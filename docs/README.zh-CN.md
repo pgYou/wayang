@@ -67,6 +67,16 @@
 npm install -g wayang-ai
 ```
 
+安装完成后，终端即可使用全局命令 `wayang`（或简写 `waya`）：
+
+```bash
+wayang          # 启动新会话
+waya            # 简写
+wayang --resume # 恢复上次会话
+```
+
+首次运行会进入交互式配置向导，填入 LLM provider 信息即可开始使用。
+
 ### 配置
 
 首次运行会自动进入交互式配置引导，填写 LLM Provider 信息即可。

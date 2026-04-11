@@ -67,6 +67,16 @@ Complex AI workflows need more than a single chat. Wayang acts as an intelligent
 npm install -g wayang-ai
 ```
 
+After installation, the global command `wayang` (alias `waya`) is available in your terminal:
+
+```bash
+wayang          # start a new session
+waya            # shorthand alias
+wayang --resume # resume last session
+```
+
+On first run, an interactive setup wizard will guide you through configuring your LLM provider.
+
 ### Configure
 
 On first run, Wayang launches an interactive setup wizard. Just fill in your LLM provider details.
