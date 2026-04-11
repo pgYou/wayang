@@ -1,0 +1,73 @@
+{
+  "name": "wayang-ai",
+  "version": "0.1.0",
+  "description": "Multi-agent orchestration platform",
+  "type": "module",
+  "license": "MIT",
+  "author": "pgYou",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pgYou/wayang.git"
+  },
+  "homepage": "https://github.com/pgYou/wayang#readme",
+  "bugs": {
+    "url": "https://github.com/pgYou/wayang/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "multi-agent",
+    "orchestration",
+    "cli",
+    "llm",
+    "claude"
+  ],
+  "bin": {
+    "wayang": "./dist/cli.js",
+    "waya": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.map"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev:watch": "tsup --watch",
+    "dev": "tsup && node --env-file=.env.local dist/cli.js --home-dir . -w . -c ./config.local.json --verbose",
+    "start": "node dist/cli.js",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc --noEmit && eslint src/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.50",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.98",
+    "@types/react": "^18.3.28",
+    "ai": "^6.0.145",
+    "ink": "^4.4.1",
+    "lodash-es": "^4.18.1",
+    "meow": "^14.1.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "prompts": "^2.4.2",
+    "react": "^18.3.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/lodash-es": "^4.17.12",
+    "@types/node": "^22.0.0",
+    "@types/prompts": "^2.4.9",
+    "eslint": "^9.0.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.58.0",
+    "vitest": "^4.1.2"
+  }
+}
