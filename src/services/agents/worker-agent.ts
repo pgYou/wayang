@@ -10,6 +10,7 @@ import type { Logger } from '@/infra/logger';
 import { WORKER_AGENT_MAX_STEP } from './constants';
 
 import { buildWorkerSystemPrompt } from './prompts/index';
+import { SystemContext } from '@/infra/system-context';
 
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   readonly state: WorkerState;
@@ -17,15 +18,17 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private _terminalResult: WorkerResult | null = null;
   private readonly workspaceDir: string;
   private contextManager: ContextManager;
-  constructor(provider: ProviderConfig, sessionDir: string, workspaceDir: string, logger: Logger) {
+  private readonly ctx: SystemContext;
+
+  constructor(provider: ProviderConfig, sessionDir: string, workspaceDir: string, ctx: SystemContext) {
     super(provider);
-    this.logger = logger;
+    this.ctx = ctx;
+    this.logger = ctx.logger;
     this.workspaceDir = workspaceDir;
-    this.state = new WorkerState(sessionDir, this.id, logger);
+    this.state = new WorkerState(sessionDir, this.id, ctx.logger);
     this.contextManager = new ContextManager(
       this.state,
-      buildWorkerSystemPrompt(),
-      () => '',
+      buildWorkerSystemPrompt(this.ctx),
     );
   }
 
@@ -34,20 +37,12 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     tools: Record<string, any>,
     onProgress?: (msg: string) => void,
   ): Promise<WorkerResult> {
+    this.logger.debug({ task }, 'WorkerAgent run called');
     // Set task info in state
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
 
-    // Rebuild system prompt with task-specific dynamic context
-    this.contextManager = new ContextManager(
-      this.state,
-      buildWorkerSystemPrompt({ taskId: task.id, workspaceDir: this.workspaceDir }),
-      () => '',
-    );
-
     // Reset terminal result for this run
     this._terminalResult = null;
-
-
 
     // Add task description as initial user message
     this.state.append('conversation', {
@@ -92,11 +87,13 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
 
   /** Called by done tool callback — saves result. Loop stops via stopWhen. */
   complete(summary: string): void {
+    this.logger.debug({ summary }, 'WorkerAgent complete called');
     this._terminalResult = { status: 'completed', summary };
   }
 
   /** Called by fail tool callback — saves result. Loop stops via stopWhen. */
   fail(error: string): void {
+    this.logger.debug({ error }, 'WorkerAgent fail called');
     this._terminalResult = { status: 'failed', error };
   }
 

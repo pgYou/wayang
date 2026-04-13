@@ -5,15 +5,10 @@ import { tmpdir } from 'node:os';
 import { WorkerFactory } from '@/services/worker-factory';
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
 import { WorkerAgent } from '@/services/agents/worker-agent';
-import type { ProviderConfig, WorkerConfig } from '@/types/index';
+import type { WorkerConfig } from '@/types/index';
+import { mockProvider, createMockCtx } from '@/__tests__/helpers';
 
 // --- Helpers ---
-
-const providerConfig: ProviderConfig = {
-  endpoint: 'http://localhost:1234/v1',
-  apiKey: 'test-key',
-  modelName: 'test-model',
-};
 
 const claudeCodeConfig: WorkerConfig = {
   type: 'claude-code',
@@ -23,10 +18,10 @@ const claudeCodeConfig: WorkerConfig = {
 function makeDeps(overrides?: { workerConfigs?: Record<string, WorkerConfig> }) {
   const tempDir = mkdtempSync(join(tmpdir(), 'wayang-wf-test-'));
   return {
-    workerProvider: providerConfig,
+    workerProvider: mockProvider,
     sessionDir: tempDir,
     workspaceDir: tempDir,
-    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), child: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })) } as any,
+    ctx: createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any),
     workerConfigs: overrides?.workerConfigs,
     _tempDir: tempDir,
   };

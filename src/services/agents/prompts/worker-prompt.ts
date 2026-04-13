@@ -5,7 +5,8 @@
  * uses tools (bash, file I/O) to accomplish it, and reports done/fail.
  */
 
-import { assemble, section } from './prompt-utils';
+import { SystemContext } from '@/infra/system-context';
+import { assemble, buildEnvironment, section } from './prompt-utils';
 
 // ---------------------------------------------------------------------------
 // Static sections
@@ -95,30 +96,11 @@ Bad: "Failed"
 Good: "Failed: npm install timed out after 30s, network may be unreachable"`);
 
 // ---------------------------------------------------------------------------
-// Dynamic section builders
-// ---------------------------------------------------------------------------
-
-export interface WorkerDynamicContext {
-  taskId: string;
-  workspaceDir: string;
-}
-
-function buildEnvironment(ctx: WorkerDynamicContext): string {
-  const now = new Date();
-  const date = now.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
-  const lines: string[] = [];
-  lines.push(`- Date: ${date}`);
-  lines.push(`- Task ID: ${ctx.taskId}`);
-  lines.push(`- Workspace: ${ctx.workspaceDir}`);
-  return section('Environment', lines.join('\n'));
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /** Build the full Worker system prompt (static + dynamic). */
-export function buildWorkerSystemPrompt(ctx?: WorkerDynamicContext): string {
+export function buildWorkerSystemPrompt(ctx: SystemContext): string {
   return assemble(
     IDENTITY,
     LANGUAGE_RULES,
@@ -127,6 +109,6 @@ export function buildWorkerSystemPrompt(ctx?: WorkerDynamicContext): string {
     QUALITY_RULES,
     HARD_CONSTRAINTS,
     PROGRESS_REPORTING,
-    ctx ? buildEnvironment(ctx) : undefined,
+    buildEnvironment(ctx)
   );
 }

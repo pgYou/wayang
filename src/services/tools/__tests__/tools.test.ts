@@ -11,21 +11,12 @@ import { doneTool } from '@/services/tools/done';
 import { failTool } from '@/services/tools/fail';
 import { skipReplyTool } from '@/services/tools/skip-reply';
 import { bashTool } from '@/services/tools/bash';
+import { makeTask } from '@/__tests__/helpers';
 
 // Helper to call tool execute
 async function exec(toolObj: any, args: any): Promise<string> {
   return toolObj.execute(args);
 }
-
-const makeTask = (id: string, overrides?: Partial<TaskDetail>): TaskDetail => ({
-  id,
-  title: `Task ${id}`,
-  description: `Description for ${id}`,
-  priority: 'normal',
-  status: 'pending',
-  createdAt: Date.now(),
-  ...overrides,
-});
 
 // --- add_task ---
 

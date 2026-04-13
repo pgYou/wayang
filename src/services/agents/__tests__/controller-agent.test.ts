@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ControllerAgentState } from '@/services/agents/controller-state';
-import type { Logger } from '@/infra/logger';
-import type { ControllerSignal, ProviderConfig } from '@/types/index';
+import type { ControllerSignal } from '@/types/index';
+import { mockProvider, createMockCtx } from '@/__tests__/helpers';
 
 // Mock model-factory to avoid real SDK calls
 vi.mock('../model-factory.js', () => ({
@@ -33,16 +33,6 @@ function createMockState(): any {
   };
 }
 
-function createMockLogger(): Logger {
-  return { info: vi.fn(), debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as any;
-}
-
-const mockProvider: ProviderConfig = {
-  endpoint: 'http://localhost:1234',
-  apiKey: 'test-key',
-  modelName: 'test-model',
-};
-
 function mockStreamResponse(text: string) {
   // streamText returns synchronously — an object with textStream, text (Promise), etc.
   vi.mocked(streamText).mockReturnValue({
@@ -55,18 +45,16 @@ function mockStreamResponse(text: string) {
 
 describe('ControllerAgent', () => {
   let state: any;
-  let logger: Logger;
   let agent: ControllerAgent;
 
   beforeEach(() => {
     state = createMockState();
-    logger = createMockLogger();
     vi.mocked(streamText).mockReset();
     agent = new ControllerAgent(
+      createMockCtx(),
       state as ControllerAgentState,
       mockProvider,
       {}, // tools
-      logger,
     );
   });
 

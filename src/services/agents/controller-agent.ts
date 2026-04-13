@@ -4,7 +4,7 @@ import { ControllerAgentState } from '@/services/agents/controller-state';
 import { buildAssistantEntry } from './utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, WorkerConfig } from '@/types/index';
+import type { ControllerSignal, ProviderConfig } from '@/types/index';
 import { EEntryType, ESignalSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import { generateText } from 'ai';
@@ -14,29 +14,30 @@ import {
   buildSummarizerPrompt,
   buildControllerSystemPrompt,
 } from './prompts/index';
+import { SystemContext } from '@/infra/system-context';
 
 export class ControllerAgent extends BaseAgent {
   readonly state: ControllerAgentState;
   private readonly contextManager: ContextManager;
   private readonly tools: ToolSet;
   private readonly logger: Logger;
+  private readonly ctx: SystemContext;
 
   constructor(
+    ctx: SystemContext,
     state: ControllerAgentState,
     provider: ProviderConfig,
     tools: ToolSet,
-    logger: Logger,
-    workerConfigs?: Record<string, WorkerConfig>,
   ) {
     super(provider);
+    this.ctx = ctx;
     this.state = state;
     this.tools = tools;
-    this.logger = logger;
+    this.logger = ctx.logger;
 
     this.contextManager = new ContextManager(
       state,
-      buildControllerSystemPrompt({ workers: workerConfigs }),
-      () => '',
+      buildControllerSystemPrompt(this.ctx),
     );
     this.setHooks({
       beforeLLM: ({ messages }) => {

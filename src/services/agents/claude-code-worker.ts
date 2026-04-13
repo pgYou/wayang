@@ -17,6 +17,7 @@ import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import { EEntryType } from '@/types/index';
 import { buildThirdPartyPrompt } from './prompts/index';
+import { SystemContext } from '@/infra/system-context';
 
 export class ClaudeCodeWorker implements IWorkerInstance {
   readonly id: string;
@@ -40,18 +41,19 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private static readonly PROGRESS_DEBOUNCE_MS = 500;
   private _progressTimer: ReturnType<typeof setTimeout> | null = null;
   private _pendingProgress: string | null = null;
-
+  private readonly ctx: SystemContext;
   constructor(
     config: WorkerConfig,
     sessionDir: string,
     workspaceDir: string,
-    logger: Logger,
+    ctx: SystemContext,
   ) {
     this.id = generateId('cw');
+    this.ctx = ctx;
     this.config = config;
     this.workspaceDir = workspaceDir;
-    this.logger = logger;
-    this.state = new WorkerState(sessionDir, this.id, logger);
+    this.logger = ctx.logger;
+    this.state = new WorkerState(sessionDir, this.id, ctx.logger);
   }
 
   async run(
