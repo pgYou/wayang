@@ -4,6 +4,7 @@ import type { TaskPool } from '@/services/task/task-pool';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { EventBus } from '@/infra/event-bus';
 import type { TaskDetail, WorkerResult } from '@/types/index';
+import { makeTask } from '@/__tests__/helpers';
 
 // --- Mocks ---
 
@@ -69,15 +70,6 @@ function createMockContext(): SchedulerContext {
   };
 }
 
-const makeTask = (id: string, overrides?: Partial<TaskDetail>): TaskDetail => ({
-  id,
-  title: `Task ${id}`,
-  description: `Description for ${id}`,
-  priority: 'normal',
-  status: 'pending',
-  createdAt: Date.now(),
-  ...overrides,
-});
 
 // --- Tests ---
 

@@ -7,7 +7,8 @@
 
 import type { WorkerConfig } from '@/types/config';
 import { PUPPET_DEFAULTS } from '../worker-defaults';
-import { assemble, section } from './prompt-utils';
+import { assemble, buildEnvironment, section } from './prompt-utils';
+import { SystemContext } from '@/infra/system-context';
 
 // ---------------------------------------------------------------------------
 // Static sections (cacheable, never change between calls)
@@ -45,7 +46,15 @@ User: 任务进展如何？
 Assistant: 正在执行中，还没完成。
 
 User: hi
-Assistant: 有什么需要帮忙的？`);
+Assistant: 有什么需要帮忙的？
+
+## initiative
+You are permitted to take the initiative, but only when the user explicitly requests that you do something. You should strive to strike a balance between the following:
+  - Doing the right thing when requested—including taking action and following up;
+  - Avoiding surprising the user with actions you take without being asked.
+
+For example, if a user asks you how to handle a specific situation, [you should first focus on answering their question rather than immediately jumping to take action.]
+`);
 
 const TOOL_USAGE = section('Task delegation',
   `## When to create a task
@@ -115,7 +124,7 @@ CRITICAL RULES:
 - When handling PROGRESS, skip_reply must be the ONLY tool call with NO text output. The system will stop execution after skip_reply.`);
 
 const HARD_CONSTRAINTS = section('Hard constraints',
-  `- NEVER execute commands or write files yourself. Delegate via add_task.
+  `- NEVER execute commands or write files yourself. Delegate via add_task（worker will execute）.
 - NEVER poll or busy-wait for task completion.
 - NEVER fabricate results. Only report what you actually received.
 - NEVER ignore errors — always surface them.
@@ -124,13 +133,6 @@ const HARD_CONSTRAINTS = section('Hard constraints',
 // ---------------------------------------------------------------------------
 // Dynamic section (injected per call)
 // ---------------------------------------------------------------------------
-
-function buildEnvironment(): string {
-  const now = new Date();
-  const date = now.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
-  const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
-  return section('Environment', `- Date: ${date} (${weekday})`);
-}
 
 function buildWorkerList(workers?: Record<string, WorkerConfig>): string {
   const lines: string[] = [`- \`puppet\` — ${PUPPET_DEFAULTS.description} [${PUPPET_DEFAULTS.capabilities.join(', ')}]`];
@@ -152,14 +154,14 @@ export interface ControllerDynamicContext {
 }
 
 /** Build the full Controller system prompt. */
-export function buildControllerSystemPrompt(ctx?: ControllerDynamicContext): string {
+export function buildControllerSystemPrompt(ctx: SystemContext): string {
   return assemble(
     IDENTITY,
     RESPONSE_STYLE,
     TOOL_USAGE,
     SIGNAL_HANDLING,
     HARD_CONSTRAINTS,
-    buildWorkerList(ctx?.workers),
-    buildEnvironment(),
+    buildWorkerList(ctx.config.workers),
+    buildEnvironment(ctx),
   );
 }

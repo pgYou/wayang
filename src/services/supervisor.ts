@@ -115,11 +115,10 @@ export class Supervisor implements SchedulerContext {
       queryMessages: (filter) => this.signalQueue.query(filter),
     });
     this.controllerAgent = new ControllerAgent(
+      this.ctx,
       this.controllerState,
       this.controllerProvider,
       controllerTools,
-      this.ctx.logger,
-      config.workers,
     );
 
     // Wire up scheduler spawn function
@@ -201,7 +200,7 @@ export class Supervisor implements SchedulerContext {
       workerProvider: this.workerProvider,
       sessionDir: this.ctx.sessionDir,
       workspaceDir: this.ctx.workspaceDir,
-      logger: this.ctx.logger,
+      ctx: this.ctx,
       workerConfigs: this.config.workers,
     });
     this.workers.set(workerId, worker);
@@ -211,23 +210,23 @@ export class Supervisor implements SchedulerContext {
     // Puppet workers need Wayang tools; third-party workers don't use them
     const tools = workerType === 'puppet'
       ? createWorkerTools({
-          listTasks: (status?: TaskDetail['status']) => this.taskPool.list(status),
-          cwd: this.ctx.workspaceDir,
-          reportProgress: (msg: string, _percent?: number) => {
-            this.signalQueue.enqueue({
-              source: 'worker',
-              type: 'progress',
-              payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: workerMeta.emoji, message: msg },
-            });
-          },
-          onComplete: (summary: string) => {
-            // WorkerAgent.complete — safe cast, only puppet workers reach here
-            (worker as any).complete(summary);
-          },
-          onFail: (error: string) => {
-            (worker as any).fail(error);
-          },
-        })
+        listTasks: (status?: TaskDetail['status']) => this.taskPool.list(status),
+        cwd: this.ctx.workspaceDir,
+        reportProgress: (msg: string, _percent?: number) => {
+          this.signalQueue.enqueue({
+            source: 'worker',
+            type: 'progress',
+            payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: workerMeta.emoji, message: msg },
+          });
+        },
+        onComplete: (summary: string) => {
+          // WorkerAgent.complete — safe cast, only puppet workers reach here
+          (worker as any).complete(summary);
+        },
+        onFail: (error: string) => {
+          (worker as any).fail(error);
+        },
+      })
       : {};
 
     this.ctx.logger.info({ workerId, taskId: task.id, workerType }, 'Worker starting');

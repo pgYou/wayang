@@ -7,6 +7,7 @@ import { TaskPoolState } from '@/services/task/task-pool-state';
 import { EventBus } from '@/infra/event-bus';
 import { TaskPool } from '@/services/task/task-pool';
 import type { TaskDetail } from '@/types/index';
+import { makeTask } from '@/__tests__/helpers';
 
 describe('TaskPool', () => {
   let tempDir: string;
@@ -14,15 +15,6 @@ describe('TaskPool', () => {
   let state: TaskPoolState;
   let eventBus: EventBus;
   const logger = createLogger('silent');
-
-  const makeTask = (id: string, priority: TaskDetail['priority'] = 'normal'): TaskDetail => ({
-    id,
-    title: `task ${id}`,
-    description: `task ${id}`,
-    priority,
-    status: 'pending',
-    createdAt: Date.now(),
-  });
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'wayang-test-'));
@@ -133,9 +125,9 @@ describe('TaskPool', () => {
     });
 
     it('should peek high priority first without removing', () => {
-      taskPool.add(makeTask('t1', 'normal'));
-      taskPool.add(makeTask('t2', 'high'));
-      taskPool.add(makeTask('t3', 'normal'));
+      taskPool.add(makeTask('t1', { priority: 'normal' }));
+      taskPool.add(makeTask('t2', { priority: 'high' }));
+      taskPool.add(makeTask('t3', { priority: 'normal' }));
 
       const peeked = taskPool.peekHighestPriority();
       expect(peeked!.id).toBe('t2');

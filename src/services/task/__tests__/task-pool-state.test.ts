@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { createLogger } from '@/infra/logger';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import type { TaskDetail } from '@/types/index';
+import { makeTask } from '@/__tests__/helpers';
 
 describe('TaskPoolState', () => {
   let tempDir: string;
@@ -20,14 +21,6 @@ describe('TaskPoolState', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const makeTask = (id: string, status: TaskDetail['status'] = 'pending'): TaskDetail => ({
-    id,
-    title: `task ${id}`,
-    description: `task ${id}`,
-    priority: 'normal',
-    status,
-    createdAt: Date.now(),
-  });
 
   it('should initialize with empty task lists', () => {
     expect(state.get('tasks.pending')).toEqual([]);
@@ -63,8 +56,8 @@ describe('TaskPoolState', () => {
   it('should restore all task lists', async () => {
     const task = makeTask('t1');
     state.append('tasks.pending', task);
-    state.append('tasks.running', { ...makeTask('t2'), status: 'running' });
-    state.append('tasks.history', { ...makeTask('t3'), status: 'completed' });
+    state.append('tasks.running', makeTask('t2', { status: 'running' }));
+    state.append('tasks.history', makeTask('t3', { status: 'completed' }));
 
     const state2 = new TaskPoolState(tempDir, logger);
     await state2.restore();
