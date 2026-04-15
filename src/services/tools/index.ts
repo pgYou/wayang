@@ -9,6 +9,10 @@ import { skipReplyTool } from './skip-reply';
 import { bashTool } from './bash';
 import { readFileTool } from './read-file';
 import { writeFileTool } from './write-file';
+import { editFileTool } from './edit-file';
+import { searchFilesTool } from './search-files';
+import { searchContentTool } from './search-content';
+import { webSearchTool } from './web-search';
 import { doneTool } from './done';
 import { failTool } from './fail';
 import { updateProgressTool } from './update-progress';
@@ -37,6 +41,8 @@ export interface WorkerToolDeps {
   onComplete: (summary: string) => void;
   /** Called when worker calls the fail tool. */
   onFail: (error: string) => void;
+  /** Tavily API key for web_search. Optional — tool returns error if unset. */
+  tavilyApiKey?: string;
 }
 
 export function createControllerTools(deps: ControllerToolDeps) {
@@ -61,6 +67,10 @@ export function createWorkerTools(deps: WorkerToolDeps) {
     bash: bashTool({ cwd: deps.cwd }),
     read_file: readFileTool({ cwd: deps.cwd }),
     write_file: writeFileTool({ cwd: deps.cwd }),
+    edit_file: editFileTool({ cwd: deps.cwd }),
+    search_files: searchFilesTool({ cwd: deps.cwd }),
+    search_content: searchContentTool({ cwd: deps.cwd }),
+    web_search: webSearchTool({ tavilyApiKey: deps.tavilyApiKey }),
     list_tasks: listTasksTool({ listTasks: deps.listTasks }),
     update_progress: updateProgressTool({ reportProgress: deps.reportProgress }),
     done: doneTool({ onComplete: deps.onComplete }),

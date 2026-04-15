@@ -1,16 +1,7 @@
 import { z } from 'zod';
 import { readFileSync } from 'node:fs';
-import { resolve, relative } from 'node:path';
-import { defineTool, safeExecute } from './common';
-
-/** Validate that resolved path stays within workspace. */
-function validatePath(resolved: string, workspace: string): string | null {
-  const rel = relative(workspace, resolved);
-  if (rel.startsWith('..') || resolve(workspace, rel) !== resolved) {
-    return `Path escapes workspace: ${resolved} (workspace: ${workspace})`;
-  }
-  return null;
-}
+import { resolve } from 'node:path';
+import { defineTool, safeExecute, validatePath } from './common';
 
 export function readFileTool(deps: { cwd?: string } = {}) {
   const workspace = deps.cwd ?? process.cwd();

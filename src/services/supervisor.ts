@@ -199,6 +199,7 @@ export class Supervisor implements SchedulerContext {
       ? createWorkerTools({
         listTasks: (status?: TaskDetail['status']) => this.taskPool.list(status),
         cwd: this.ctx.workspaceDir,
+        tavilyApiKey: this.config.tavilyApiKey,
         reportProgress: (msg: string, _percent?: number) => {
           this.signalQueue.enqueue({
             source: 'worker',
