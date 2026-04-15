@@ -1,7 +1,7 @@
 import type { TaskDetail } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import type { TaskPoolState } from '@/services/task/task-pool-state';
-import type { EventBus } from '@/infra/event-bus';
+import type { LifecycleHooks } from '@/services/lifecycle-hooks';
 
 export class TaskPool {
   /** Expose state for UI subscription via useWayangState. */
@@ -9,13 +9,13 @@ export class TaskPool {
 
   constructor(
     private state: TaskPoolState,
-    private eventBus: EventBus,
+    private hooks: LifecycleHooks,
     private logger: Logger,
   ) {}
 
   add(task: TaskDetail): void {
     this.state.append('tasks.pending', task);
-    this.eventBus.emit('task:added', task);
+    this.hooks.emit('task:added', task);
     this.logger.info({ taskId: task.id }, 'Task added');
   }
 
@@ -49,13 +49,13 @@ export class TaskPool {
 
   complete(id: string, result: string): void {
     this.moveToHistory(id, 'completed', { result });
-    this.eventBus.emit('task:completed', { taskId: id });
+    this.hooks.emit('task:completed', { taskId: id });
     this.logger.info({ taskId: id }, 'Task completed');
   }
 
   fail(id: string, error: string): void {
     this.moveToHistory(id, 'failed', { error });
-    this.eventBus.emit('task:failed', { taskId: id, error });
+    this.hooks.emit('task:failed', { taskId: id, error });
     this.logger.info({ taskId: id, error }, 'Task failed');
   }
 
@@ -65,7 +65,7 @@ export class TaskPool {
     const runIdx = running.findIndex(t => t.id === id);
     if (runIdx !== -1) {
       this.moveToHistory(id, 'cancelled', {});
-      this.eventBus.emit('task:cancelled', { taskId: id });
+      this.hooks.emit('task:cancelled', { taskId: id });
       this.logger.info({ taskId: id }, 'Running task cancelled');
       return true;
     }
@@ -80,7 +80,7 @@ export class TaskPool {
         status: 'cancelled',
         completedAt: Date.now(),
       });
-      this.eventBus.emit('task:cancelled', { taskId: id });
+      this.hooks.emit('task:cancelled', { taskId: id });
       this.logger.info({ taskId: id }, 'Pending task cancelled');
       return true;
     }

@@ -1,6 +1,7 @@
 import type { ControllerSignal, NewSignalInput, SignalStatus, SignalSource, SignalType } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import type { SignalState } from '@/services/signal/signal-state';
+import type { LifecycleHooks } from '@/services/lifecycle-hooks';
 
 /** Query filter for signals */
 export interface SignalQueryFilter {
@@ -22,6 +23,7 @@ export class SignalQueue {
   constructor(
     private state: SignalState,
     private logger: Logger,
+    private hooks?: LifecycleHooks,
   ) {
     const sigs = state.get<ControllerSignal[]>('signals');
     this.counter = sigs.reduce((max, s) => {
@@ -69,6 +71,9 @@ export class SignalQueue {
       this.resolveWait();
       this.resolveWait = null;
     }
+
+    // Notify lifecycle hooks
+    this.hooks?.emit('signal:enqueued', { signal: full });
   }
 
   dequeueUnread(): ControllerSignal[] {

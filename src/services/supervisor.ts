@@ -1,5 +1,5 @@
 import { SystemContext } from '@/infra/system-context';
-import { EventBus } from '@/infra/event-bus';
+import { LifecycleHooks } from '@/services/lifecycle-hooks';
 import { TaskPool } from '@/services/task/task-pool';
 import { SignalQueue } from '@/services/signal/signal-queue';
 import { TaskScheduler, type SchedulerContext } from '@/services/task/task-scheduler';
@@ -9,7 +9,7 @@ import { TaskPoolState } from './task/task-pool-state';
 import { SignalState } from './signal/signal-state';
 import { SessionManager } from '@/services/session/session-manager';
 import { ControllerAgent } from './agents/controller-agent';
-import { createControllerTools, createWorkerTools } from '@/services/tools/index';
+import { createWorkerTools } from '@/services/tools/index';
 import { WorkerFactory } from '@/services/worker-factory';
 import type { WayangConfig, TaskDetail, WorkerResult, ProviderConfig, IWorkerInstance } from '@/types/index';
 import type { ActiveWorkerInfo } from './agents/controller-state';
@@ -28,7 +28,7 @@ export interface SupervisorOptions {
 
 export class Supervisor implements SchedulerContext {
   readonly ctx: SystemContext;
-  readonly eventBus: EventBus;
+  readonly hooks: LifecycleHooks;
   readonly controllerState: ControllerAgentState;
   readonly taskPool: TaskPool;
   readonly signalQueue: SignalQueue;
@@ -76,8 +76,8 @@ export class Supervisor implements SchedulerContext {
       'Provider config',
     );
 
-    // Create event bus
-    this.eventBus = new EventBus();
+    // Create lifecycle hooks
+    this.hooks = new LifecycleHooks();
 
     // Create states
     this.controllerState = new ControllerAgentState(this.ctx.sessionDir, this.ctx.logger);
@@ -85,41 +85,28 @@ export class Supervisor implements SchedulerContext {
     const signalState = new SignalState(this.ctx.sessionDir, this.ctx.logger);
 
     // Create services
-    this.taskPool = new TaskPool(taskPoolState, this.eventBus, this.ctx.logger);
-    this.signalQueue = new SignalQueue(signalState, this.ctx.logger);
+    this.taskPool = new TaskPool(taskPoolState, this.hooks, this.ctx.logger);
+    this.signalQueue = new SignalQueue(signalState, this.ctx.logger, this.hooks);
     this.scheduler = new TaskScheduler(
       this.ctx.logger,
       this.taskPool,
       this.signalQueue,
-      this.eventBus,
+      this.hooks,
       this, // SchedulerContext
       this.ctx.maxConcurrency,
       config.workers,
     );
 
     // Create controller agent
-    const controllerTools = createControllerTools({
-      addTask: (task: TaskDetail) => this.taskPool.add(task),
-      validateWorkerType: (type: string) => {
-        if (type === 'puppet') return null;
-        const workerConfig = config.workers?.[type];
-        if (!workerConfig) return `Unknown worker type: "${type}". Available: puppet${Object.keys(config.workers ?? {}).map(k => `, ${k}`).join('')}`;
-        if (workerConfig.enable === false) return `Worker "${type}" is disabled`;
-        return null;
-      },
-      listTasks: (status?: TaskDetail['status']) => this.taskPool.list(status),
-      getTask: (taskId: string) => this.taskPool.get(taskId),
-      cancelTask: (taskId: string) => this.taskPool.cancel(taskId),
+    this.controllerAgent = ControllerAgent.create({
+      ctx: this.ctx,
+      state: this.controllerState,
+      provider: this.controllerProvider,
+      config,
+      taskPool: this.taskPool,
+      signalQueue: this.signalQueue,
       abortWorker: (taskId: string) => this.abortWorkerByTaskId(taskId),
-      updateTask: (taskId, updates) => this.taskPool.updatePending(taskId, updates),
-      queryMessages: (filter) => this.signalQueue.query(filter),
     });
-    this.controllerAgent = new ControllerAgent(
-      this.ctx,
-      this.controllerState,
-      this.controllerProvider,
-      controllerTools,
-    );
 
     // Wire up scheduler spawn function
     this.scheduler.setSpawnFn((taskWithWorker: TaskWithWorkerId) => {

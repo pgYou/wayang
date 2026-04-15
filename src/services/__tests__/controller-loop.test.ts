@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mainControllerLoop } from '@/services/controller-loop';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ControllerLoop } from '@/services/controller-loop';
 import type { Supervisor } from '@/services/supervisor';
 
 function createMockSupervisor(): any {
@@ -7,6 +7,7 @@ function createMockSupervisor(): any {
     signalQueue: {
       dequeueUnread: vi.fn().mockReturnValue([]),
       waitForSignal: vi.fn().mockResolvedValue(undefined),
+      enqueue: vi.fn(),
     },
     controllerAgent: {
       run: vi.fn().mockImplementation(() => (async function* () {
@@ -19,6 +20,17 @@ function createMockSupervisor(): any {
         append: vi.fn(),
       },
     },
+    hooks: {
+      on: vi.fn().mockReturnValue(() => {}),
+      emit: vi.fn(),
+    },
+    taskPool: {
+      getRunningCount: vi.fn().mockReturnValue(0),
+      list: vi.fn().mockReturnValue([]),
+    },
+    controllerState: {
+      get: vi.fn().mockReturnValue([]),
+    },
     ctx: {
       abortController: new AbortController(),
       logger: {
@@ -30,26 +42,69 @@ function createMockSupervisor(): any {
   };
 }
 
-describe('mainControllerLoop', () => {
+describe('ControllerLoop', () => {
+  let supervisor: ReturnType<typeof createMockSupervisor>;
+
+  beforeEach(() => {
+    supervisor = createMockSupervisor();
+  });
+
   it('should dequeue signals and execute them', async () => {
-    const supervisor = createMockSupervisor();
     const signals = [{ id: '1', source: 'user', type: 'input', payload: { text: 'hello' } }];
     let callCount = 0;
     supervisor.signalQueue.dequeueUnread.mockImplementation(() => {
       callCount++;
       if (callCount === 1) return signals;
-      // Abort after first successful process
       supervisor.ctx.abortController.abort();
       return [];
     });
 
-    await mainControllerLoop(supervisor as unknown as Supervisor);
+    const loop = new ControllerLoop(supervisor as unknown as Supervisor);
+    await loop.start();
 
     expect(supervisor.controllerAgent.run).toHaveBeenCalledWith(signals);
   });
 
+  it('should emit controller:loop-start and controller:loop-end hooks', async () => {
+    // Use real hooks to capture emits
+    const emitted: Array<{ hook: string; payload: any }> = [];
+    supervisor.hooks.on.mockImplementation((hook: string, fn: any) => {
+      // Store the callback so ControllerLoop's internal heartbeat logic works
+      return () => {};
+    });
+    supervisor.hooks.emit.mockImplementation((hook: string, payload: any) => {
+      emitted.push({ hook, payload });
+    });
+
+    const signals = [{ id: '1', source: 'user', type: 'input', payload: { text: 'hello' } }];
+    let callCount = 0;
+    supervisor.signalQueue.dequeueUnread.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) return signals;
+      supervisor.ctx.abortController.abort();
+      return [];
+    });
+
+    const loop = new ControllerLoop(supervisor as unknown as Supervisor);
+    await loop.start();
+
+    expect(emitted.some(e => e.hook === 'controller:loop-start')).toBe(true);
+    expect(emitted.some(e => e.hook === 'controller:loop-end')).toBe(true);
+  });
+
+  it('should subscribe to hooks on start', async () => {
+    supervisor.signalQueue.waitForSignal.mockImplementation(async () => {
+      supervisor.ctx.abortController.abort();
+    });
+
+    const loop = new ControllerLoop(supervisor as unknown as Supervisor);
+    await loop.start();
+
+    expect(supervisor.hooks.on).toHaveBeenCalledWith('controller:loop-end', expect.any(Function));
+    expect(supervisor.hooks.on).toHaveBeenCalledWith('signal:enqueued', expect.any(Function));
+  });
+
   it('should wait for signals when queue is empty', async () => {
-    const supervisor = createMockSupervisor();
     let waitCount = 0;
     supervisor.signalQueue.waitForSignal.mockImplementation(async () => {
       waitCount++;
@@ -58,24 +113,24 @@ describe('mainControllerLoop', () => {
       }
     });
 
-    await mainControllerLoop(supervisor as unknown as Supervisor);
+    const loop = new ControllerLoop(supervisor as unknown as Supervisor);
+    await loop.start();
 
     expect(supervisor.signalQueue.waitForSignal).toHaveBeenCalled();
   });
 
   it('should stop when aborted during waitForSignal', async () => {
-    const supervisor = createMockSupervisor();
     supervisor.signalQueue.waitForSignal.mockImplementation(async () => {
       supervisor.ctx.abortController.abort();
     });
 
-    await mainControllerLoop(supervisor as unknown as Supervisor);
+    const loop = new ControllerLoop(supervisor as unknown as Supervisor);
+    await loop.start();
 
     expect(supervisor.ctx.abortController.signal.aborted).toBe(true);
   });
 
   it('should handle errors and continue loop', async () => {
-    const supervisor = createMockSupervisor();
     let dequeueCount = 0;
     supervisor.signalQueue.dequeueUnread.mockImplementation(() => {
       dequeueCount++;
@@ -84,21 +139,137 @@ describe('mainControllerLoop', () => {
       return [];
     });
 
-    await mainControllerLoop(supervisor as unknown as Supervisor);
+    const loop = new ControllerLoop(supervisor as unknown as Supervisor);
+    await loop.start();
 
     expect(supervisor.ctx.logger.error).toHaveBeenCalled();
   });
 
   it('should break on error if aborted', async () => {
-    const supervisor = createMockSupervisor();
     supervisor.signalQueue.dequeueUnread.mockImplementation(() => {
       supervisor.ctx.abortController.abort();
       throw new Error('test error');
     });
 
-    await mainControllerLoop(supervisor as unknown as Supervisor);
+    const loop = new ControllerLoop(supervisor as unknown as Supervisor);
+    await loop.start();
 
-    // Should not log error because it breaks immediately
     expect(supervisor.ctx.logger.error).not.toHaveBeenCalled();
+  });
+});
+
+describe('ControllerLoop heartbeat', () => {
+  let supervisor: ReturnType<typeof createMockSupervisor>;
+  let idleHandler: ((payload: { lastWakeAt: number }) => void) | null;
+  let signalEnqueuedHandler: (() => void) | null;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    supervisor = createMockSupervisor();
+    idleHandler = null;
+    signalEnqueuedHandler = null;
+
+    // Capture the hook callbacks registered by ControllerLoop
+    supervisor.hooks.on.mockImplementation((hook: string, fn: any) => {
+      if (hook === 'controller:loop-end') idleHandler = fn;
+      if (hook === 'signal:enqueued') signalEnqueuedHandler = fn;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Helper: create a loop, start it (immediately abort the main while-loop),
+  // then test heartbeat behavior via the captured hook callbacks.
+  async function createAndStartLoop(opts?: { heartbeatIntervalMs?: number }) {
+    supervisor.signalQueue.waitForSignal.mockImplementation(async () => {
+      supervisor.ctx.abortController.abort();
+    });
+    const loop = new ControllerLoop(supervisor as unknown as Supervisor, opts);
+    await loop.start();
+    return loop;
+  }
+
+  it('should inject heartbeat after idle interval when workers are running', async () => {
+    supervisor.taskPool.getRunningCount.mockReturnValue(1);
+    supervisor.controllerState.get.mockReturnValue([
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now() - 5000 },
+    ]);
+
+    await createAndStartLoop({ heartbeatIntervalMs: 10_000 });
+
+    // Simulate idle
+    idleHandler!({ lastWakeAt: Date.now() });
+
+    expect(supervisor.signalQueue.enqueue).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(10_000);
+
+    expect(supervisor.signalQueue.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'system', type: 'heartbeat' }),
+    );
+  });
+
+  it('should NOT inject heartbeat when no workers are running', async () => {
+    supervisor.taskPool.getRunningCount.mockReturnValue(0);
+
+    await createAndStartLoop({ heartbeatIntervalMs: 10_000 });
+    idleHandler!({ lastWakeAt: Date.now() });
+    vi.advanceTimersByTime(30_000);
+
+    expect(supervisor.signalQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('should reset timer when signal:enqueued fires', async () => {
+    supervisor.taskPool.getRunningCount.mockReturnValue(1);
+    supervisor.controllerState.get.mockReturnValue([
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now() },
+    ]);
+
+    await createAndStartLoop({ heartbeatIntervalMs: 30_000 });
+    idleHandler!({ lastWakeAt: Date.now() });
+
+    // 20s in, a real signal arrives → resets timer
+    vi.advanceTimersByTime(20_000);
+    signalEnqueuedHandler!();
+
+    // At 30s mark — should NOT fire
+    vi.advanceTimersByTime(10_000);
+    expect(supervisor.signalQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('should clean up timer on shutdown', async () => {
+    supervisor.taskPool.getRunningCount.mockReturnValue(1);
+    supervisor.controllerState.get.mockReturnValue([
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now() },
+    ]);
+
+    const loop = await createAndStartLoop({ heartbeatIntervalMs: 10_000 });
+    idleHandler!({ lastWakeAt: Date.now() });
+    loop.shutdown();
+
+    vi.advanceTimersByTime(30_000);
+    expect(supervisor.signalQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('should include worker details in heartbeat payload', async () => {
+    const startedAt = Date.now() - 15_000;
+    supervisor.taskPool.getRunningCount.mockReturnValue(1);
+    supervisor.taskPool.list.mockReturnValue([{ id: 'p1' }, { id: 'p2' }]);
+    supervisor.controllerState.get.mockReturnValue([
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Write code', workerType: 'puppet', startedAt },
+    ]);
+
+    await createAndStartLoop({ heartbeatIntervalMs: 10_000 });
+    idleHandler!({ lastWakeAt: Date.now() });
+    vi.advanceTimersByTime(10_000);
+
+    const call = supervisor.signalQueue.enqueue.mock.calls[0][0];
+    expect(call.payload.workers).toHaveLength(1);
+    expect(call.payload.workers[0].taskTitle).toBe('Write code');
+    expect(call.payload.workers[0].workerType).toBe('puppet');
+    expect(call.payload.pendingTaskCount).toBe(2);
+    expect(call.payload.idleSinceMs).toBeGreaterThanOrEqual(10_000);
   });
 });

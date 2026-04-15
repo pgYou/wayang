@@ -30,6 +30,8 @@ export enum ESignalSubtype {
   WorkerCompleted = 'worker_completed',
   /** Worker failed a task. */
   WorkerFailed = 'worker_failed',
+  /** System heartbeat — periodic check-in while workers are running. */
+  Heartbeat = 'heartbeat',
 }
 
 // --- Tool record types ---

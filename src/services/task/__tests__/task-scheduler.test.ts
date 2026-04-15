@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { TaskScheduler, type SchedulerContext } from '@/services/task/task-scheduler';
 import type { TaskPool } from '@/services/task/task-pool';
 import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { EventBus } from '@/infra/event-bus';
+import type { LifecycleHooks } from '@/services/lifecycle-hooks';
 import type { TaskDetail, WorkerResult } from '@/types/index';
 import { makeTask } from '@/__tests__/helpers';
 
@@ -52,14 +52,14 @@ function createMockSignalQueue() {
   } as unknown as SignalQueue;
 }
 
-function createMockEventBus() {
+function createMockHooks() {
   const handlers = new Map<string, () => void>();
   return {
     on: vi.fn((event: string, handler: () => void) => { handlers.set(event, handler); }),
     emit: vi.fn((event: string) => { handlers.get(event)?.(); }),
-    off: vi.fn(),
+    removeAll: vi.fn(),
     _handlers: handlers,
-  } as unknown as EventBus;
+  } as unknown as LifecycleHooks;
 }
 
 function createMockContext(): SchedulerContext {
@@ -77,7 +77,7 @@ describe('TaskScheduler', () => {
   let scheduler: TaskScheduler;
   let taskPool: ReturnType<typeof createMockTaskPool>;
   let signalQueue: ReturnType<typeof createMockSignalQueue>;
-  let eventBus: ReturnType<typeof createMockEventBus>;
+  let hooks: ReturnType<typeof createMockHooks>;
   let ctx: ReturnType<typeof createMockContext>;
   let spawnResults: Map<string, WorkerResult>;
   let spawnErrors: Map<string, Error>;
@@ -86,7 +86,7 @@ describe('TaskScheduler', () => {
     vi.clearAllMocks();
     taskPool = createMockTaskPool();
     signalQueue = createMockSignalQueue();
-    eventBus = createMockEventBus();
+    hooks = createMockHooks();
     ctx = createMockContext();
     spawnResults = new Map();
     spawnErrors = new Map();
@@ -95,7 +95,7 @@ describe('TaskScheduler', () => {
       mockLogger as any,
       taskPool,
       signalQueue,
-      eventBus,
+      hooks,
       ctx,
       3, // maxConcurrency
     );
@@ -110,7 +110,7 @@ describe('TaskScheduler', () => {
   describe('start', () => {
     it('should register task:added event listener', () => {
       scheduler.start();
-      expect(eventBus.on).toHaveBeenCalledWith('task:added', expect.any(Function));
+      expect(hooks.on).toHaveBeenCalledWith('task:added', expect.any(Function));
     });
   });
 
@@ -136,7 +136,7 @@ describe('TaskScheduler', () => {
     });
 
     it('should not schedule when spawnFn is null', () => {
-      const schedulerNoSpawn = new TaskScheduler(mockLogger as any, taskPool, signalQueue, eventBus, ctx, 3);
+      const schedulerNoSpawn = new TaskScheduler(mockLogger as any, taskPool, signalQueue, hooks, ctx, 3);
       (taskPool as any).add(makeTask('t1'));
 
       schedulerNoSpawn.schedule();
@@ -255,7 +255,7 @@ describe('TaskScheduler', () => {
       scheduler.start();
 
       // Emit task:added event via the mock event bus
-      const handlers = (eventBus as any)._handlers as Map<string, () => void>;
+      const handlers = (hooks as any)._handlers as Map<string, () => void>;
       const handler = handlers.get('task:added');
 
       // Simulate: add a task then emit the event

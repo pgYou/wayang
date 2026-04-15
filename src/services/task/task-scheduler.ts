@@ -1,7 +1,7 @@
 import type { Logger } from '@/infra/logger';
 import type { TaskPool } from '@/services/task/task-pool';
 import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { EventBus } from '@/infra/event-bus';
+import type { LifecycleHooks } from '@/services/lifecycle-hooks';
 import type { TaskDetail, WorkerConfig, WorkerResult } from '@/types/index';
 import { formatLlmError } from '@/utils/llm-error';
 import { generateId } from '@/utils/id';
@@ -24,7 +24,7 @@ export class TaskScheduler {
     private logger: Logger,
     private taskPool: TaskPool,
     private signalQueue: SignalQueue,
-    private eventBus: EventBus,
+    private hooks: LifecycleHooks,
     private ctx: SchedulerContext,
     private maxConcurrency: number = 3,
     private workerConfigs?: Record<string, WorkerConfig>,
@@ -36,7 +36,7 @@ export class TaskScheduler {
   }
 
   start(): void {
-    this.eventBus.on('task:added', () => this.schedule());
+    this.hooks.on('task:added', () => this.schedule());
     this.logger.info('Scheduler started');
   }
 
