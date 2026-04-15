@@ -106,6 +106,15 @@ export class Supervisor implements SchedulerContext {
       taskPool: this.taskPool,
       signalQueue: this.signalQueue,
       abortWorker: (taskId: string) => this.abortWorkerByTaskId(taskId),
+      getWorkerConversation: (taskId: string) => {
+        for (const [workerId, tId] of this.workerTaskMap) {
+          if (tId === taskId) {
+            const worker = this.workers.get(workerId);
+            return worker?.getState()?.get<any[]>('conversation') ?? [];
+          }
+        }
+        return [];
+      },
     });
 
     // Wire up scheduler spawn function
@@ -264,6 +273,13 @@ export class Supervisor implements SchedulerContext {
     if (idx !== -1) {
       this.controllerState.remove('runtimeState.activeWorkers', idx);
     }
+  }
+
+  // --- Inquiry ---
+
+  /** Resolve a pending controller inquiry with the user's answer. */
+  resolveInquiry(answer: string): void {
+    this.controllerState.resolveInquiry(answer);
   }
 
   // --- Shutdown ---

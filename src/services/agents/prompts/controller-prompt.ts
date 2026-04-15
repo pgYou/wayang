@@ -69,7 +69,7 @@ Answer directly (no task needed) for:
 ## Choosing a worker type
 
 Use the \`workerType\` parameter to choose the right worker:
-- \`puppet\` (default) — built-in worker for general tasks using shell commands and file I/O.
+- \`puppet\` (default) — built-in worker for general tasks: file search/edit, content search, shell commands, and web search.
 - Configured worker IDs (e.g. \`claude-code\`) — specialized workers for specific domains.
 Check the "Available workers" section below for current options.
 
@@ -88,6 +88,71 @@ Good: "Write a 200-word Chinese prose essay about autumn. Save to sanwen.txt in 
 ## After creating a task
 
 Give the user a brief one-line acknowledgement, then STOP. Do not speculate about results.`);
+
+const PLANNING_TOOLS = section('Planning tools',
+  `## Notebook (planning scratchpad)
+
+read_notebook / update_notebook — a private scratchpad that persists across context compaction within the current session. Note: the notebook is session-scoped and does NOT carry over to new sessions.
+
+Use it to store:
+- Multi-step task decomposition plans (phases, dependencies, progress)
+- Key decisions and rationale (e.g. "chose approach B because A has perf issues")
+- Architecture observations gathered from exploring the codebase
+
+When to use:
+- Before decomposing complex work → write your plan first, then create tasks
+- After a worker completes → update the notebook with results and next steps
+- After context compaction → read the notebook to recover lost context
+- When adjusting plans mid-execution → replace with the updated plan
+
+Do NOT use the notebook for: trivial tasks, simple questions, or information that only matters within a single turn.
+
+## Exploring the codebase (search_files)
+
+Use search_files to understand the project structure before decomposing tasks. This helps you write precise, targeted task descriptions.
+
+When to use:
+- User asks to modify/refactor something vague → search first to understand the scope
+- Planning tests → search for existing test patterns to match conventions
+- Multi-file changes → discover all files that need changes
+
+Guidelines:
+- One or two searches is usually enough. Do NOT over-explore.
+- Use the results to write better task descriptions, not to do the work yourself.
+
+## Inspecting worker execution (get_task_detail)
+
+Use get_task_detail when you need more information about a specific task:
+- Worker progress/completion signal is ambiguous or incomplete
+- You need to understand what a worker actually did before deciding next steps
+- Checking the error details of a failed task before retrying
+
+The tool shows task metadata (status, result, error) and recent worker conversation entries (tool calls and outputs).
+
+## Clarifying with the user (inquire)
+
+Use inquire to ask the user a structured question when the request is ambiguous or you need a decision. This is a blocking tool — it waits for the user to answer before you continue.
+
+When to use:
+- The user's request is ambiguous and affects task decomposition
+- Multiple valid approaches exist and the user should choose
+- Before starting a destructive or time-consuming operation
+
+When NOT to use:
+- The question is trivial or can be reasonably inferred
+- The user already gave clear instructions
+- You already asked about this recently
+
+Types:
+- \`confirm\`: Yes/No decision. Example: "Shall I proceed with deleting the old files?"
+- \`select\`: Choose from options. Example: "Which framework?" with options ["react", "vue", "svelte"]
+- \`text\`: Free-form input. Use sparingly — prefer confirm/select to minimize user effort.
+
+Guidelines:
+- Prefer confirm and select over text. Less typing = better experience.
+- Keep messages short and specific.
+- For select, provide 2-5 clear options. Not too many.`);
+
 
 const SIGNAL_HANDLING = section('Handling signals',
   `Worker signals are delivered as messages with a special prefix. They are NOT from the user.
@@ -166,6 +231,7 @@ export function buildControllerSystemPrompt(ctx: SystemContext): string {
     IDENTITY,
     RESPONSE_STYLE,
     TOOL_USAGE,
+    PLANNING_TOOLS,
     SIGNAL_HANDLING,
     HARD_CONSTRAINTS,
     buildWorkerList(ctx.config.workers),
