@@ -1,4 +1,4 @@
-import type { TaskDetail, ControllerSignal } from '@/types/index';
+import type { TaskDetail, ControllerSignal, InquireQuestion } from '@/types/index';
 import { addTaskTool } from './add-task';
 import { listTasksTool } from './list-tasks';
 import { cancelTaskTool } from './cancel-task';
@@ -13,6 +13,8 @@ import { editFileTool } from './edit-file';
 import { searchFilesTool } from './search-files';
 import { searchContentTool } from './search-content';
 import { webSearchTool } from './web-search';
+import { readNotebookTool, updateNotebookTool } from './notebook';
+import { inquireTool } from './inquire';
 import { doneTool } from './done';
 import { failTool } from './fail';
 import { updateProgressTool } from './update-progress';
@@ -31,6 +33,16 @@ export interface ControllerToolDeps {
     source?: ControllerSignal['source'];
     type?: ControllerSignal['type'];
   }) => ControllerSignal[];
+  /** Workspace directory for file search. */
+  cwd?: string;
+  /** Get worker conversation entries for a task. */
+  getWorkerConversation?: (taskId: string) => any[];
+  /** Read the controller's private notebook. */
+  getNotebook: () => string;
+  /** Write to the controller's private notebook. */
+  setNotebook: (content: string, mode: 'replace' | 'append') => void;
+  /** Ask the user a structured question and wait for the answer. */
+  inquire: (question: InquireQuestion) => Promise<string>;
 }
 
 export interface WorkerToolDeps {
@@ -55,10 +67,15 @@ export function createControllerTools(deps: ControllerToolDeps) {
     }),
     get_task_detail: getTaskDetailTool({
       getTask: deps.getTask,
+      getWorkerConversation: deps.getWorkerConversation,
     }),
     update_task: updateTaskTool({ updateTask: deps.updateTask }),
     query_signals: querySignalsTool({ querySignals: deps.queryMessages }),
     skip_reply: skipReplyTool(),
+    read_notebook: readNotebookTool({ getNotebook: deps.getNotebook }),
+    update_notebook: updateNotebookTool({ setNotebook: deps.setNotebook }),
+    search_files: searchFilesTool({ cwd: deps.cwd }),
+    inquire: inquireTool({ inquire: deps.inquire }),
   };
 }
 

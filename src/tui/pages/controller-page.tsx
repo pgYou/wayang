@@ -3,6 +3,7 @@ import { useMemoizedFn } from '@/tui/hooks/use-memoized-fn';
 import { Box, useStdout } from 'ink';
 import { ChatArea } from '@/tui/components/chat-area';
 import { InputArea } from '@/tui/components/input-area';
+import { InquiryPrompt } from '@/tui/components/inquiry-prompt';
 import { StatusBar } from '@/tui/components/status-bar';
 import { OverlayPanel } from '@/tui/components/overlay-panel';
 import { WorkerListOverlay } from '@/tui/components/worker-list-overlay';
@@ -11,7 +12,7 @@ import { useRouter } from '@/tui/providers/route-provider';
 import { useWayangState } from '@/tui/hooks/use-wayang-state';
 import { useSlashCommands } from '@/tui/hooks/use-slash-commands';
 import type { ConversationEntry } from '@/types/conversation';
-import type { ControllerSignal, TaskDetail } from '@/types/index';
+import type { ControllerSignal, TaskDetail, InquireQuestion } from '@/types/index';
 import type { ActiveWorkerInfo } from '@/services/agents/controller-state';
 import type { DisplayItem } from '@/tui/types/display-item';
 import type { Overlay } from '@/tui/types/overlay';
@@ -55,6 +56,11 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
   // Busy state from controller agent (dynamicState = not persisted)
   const agentBusy = useWayangState<boolean>(
     supervisor.controllerState, 'dynamicState.busy',
+  );
+
+  // Pending inquiry from controller
+  const pendingInquiry = useWayangState<InquireQuestion | null>(
+    supervisor.controllerState, 'runtimeState.pendingInquiry',
   );
 
   // Build DisplayItem[]: conversation entries (read) + unread signals
@@ -139,7 +145,11 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
         />
       </Box>
       {overlay && <OverlayPanel overlay={overlay} />}
-      <InputArea onSubmit={handleSubmit} onExit={onExit} onEscape={dismissOverlay} busy={busy} />
+      {pendingInquiry ? (
+        <InquiryPrompt inquiry={pendingInquiry} onAnswer={(answer) => supervisor.resolveInquiry(answer)} />
+      ) : (
+        <InputArea onSubmit={handleSubmit} onExit={onExit} onEscape={dismissOverlay} busy={busy} />
+      )}
       <StatusBar
         activeWorkers={activeWorkers ?? []}
         pendingTasks={pendingTasks ?? []}

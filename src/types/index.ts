@@ -38,3 +38,5 @@ export type { WorkerResult, ActiveWorkerInfo, IWorkerInstance } from './worker';
 
 export type { WayangLanguageModel as WayangModel } from './agent';
 
+export type { InquireQuestion } from './inquiry';
+

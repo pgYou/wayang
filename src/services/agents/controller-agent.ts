@@ -68,8 +68,10 @@ export class ControllerAgent extends BaseAgent {
     taskPool: TaskPool;
     signalQueue: SignalQueue;
     abortWorker: (taskId: string) => void;
+    /** Get worker conversation entries for a task. */
+    getWorkerConversation?: (taskId: string) => any[];
   }): ControllerAgent {
-    const { ctx, state, provider, config, taskPool, signalQueue, abortWorker } = opts;
+    const { ctx, state, provider, config, taskPool, signalQueue, abortWorker, getWorkerConversation } = opts;
 
     const tools = createControllerTools({
       addTask: (task: TaskDetail) => taskPool.add(task),
@@ -82,10 +84,18 @@ export class ControllerAgent extends BaseAgent {
       },
       listTasks: (status?: TaskDetail['status']) => taskPool.list(status),
       getTask: (taskId: string) => taskPool.get(taskId),
+      getWorkerConversation,
       cancelTask: (taskId: string) => taskPool.cancel(taskId),
       abortWorker,
       updateTask: (taskId, updates) => taskPool.updatePending(taskId, updates),
       queryMessages: (filter) => signalQueue.query(filter),
+      cwd: ctx.workspaceDir,
+      getNotebook: () => state.get<string>('runtimeState.notebook') ?? '',
+      setNotebook: (content, mode) => {
+        const current = state.get<string>('runtimeState.notebook') ?? '';
+        state.set('runtimeState.notebook', mode === 'append' ? (current ? current + '\n' + content : content) : content);
+      },
+      inquire: (question) => state.askInquiry(question),
     });
 
     return new ControllerAgent(ctx, state, provider, tools);

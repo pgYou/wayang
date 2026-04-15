@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { ConversationEntry, ActiveWorkerInfo } from '@/types/index';
+import type { ConversationEntry, ActiveWorkerInfo, InquireQuestion } from '@/types/index';
 import { EEntryType, ESystemSubtype, isSystemEntry, getEntryContent } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import { BaseWayangState } from '@/infra/state/base-state';
@@ -12,6 +12,10 @@ interface ControllerRuntimeState {
   session: { id: string; startedAt: number };
   activeWorkers: ActiveWorkerInfo[];
   maxConcurrency: number;
+  /** Controller's private scratchpad — persists across context compaction. */
+  notebook: string;
+  /** Active inquiry from controller to user — null when no inquiry pending. */
+  pendingInquiry: InquireQuestion | null;
 }
 
 interface DynamicState {
@@ -32,6 +36,8 @@ interface ControllerStateData {
 export class ControllerAgentState extends BaseWayangState {
   private jsonFile: JSONFileHelper;
   private jsonlFile: JSONLFileHelper;
+  /** In-memory resolve function for the current inquiry — never persisted. */
+  private inquiryResolver: ((answer: string) => void) | null = null;
 
   constructor(
     private sessionDir: string,
@@ -45,6 +51,8 @@ export class ControllerAgentState extends BaseWayangState {
         session: { id: '', startedAt: 0 },
         activeWorkers: [],
         maxConcurrency: 3,
+        notebook: '',
+        pendingInquiry: null,
       },
       conversation: [],
       compactSummary: null,
@@ -107,5 +115,22 @@ export class ControllerAgentState extends BaseWayangState {
     if (path === 'conversation') {
       this.persistAppend(path, entry);
     }
+  }
+
+  /** Set a pending inquiry and return a Promise that resolves when the user answers. */
+  askInquiry(question: InquireQuestion): Promise<string> {
+    return new Promise<string>((resolve) => {
+      this.inquiryResolver = resolve;
+      this.set('runtimeState.pendingInquiry', question);
+    });
+  }
+
+  /** Resolve the pending inquiry with the user's answer. */
+  resolveInquiry(answer: string): void {
+    if (this.inquiryResolver) {
+      this.inquiryResolver(answer);
+      this.inquiryResolver = null;
+    }
+    this.set('runtimeState.pendingInquiry', null);
   }
 }
