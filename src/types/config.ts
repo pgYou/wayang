@@ -30,6 +30,8 @@ export interface WayangConfig {
   worker: { provider: string; maxConcurrency: number };
   /** Third-party worker definitions, keyed by worker ID. */
   workers?: Record<string, WorkerConfig>;
+  /** Tavily API key for web_search tool. Optional — tool returns error if unset. */
+  tavilyApiKey?: string;
 }
 
 /** Validate required fields, return error message or null */

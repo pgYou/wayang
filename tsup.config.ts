@@ -11,6 +11,7 @@ export default defineConfig({
   external: [
     'ai',
     '@ai-sdk/openai',
+    'fast-glob',
     'lodash-es',
     'pino',
     'pino-pretty',

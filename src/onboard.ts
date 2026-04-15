@@ -20,6 +20,8 @@ function fillApiKeys(config: WayangConfig): void {
       provider.apiKey = envKey;
     }
   }
+  // Optional tool API keys
+  config.tavilyApiKey = config.tavilyApiKey || process.env.WAYANG_TAVILY_API_KEY || undefined;
 }
 
 /** Detect whether Claude Code CLI is installed. */

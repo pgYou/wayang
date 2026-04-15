@@ -1,6 +1,16 @@
 import { tool } from 'ai';
+import { resolve, relative } from 'node:path';
 
 const MAX_RESULT_CHARS = 8000;
+
+/** Validate that resolved path stays within workspace. */
+export function validatePath(resolved: string, workspace: string): string | null {
+  const rel = relative(workspace, resolved);
+  if (rel.startsWith('..') || resolve(workspace, rel) !== resolved) {
+    return `Path escapes workspace: ${resolved} (workspace: ${workspace})`;
+  }
+  return null;
+}
 
 export function truncate(result: string): string {
   if (result.length <= MAX_RESULT_CHARS) return result;

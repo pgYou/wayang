@@ -49,6 +49,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.98",
     "@types/react": "^18.3.28",
     "ai": "^6.0.145",
+    "fast-glob": "^3.3.3",
     "ink": "^4.4.1",
     "lodash-es": "^4.18.1",
     "meow": "^14.1.0",
