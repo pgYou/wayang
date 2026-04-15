@@ -28,6 +28,7 @@ export type {
   FailedSignalPayload,
   ProgressSignalPayload,
   CancelledSignalPayload,
+  HeartbeatSignalPayload,
 } from './signal';
 export { getSignalField } from './signal';
 

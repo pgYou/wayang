@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import type { DisplayItem } from '@/tui/types/display-item';
+import { ESignalSubtype } from '@/types/conversation';
 import { theme } from '@/tui/theme';
 
 /** Max lines to show for signal content. */
@@ -24,7 +25,9 @@ export function SignalRow({ item }: { item: DisplayItem }) {
   if (item.workerId) contextParts.push(`w:${item.workerId.slice(-4)}`);
   const context = contextParts.length > 0 ? `[${contextParts.join(' · ')}] ` : '';
 
-  const content = trimContent(item.content, MAX_CONTENT_LINES);
+  const content = item.subtype === ESignalSubtype.Heartbeat
+    ? ''
+    : trimContent(item.content, MAX_CONTENT_LINES);
 
   return (
     <Box flexDirection="column">

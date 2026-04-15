@@ -109,6 +109,15 @@ export function entryToDisplayItem(entry: ConversationEntry): DisplayItem | null
   }
 }
 
+/** SignalType → ESignalSubtype mapping. */
+const signalSubtypeMap: Record<string, ESignalSubtype> = {
+  completed: ESignalSubtype.WorkerCompleted,
+  failed: ESignalSubtype.WorkerFailed,
+  progress: ESignalSubtype.WorkerProgress,
+  heartbeat: ESignalSubtype.Heartbeat,
+  cancelled: ESignalSubtype.WorkerFailed,
+};
+
 /** Convert an unread signal to a DisplayItem (always unread). */
 export function signalToDisplayItem(signal: ControllerSignal): DisplayItem {
   const base = {
@@ -125,10 +134,7 @@ export function signalToDisplayItem(signal: ControllerSignal): DisplayItem {
     };
   }
 
-  // worker signals
-  const subtype = signal.type === 'completed' ? ESignalSubtype.WorkerCompleted
-    : signal.type === 'failed' ? ESignalSubtype.WorkerFailed
-    : ESignalSubtype.WorkerProgress;
+  const subtype = signalSubtypeMap[signal.type] ?? ESignalSubtype.WorkerProgress;
   const content = getSignalField(signal, 'summary')
     ?? getSignalField(signal, 'error')
     ?? getSignalField(signal, 'message')

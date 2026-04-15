@@ -76,7 +76,7 @@ describe('Supervisor', () => {
       expect(sup.scheduler).toBeDefined();
       expect(sup.controllerAgent).toBeDefined();
       expect(sup.controllerState).toBeDefined();
-      expect(sup.eventBus).toBeDefined();
+      expect(sup.hooks).toBeDefined();
       expect(sup.workerFactory).toBeDefined();
       expect(sup.sessionManager).toBeDefined();
     });

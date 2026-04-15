@@ -6,7 +6,7 @@
  */
 
 import { Supervisor, type SupervisorOptions } from './services/supervisor';
-import { mainControllerLoop } from './services/controller-loop';
+import { ControllerLoop } from './services/controller-loop';
 import { getSession } from './infra/session-helpers';
 import { renderInkUI } from './tui/render';
 import { loadConfig } from './onboard';
@@ -71,15 +71,19 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   await supervisor.restore();
   await supervisor.start();
 
-  mainControllerLoop(supervisor).catch((err) => {
+  const controllerLoop = new ControllerLoop(supervisor);
+
+  controllerLoop.start().catch((err) => {
     supervisor.ctx.logger.error({ error: err.message }, 'Controller loop crashed');
   });
 
   // Graceful shutdown on SIGTERM (external kill)
   process.on('SIGTERM', () => {
+    controllerLoop.shutdown();
     supervisor.shutdown().then(() => process.exit(0));
   });
 
   await renderInkUI(supervisor);
+  controllerLoop.shutdown();
   await supervisor.shutdown();
 }

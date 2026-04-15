@@ -4,7 +4,8 @@ import { ControllerAgentState } from '@/services/agents/controller-state';
 import { buildAssistantEntry } from './utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig } from '@/types/index';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig } from '@/types/index';
+import type { ConversationEntry, SignalEntry } from '@/types/conversation';
 import { EEntryType, ESignalSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import { generateText } from 'ai';
@@ -14,7 +15,10 @@ import {
   buildSummarizerPrompt,
   buildControllerSystemPrompt,
 } from './prompts/index';
+import { createControllerTools } from '@/services/tools/index';
 import { SystemContext } from '@/infra/system-context';
+import type { TaskPool } from '@/services/task/task-pool';
+import type { SignalQueue } from '@/services/signal/signal-queue';
 
 export class ControllerAgent extends BaseAgent {
   readonly state: ControllerAgentState;
@@ -50,6 +54,43 @@ export class ControllerAgent extends BaseAgent {
 
   }
 
+  /**
+   * Factory — create a ControllerAgent wired to the given services.
+   *
+   * Encapsulates tool creation and dependency wiring so that Supervisor
+   * doesn't need to know about individual tool deps.
+   */
+  static create(opts: {
+    ctx: SystemContext;
+    state: ControllerAgentState;
+    provider: ProviderConfig;
+    config: WayangConfig;
+    taskPool: TaskPool;
+    signalQueue: SignalQueue;
+    abortWorker: (taskId: string) => void;
+  }): ControllerAgent {
+    const { ctx, state, provider, config, taskPool, signalQueue, abortWorker } = opts;
+
+    const tools = createControllerTools({
+      addTask: (task: TaskDetail) => taskPool.add(task),
+      validateWorkerType: (type: string) => {
+        if (type === 'puppet') return null;
+        const workerConfig = config.workers?.[type];
+        if (!workerConfig) return `Unknown worker type: "${type}". Available: puppet${Object.keys(config.workers ?? {}).map(k => `, ${k}`).join('')}`;
+        if (workerConfig.enable === false) return `Worker "${type}" is disabled`;
+        return null;
+      },
+      listTasks: (status?: TaskDetail['status']) => taskPool.list(status),
+      getTask: (taskId: string) => taskPool.get(taskId),
+      cancelTask: (taskId: string) => taskPool.cancel(taskId),
+      abortWorker,
+      updateTask: (taskId, updates) => taskPool.updatePending(taskId, updates),
+      queryMessages: (filter) => signalQueue.query(filter),
+    });
+
+    return new ControllerAgent(ctx, state, provider, tools);
+  }
+
   /** Run the controller agent — streams text chunks while updating streamingEntries in state. */
   async run(signals: ControllerSignal[]): Promise<{ text: string }> {
     this.state.set('dynamicState.busy', true);
@@ -65,77 +106,7 @@ export class ControllerAgent extends BaseAgent {
 
     // Append incoming signals to conversation
     for (const sig of signals) {
-      if (sig.type === 'input') {
-        const text = sig.payload.text;
-        this.state.append('conversation', {
-          type: EEntryType.User,
-          uuid: generateId('u'),
-          parentUuid: null,
-          sessionId: 'controller',
-          timestamp: ts,
-          message: { role: 'user', content: text },
-        });
-      } else if (sig.type === 'completed') {
-        this.state.append('conversation', {
-          type: EEntryType.Signal,
-          uuid: generateId('sig'),
-          parentUuid: null,
-          sessionId: 'controller',
-          timestamp: ts,
-          subtype: ESignalSubtype.WorkerCompleted,
-          workerId: sig.payload.workerId,
-          workerType: sig.payload.workerType,
-          emoji: sig.payload.emoji,
-          taskId: sig.payload.taskId,
-          taskTitle: sig.payload.taskTitle,
-          content: sig.payload.summary ?? JSON.stringify(sig.payload),
-        });
-      } else if (sig.type === 'failed') {
-        this.state.append('conversation', {
-          type: EEntryType.Signal,
-          uuid: generateId('sig'),
-          parentUuid: null,
-          sessionId: 'controller',
-          timestamp: ts,
-          subtype: ESignalSubtype.WorkerFailed,
-          workerId: sig.payload.workerId,
-          workerType: sig.payload.workerType,
-          emoji: sig.payload.emoji,
-          taskId: sig.payload.taskId,
-          taskTitle: sig.payload.taskTitle,
-          content: sig.payload.error,
-        });
-      } else if (sig.type === 'progress') {
-        this.state.append('conversation', {
-          type: EEntryType.Signal,
-          uuid: generateId('sig'),
-          parentUuid: null,
-          sessionId: 'controller',
-          timestamp: ts,
-          subtype: ESignalSubtype.WorkerProgress,
-          workerId: sig.payload.workerId,
-          workerType: sig.payload.workerType,
-          emoji: sig.payload.emoji,
-          taskId: sig.payload.taskId,
-          taskTitle: sig.payload.taskTitle,
-          content: sig.payload.message,
-        });
-      } else {
-        // cancelled or unknown — generic entry
-        this.state.append('conversation', {
-          type: EEntryType.Signal,
-          uuid: generateId('sig'),
-          parentUuid: null,
-          sessionId: 'controller',
-          timestamp: ts,
-          subtype: ESignalSubtype.WorkerFailed,
-          workerId: sig.payload.workerId,
-          workerType: sig.payload.workerType,
-          emoji: sig.payload.emoji,
-          taskId: sig.payload.taskId,
-          content: JSON.stringify(sig.payload),
-        });
-      }
+      this.state.append('conversation', signalToEntry(sig, ts));
     }
 
     // Clear stale streaming entries from previous run
@@ -237,4 +208,94 @@ export class ControllerAgent extends BaseAgent {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Signal → ConversationEntry converters
+// ---------------------------------------------------------------------------
+
+/** Common fields for all SignalEntry variants. */
+function signalBase(ts: string): Omit<SignalEntry, 'subtype' | 'content' | 'taskTitle'> {
+  return {
+    type: EEntryType.Signal,
+    uuid: generateId('sig'),
+    parentUuid: null,
+    sessionId: 'controller',
+    timestamp: ts,
+  };
+}
+
+type SignalConverter = (sig: ControllerSignal, ts: string) => ConversationEntry;
+
+const signalConverters: Record<string, SignalConverter> = {
+  input: (sig, ts) => ({
+    type: EEntryType.User,
+    uuid: generateId('u'),
+    parentUuid: null,
+    sessionId: 'controller',
+    timestamp: ts,
+    message: { role: 'user' as const, content: (sig.payload as any).text },
+  }),
+
+  completed: (sig, ts) => {
+    const p = sig.payload as any;
+    return {
+      ...signalBase(ts),
+      subtype: ESignalSubtype.WorkerCompleted,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle,
+      content: p.summary ?? JSON.stringify(sig.payload),
+    };
+  },
+
+  failed: (sig, ts) => {
+    const p = sig.payload as any;
+    return {
+      ...signalBase(ts),
+      subtype: ESignalSubtype.WorkerFailed,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle,
+      content: p.error,
+    };
+  },
+
+  progress: (sig, ts) => {
+    const p = sig.payload as any;
+    return {
+      ...signalBase(ts),
+      subtype: ESignalSubtype.WorkerProgress,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle,
+      content: p.message,
+    };
+  },
+
+  heartbeat: (sig, ts) => {
+    const p = sig.payload as any;
+    const workerSummary = p.workers
+      .map((w: any) => `${w.taskTitle} (${w.workerType}, running ${Math.round(w.runningForMs / 1000)}s)`)
+      .join(', ');
+    return {
+      ...signalBase(ts),
+      subtype: ESignalSubtype.Heartbeat,
+      taskTitle: 'heartbeat',
+      content: `[HEARTBEAT] ${p.reason}\nIdle: ${Math.round(p.idleSinceMs / 1000)}s\nWorkers: ${workerSummary}\nPending tasks: ${p.pendingTaskCount}`,
+    };
+  },
+};
+
+/** Convert a ControllerSignal to a ConversationEntry. */
+function signalToEntry(sig: ControllerSignal, ts: string): ConversationEntry {
+  const converter = signalConverters[sig.type];
+  if (converter) return converter(sig, ts);
+
+  // Fallback for unknown/cancelled signals
+  const p = sig.payload as any;
+  return {
+    ...signalBase(ts),
+    subtype: ESignalSubtype.WorkerFailed,
+    workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+    taskId: p.taskId, taskTitle: p.taskTitle ?? sig.type,
+    content: JSON.stringify(sig.payload),
+  } as SignalEntry;
 }

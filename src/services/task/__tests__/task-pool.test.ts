@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createLogger } from '@/infra/logger';
 import { TaskPoolState } from '@/services/task/task-pool-state';
-import { EventBus } from '@/infra/event-bus';
+import { LifecycleHooks } from '@/services/lifecycle-hooks';
 import { TaskPool } from '@/services/task/task-pool';
 import type { TaskDetail } from '@/types/index';
 import { makeTask } from '@/__tests__/helpers';
@@ -13,14 +13,14 @@ describe('TaskPool', () => {
   let tempDir: string;
   let taskPool: TaskPool;
   let state: TaskPoolState;
-  let eventBus: EventBus;
+  let hooks: LifecycleHooks;
   const logger = createLogger('silent');
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'wayang-test-'));
     state = new TaskPoolState(tempDir, logger);
-    eventBus = new EventBus();
-    taskPool = new TaskPool(state, eventBus, logger);
+    hooks = new LifecycleHooks();
+    taskPool = new TaskPool(state, hooks, logger);
   });
 
   afterEach(() => {
@@ -36,7 +36,7 @@ describe('TaskPool', () => {
 
     it('should emit task:added event', () => {
       let emitted = false;
-      eventBus.on('task:added', () => { emitted = true; });
+      hooks.on('task:added', () => { emitted = true; });
       taskPool.add(makeTask('t1'));
       expect(emitted).toBe(true);
     });
@@ -95,7 +95,7 @@ describe('TaskPool', () => {
 
     it('should emit task:completed event', () => {
       let emitted = false;
-      eventBus.on('task:completed', () => { emitted = true; });
+      hooks.on('task:completed', () => { emitted = true; });
       taskPool.add(makeTask('t1'));
       taskPool.moveToRunning('t1', 'w1');
       taskPool.complete('t1', 'done');
