@@ -47,7 +47,7 @@ Before acting, briefly plan your approach (you have a step budget — use it wis
 
 - write_file creates a NEW file only. If the file already exists, it will fail — use edit_file instead.
 - edit_file modifies an existing file by replacing a unique string. The old_string must appear exactly once. If it matches multiple times, the tool will tell you — expand the surrounding context to make it unique.
-- Always verify changes: after write_file or edit_file, use read_file to confirm the content is correct.
+- Always verify changes: after write_file or edit_file, use read_file to confirm the content is correct. For large files, use offset and limit to read specific sections instead of the entire file.
 - Use relative paths (relative to workspace). All file operations are sandboxed to the workspace.
 
 ## Web search

@@ -4,7 +4,7 @@ import { ControllerAgentState } from '@/services/agents/controller-state';
 import { buildAssistantEntry } from './utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig } from '@/types/index';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload } from '@/types/index';
 import type { ConversationEntry, SignalEntry } from '@/types/conversation';
 import { EEntryType, ESignalSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -17,7 +17,7 @@ import {
 } from './prompts/index';
 import { createControllerTools } from '@/services/tools/index';
 import { SystemContext } from '@/infra/system-context';
-import type { TaskPool } from '@/services/task/task-pool';
+import type { TaskExecuteEngine } from '@/services/task-execute-engine';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 
 export class ControllerAgent extends BaseAgent {
@@ -57,37 +57,27 @@ export class ControllerAgent extends BaseAgent {
   /**
    * Factory — create a ControllerAgent wired to the given services.
    *
-   * Encapsulates tool creation and dependency wiring so that Supervisor
-   * doesn't need to know about individual tool deps.
+   * The agent creates its own ControllerAgentState internally.
    */
   static create(opts: {
     ctx: SystemContext;
-    state: ControllerAgentState;
     provider: ProviderConfig;
     config: WayangConfig;
-    taskPool: TaskPool;
+    engine: TaskExecuteEngine;
     signalQueue: SignalQueue;
-    abortWorker: (taskId: string) => void;
-    /** Get worker conversation entries for a task. */
-    getWorkerConversation?: (taskId: string) => any[];
   }): ControllerAgent {
-    const { ctx, state, provider, config, taskPool, signalQueue, abortWorker, getWorkerConversation } = opts;
+    const { ctx, provider, config, engine, signalQueue } = opts;
+    const state = new ControllerAgentState(ctx);
 
     const tools = createControllerTools({
-      addTask: (task: TaskDetail) => taskPool.add(task),
-      validateWorkerType: (type: string) => {
-        if (type === 'puppet') return null;
-        const workerConfig = config.workers?.[type];
-        if (!workerConfig) return `Unknown worker type: "${type}". Available: puppet${Object.keys(config.workers ?? {}).map(k => `, ${k}`).join('')}`;
-        if (workerConfig.enable === false) return `Worker "${type}" is disabled`;
-        return null;
-      },
-      listTasks: (status?: TaskDetail['status']) => taskPool.list(status),
-      getTask: (taskId: string) => taskPool.get(taskId),
-      getWorkerConversation,
-      cancelTask: (taskId: string) => taskPool.cancel(taskId),
-      abortWorker,
-      updateTask: (taskId, updates) => taskPool.updatePending(taskId, updates),
+      addTask: (task: TaskDetail) => engine.add(task),
+      validateWorkerType: (type: string) => engine.validateWorkerType(type),
+      listTasks: (status?: TaskDetail['status']) => engine.list(status),
+      getTask: (taskId: string) => engine.get(taskId),
+      getWorkerConversation: (taskId: string) => engine.getWorkerConversation(taskId),
+      cancelTask: (taskId: string) => engine.cancel(taskId),
+      abortWorker: (taskId: string) => engine.abortByTaskId(taskId),
+      updateTask: (taskId, updates) => engine.updatePending(taskId, updates),
       queryMessages: (filter) => signalQueue.query(filter),
       cwd: ctx.workspaceDir,
       getNotebook: () => state.get<string>('runtimeState.notebook') ?? '',
@@ -132,7 +122,7 @@ export class ControllerAgent extends BaseAgent {
       maxSteps: 50,
       stopTools: ['skip_reply'],
       onStep: (event) => {
-        const streamingEntries = this.state.get<any[]>('dynamicState.streamingEntries');
+        const streamingEntries = this.state.get<ConversationEntry[]>('dynamicState.streamingEntries');
         const streamingUuid = streamingEntries?.[0]?.uuid;
         const entry = buildAssistantEntry(event, this.id, streamingUuid);
         this.state.append('conversation', entry);
@@ -145,7 +135,7 @@ export class ControllerAgent extends BaseAgent {
     for await (const chunk of gen) {
       if (chunk) {
         // When streamingEntries was cleared by onStep, start a fresh streaming entry
-        const current = this.state.get<any[]>('dynamicState.streamingEntries');
+        const current = this.state.get<ConversationEntry[]>('dynamicState.streamingEntries');
         if (!current || current.length === 0) {
           streamingEntry = this.createStreamingEntry();
         }
@@ -210,7 +200,7 @@ export class ControllerAgent extends BaseAgent {
     } catch (err) {
       // All retries failed — fallback: truncate half of history in memory only
       this.logger.warn({ error: String(err) }, 'Compaction failed, falling back to half-truncation');
-      const conversation = this.state.get<any[]>('conversation');
+      const conversation = this.state.get<ConversationEntry[]>('conversation');
       if (conversation.length > 4) {
         const half = Math.floor(conversation.length / 2);
         this.state.set('conversation', conversation.slice(-half));
@@ -244,11 +234,11 @@ const signalConverters: Record<string, SignalConverter> = {
     parentUuid: null,
     sessionId: 'controller',
     timestamp: ts,
-    message: { role: 'user' as const, content: (sig.payload as any).text },
+    message: { role: 'user' as const, content: (sig.payload as InputSignalPayload).text },
   }),
 
   completed: (sig, ts) => {
-    const p = sig.payload as any;
+    const p = sig.payload as CompletedSignalPayload;
     return {
       ...signalBase(ts),
       subtype: ESignalSubtype.WorkerCompleted,
@@ -259,7 +249,7 @@ const signalConverters: Record<string, SignalConverter> = {
   },
 
   failed: (sig, ts) => {
-    const p = sig.payload as any;
+    const p = sig.payload as FailedSignalPayload;
     return {
       ...signalBase(ts),
       subtype: ESignalSubtype.WorkerFailed,
@@ -270,7 +260,7 @@ const signalConverters: Record<string, SignalConverter> = {
   },
 
   progress: (sig, ts) => {
-    const p = sig.payload as any;
+    const p = sig.payload as ProgressSignalPayload;
     return {
       ...signalBase(ts),
       subtype: ESignalSubtype.WorkerProgress,
@@ -281,9 +271,9 @@ const signalConverters: Record<string, SignalConverter> = {
   },
 
   heartbeat: (sig, ts) => {
-    const p = sig.payload as any;
+    const p = sig.payload as HeartbeatSignalPayload;
     const workerSummary = p.workers
-      .map((w: any) => `${w.taskTitle} (${w.workerType}, running ${Math.round(w.runningForMs / 1000)}s)`)
+      .map((w) => `${w.taskTitle} (${w.workerType}, running ${Math.round(w.runningForMs / 1000)}s)`)
       .join(', ');
     return {
       ...signalBase(ts),
@@ -300,7 +290,7 @@ function signalToEntry(sig: ControllerSignal, ts: string): ConversationEntry {
   if (converter) return converter(sig, ts);
 
   // Fallback for unknown/cancelled signals
-  const p = sig.payload as any;
+  const p = sig.payload as FailedSignalPayload;
   return {
     ...signalBase(ts),
     subtype: ESignalSubtype.WorkerFailed,

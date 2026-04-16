@@ -3,6 +3,7 @@ import type { ControllerSignal, StateEvent } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
+import type { SystemContext } from '@/infra/system-context';
 
 interface SignalStateData {
   signals: ControllerSignal[];
@@ -31,13 +32,11 @@ export class SignalState extends BaseWayangState {
   private eventBuffer: StateEventLog[] = [];
   /** When true, skip recording events (used during restore to avoid re-writing). */
   private restoring = false;
+  private readonly logger: Logger;
 
-  constructor(
-    private sessionDir: string,
-    private logger: Logger,
-  ) {
-    const jsonlFile = new JSONLFileHelper(join(sessionDir, 'signals.jsonl'));
-    const eventLogFile = new JSONLFileHelper(join(sessionDir, 'state-events.jsonl'));
+  constructor(ctx: SystemContext) {
+    const jsonlFile = new JSONLFileHelper(join(ctx.sessionDir, 'signals.jsonl'));
+    const eventLogFile = new JSONLFileHelper(join(ctx.sessionDir, 'state-events.jsonl'));
 
     super(
       { signals: [] },
@@ -46,6 +45,7 @@ export class SignalState extends BaseWayangState {
 
     this.jsonlFile = jsonlFile;
     this.eventLogFile = eventLogFile;
+    this.logger = ctx.logger;
 
     // Subscribe to state changes for event sourcing
     this.on('signals', (event: StateEvent) => this.recordStateEvent(event));

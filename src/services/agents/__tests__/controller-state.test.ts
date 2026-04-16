@@ -1,18 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { createLogger } from '@/infra/logger';
+import { createMockCtx } from '@/__tests__/helpers';
 import { ControllerAgentState } from '@/services/agents/controller-state';
+import type { SystemContext } from '@/infra/system-context';
 
 describe('ControllerAgentState', () => {
   let tempDir: string;
   let state: ControllerAgentState;
-  const logger = createLogger('silent');
+  let ctx: SystemContext;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'wayang-test-'));
-    state = new ControllerAgentState(tempDir, logger);
+    ctx = createMockCtx({ sessionDir: tempDir } as any);
+    state = new ControllerAgentState(ctx);
   });
 
   afterEach(() => {
@@ -21,8 +23,8 @@ describe('ControllerAgentState', () => {
 
   it('should initialize with default data', () => {
     const runtime = state.get('runtimeState');
-    expect(runtime.activeWorkers).toEqual([]);
-    expect(runtime.maxConcurrency).toBe(3);
+    expect(runtime.notebook).toBe('');
+    expect(runtime.pendingInquiry).toBeNull();
     expect(state.get('conversation')).toEqual([]);
     expect(state.get('compactSummary')).toBeNull();
   });
@@ -30,19 +32,6 @@ describe('ControllerAgentState', () => {
   it('should set runtime state', () => {
     state.set('runtimeState.session', { id: 's1', startedAt: 1000 });
     expect(state.get('runtimeState.session')).toEqual({ id: 's1', startedAt: 1000 });
-  });
-
-  it('should append active workers', () => {
-    state.append('runtimeState.activeWorkers', {
-      workerId: 'w1',
-      taskId: 't1',
-      startedAt: Date.now(),
-    });
-    expect(state.get('runtimeState.activeWorkers')).toHaveLength(1);
-    expect(state.get('runtimeState.activeWorkers[0].workerId')).toBe('w1');
-    // verify via array directly
-    const workers = state.get('runtimeState.activeWorkers') as any[];
-    expect(workers[0].workerId).toBe('w1');
   });
 
   it('should persist conversation entries via append', () => {
@@ -56,27 +45,18 @@ describe('ControllerAgentState', () => {
     };
 
     state.append('conversation', entry);
-    // Read from disk
     const fs = require('fs');
     const content = fs.readFileSync(join(tempDir, 'conversation.jsonl'), 'utf-8');
     expect(content).toContain('hello');
   });
 
   it('should restore from disk', async () => {
-    // Write data
     state.set('runtimeState.session', { id: 's1', startedAt: 1000 });
-    state.append('runtimeState.activeWorkers', {
-      workerId: 'w1',
-      taskId: 't1',
-      startedAt: 1000,
-    });
 
-    // Create new state instance and restore
-    const state2 = new ControllerAgentState(tempDir, logger);
+    const state2 = new ControllerAgentState(ctx);
     await state2.restore();
 
     expect(state2.get('runtimeState.session')).toEqual({ id: 's1', startedAt: 1000 });
-    expect(state2.get('runtimeState.activeWorkers')).toHaveLength(1);
   });
 
   it('should restore conversation entries', async () => {
@@ -89,7 +69,7 @@ describe('ControllerAgentState', () => {
       message: { role: 'user', content: 'hello' },
     });
 
-    const state2 = new ControllerAgentState(tempDir, logger);
+    const state2 = new ControllerAgentState(ctx);
     await state2.restore();
 
     expect(state2.get('conversation')).toHaveLength(1);

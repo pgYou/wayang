@@ -20,19 +20,17 @@ function createMockSupervisor(): any {
         append: vi.fn(),
       },
     },
-    hooks: {
-      on: vi.fn().mockReturnValue(() => {}),
-      emit: vi.fn(),
-    },
-    taskPool: {
+    engine: {
       getRunningCount: vi.fn().mockReturnValue(0),
+      getActiveWorkers: vi.fn().mockReturnValue([]),
       list: vi.fn().mockReturnValue([]),
-    },
-    controllerState: {
-      get: vi.fn().mockReturnValue([]),
     },
     ctx: {
       abortController: new AbortController(),
+      hooks: {
+        on: vi.fn().mockReturnValue(() => {}),
+        emit: vi.fn(),
+      },
       logger: {
         info: vi.fn(),
         debug: vi.fn(),
@@ -66,13 +64,11 @@ describe('ControllerLoop', () => {
   });
 
   it('should emit controller:loop-start and controller:loop-end hooks', async () => {
-    // Use real hooks to capture emits
     const emitted: Array<{ hook: string; payload: any }> = [];
-    supervisor.hooks.on.mockImplementation((hook: string, fn: any) => {
-      // Store the callback so ControllerLoop's internal heartbeat logic works
+    supervisor.ctx.hooks.on.mockImplementation((hook: string, fn: any) => {
       return () => {};
     });
-    supervisor.hooks.emit.mockImplementation((hook: string, payload: any) => {
+    supervisor.ctx.hooks.emit.mockImplementation((hook: string, payload: any) => {
       emitted.push({ hook, payload });
     });
 
@@ -100,8 +96,8 @@ describe('ControllerLoop', () => {
     const loop = new ControllerLoop(supervisor as unknown as Supervisor);
     await loop.start();
 
-    expect(supervisor.hooks.on).toHaveBeenCalledWith('controller:loop-end', expect.any(Function));
-    expect(supervisor.hooks.on).toHaveBeenCalledWith('signal:enqueued', expect.any(Function));
+    expect(supervisor.ctx.hooks.on).toHaveBeenCalledWith('controller:loop-end', expect.any(Function));
+    expect(supervisor.ctx.hooks.on).toHaveBeenCalledWith('signal:enqueued', expect.any(Function));
   });
 
   it('should wait for signals when queue is empty', async () => {
@@ -169,8 +165,7 @@ describe('ControllerLoop heartbeat', () => {
     idleHandler = null;
     signalEnqueuedHandler = null;
 
-    // Capture the hook callbacks registered by ControllerLoop
-    supervisor.hooks.on.mockImplementation((hook: string, fn: any) => {
+    supervisor.ctx.hooks.on.mockImplementation((hook: string, fn: any) => {
       if (hook === 'controller:loop-end') idleHandler = fn;
       if (hook === 'signal:enqueued') signalEnqueuedHandler = fn;
       return () => {};
@@ -181,8 +176,6 @@ describe('ControllerLoop heartbeat', () => {
     vi.useRealTimers();
   });
 
-  // Helper: create a loop, start it (immediately abort the main while-loop),
-  // then test heartbeat behavior via the captured hook callbacks.
   async function createAndStartLoop(opts?: { heartbeatIntervalMs?: number }) {
     supervisor.signalQueue.waitForSignal.mockImplementation(async () => {
       supervisor.ctx.abortController.abort();
@@ -193,14 +186,13 @@ describe('ControllerLoop heartbeat', () => {
   }
 
   it('should inject heartbeat after idle interval when workers are running', async () => {
-    supervisor.taskPool.getRunningCount.mockReturnValue(1);
-    supervisor.controllerState.get.mockReturnValue([
+    supervisor.engine.getRunningCount.mockReturnValue(1);
+    supervisor.engine.getActiveWorkers.mockReturnValue([
       { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now() - 5000 },
     ]);
 
     await createAndStartLoop({ heartbeatIntervalMs: 10_000 });
 
-    // Simulate idle
     idleHandler!({ lastWakeAt: Date.now() });
 
     expect(supervisor.signalQueue.enqueue).not.toHaveBeenCalled();
@@ -212,7 +204,7 @@ describe('ControllerLoop heartbeat', () => {
   });
 
   it('should NOT inject heartbeat when no workers are running', async () => {
-    supervisor.taskPool.getRunningCount.mockReturnValue(0);
+    supervisor.engine.getRunningCount.mockReturnValue(0);
 
     await createAndStartLoop({ heartbeatIntervalMs: 10_000 });
     idleHandler!({ lastWakeAt: Date.now() });
@@ -222,26 +214,24 @@ describe('ControllerLoop heartbeat', () => {
   });
 
   it('should reset timer when signal:enqueued fires', async () => {
-    supervisor.taskPool.getRunningCount.mockReturnValue(1);
-    supervisor.controllerState.get.mockReturnValue([
+    supervisor.engine.getRunningCount.mockReturnValue(1);
+    supervisor.engine.getActiveWorkers.mockReturnValue([
       { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now() },
     ]);
 
     await createAndStartLoop({ heartbeatIntervalMs: 30_000 });
     idleHandler!({ lastWakeAt: Date.now() });
 
-    // 20s in, a real signal arrives → resets timer
     vi.advanceTimersByTime(20_000);
     signalEnqueuedHandler!();
 
-    // At 30s mark — should NOT fire
     vi.advanceTimersByTime(10_000);
     expect(supervisor.signalQueue.enqueue).not.toHaveBeenCalled();
   });
 
   it('should clean up timer on shutdown', async () => {
-    supervisor.taskPool.getRunningCount.mockReturnValue(1);
-    supervisor.controllerState.get.mockReturnValue([
+    supervisor.engine.getRunningCount.mockReturnValue(1);
+    supervisor.engine.getActiveWorkers.mockReturnValue([
       { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now() },
     ]);
 
@@ -255,9 +245,9 @@ describe('ControllerLoop heartbeat', () => {
 
   it('should include worker details in heartbeat payload', async () => {
     const startedAt = Date.now() - 15_000;
-    supervisor.taskPool.getRunningCount.mockReturnValue(1);
-    supervisor.taskPool.list.mockReturnValue([{ id: 'p1' }, { id: 'p2' }]);
-    supervisor.controllerState.get.mockReturnValue([
+    supervisor.engine.getRunningCount.mockReturnValue(1);
+    supervisor.engine.list.mockReturnValue([{ id: 'p1' }, { id: 'p2' }]);
+    supervisor.engine.getActiveWorkers.mockReturnValue([
       { workerId: 'w1', taskId: 't1', taskTitle: 'Write code', workerType: 'puppet', startedAt },
     ]);
 

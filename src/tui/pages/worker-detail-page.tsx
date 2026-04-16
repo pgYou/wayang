@@ -16,7 +16,7 @@ const TOOL_CONTENT_MAX_LENGTH = 80;
 
 export function WorkerDetailPage({ workerId, onBack }: { workerId: string; onBack: () => void }) {
   const supervisor = useSupervisor();
-  const workerState = supervisor.getWorkerState(workerId);
+  const workerState = supervisor.engine.getWorkerState(workerId);
 
   if (!workerState) {
     return (
@@ -35,7 +35,7 @@ function WorkerContent({ workerState, workerId }: { workerState: BaseWayangState
   const taskInfo = useWayangState<any>(workerState, 'runtimeState.task');
   const conversation = useWayangState<ConversationEntry[]>(workerState, 'conversation');
   const activeWorkers = useWayangState<ActiveWorkerInfo[]>(
-    supervisor.controllerState, 'runtimeState.activeWorkers',
+    supervisor.engine.workerState, 'activeWorkers',
   );
 
   const workerInfo = useMemo(

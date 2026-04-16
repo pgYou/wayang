@@ -25,20 +25,18 @@ Run a single test file: `npx vitest run src/path/to/file.test.ts`
 
 ```
 CLI (meow) → bootstrap → loadConfig → SessionManager → Supervisor → start
-                                                          ├── mainControllerLoop (signal-driven event loop)
-                                                          ├── TaskScheduler (reacts to task:added events)
+                                                          ├── ControllerLoop (signal-driven event loop)
+                                                          ├── TaskExecuteEngine (task + worker lifecycle)
                                                           └── renderInkUI (React/Ink TUI)
 ```
 
 ### Core Components (`src/services/`)
 
-- **Supervisor** — central orchestrator; owns all services, wires dependencies, manages worker lifecycle. Implements `SchedulerContext` interface.
-- **ControllerAgent** — LLM agent that processes signals (user input, worker completions/failures/progress), decides actions via tools (add_task, cancel_task, etc.), and streams responses. Uses Vercel AI SDK `streamText`.
+- **Supervisor** — assembles all services and manages top-level lifecycle (restore, start, shutdown). No business logic — delegates to engine and controller agent.
+- **TaskExecuteEngine** — unified task + worker lifecycle manager. Handles: task state machine (pending → running → completed/failed), scheduling (direct calls, not hooks), worker creation/tracking/abort, and active worker state for TUI. Depends on SignalQueue (one-way: emits signals).
+- **ControllerAgent** — LLM agent that processes signals (user input, worker completions/failures/progress), decides actions via tools (add_task, cancel_task, etc.), and streams responses. Creates its own ControllerAgentState internally. Uses Vercel AI SDK `streamText`.
 - **WorkerAgent** ("puppet") — built-in LLM worker that executes a single task with tools (bash, read_file, write_file, done, fail). Uses `collectLoop` (non-streaming).
 - **ClaudeCodeWorker** — third-party worker delegating to Claude Code via `@anthropic-ai/claude-agent-sdk`. Independent implementation (not extending BaseAgent).
-- **WorkerFactory** — creates worker instances by type ("puppet" → WorkerAgent, "claude-code" → ClaudeCodeWorker).
-- **TaskScheduler** — listens for `task:added` events, dequeues pending tasks up to `maxConcurrency`, spawns workers via fire-and-forget pattern.
-- **TaskPool** — task state machine (pending → running → completed/failed/cancelled).
 - **SignalQueue** — message bus between workers and controller. Controller loop blocks on `waitForSignal()`, processes batch of unread signals each iteration.
 
 ### Signal-Driven Controller Loop
@@ -75,8 +73,10 @@ Config file (`~/.wayang.config.json` or `--config`): defines providers, controll
 
 ## Key Patterns
 
-- **Dependency injection over imports**: tools, spawn functions, and service dependencies are injected via constructor params or setter methods (e.g. `scheduler.setSpawnFn()` to break circular deps).
+- **Dependency injection over imports**: tools, spawn functions, and service dependencies are injected via constructor params or setter methods.
+- **SystemContext as shared infrastructure**: `SystemContext` carries logger, config, hooks, sessionDir, etc. All domain objects receive `ctx` in their constructor — never pass individual properties like `ctx.logger` or `ctx.sessionDir` separately.
 - **State subscriptions for UI reactivity**: TUI components subscribe to specific state paths; state changes trigger React re-renders through the `use-wayang-state` hook.
+- **Hooks are for non-core side effects only**: `LifecycleHooks` is for optional, peripheral concerns (e.g. metrics, debugging, UI notifications) — things you could remove without breaking the main flow. **Core logic flow (task scheduling, worker lifecycle, signal processing) must use direct method calls, not hooks.** If removing a hook listener would break the system, that logic does not belong in hooks.
 - **Session persistence**: sessions are stored under `~/.wayang/` with JSONL conversation logs for crash recovery and resume (`--resume`).
 - **Context compaction**: ControllerAgent uses LLM-based summarization when context window fills up, with fallback to half-truncation.
 

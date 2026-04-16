@@ -20,12 +20,12 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private contextManager: ContextManager;
   private readonly ctx: SystemContext;
 
-  constructor(provider: ProviderConfig, sessionDir: string, workspaceDir: string, ctx: SystemContext) {
+  constructor(provider: ProviderConfig, ctx: SystemContext) {
     super(provider);
     this.ctx = ctx;
     this.logger = ctx.logger;
-    this.workspaceDir = workspaceDir;
-    this.state = new WorkerState(sessionDir, this.id, ctx.logger);
+    this.workspaceDir = ctx.workspaceDir;
+    this.state = new WorkerState(ctx.sessionDir, this.id, ctx.logger);
     this.contextManager = new ContextManager(
       this.state,
       buildWorkerSystemPrompt(this.ctx),

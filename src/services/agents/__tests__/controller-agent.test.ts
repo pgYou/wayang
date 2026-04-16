@@ -21,7 +21,6 @@ import { streamText } from 'ai';
 function createMockState(): any {
   const data: Record<string, any> = {
     conversation: [],
-    'runtimeState.activeWorkers': [],
   };
   return {
     get: vi.fn((path: string) => data[path] ?? null),

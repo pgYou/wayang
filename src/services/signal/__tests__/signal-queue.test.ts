@@ -2,21 +2,23 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { createLogger } from '@/infra/logger';
+import { createMockCtx } from '@/__tests__/helpers';
 import { SignalState } from '@/services/signal/signal-state';
 import { SignalQueue } from '@/services/signal/signal-queue';
 import type { ControllerSignal, InputSignalPayload, ProgressSignalPayload } from '@/types/index';
+import type { SystemContext } from '@/infra/system-context';
 
 describe('SignalQueue', () => {
   let tempDir: string;
   let sq: SignalQueue;
   let state: SignalState;
-  const logger = createLogger('silent');
+  let ctx: SystemContext;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'wayang-test-'));
-    state = new SignalState(tempDir, logger);
-    sq = new SignalQueue(state, logger);
+    ctx = createMockCtx({ sessionDir: tempDir } as any);
+    sq = new SignalQueue(ctx);
+    state = sq.stateRef as SignalState;
   });
 
   afterEach(() => {
@@ -158,7 +160,7 @@ describe('SignalQueue', () => {
       payload: { text: 'persist me' },
     });
 
-    const state2 = new SignalState(tempDir, logger);
+    const state2 = new SignalState(ctx);
     await state2.restore();
     const restored = state2.get<ControllerSignal[]>('signals');
     expect(restored).toHaveLength(1);

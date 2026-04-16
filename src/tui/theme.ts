@@ -40,8 +40,8 @@ const baseToken = {
   },
   /** Animation timing (ms). */
   timing: {
-    slow: 1000,
-    normal: 500,
+    slow: 500,
+    normal: 300,
     fast: 100,
   },
 } as const;

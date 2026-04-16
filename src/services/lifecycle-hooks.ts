@@ -13,6 +13,7 @@ import type { TaskDetail, ControllerSignal } from '@/types/index';
 // ---------------------------------------------------------------------------
 
 export interface HookMap {
+  // --- Task lifecycle (side-effect hooks — no core logic depends on these) ---
   'task:added': TaskDetail;
   'task:completed': { taskId: string };
   'task:failed': { taskId: string; error: string };
