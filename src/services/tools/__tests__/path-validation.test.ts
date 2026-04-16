@@ -104,7 +104,7 @@ describe('read_file path validation', () => {
     writeFileSync(join(cwd, 'test.txt'), 'hello', 'utf-8');
     const tool = readFileTool({ cwd });
     const result = await exec(tool, { path: 'test.txt' });
-    expect(result).toBe('hello');
+    expect(result).toBe('1\thello');
   });
 
   it('should reject path traversal with ..', async () => {

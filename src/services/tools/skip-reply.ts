@@ -7,7 +7,7 @@ import { defineTool, safeExecute } from './common';
  */
 export function skipReplyTool() {
   return defineTool({
-    description: 'Acknowledge a signal without responding to the user. Call this when you receive a PROGRESS signal and have nothing meaningful to say. The user will not see anything.',
+    description: 'Acknowledge a signal without responding to the user. IMPORTANT: this tool terminates the turn immediately. You MUST NOT output any text in the same response — your response must contain ONLY this tool call. Any co-emitted text will leak to the user as a broken message.',
     parameters: z.object({}),
     execute: safeExecute('skip_reply', async () => {
       return '(skipped)';

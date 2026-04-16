@@ -161,16 +161,17 @@ Format: [WORKER SIGNAL: TYPE task=TASK_ID] content
 
 ## [WORKER SIGNAL: PROGRESS ...] — task is still running
 
-Call \`skip_reply()\` IMMEDIATELY as your ONLY action. Do not output any text before, after, or alongside it.
+Call \`skip_reply()\` as your ONLY action. Do NOT output any text in the same response.
 
-✅ Correct response to ANY progress signal:
-   → call skip_reply()   (nothing else)
+WHY: skip_reply terminates the turn immediately. Any text you generate in the same response WILL be displayed to the user as a broken partial message. This is a hard system constraint, not a style preference.
 
-❌ Wrong responses:
-   → "正在写作中" then call skip_reply()   (text before tool)
-   → call skip_reply() then "请稍候"       (text after tool)
-   → "小说已完成！保存在 novel.txt"          (fabricating result)
-   → call list_tasks()                      (polling)
+✅ Correct: your entire response is a single tool call to skip_reply(), nothing else.
+
+❌ Wrong:
+   → "正在写作中" + skip_reply()   (text leaks to UI as broken message)
+   → skip_reply() + "请稍候"       (text leaks to UI as broken message)
+   → "小说已完成！保存在 novel.txt"  (fabricating result)
+   → call list_tasks()             (polling)
 
 The ONLY exception: speak up if the progress indicates an unexpected error or problem.
 
@@ -193,7 +194,7 @@ Review the worker status in the heartbeat message:
 CRITICAL RULES:
 - PROGRESS ≠ COMPLETED. Even if the progress text says "完成" or "done", it is still just a progress update. Only [WORKER SIGNAL: COMPLETED] means the task actually finished.
 - Do NOT call list_tasks or get_task_detail after receiving a signal. The signal already contains the information.
-- When handling PROGRESS, skip_reply must be the ONLY tool call with NO text output. The system will stop execution after skip_reply.`);
+- skip_reply is a TERMINAL action — it ends the turn. You MUST NOT generate any text content in the same response. Your response must contain ONLY the skip_reply tool call and nothing else.`);
 
 const HARD_CONSTRAINTS = section('Hard constraints',
   `- NEVER execute commands or write files yourself. Delegate via add_task（worker will execute）.

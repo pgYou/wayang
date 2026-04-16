@@ -1,17 +1,15 @@
 import { join } from 'node:path';
-import type { ConversationEntry, ActiveWorkerInfo, InquireQuestion } from '@/types/index';
+import type { ConversationEntry, InquireQuestion } from '@/types/index';
 import { EEntryType, ESystemSubtype, isSystemEntry, getEntryContent } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
+import type { SystemContext } from '@/infra/system-context';
 
-export type { ActiveWorkerInfo } from '@/types/index';
 
 interface ControllerRuntimeState {
   session: { id: string; startedAt: number };
-  activeWorkers: ActiveWorkerInfo[];
-  maxConcurrency: number;
   /** Controller's private scratchpad — persists across context compaction. */
   notebook: string;
   /** Active inquiry from controller to user — null when no inquiry pending. */
@@ -36,21 +34,17 @@ interface ControllerStateData {
 export class ControllerAgentState extends BaseWayangState {
   private jsonFile: JSONFileHelper;
   private jsonlFile: JSONLFileHelper;
+  private readonly logger: Logger;
   /** In-memory resolve function for the current inquiry — never persisted. */
   private inquiryResolver: ((answer: string) => void) | null = null;
 
-  constructor(
-    private sessionDir: string,
-    private logger: Logger,
-  ) {
-    const jsonFile = new JSONFileHelper(join(sessionDir, 'runtime-state.json'));
-    const jsonlFile = new JSONLFileHelper(join(sessionDir, 'conversation.jsonl'));
+  constructor(ctx: SystemContext) {
+    const jsonFile = new JSONFileHelper(join(ctx.sessionDir, 'runtime-state.json'));
+    const jsonlFile = new JSONLFileHelper(join(ctx.sessionDir, 'conversation.jsonl'));
 
     const initialData: ControllerStateData = {
       runtimeState: {
         session: { id: '', startedAt: 0 },
-        activeWorkers: [],
-        maxConcurrency: 3,
         notebook: '',
         pendingInquiry: null,
       },
@@ -66,6 +60,7 @@ export class ControllerAgentState extends BaseWayangState {
 
     this.jsonFile = jsonFile;
     this.jsonlFile = jsonlFile;
+    this.logger = ctx.logger;
   }
 
   async restore(): Promise<void> {

@@ -1,7 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
-import type { TaskDetail } from '@/types/index';
-import type { ActiveWorkerInfo } from '@/services/agents/controller-state';
+import type { TaskDetail, ActiveWorkerInfo } from '@/types/index';
 
 export function StatusBar({
   activeWorkers,

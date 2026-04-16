@@ -50,7 +50,8 @@ export class ControllerLoop {
   // --- Lifecycle ---
 
   async start(): Promise<void> {
-    const { signalQueue, controllerAgent, hooks, ctx } = this.supervisor;
+    const { signalQueue, controllerAgent, ctx } = this.supervisor;
+    const { hooks } = ctx;
 
     // Subscribe to hooks for heartbeat wake logic
     this.unsubscribers.push(
@@ -127,7 +128,7 @@ export class ControllerLoop {
     this.clearHeartbeatTimer();
 
     // Only set timer if there are running workers
-    if (this.supervisor.taskPool.getRunningCount() === 0) return;
+    if (this.supervisor.engine.getRunningCount() === 0) return;
 
     this.heartbeatTimer = setTimeout(() => {
       this.heartbeatTimer = null;
@@ -137,7 +138,7 @@ export class ControllerLoop {
 
   private sendHeartbeatSignal(lastWakeAt: number): void {
     const now = Date.now();
-    const activeWorkers = this.supervisor.controllerState.get<ActiveWorkerInfo[]>('runtimeState.activeWorkers');
+    const activeWorkers = this.supervisor.engine.getActiveWorkers();
 
     this.supervisor.signalQueue.enqueue({
       source: 'system',
@@ -152,7 +153,7 @@ export class ControllerLoop {
           workerType: w.workerType,
           runningForMs: now - w.startedAt,
         })),
-        pendingTaskCount: this.supervisor.taskPool.list('pending').length,
+        pendingTaskCount: this.supervisor.engine.list('pending').length,
       },
     });
   }

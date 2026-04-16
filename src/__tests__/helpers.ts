@@ -2,6 +2,7 @@ import { vi } from 'vitest';
 import type { ProviderConfig, TaskDetail } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import type { SystemContext } from '@/infra/system-context';
+import { LifecycleHooks } from '@/services/lifecycle-hooks';
 
 /** Shared ProviderConfig fixture for tests. */
 export const mockProvider: ProviderConfig = {
@@ -33,6 +34,7 @@ export function createMockCtx(overrides?: Partial<SystemContext>): SystemContext
     startedAt: Date.now(),
     logLevel: 'info',
     abortController: new AbortController(),
+    hooks: new LifecycleHooks(),
     config: { providers: {}, controller: {}, worker: {} },
     controllerProvider: mockProvider,
     workerProvider: mockProvider,

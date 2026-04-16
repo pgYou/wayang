@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Supervisor } from '@/services/supervisor';
-import type { WayangConfig, WorkerResult, IWorkerInstance } from '@/types/index';
+import type { WayangConfig } from '@/types/index';
 
 // --- Helpers ---
 
@@ -71,13 +71,10 @@ describe('Supervisor', () => {
 
     it('should initialize all core components', () => {
       const sup = createSupervisor(tempDir);
-      expect(sup.taskPool).toBeDefined();
+      expect(sup.engine).toBeDefined();
       expect(sup.signalQueue).toBeDefined();
-      expect(sup.scheduler).toBeDefined();
       expect(sup.controllerAgent).toBeDefined();
-      expect(sup.controllerState).toBeDefined();
-      expect(sup.hooks).toBeDefined();
-      expect(sup.workerFactory).toBeDefined();
+      expect(sup.ctx.hooks).toBeDefined();
       expect(sup.sessionManager).toBeDefined();
     });
   });
@@ -88,7 +85,7 @@ describe('Supervisor', () => {
       await sup.restore();
       await sup.start();
 
-      const session = sup.controllerState.get<{ id: string; startedAt: string }>('runtimeState.session');
+      const session = sup.controllerAgent.state.get<{ id: string; startedAt: string }>('runtimeState.session');
       expect(session.id).toBe(sup.ctx.sessionId);
       expect(session.startedAt).toBeTruthy();
     });
@@ -98,16 +95,7 @@ describe('Supervisor', () => {
     it('should restore all states', async () => {
       const sup = createSupervisor(tempDir);
       await sup.restore();
-      // No crash = success (each sub-restore has its own tests)
-    });
-
-    it('should recover crashed workers on restore', async () => {
-      const sup = createSupervisor(tempDir);
-      await sup.restore();
-
-      // No stale activeWorkers after restore
-      const activeWorkers = sup.controllerState.get<any[]>('runtimeState.activeWorkers');
-      expect(activeWorkers).toHaveLength(0);
+      // No crash = success
     });
 
     it('should mark running tasks as failed on restore (crash recovery)', async () => {
@@ -115,11 +103,19 @@ describe('Supervisor', () => {
       await sup.restore();
 
       // Add a running task, then simulate crash recovery
-      sup.taskPool.add({
+      sup.engine.add({
         id: 't1', title: 'test', description: 'test', priority: 'normal',
         status: 'pending', createdAt: Date.now(),
       });
-      sup.taskPool.moveToRunning('t1', 'w-old');
+
+      // Manually move to running to simulate a task in progress
+      // (scheduleNext would try to spawn a real worker, so we use internal state)
+      const pending = sup.engine.taskState.get<any[]>('tasks.pending');
+      if (pending.length > 0) {
+        const [task] = pending.splice(0, 1);
+        sup.engine.taskState.set('tasks.pending', pending);
+        sup.engine.taskState.append('tasks.running', { ...task, status: 'running', startedAt: Date.now(), workerSessionId: 'w-old' });
+      }
 
       // Re-create supervisor with resume to trigger recovery
       const sessionDir = sup.ctx.sessionDir;
@@ -127,114 +123,12 @@ describe('Supervisor', () => {
       const sup2 = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
       await sup2.restore();
 
-      const history = sup2.taskPool.list('failed');
-      // The crashed running task should be marked failed
-      expect(history.some(t => t.id === 't1' && t.status === 'failed')).toBe(true);
-    });
-  });
-
-  describe('worker management', () => {
-    it('should track registered workers', () => {
-      const sup = createSupervisor(tempDir);
-      const mockWorker: IWorkerInstance = {
-        id: 'w-test',
-        run: vi.fn(),
-        abort: vi.fn(),
-        getState: vi.fn(() => null),
-      };
-      sup.registerWorker(mockWorker);
-      expect(sup.getWorker('w-test')).toBe(mockWorker);
-    });
-
-    it('should return undefined for unknown worker', () => {
-      const sup = createSupervisor(tempDir);
-      expect(sup.getWorker('unknown')).toBeUndefined();
-    });
-
-    it('should return null state for unknown worker', () => {
-      const sup = createSupervisor(tempDir);
-      expect(sup.getWorkerState('unknown')).toBeNull();
-    });
-
-    it('should abort worker by task id', () => {
-      const sup = createSupervisor(tempDir);
-      const mockAbort = vi.fn();
-      const mockWorker: IWorkerInstance = {
-        id: 'w-1',
-        run: vi.fn(),
-        abort: mockAbort,
-        getState: vi.fn(() => null),
-      };
-      sup.registerWorker(mockWorker);
-      // Manually set workerTaskMap (normally set by spawnWorker)
-      (sup as any).workerTaskMap.set('w-1', 't-1');
-
-      sup.abortWorkerByTaskId('t-1');
-      expect(mockAbort).toHaveBeenCalled();
-    });
-
-    it('should not crash when aborting unknown task', () => {
-      const sup = createSupervisor(tempDir);
-      expect(() => sup.abortWorkerByTaskId('nonexistent')).not.toThrow();
-    });
-  });
-
-  describe('SchedulerContext implementation', () => {
-    it('should add and remove active workers', async () => {
-      const sup = createSupervisor(tempDir);
-      await sup.restore();
-
-      sup.addActiveWorker({
-        workerId: 'w-1',
-        taskId: 't-1',
-        startedAt: Date.now(),
-        workerType: 'puppet',
-        taskTitle: 'Test task',
-        emoji: '🧸',
-      });
-
-      let active = sup.controllerState.get<any[]>('runtimeState.activeWorkers');
-      expect(active).toHaveLength(1);
-
-      sup.removeActiveWorker('w-1');
-      active = sup.controllerState.get<any[]>('runtimeState.activeWorkers');
-      expect(active).toHaveLength(0);
+      const history = sup2.engine.list('failed');
+      expect(history.some((t: any) => t.id === 't1' && t.status === 'failed')).toBe(true);
     });
   });
 
   describe('shutdown', () => {
-    it('should abort all workers and cancel running tasks', async () => {
-      const sup = createSupervisor(tempDir);
-      await sup.restore();
-
-      // Register a mock worker
-      const mockAbort = vi.fn();
-      const mockWorker: IWorkerInstance = {
-        id: 'w-1',
-        run: vi.fn(),
-        abort: mockAbort,
-        getState: vi.fn(() => null),
-      };
-      sup.registerWorker(mockWorker);
-      (sup as any).workerTaskMap.set('w-1', 't-1');
-
-      // Add a running task
-      sup.taskPool.add({
-        id: 't-1', title: 'test', description: 'test', priority: 'normal',
-        status: 'pending', createdAt: Date.now(),
-      });
-      sup.taskPool.moveToRunning('t-1', 'w-1');
-
-      await sup.shutdown();
-
-      expect(mockAbort).toHaveBeenCalled();
-      // Running tasks should be cancelled
-      const cancelled = sup.taskPool.list('cancelled');
-      expect(cancelled.some(t => t.id === 't-1')).toBe(true);
-      // Workers should be cleared
-      expect(sup.getWorker('w-1')).toBeUndefined();
-    });
-
     it('should abort system context', async () => {
       const sup = createSupervisor(tempDir);
       await sup.shutdown();

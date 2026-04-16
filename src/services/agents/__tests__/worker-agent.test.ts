@@ -31,19 +31,19 @@ describe('WorkerAgent', () => {
   });
 
   it('should create worker with unique id', () => {
-    const w1 = new WorkerAgent(mockProvider, '/tmp/test', '/tmp/workspace', createMockCtx());
-    const w2 = new WorkerAgent(mockProvider, '/tmp/test', '/tmp/workspace', createMockCtx());
+    const w1 = new WorkerAgent(mockProvider, createMockCtx());
+    const w2 = new WorkerAgent(mockProvider, createMockCtx());
     expect(w1.id).not.toBe(w2.id);
   });
 
   it('should return completed result via complete() callback', () => {
-    const worker = new WorkerAgent(mockProvider, '/tmp/test', '/tmp/workspace', createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx());
     worker.complete('All done successfully');
     expect(worker['_terminalResult']).toEqual({ status: 'completed', summary: 'All done successfully' });
   });
 
   it('should return failed result via fail() callback', () => {
-    const worker = new WorkerAgent(mockProvider, '/tmp/test', '/tmp/workspace', createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx());
     worker.fail('Something went wrong');
     expect(worker['_terminalResult']).toEqual({ status: 'failed', error: 'Something went wrong' });
   });
@@ -51,7 +51,7 @@ describe('WorkerAgent', () => {
   it('should return stream text when max steps reached without done/fail', async () => {
     mockStreamResponse('some text without calling done');
 
-    const worker = new WorkerAgent(mockProvider, '/tmp/test', '/tmp/workspace', createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx());
     const result = await worker.run(
       { id: 't-5', title: 'test', description: 'test', workerId: 'w-5', priority: 'normal', status: 'running', createdAt: Date.now() },
       {},
@@ -64,7 +64,7 @@ describe('WorkerAgent', () => {
   it('should return failed when abort signal is already set before run', async () => {
     mockStreamResponse('');
 
-    const worker = new WorkerAgent(mockProvider, '/tmp/test', '/tmp/workspace', createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx());
     worker.abort();
 
     const result = await worker.run(
@@ -77,7 +77,7 @@ describe('WorkerAgent', () => {
   });
 
   it('should return terminal result when complete() called via done tool', async () => {
-    const worker = new WorkerAgent(mockProvider, '/tmp/test', '/tmp/workspace', createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx());
 
     // Simulate: LLM calls done tool → complete() is invoked during stream
     vi.mocked(streamText).mockImplementation(((opts: any) => {

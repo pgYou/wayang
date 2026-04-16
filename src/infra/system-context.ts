@@ -1,6 +1,7 @@
-import type { WayangConfig, ProviderConfig } from '@/types/index';
+import type { WayangConfig } from '@/types/index';
 import type { Logger } from './logger';
 import { createLogger } from './logger';
+import { LifecycleHooks } from '@/services/lifecycle-hooks';
 
 export class SystemContext {
   readonly sessionId: string;
@@ -11,6 +12,7 @@ export class SystemContext {
   readonly logger: Logger;
   readonly abortController: AbortController;
   readonly config: WayangConfig;
+  readonly hooks: LifecycleHooks;
 
   constructor(config: WayangConfig, sessionId: string, sessionDir: string, workspaceDir: string, logLevel?: string) {
     this.config = config;
@@ -20,6 +22,7 @@ export class SystemContext {
     this.startedAt = Date.now();
     this.logLevel = logLevel ?? 'info';
     this.abortController = new AbortController();
+    this.hooks = new LifecycleHooks();
 
     this.logger = createLogger(this.logLevel, `${sessionDir}/wayang.log`).child({
       session: sessionId,
