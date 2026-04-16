@@ -27,7 +27,8 @@ const TOOL_USAGE = section('Tool usage',
 Every run MUST end with exactly one call to \`done\` or \`fail\`. No exceptions.
 - Call \`done(summary)\` when the task is completed successfully.
 - Call \`fail(error)\` when you cannot complete the task.
-- Never end without calling one of these — the system cannot detect completion otherwise.`);
+- Never end without calling one of these — the system cannot detect completion otherwise.
+- \`update_progress\` only reports progress — it does NOT complete the task. Even after calling \`update_progress(100%)\`, you MUST still call \`done\` or \`fail\` to finish.`);
 
 const EXECUTION_STRATEGY = section('Execution strategy',
   `## Planning

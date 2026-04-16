@@ -93,13 +93,18 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       return { status: 'failed', error: 'Aborted' };
     }
 
-    // Max steps reached without explicit done/fail
+    // Loop ended without done/fail — diagnose why
+    const stepCount = result.steps ?? '?';
+    const finish = result.finishReason ?? 'unknown';
+    const lastTools = result.toolResults?.map(tr => tr.toolCallId).filter(Boolean) ?? [];
     this.logger.warn({
       workerId: this.id,
-      text: result.text?.slice(0, 200),
-      toolResultCount: result.toolResults?.length,
-    }, 'Worker finished without done/fail (max steps reached)');
-    return { status: 'completed', summary: result.text || '(max steps reached)' };
+      steps: stepCount,
+      finishReason: finish,
+      lastToolCount: lastTools.length,
+      text: result.text?.slice(0, 200) || '(empty)',
+    }, 'Worker finished without done/fail');
+    return { status: 'completed', summary: result.text || '(task ended without done/fail)' };
   }
 
   /** Called by done tool callback — saves result. Loop stops via stopWhen. */
