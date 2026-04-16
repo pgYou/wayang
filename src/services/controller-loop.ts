@@ -12,7 +12,9 @@
  *   • `signal:enqueued` → reset countdown (real event arrived)
  */
 
-import type { Supervisor } from '@/services/supervisor';
+import type { SystemContext } from '@/infra/system-context';
+import type { SignalQueue } from '@/services/signal/signal-queue';
+import type { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ActiveWorkerInfo } from '@/types/index';
 import { EEntryType, ESystemSubtype } from '@/types/index';
 import { generateId } from '@/utils/id';
@@ -20,12 +22,19 @@ import { nowISO } from '@/utils/time';
 import { formatLlmError } from '@/utils/llm-error';
 
 // ---------------------------------------------------------------------------
-// Options
+// Types
 // ---------------------------------------------------------------------------
 
 export interface ControllerLoopOptions {
   /** Idle interval (ms) before injecting a heartbeat signal. Default 30s. */
   heartbeatIntervalMs?: number;
+}
+
+/** Callback to gather heartbeat data. Keeps ControllerLoop decoupled from engine. */
+export interface HeartbeatProvider {
+  getRunningCount(): number;
+  getActiveWorkers(): ActiveWorkerInfo[];
+  getPendingCount(): number;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,7 +50,10 @@ export class ControllerLoop {
   private readonly unsubscribers: Array<() => void> = [];
 
   constructor(
-    private readonly supervisor: Supervisor,
+    private readonly ctx: SystemContext,
+    private readonly signalQueue: SignalQueue,
+    private readonly controllerAgent: ControllerAgent,
+    private readonly heartbeatProvider: HeartbeatProvider,
     options?: ControllerLoopOptions,
   ) {
     this.heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 30_000;
@@ -50,7 +62,7 @@ export class ControllerLoop {
   // --- Lifecycle ---
 
   async start(): Promise<void> {
-    const { signalQueue, controllerAgent, ctx } = this.supervisor;
+    const { signalQueue, controllerAgent, ctx } = this;
     const { hooks } = ctx;
 
     // Subscribe to hooks for heartbeat wake logic
@@ -128,7 +140,7 @@ export class ControllerLoop {
     this.clearHeartbeatTimer();
 
     // Only set timer if there are running workers
-    if (this.supervisor.engine.getRunningCount() === 0) return;
+    if (this.heartbeatProvider.getRunningCount() === 0) return;
 
     this.heartbeatTimer = setTimeout(() => {
       this.heartbeatTimer = null;
@@ -138,9 +150,9 @@ export class ControllerLoop {
 
   private sendHeartbeatSignal(lastWakeAt: number): void {
     const now = Date.now();
-    const activeWorkers = this.supervisor.engine.getActiveWorkers();
+    const activeWorkers = this.heartbeatProvider.getActiveWorkers();
 
-    this.supervisor.signalQueue.enqueue({
+    this.signalQueue.enqueue({
       source: 'system',
       type: 'heartbeat',
       payload: {
@@ -153,7 +165,7 @@ export class ControllerLoop {
           workerType: w.workerType,
           runningForMs: now - w.startedAt,
         })),
-        pendingTaskCount: this.supervisor.engine.list('pending').length,
+        pendingTaskCount: this.heartbeatProvider.getPendingCount(),
       },
     });
   }

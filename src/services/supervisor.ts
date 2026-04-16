@@ -1,6 +1,7 @@
 import { SystemContext } from '@/infra/system-context';
 import { SignalQueue } from '@/services/signal/signal-queue';
 import { TaskExecuteEngine } from '@/services/task-execute-engine';
+import { ControllerLoop } from '@/services/controller-loop';
 import { SessionManager } from '@/services/session/session-manager';
 import { ControllerAgent } from './agents/controller-agent';
 import type { WayangConfig } from '@/types/index';
@@ -22,6 +23,7 @@ export class Supervisor {
   readonly engine: TaskExecuteEngine;
   readonly controllerAgent: ControllerAgent;
   readonly sessionManager: SessionManager;
+  private controllerLoop: ControllerLoop;
 
   constructor(options: SupervisorOptions) {
     const { config, workspaceDir, logLevel } = options;
@@ -58,6 +60,17 @@ export class Supervisor {
       engine: this.engine,
       signalQueue: this.signalQueue,
     });
+
+    this.controllerLoop = new ControllerLoop(
+      this.ctx,
+      this.signalQueue,
+      this.controllerAgent,
+      {
+        getRunningCount: () => this.engine.getRunningCount(),
+        getActiveWorkers: () => this.engine.getActiveWorkers(),
+        getPendingCount: () => this.engine.list('pending').length,
+      },
+    );
   }
 
   // --- Lifecycle ---
@@ -80,6 +93,11 @@ export class Supervisor {
       startedAt: this.ctx.startedAt,
     });
 
+    // Start controller loop (fire-and-forget, runs until abort)
+    this.controllerLoop.start().catch((err) => {
+      this.ctx.logger.error({ error: err.message }, 'Controller loop crashed');
+    });
+
     this.ctx.logger.info('Supervisor started');
   }
 
@@ -93,9 +111,8 @@ export class Supervisor {
   // --- Shutdown ---
 
   async shutdown(): Promise<void> {
+    this.controllerLoop.shutdown();
     this.engine.abortAll();
-
-    // Stop controller loop
     this.ctx.abortController.abort();
 
     this.ctx.logger.info('Supervisor shutdown complete');
