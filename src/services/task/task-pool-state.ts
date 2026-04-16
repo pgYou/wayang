@@ -3,6 +3,7 @@ import type { TaskDetail } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';
+import type { SystemContext } from '@/infra/system-context';
 
 interface TaskPoolData {
   tasks: {
@@ -14,12 +15,10 @@ interface TaskPoolData {
 
 export class TaskPoolState extends BaseWayangState {
   private jsonFile: JSONFileHelper;
+  private readonly logger: Logger;
 
-  constructor(
-    private sessionDir: string,
-    private logger: Logger,
-  ) {
-    const jsonFile = new JSONFileHelper(join(sessionDir, 'tasks.json'));
+  constructor(ctx: SystemContext) {
+    const jsonFile = new JSONFileHelper(join(ctx.sessionDir, 'tasks.json'));
 
     super(
       {
@@ -33,6 +32,7 @@ export class TaskPoolState extends BaseWayangState {
     );
 
     this.jsonFile = jsonFile;
+    this.logger = ctx.logger;
   }
 
   async restore(): Promise<void> {

@@ -2,18 +2,20 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { createLogger } from '@/infra/logger';
+import { createMockCtx } from '@/__tests__/helpers';
 import { SignalState } from '@/services/signal/signal-state';
 import type { ControllerSignal } from '@/types/index';
+import type { SystemContext } from '@/infra/system-context';
 
 describe('SignalState', () => {
   let tempDir: string;
   let state: SignalState;
-  const logger = createLogger('silent');
+  let ctx: SystemContext;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'wayang-test-'));
-    state = new SignalState(tempDir, logger);
+    ctx = createMockCtx({ sessionDir: tempDir } as any);
+    state = new SignalState(ctx);
   });
 
   afterEach(() => {
@@ -50,7 +52,7 @@ describe('SignalState', () => {
   it('should persist to JSONL on append', async () => {
     state.append('signals', makeSig('s1'));
 
-    const state2 = new SignalState(tempDir, logger);
+    const state2 = new SignalState(ctx);
     await state2.restore();
     expect(state2.get('signals')).toHaveLength(1);
   });
@@ -63,7 +65,7 @@ describe('SignalState', () => {
     sigs[0].status = 'read';
     state.set('signals', [...sigs]);
 
-    const state2 = new SignalState(tempDir, logger);
+    const state2 = new SignalState(ctx);
     await state2.restore();
     const restored = state2.get('signals') as ControllerSignal[];
     expect(restored).toHaveLength(2);
@@ -123,7 +125,7 @@ describe('SignalState', () => {
   it('should persist state events to JSONL', async () => {
     state.append('signals', makeSig('sig-1'));
 
-    const state2 = new SignalState(tempDir, logger);
+    const state2 = new SignalState(ctx);
     await state2.restore();
 
     const events = state2.getStateEvents();
@@ -134,7 +136,7 @@ describe('SignalState', () => {
   it('should restore state events with signal count logged', async () => {
     state.append('signals', makeSig('sig-1'));
 
-    const state2 = new SignalState(tempDir, logger);
+    const state2 = new SignalState(ctx);
     await state2.restore();
 
     const restored = state2.get('signals') as ControllerSignal[];

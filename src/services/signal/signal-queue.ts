@@ -1,6 +1,7 @@
 import type { ControllerSignal, NewSignalInput, SignalStatus, SignalSource, SignalType } from '@/types/index';
 import type { Logger } from '@/infra/logger';
-import type { SignalState } from '@/services/signal/signal-state';
+import { SignalState } from '@/services/signal/signal-state';
+import type { SystemContext } from '@/infra/system-context';
 
 /** Query filter for signals */
 export interface SignalQueryFilter {
@@ -18,12 +19,16 @@ export class SignalQueue {
   /** Expose state for UI subscription via useWayangState. */
   get stateRef() { return this.state; }
   private counter: number;
+  private readonly state: SignalState;
+  private readonly logger: Logger;
+  private readonly ctx: SystemContext;
 
-  constructor(
-    private state: SignalState,
-    private logger: Logger,
-  ) {
-    const sigs = state.get<ControllerSignal[]>('signals');
+  constructor(ctx: SystemContext) {
+    this.ctx = ctx;
+    this.state = new SignalState(ctx);
+    this.logger = ctx.logger;
+
+    const sigs = this.state.get<ControllerSignal[]>('signals');
     this.counter = sigs.reduce((max, s) => {
       const n = parseInt(s.id.replace('sig-', ''), 10);
       return isNaN(n) ? max : Math.max(max, n);
@@ -69,6 +74,9 @@ export class SignalQueue {
       this.resolveWait();
       this.resolveWait = null;
     }
+
+    // Notify lifecycle hooks
+    this.ctx.hooks.emit('signal:enqueued', { signal: full });
   }
 
   dequeueUnread(): ControllerSignal[] {

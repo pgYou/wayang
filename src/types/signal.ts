@@ -2,7 +2,7 @@
 
 export type SignalStatus = 'unread' | 'read' | 'discarded';
 export type SignalSource = 'user' | 'worker' | 'system';
-export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled';
+export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'heartbeat';
 
 /** User input signal payload. */
 export interface InputSignalPayload {
@@ -63,6 +63,25 @@ export interface CancelledSignalPayload {
   emoji?: string;
 }
 
+/** System heartbeat signal payload — periodic check-in while workers are running. */
+export interface HeartbeatSignalPayload {
+  /** Human-readable reason for the heartbeat. */
+  reason: string;
+  /** Milliseconds since the last loop wake. */
+  idleSinceMs: number;
+  /** Snapshot of currently active workers. */
+  workers: Array<{
+    workerId: string;
+    taskId: string;
+    taskTitle: string;
+    workerType: string;
+    /** How long this worker has been running (ms). */
+    runningForMs: number;
+  }>;
+  /** Number of pending (queued) tasks. */
+  pendingTaskCount: number;
+}
+
 /** Discriminated union of all signal payloads by SignalType. */
 export type SignalPayloadMap = {
   input: InputSignalPayload;
@@ -70,6 +89,7 @@ export type SignalPayloadMap = {
   failed: FailedSignalPayload;
   progress: ProgressSignalPayload;
   cancelled: CancelledSignalPayload;
+  heartbeat: HeartbeatSignalPayload;
 };
 
 /** A typed signal where payload corresponds to the signal type. */

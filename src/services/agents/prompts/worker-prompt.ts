@@ -5,7 +5,8 @@
  * uses tools (bash, file I/O) to accomplish it, and reports done/fail.
  */
 
-import { assemble, section } from './prompt-utils';
+import { SystemContext } from '@/infra/system-context';
+import { assemble, buildEnvironment, section } from './prompt-utils';
 
 // ---------------------------------------------------------------------------
 // Static sections
@@ -26,7 +27,8 @@ const TOOL_USAGE = section('Tool usage',
 Every run MUST end with exactly one call to \`done\` or \`fail\`. No exceptions.
 - Call \`done(summary)\` when the task is completed successfully.
 - Call \`fail(error)\` when you cannot complete the task.
-- Never end without calling one of these — the system cannot detect completion otherwise.`);
+- Never end without calling one of these — the system cannot detect completion otherwise.
+- \`update_progress\` only reports progress — it does NOT complete the task. Even after calling \`update_progress(100%)\`, you MUST still call \`done\` or \`fail\` to finish.`);
 
 const EXECUTION_STRATEGY = section('Execution strategy',
   `## Planning
@@ -36,11 +38,23 @@ Before acting, briefly plan your approach (you have a step budget — use it wis
 2. Break it into concrete steps
 3. Execute each step, verifying the result before moving on
 
+## Discovering files
+
+- Use search_files to find files by glob pattern (e.g. "**/*.ts", "src/**/*.test.ts").
+- Use search_content to search file contents (like grep). Returns file:line:content format.
+- Do NOT guess paths — use these tools to discover the codebase structure first.
+
 ## File operations
 
-- Always verify write results: after write_file, use read_file to confirm content is correct.
-- Use absolute or workspace-relative paths. Do not guess paths — use bash(ls) or read_file to discover them.
-- When creating files, include ALL the content in a single write_file call. Never write an empty file intending to fill it later.
+- write_file creates a NEW file only. If the file already exists, it will fail — use edit_file instead.
+- edit_file modifies an existing file by replacing a unique string. The old_string must appear exactly once. If it matches multiple times, the tool will tell you — expand the surrounding context to make it unique.
+- Always verify changes: after write_file or edit_file, use read_file to confirm the content is correct. For large files, use offset and limit to read specific sections instead of the entire file.
+- Use relative paths (relative to workspace). All file operations are sandboxed to the workspace.
+
+## Web search
+
+- Use web_search when the task requires information you don't have (API docs, library usage, current events).
+- Results include title, URL, and a content snippet. Use the information, do not fabricate URLs.
 
 ## Shell commands
 
@@ -65,9 +79,10 @@ const QUALITY_RULES = section('Quality rules',
 const HARD_CONSTRAINTS = section('Hard constraints',
   `- MUST call done() or fail() to terminate. Never just stop.
 - NEVER write empty files. If you call write_file, the content parameter must contain the actual content.
+- write_file can only CREATE new files. To modify an existing file, use edit_file.
 - NEVER exceed your step budget silently — if you're running out of steps, call done() with partial results or fail() explaining the limitation.
 - NEVER run destructive commands (rm -rf /, DROP DATABASE, etc.) without explicit instruction in the task.
-- ALL file operations (read_file, write_file) are sandboxed to the workspace directory. Paths outside will be rejected. Use relative paths or paths under the workspace shown in the Environment section.
+- ALL file operations (read_file, write_file, edit_file) are sandboxed to the workspace directory. Paths outside will be rejected. Use relative paths or paths under the workspace shown in the Environment section.
 - bash commands run with cwd set to the workspace. Do NOT cd out of it or write to paths outside it.`);
 
 const PROGRESS_REPORTING = section('Progress reporting',
@@ -95,30 +110,11 @@ Bad: "Failed"
 Good: "Failed: npm install timed out after 30s, network may be unreachable"`);
 
 // ---------------------------------------------------------------------------
-// Dynamic section builders
-// ---------------------------------------------------------------------------
-
-export interface WorkerDynamicContext {
-  taskId: string;
-  workspaceDir: string;
-}
-
-function buildEnvironment(ctx: WorkerDynamicContext): string {
-  const now = new Date();
-  const date = now.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
-  const lines: string[] = [];
-  lines.push(`- Date: ${date}`);
-  lines.push(`- Task ID: ${ctx.taskId}`);
-  lines.push(`- Workspace: ${ctx.workspaceDir}`);
-  return section('Environment', lines.join('\n'));
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /** Build the full Worker system prompt (static + dynamic). */
-export function buildWorkerSystemPrompt(ctx?: WorkerDynamicContext): string {
+export function buildWorkerSystemPrompt(ctx: SystemContext): string {
   return assemble(
     IDENTITY,
     LANGUAGE_RULES,
@@ -127,6 +123,6 @@ export function buildWorkerSystemPrompt(ctx?: WorkerDynamicContext): string {
     QUALITY_RULES,
     HARD_CONSTRAINTS,
     PROGRESS_REPORTING,
-    ctx ? buildEnvironment(ctx) : undefined,
+    buildEnvironment(ctx)
   );
 }

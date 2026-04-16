@@ -43,7 +43,6 @@ export class ContextManager {
   constructor(
     private state: BaseWayangState,
     private staticPrompt: string,
-    private dynamicContextFn: () => string,
     maxTokens?: number,
   ) {
     this.maxTokens = maxTokens ?? DEFAULT_MAX_TOKENS;
@@ -56,7 +55,6 @@ export class ContextManager {
     if (this.compactSummary) {
       parts.push(`\n[Conversation Summary]\n${this.compactSummary}`);
     }
-    parts.push('\n' + this.dynamicContextFn());
     return parts.join('\n\n');
   }
 

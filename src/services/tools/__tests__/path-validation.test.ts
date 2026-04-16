@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writeFileTool } from '@/services/tools/write-file';
@@ -69,6 +69,24 @@ describe('write_file path validation', () => {
     expect(result).toContain('[ERROR]');
     expect(result).toContain('escapes workspace');
   });
+
+  it('should reject writing to an existing file', async () => {
+    writeFileSync(join(cwd, 'existing.txt'), 'original', 'utf-8');
+    const tool = writeFileTool({ cwd });
+    const result = await exec(tool, { path: 'existing.txt', content: 'overwritten' });
+    expect(result).toContain('[ERROR]');
+    expect(result).toContain('already exists');
+    expect(result).toContain('edit_file');
+    // Verify file content unchanged
+    expect(readFileSync(join(cwd, 'existing.txt'), 'utf-8')).toBe('original');
+  });
+
+  it('should create a new file when it does not exist', async () => {
+    const tool = writeFileTool({ cwd });
+    const result = await exec(tool, { path: 'new.txt', content: 'fresh' });
+    expect(result).toContain('Written');
+    expect(readFileSync(join(cwd, 'new.txt'), 'utf-8')).toBe('fresh');
+  });
 });
 
 describe('read_file path validation', () => {
@@ -86,7 +104,7 @@ describe('read_file path validation', () => {
     writeFileSync(join(cwd, 'test.txt'), 'hello', 'utf-8');
     const tool = readFileTool({ cwd });
     const result = await exec(tool, { path: 'test.txt' });
-    expect(result).toBe('hello');
+    expect(result).toBe('1\thello');
   });
 
   it('should reject path traversal with ..', async () => {

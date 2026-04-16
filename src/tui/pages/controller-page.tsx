@@ -3,6 +3,7 @@ import { useMemoizedFn } from '@/tui/hooks/use-memoized-fn';
 import { Box, useStdout } from 'ink';
 import { ChatArea } from '@/tui/components/chat-area';
 import { InputArea } from '@/tui/components/input-area';
+import { InquiryPrompt } from '@/tui/components/inquiry-prompt';
 import { StatusBar } from '@/tui/components/status-bar';
 import { OverlayPanel } from '@/tui/components/overlay-panel';
 import { WorkerListOverlay } from '@/tui/components/worker-list-overlay';
@@ -11,8 +12,8 @@ import { useRouter } from '@/tui/providers/route-provider';
 import { useWayangState } from '@/tui/hooks/use-wayang-state';
 import { useSlashCommands } from '@/tui/hooks/use-slash-commands';
 import type { ConversationEntry } from '@/types/conversation';
-import type { ControllerSignal, TaskDetail } from '@/types/index';
-import type { ActiveWorkerInfo } from '@/services/agents/controller-state';
+import type { ControllerSignal, TaskDetail, InquireQuestion } from '@/types/index';
+import type { ActiveWorkerInfo } from '@/types/index';
 import type { DisplayItem } from '@/tui/types/display-item';
 import type { Overlay } from '@/tui/types/overlay';
 import { entryToDisplayItem, signalToDisplayItem } from '@/tui/types/display-item';
@@ -29,11 +30,11 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
   const chatContentWidth = terminalCols - 4;
 
   const conversation = useWayangState<ConversationEntry[]>(
-    supervisor.controllerState, 'conversation',
+    supervisor.controllerAgent.state, 'conversation',
   );
 
   const streamingEntries = useWayangState<ConversationEntry[]>(
-    supervisor.controllerState, 'dynamicState.streamingEntries',
+    supervisor.controllerAgent.state, 'dynamicState.streamingEntries',
   );
 
   // Subscribe to signals so useMemo recomputes when signals change
@@ -43,18 +44,23 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
 
   // Subscribe to active workers & tasks for status display
   const activeWorkers = useWayangState<ActiveWorkerInfo[]>(
-    supervisor.controllerState, 'runtimeState.activeWorkers',
+    supervisor.engine.workerState, 'activeWorkers',
   );
   const pendingTasks = useWayangState<TaskDetail[]>(
-    supervisor.taskPool.stateRef, 'tasks.pending',
+    supervisor.engine.taskState, 'tasks.pending',
   );
   const runningTasks = useWayangState<TaskDetail[]>(
-    supervisor.taskPool.stateRef, 'tasks.running',
+    supervisor.engine.taskState, 'tasks.running',
   );
 
   // Busy state from controller agent (dynamicState = not persisted)
   const agentBusy = useWayangState<boolean>(
-    supervisor.controllerState, 'dynamicState.busy',
+    supervisor.controllerAgent.state, 'dynamicState.busy',
+  );
+
+  // Pending inquiry from controller
+  const pendingInquiry = useWayangState<InquireQuestion | null>(
+    supervisor.controllerAgent.state, 'runtimeState.pendingInquiry',
   );
 
   // Build DisplayItem[]: conversation entries (read) + unread signals
@@ -139,7 +145,11 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
         />
       </Box>
       {overlay && <OverlayPanel overlay={overlay} />}
-      <InputArea onSubmit={handleSubmit} onExit={onExit} onEscape={dismissOverlay} busy={busy} />
+      {pendingInquiry ? (
+        <InquiryPrompt inquiry={pendingInquiry} onAnswer={(answer) => supervisor.resolveInquiry(answer)} />
+      ) : (
+        <InputArea onSubmit={handleSubmit} onExit={onExit} onEscape={dismissOverlay} busy={busy} />
+      )}
       <StatusBar
         activeWorkers={activeWorkers ?? []}
         pendingTasks={pendingTasks ?? []}

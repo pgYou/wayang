@@ -10,6 +10,7 @@ import type { Logger } from '@/infra/logger';
 import { WORKER_AGENT_MAX_STEP } from './constants';
 
 import { buildWorkerSystemPrompt } from './prompts/index';
+import { SystemContext } from '@/infra/system-context';
 
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   readonly state: WorkerState;
@@ -17,15 +18,17 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private _terminalResult: WorkerResult | null = null;
   private readonly workspaceDir: string;
   private contextManager: ContextManager;
-  constructor(provider: ProviderConfig, sessionDir: string, workspaceDir: string, logger: Logger) {
+  private readonly ctx: SystemContext;
+
+  constructor(provider: ProviderConfig, ctx: SystemContext) {
     super(provider);
-    this.logger = logger;
-    this.workspaceDir = workspaceDir;
-    this.state = new WorkerState(sessionDir, this.id, logger);
+    this.ctx = ctx;
+    this.logger = ctx.logger;
+    this.workspaceDir = ctx.workspaceDir;
+    this.state = new WorkerState(ctx.sessionDir, this.id, ctx.logger);
     this.contextManager = new ContextManager(
       this.state,
-      buildWorkerSystemPrompt(),
-      () => '',
+      buildWorkerSystemPrompt(this.ctx),
     );
   }
 
@@ -34,20 +37,12 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     tools: Record<string, any>,
     onProgress?: (msg: string) => void,
   ): Promise<WorkerResult> {
+    this.logger.debug({ task }, 'WorkerAgent run called');
     // Set task info in state
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
 
-    // Rebuild system prompt with task-specific dynamic context
-    this.contextManager = new ContextManager(
-      this.state,
-      buildWorkerSystemPrompt({ taskId: task.id, workspaceDir: this.workspaceDir }),
-      () => '',
-    );
-
     // Reset terminal result for this run
     this._terminalResult = null;
-
-
 
     // Add task description as initial user message
     this.state.append('conversation', {
@@ -70,6 +65,18 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       onStep: (event) => {
         const entry = buildAssistantEntry(event, this.id);
         this.state.append('conversation', entry);
+
+        // Log step details for debugging
+        const toolNames = entry.toolCalls?.map(tc => tc.toolName) ?? [];
+        const hasError = entry.toolResults?.some(tr => tr.isError);
+        this.logger.debug({
+          workerId: this.id,
+          step: event.finishReason,
+          toolCalls: toolNames,
+          hasError,
+          textLength: event.text?.length ?? 0,
+        }, 'Worker step finished');
+
         if (event.text && onProgress) {
           onProgress(event.text.slice(0, 200));
         }
@@ -86,17 +93,29 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       return { status: 'failed', error: 'Aborted' };
     }
 
-    // Max steps reached without explicit done/fail
-    return { status: 'completed', summary: result.text || '(max steps reached)' };
+    // Loop ended without done/fail — diagnose why
+    const stepCount = result.steps ?? '?';
+    const finish = result.finishReason ?? 'unknown';
+    const lastTools = result.toolResults?.map(tr => tr.toolCallId).filter(Boolean) ?? [];
+    this.logger.warn({
+      workerId: this.id,
+      steps: stepCount,
+      finishReason: finish,
+      lastToolCount: lastTools.length,
+      text: result.text?.slice(0, 200) || '(empty)',
+    }, 'Worker finished without done/fail');
+    return { status: 'completed', summary: result.text || '(task ended without done/fail)' };
   }
 
   /** Called by done tool callback — saves result. Loop stops via stopWhen. */
   complete(summary: string): void {
+    this.logger.debug({ summary }, 'WorkerAgent complete called');
     this._terminalResult = { status: 'completed', summary };
   }
 
   /** Called by fail tool callback — saves result. Loop stops via stopWhen. */
   fail(error: string): void {
+    this.logger.debug({ error }, 'WorkerAgent fail called');
     this._terminalResult = { status: 'failed', error };
   }
 

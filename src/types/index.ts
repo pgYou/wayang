@@ -28,6 +28,7 @@ export type {
   FailedSignalPayload,
   ProgressSignalPayload,
   CancelledSignalPayload,
+  HeartbeatSignalPayload,
 } from './signal';
 export { getSignalField } from './signal';
 
@@ -36,4 +37,6 @@ export type { StateEvent } from './state';
 export type { WorkerResult, ActiveWorkerInfo, IWorkerInstance } from './worker';
 
 export type { WayangLanguageModel as WayangModel } from './agent';
+
+export type { InquireQuestion } from './inquiry';
 

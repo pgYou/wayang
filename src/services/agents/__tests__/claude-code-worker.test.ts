@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
 import type { WorkerConfig, TaskDetail } from '@/types/index';
+import { createMockCtx } from '@/__tests__/helpers';
 
 // Mock the Claude Agent SDK
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
@@ -20,14 +21,6 @@ const config: WorkerConfig = {
   type: 'claude-code',
   description: 'Test worker',
   maxTurns: 5,
-};
-
-const mockLogger = {
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
-  child: vi.fn(() => mockLogger),
 };
 
 const makeTask = (overrides?: Partial<TaskDetail>): TaskDetail & { workerId: string } => ({
@@ -100,7 +93,7 @@ describe('ClaudeCodeWorker', () => {
   });
 
   function createWorker(cfg: WorkerConfig = config) {
-    return new ClaudeCodeWorker(cfg, tempDir, tempDir, mockLogger as any);
+    return new ClaudeCodeWorker(cfg, tempDir, tempDir, createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any));
   }
 
   it('should have a valid id', () => {

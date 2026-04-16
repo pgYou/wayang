@@ -40,7 +40,7 @@ export function useSlashCommands(supervisor: Supervisor, ctx: SlashCommandContex
 
       case 'tasks': {
         const status = parts[1] as TaskDetail['status'] | undefined;
-        const tasks = supervisor.taskPool.list(status);
+        const tasks = supervisor.engine.list(status);
         if (tasks.length === 0) return { handled: true, output: 'No tasks' };
         const lines = tasks.map(t =>
           `[${t.status}] ${t.id}: ${t.description}${t.result ? ` → ${t.result}` : ''}`,
@@ -56,7 +56,7 @@ export function useSlashCommands(supervisor: Supervisor, ctx: SlashCommandContex
         const workerId = parts[1];
         if (!workerId) {
           // List all workers
-          const activeWorkers = supervisor.controllerState.get<ActiveWorkerInfo[]>('runtimeState.activeWorkers');
+          const activeWorkers = supervisor.engine.getActiveWorkers();
           if (!activeWorkers || activeWorkers.length === 0) {
             return { handled: true, output: 'No active workers. Usage: /worker <id>' };
           }
@@ -73,8 +73,7 @@ export function useSlashCommands(supervisor: Supervisor, ctx: SlashCommandContex
         if (!taskId) {
           return { handled: true, output: 'Usage: /cancel <taskId>' };
         }
-        supervisor.taskPool.cancel(taskId);
-        supervisor.abortWorkerByTaskId(taskId);
+        supervisor.engine.cancel(taskId);
         return { handled: true, output: `Task ${taskId} cancelled` };
       }
 

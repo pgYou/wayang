@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BaseAgent } from '@/services/agents/base-agent';
 import type { ProviderConfig } from '@/types/index';
+import { mockProvider } from '@/__tests__/helpers';
 
 // Mock streamText and model-factory
 vi.mock('ai', () => ({
@@ -10,12 +11,6 @@ vi.mock('ai', () => ({
 vi.mock('../model-factory.js', () => ({
   createModel: () => ({}),
 }));
-
-const mockProvider: ProviderConfig = {
-  endpoint: 'http://localhost:1234',
-  apiKey: 'test-key',
-  modelName: 'test-model',
-};
 
 // Concrete subclass for testing
 class TestAgent extends BaseAgent {

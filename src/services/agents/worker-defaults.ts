@@ -14,9 +14,9 @@ export const PUPPET_DEFAULTS = {
   /** Emoji icon for UI display. */
   emoji: '\u{1F9F8}', //  🧸
   /** Description shown to the Controller LLM. */
-  description: 'Built-in worker for general tasks using shell commands and file I/O.',
+  description: 'Built-in worker for general tasks — file search/content search, file create/edit/read, shell commands, and web search.',
   /** Capability tags. */
-  capabilities: ['shell/bash', 'file-io', 'general'],
+  capabilities: ['code', 'debug', 'refactor', 'search', 'file-io', 'web-search', 'shell'],
 } as const;
 
 /**

@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Box, Text } from 'ink';
 import { useSupervisor } from '@/tui/providers/supervisor-provider';
 import { useWayangState } from '@/tui/hooks/use-wayang-state';
 import { theme } from '@/tui/theme';
 import type { ConversationEntry } from '@/types/conversation';
 import type { ActiveWorkerInfo } from '@/types/index';
+import type { TaskDetail } from '@/types/task';
 import type { BaseWayangState } from '@/infra/state/base-state';
 
 /** Max visible entries in worker detail view. */
@@ -16,7 +17,20 @@ const TOOL_CONTENT_MAX_LENGTH = 80;
 
 export function WorkerDetailPage({ workerId, onBack }: { workerId: string; onBack: () => void }) {
   const supervisor = useSupervisor();
-  const workerState = supervisor.getWorkerState(workerId);
+  const liveState = supervisor.engine.getWorkerState(workerId);
+  const [cachedState, setCachedState] = useState<BaseWayangState | null>(null);
+
+  // Cache the worker state so it survives removal from the engine's workers Map.
+  // When the worker finishes, removeWorkerTracking deletes it after setTimeout(0),
+  // causing getWorkerState() to return null. We keep the last-known state to
+  // continue rendering the completed worker's conversation and result.
+  useEffect(() => {
+    if (liveState) {
+      setCachedState(liveState);
+    }
+  }, [liveState]);
+
+  const workerState = liveState ?? cachedState;
 
   if (!workerState) {
     return (
@@ -35,18 +49,36 @@ function WorkerContent({ workerState, workerId }: { workerState: BaseWayangState
   const taskInfo = useWayangState<any>(workerState, 'runtimeState.task');
   const conversation = useWayangState<ConversationEntry[]>(workerState, 'conversation');
   const activeWorkers = useWayangState<ActiveWorkerInfo[]>(
-    supervisor.controllerState, 'runtimeState.activeWorkers',
+    supervisor.engine.workerState, 'activeWorkers',
   );
 
+  // Cache the last known workerInfo so header (emoji, type, title) survives removal
+  const lastWorkerInfo = useRef<ActiveWorkerInfo | undefined>(undefined);
   const workerInfo = useMemo(
     () => (activeWorkers ?? []).find(w => w.workerId === workerId),
     [activeWorkers, workerId],
   );
+  if (workerInfo) {
+    lastWorkerInfo.current = workerInfo;
+  }
+  const displayInfo = workerInfo ?? lastWorkerInfo.current;
   const isRunning = !!workerInfo;
 
-  const emoji = workerInfo?.emoji ?? '?';
-  const workerType = workerInfo?.workerType ?? 'puppet';
-  const taskTitle = workerInfo?.taskTitle ?? taskInfo?.title ?? 'N/A';
+  // Look up the task in history to get completion status and result/error
+  const taskHistory = useWayangState<TaskDetail[]>(supervisor.engine.taskState, 'tasks.history');
+  const completedTask = useMemo(
+    () => (taskHistory ?? []).find(t => t.workerSessionId === workerId),
+    [taskHistory, workerId],
+  );
+
+  const emoji = displayInfo?.emoji ?? '?';
+  const workerType = displayInfo?.workerType ?? 'puppet';
+  const taskTitle = displayInfo?.taskTitle ?? taskInfo?.title ?? 'N/A';
+
+  // Derive completion info from the task history
+  const taskStatus = completedTask?.status;
+  const isCompleted = taskStatus === 'completed';
+  const isFailed = taskStatus === 'failed' || taskStatus === 'cancelled';
 
   return (
     <Box flexDirection="column" height="100%">
@@ -68,7 +100,13 @@ function WorkerContent({ workerState, workerId }: { workerState: BaseWayangState
       <Box paddingX={1} justifyContent="space-between">
         <Text dimColor>Press Esc to go back</Text>
         {isRunning && <WorkerTimer startedAt={workerInfo!.startedAt} />}
-        {!isRunning && <Text dimColor>Done</Text>}
+        {!isRunning && isCompleted && (
+          <Text color="green">Done — {completedTask?.result ?? ''}</Text>
+        )}
+        {!isRunning && isFailed && (
+          <Text color="red">Failed — {completedTask?.error ?? 'Unknown error'}</Text>
+        )}
+        {!isRunning && !isCompleted && !isFailed && <Text dimColor>Done</Text>}
       </Box>
     </Box>
   );

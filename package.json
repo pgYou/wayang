@@ -1,6 +1,6 @@
 {
   "name": "wayang-ai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Multi-agent orchestration platform",
   "type": "module",
   "license": "MIT",
@@ -33,7 +33,7 @@
   "scripts": {
     "build": "tsup",
     "dev:watch": "tsup --watch",
-    "dev": "tsup && node --env-file=.env.local dist/cli.js --home-dir . -w . -c ./config.local.json --verbose",
+    "dev": "tsc --noEmit && tsup && node --env-file=.env.local dist/cli.js --home-dir . -w . -c ./config.local.json --verbose",
     "start": "node dist/cli.js",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
@@ -49,6 +49,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.98",
     "@types/react": "^18.3.28",
     "ai": "^6.0.145",
+    "fast-glob": "^3.3.3",
     "ink": "^4.4.1",
     "lodash-es": "^4.18.1",
     "meow": "^14.1.0",

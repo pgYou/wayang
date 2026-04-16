@@ -164,6 +164,14 @@ npm run test:watch # watch mode
 npm run lint       # type check + lint
 ```
 
+## Roadmap
+
+- [ ] **Controller ↔ Worker Chat** — Allow the controller to chat with a running worker and ask for human approval when needed
+- [ ] **More Third-Party Worker Agents** — Expand integrations beyond Claude Code (e.g. Codex, Aider, Cursor agent)
+- [ ] **TUI Improvements** — Better worker detail pages, richer status display, and overall UX polish
+- [ ] **GUI** — Bring Wayang to a graphical interface beyond the terminal
+- [ ] **Sessionless Long-Running Agent** — Rethink session design: always inherit context from the previous run + long-term memory, making Wayang a continuously running agent rather than a session-based tool
+
 ## License
 
 MIT
