@@ -65,6 +65,18 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       onStep: (event) => {
         const entry = buildAssistantEntry(event, this.id);
         this.state.append('conversation', entry);
+
+        // Log step details for debugging
+        const toolNames = entry.toolCalls?.map(tc => tc.toolName) ?? [];
+        const hasError = entry.toolResults?.some(tr => tr.isError);
+        this.logger.debug({
+          workerId: this.id,
+          step: event.finishReason,
+          toolCalls: toolNames,
+          hasError,
+          textLength: event.text?.length ?? 0,
+        }, 'Worker step finished');
+
         if (event.text && onProgress) {
           onProgress(event.text.slice(0, 200));
         }
@@ -82,6 +94,11 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     }
 
     // Max steps reached without explicit done/fail
+    this.logger.warn({
+      workerId: this.id,
+      text: result.text?.slice(0, 200),
+      toolResultCount: result.toolResults?.length,
+    }, 'Worker finished without done/fail (max steps reached)');
     return { status: 'completed', summary: result.text || '(max steps reached)' };
   }
 
