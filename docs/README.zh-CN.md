@@ -164,6 +164,14 @@ npm run test:watch # 监听模式
 npm run lint       # 类型检查 + lint
 ```
 
+## 路线图
+
+- [ ] **Controller ↔ Worker 对话** — Controller 可与运行中的 Worker 直接对话，支持向用户请求审批
+- [ ] **更多第三方 Worker** — 扩展集成，支持 Codex、Aider、Cursor agent 等
+- [ ] **TUI 优化** — Worker 详情页改进，状态展示更丰富，整体体验打磨
+- [ ] **GUI** — 超越终端，提供图形化界面
+- [ ] **无会话长时运行 Agent** — 重新思考会话设计：始终继承上次执行的上下文 + 长期记忆，让 Wayang 成为持续运行的 Agent 而非会话式工具
+
 ## License
 
 MIT
