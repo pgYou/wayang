@@ -10,6 +10,8 @@ export interface StreamLoopResult {
   reasoningText?: string;
   toolResults?: Array<{ toolCallId?: string; result: unknown; isError?: boolean }>;
   usage?: { inputTokens: number; outputTokens: number };
+  finishReason?: string;
+  steps?: number;
 }
 
 export interface StreamLoopOptions {
@@ -103,6 +105,8 @@ export abstract class BaseAgent {
     const reasoningText = await stream.reasoningText;
     const toolResults = await stream.toolResults;
     const rawUsage = await stream.usage;
+    const finishReason = await stream.finishReason;
+    const steps = await stream.steps;
 
     const usage = rawUsage ? { inputTokens: rawUsage.inputTokens ?? 0, outputTokens: rawUsage.outputTokens ?? 0 } : undefined;
     this.hooks.afterLLM?.({ step, usage, durationMs: duration });
@@ -116,6 +120,8 @@ export abstract class BaseAgent {
         isError: tr.isError as boolean | undefined,
       })),
       usage,
+      finishReason,
+      steps: steps?.length,
     };
   }
 
