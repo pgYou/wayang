@@ -171,6 +171,7 @@ npm run lint       # type check + lint
 - [ ] **TUI Improvements** — Better worker detail pages, richer status display, and overall UX polish
 - [ ] **GUI** — Bring Wayang to a graphical interface beyond the terminal
 - [ ] **Sessionless Long-Running Agent** — Rethink session design: always inherit context from the previous run + long-term memory, making Wayang a continuously running agent rather than a session-based tool
+- [ ] **Pluggable Worker Ecosystem** — Standardize a Worker plugin protocol (capabilities, tools, resources), build a plugin registry, and provide scaffolding so the community can develop and share custom Workers
 
 ## License
 

@@ -11,14 +11,12 @@ import type { SystemContext } from '@/infra/system-context';
 describe('SignalQueue', () => {
   let tempDir: string;
   let sq: SignalQueue;
-  let state: SignalState;
   let ctx: SystemContext;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'wayang-test-'));
     ctx = createMockCtx({ sessionDir: tempDir } as any);
     sq = new SignalQueue(ctx);
-    state = sq.stateRef as SignalState;
   });
 
   afterEach(() => {
@@ -39,7 +37,7 @@ describe('SignalQueue', () => {
 
   it('should mark dequeued signals as read via state API', () => {
     const events: string[] = [];
-    state.on('signals', (e: any) => events.push(e.type));
+    sq.subscribe('signals', (e: any) => events.push(e.type));
 
     sq.enqueue({
       source: 'user',
@@ -86,7 +84,7 @@ describe('SignalQueue', () => {
     const unread = sq.dequeueUnread();
     expect(unread).toHaveLength(2);
 
-    const all = state.get<ControllerSignal[]>('signals');
+    const all = sq.getSnapshot<ControllerSignal[]>('signals');
     const discarded = all.filter(s => s.status === 'discarded');
     expect(discarded).toHaveLength(1);
     expect((discarded[0].payload as ProgressSignalPayload).message).toBe('step 1');
@@ -94,7 +92,7 @@ describe('SignalQueue', () => {
 
   it('should trigger state notification on progress merge', () => {
     const events: string[] = [];
-    state.on('signals', (e: any) => events.push(e.type));
+    sq.subscribe('signals', (e: any) => events.push(e.type));
 
     sq.enqueue({
       source: 'worker',
@@ -254,9 +252,9 @@ describe('SignalQueue', () => {
   it('should not modify state when querying', () => {
     sq.enqueue({ source: 'user', type: 'input', payload: { text: 'msg1' } });
 
-    const beforeState = state.get<ControllerSignal[]>('signals');
+    const beforeState = sq.getSnapshot<ControllerSignal[]>('signals');
     const result = sq.query({ status: 'unread' });
-    const afterState = state.get<ControllerSignal[]>('signals');
+    const afterState = sq.getSnapshot<ControllerSignal[]>('signals');
 
     expect(result).toHaveLength(1);
     expect(beforeState).toEqual(afterState);

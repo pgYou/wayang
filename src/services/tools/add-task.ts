@@ -13,7 +13,7 @@ export function addTaskTool(deps: AddTaskToolDeps) {
   return defineTool({
     description: 'Add a new task to the queue. A Worker will execute it automatically.',
     parameters: z.object({
-      title: z.string().max(10).describe('Brief task title, max 10 characters'),
+      title: z.string().max(50).describe('Brief task title, max 50 characters'),
       description: z.string().describe('Detailed task description for the Worker'),
       priority: z.enum(['normal', 'high']).default('normal').describe('Priority level'),
       workerType: z.string().optional().describe('Worker type: "puppet" (default, built-in LLM) or a configured worker ID (e.g. "claude-code")'),

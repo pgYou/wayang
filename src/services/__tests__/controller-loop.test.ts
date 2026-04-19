@@ -13,10 +13,7 @@ function createMocks() {
       return { text: 'ok' };
     })()),
     needsCompaction: vi.fn().mockReturnValue(false),
-    state: {
-      set: vi.fn(),
-      append: vi.fn(),
-    },
+    reportError: vi.fn(),
   };
   const heartbeat: HeartbeatProvider = {
     getRunningCount: vi.fn().mockReturnValue(0),

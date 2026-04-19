@@ -1,19 +1,22 @@
 import { BaseAgent } from './base-agent';
 import { ContextManager } from './context-manager';
-import { WorkerState } from '@/services/agents/worker-state';
+import { WorkerState, type InboxMessage } from '@/services/agents/worker-state';
 import { buildAssistantEntry } from './utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import type { WorkerResult, TaskDetail, ProviderConfig, IWorkerInstance } from '@/types/index';
+import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType } from '@/types/index';
 import type { Logger } from '@/infra/logger';
+import type { StateEvent } from '@/infra/state/base-state';
 import { WORKER_AGENT_MAX_STEP } from './constants';
+import { checkControllerMessagesTool } from '@/services/tools/check-messages';
 
 import { buildWorkerSystemPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
 
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
-  readonly state: WorkerState;
+  private readonly state: WorkerState;
   private readonly logger: Logger;
   private _terminalResult: WorkerResult | null = null;
   private readonly workspaceDir: string;
@@ -54,11 +57,19 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       message: { role: 'user', content: task.description },
     });
 
+    // Add internal tools for controller communication
+    const allTools = {
+      ...tools,
+      check_controller_messages: checkControllerMessagesTool({
+        drainInbox: () => this.drainInbox(),
+      }),
+    };
+
     // streamLoop handles abort internally — collectLoop returns cleanly
     const result = await this.collectLoop({
       system: this.contextManager.getSystemPrompt(),
       messages: this.contextManager.getMessages(),
-      tools,
+      tools: allTools,
       toolChoice: 'required',
       maxSteps: WORKER_AGENT_MAX_STEP,
       stopTools: ['done', 'fail'],
@@ -122,5 +133,39 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   /** Get state for UI rendering. */
   getState() {
     return this.state;
+  }
+
+  /** Get conversation entries. */
+  getConversation(): ConversationEntry[] {
+    return this.state.get<ConversationEntry[]>('conversation') ?? [];
+  }
+
+  // --- Subscribable ---
+
+  subscribe(path: string, callback: (event: StateEvent) => void): () => void {
+    return this.state.on(path, callback);
+  }
+
+  getSnapshot<T>(path: string): T {
+    return this.state.get(path);
+  }
+
+  /** Accept a message from the controller — writes to internal inbox. */
+  acceptMessage(message: string): void {
+    this.state.append('inbox', {
+      id: generateId('msg'),
+      content: message,
+      timestamp: Date.now(),
+    } satisfies InboxMessage);
+    this.logger.info({ workerId: this.id }, 'Controller message accepted');
+  }
+
+  /** Atomically drain and return all inbox messages. */
+  private drainInbox(): InboxMessage[] {
+    const messages = this.state.get<InboxMessage[]>('inbox') ?? [];
+    if (messages.length > 0) {
+      this.state.set('inbox', []);
+    }
+    return messages;
   }
 }

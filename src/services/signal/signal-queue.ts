@@ -2,6 +2,8 @@ import type { ControllerSignal, NewSignalInput, SignalStatus, SignalSource, Sign
 import type { Logger } from '@/infra/logger';
 import { SignalState } from '@/services/signal/signal-state';
 import type { SystemContext } from '@/infra/system-context';
+import type { Subscribable } from '@/infra/state/subscribable';
+import type { StateEvent } from '@/infra/state/base-state';
 
 /** Query filter for signals */
 export interface SignalQueryFilter {
@@ -13,11 +15,9 @@ export interface SignalQueryFilter {
   type?: SignalType;
 }
 
-export class SignalQueue {
+export class SignalQueue implements Subscribable {
   private resolveWait: (() => void) | null = null;
 
-  /** Expose state for UI subscription via useWayangState. */
-  get stateRef() { return this.state; }
   private counter: number;
   private readonly state: SignalState;
   private readonly logger: Logger;
@@ -33,6 +33,16 @@ export class SignalQueue {
       const n = parseInt(s.id.replace('sig-', ''), 10);
       return isNaN(n) ? max : Math.max(max, n);
     }, 0);
+  }
+
+  // --- Subscribable ---
+
+  subscribe(path: string, callback: (event: StateEvent) => void): () => void {
+    return this.state.on(path, callback);
+  }
+
+  getSnapshot<T>(path: string): T {
+    return this.state.get(path);
   }
 
   enqueue(sig: NewSignalInput): void {

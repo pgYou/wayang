@@ -78,7 +78,7 @@ export class Supervisor {
   async restore(): Promise<void> {
     await Promise.all([
       this.sessionManager.restore(),
-      this.controllerAgent.state.restore(),
+      this.controllerAgent.restore(),
       this.engine.restore(),
       this.signalQueue.restore(),
     ]);
@@ -88,7 +88,7 @@ export class Supervisor {
 
   async start(): Promise<void> {
     // Set controller session info
-    this.controllerAgent.state.set('runtimeState.session', {
+    this.controllerAgent.initSession({
       id: this.ctx.sessionId,
       startedAt: this.ctx.startedAt,
     });
@@ -105,7 +105,7 @@ export class Supervisor {
 
   /** Resolve a pending controller inquiry with the user's answer. */
   resolveInquiry(answer: string): void {
-    this.controllerAgent.state.resolveInquiry(answer);
+    this.controllerAgent.resolveInquiry(answer);
   }
 
   // --- Shutdown ---

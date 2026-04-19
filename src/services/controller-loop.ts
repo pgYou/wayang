@@ -16,9 +16,6 @@ import type { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ActiveWorkerInfo } from '@/types/index';
-import { EEntryType, ESystemSubtype } from '@/types/index';
-import { generateId } from '@/utils/id';
-import { nowISO } from '@/utils/time';
 import { formatLlmError } from '@/utils/llm-error';
 
 // ---------------------------------------------------------------------------
@@ -110,16 +107,7 @@ export class ControllerLoop {
         );
 
         // Surface the error in the UI as a system entry in conversation
-        controllerAgent.state.set('dynamicState.streamingEntries', []);
-        controllerAgent.state.append('conversation', {
-          type: EEntryType.System,
-          uuid: generateId('err'),
-          parentUuid: null,
-          sessionId: 'controller',
-          timestamp: nowISO(),
-          subtype: ESystemSubtype.Error,
-          content: friendly,
-        });
+        controllerAgent.reportError(friendly);
 
         await new Promise((r) => setTimeout(r, 1000));
       }

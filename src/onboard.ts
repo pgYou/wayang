@@ -66,9 +66,9 @@ async function promptClaudeCodeWorker(claudeDetected: boolean): Promise<WorkerCo
       type: 'number',
       name: 'maxTurns',
       message: 'Max turns per task',
-      initial: 10,
+      initial: 1000,
       min: 1,
-      max: 100,
+      max: 10000,
     },
   ]);
 
@@ -78,7 +78,7 @@ async function promptClaudeCodeWorker(claudeDetected: boolean): Promise<WorkerCo
     emoji: answers.emoji || '\u{1F980}',
     description: 'Coding assistant powered by Claude Code — excels at writing, debugging, and refactoring code',
     capabilities: ['code', 'debug', 'refactor', 'git'],
-    maxTurns: answers.maxTurns ?? 10,
+    maxTurns: answers.maxTurns ?? 1000,
     cliPath: answers.cliPath || undefined,
   };
 }

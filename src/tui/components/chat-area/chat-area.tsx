@@ -47,12 +47,12 @@ const ChatArea = React.memo(function ChatArea({ items, busy, streamingItems, con
         )}
       </Static>
 
-      {(streamingItems?.length || busy) && (
-        <Box paddingX={1} marginTop={items.length > 0 ? theme.spacing.blockGap : 0}>
-          <StreamingSpinner />
-          {streamingItems?.[0]?.content && <Text>{streamingItems[0].content}</Text>}
-        </Box>
-      )}
+
+      <Box paddingX={1} marginTop={items.length > 0 ? theme.spacing.blockGap : 0}>
+        <StreamingSpinner spinning={busy} />
+        {streamingItems?.[0]?.content && <Text>{streamingItems[0].content}</Text>}
+      </Box>
+
 
       {dynamicItems.length > 0 && (
         <Box flexDirection="column" paddingX={3} marginTop={1} marginBottom={1}>

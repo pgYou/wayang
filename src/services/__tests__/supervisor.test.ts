@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Supervisor } from '@/services/supervisor';
+import type { TaskDetail } from '@/types/index';
 import type { WayangConfig } from '@/types/index';
 
 // --- Helpers ---
@@ -85,7 +86,7 @@ describe('Supervisor', () => {
       await sup.restore();
       await sup.start();
 
-      const session = sup.controllerAgent.state.get<{ id: string; startedAt: string }>('runtimeState.session');
+      const session = sup.controllerAgent.getSnapshot<{ id: string; startedAt: string }>('runtimeState.session');
       expect(session.id).toBe(sup.ctx.sessionId);
       expect(session.startedAt).toBeTruthy();
     });
@@ -109,12 +110,14 @@ describe('Supervisor', () => {
       });
 
       // Manually move to running to simulate a task in progress
-      // (scheduleNext would try to spawn a real worker, so we use internal state)
-      const pending = sup.engine.taskState.get<any[]>('tasks.pending');
+      // (scheduleNext would try to spawn a real worker, so we inject via internal state)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineState = (sup.engine as any).taskState;
+      const pending: TaskDetail[] = engineState.get('tasks.pending');
       if (pending.length > 0) {
         const [task] = pending.splice(0, 1);
-        sup.engine.taskState.set('tasks.pending', pending);
-        sup.engine.taskState.append('tasks.running', { ...task, status: 'running', startedAt: Date.now(), workerSessionId: 'w-old' });
+        engineState.set('tasks.pending', pending);
+        engineState.append('tasks.running', { ...task, status: 'running', startedAt: Date.now(), workerSessionId: 'w-old' });
       }
 
       // Re-create supervisor with resume to trigger recovery
