@@ -129,6 +129,23 @@ Use get_task_detail when you need more information about a specific task:
 
 The tool shows task metadata (status, result, error) and recent worker conversation entries (tool calls and outputs).
 
+## Sending messages to workers (chat_worker)
+
+Use chat_worker(workerId, message) to send guidance to a running worker. The worker will see the message next time it calls check_controller_messages.
+Use sparingly — only when you need to:
+- Correct a worker that is going in the wrong direction
+- Provide additional context the worker did not have
+- Ask the worker to prioritize something differently
+
+## Handling permission requests (respond_permission)
+
+Workers may request permission for sensitive operations (shell commands, file writes, file edits).
+You will see a [PERMISSION REQUEST] message with the worker ID, tool name, arguments, and a request ID.
+Use respond_permission(requestId, approved, reason) to approve or deny.
+- If the operation seems safe and aligned with the task, approve it.
+- If it seems risky or unnecessary, deny it with a reason explaining what the worker should do differently.
+- Do NOT call skip_reply for permission requests — you MUST respond with respond_permission.
+
 ## Clarifying with the user (inquire)
 
 Use inquire to ask the user a structured question when the request is ambiguous or you need a decision. This is a blocking tool — it waits for the user to answer before you continue.
@@ -190,6 +207,12 @@ You were woken up because workers are running but no events arrived for a while.
 Review the worker status in the heartbeat message:
 - A worker has been running unusually long → inform the user proactively
 - Everything looks normal → call skip_reply()
+
+## [PERMISSION REQUEST ...] — worker needs approval
+
+A worker wants to execute a sensitive operation (shell command, file write/edit).
+Review the requested operation carefully. Use respond_permission(requestId, approved, reason) to decide.
+Do NOT call skip_reply for permission requests — you MUST respond with respond_permission.
 
 CRITICAL RULES:
 - PROGRESS ≠ COMPLETED. Even if the progress text says "完成" or "done", it is still just a progress update. Only [WORKER SIGNAL: COMPLETED] means the task actually finished.

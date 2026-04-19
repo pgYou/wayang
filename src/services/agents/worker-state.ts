@@ -10,9 +10,16 @@ interface WorkerRuntimeState {
   task: { id: string; description: string };
 }
 
+export interface InboxMessage {
+  id: string;
+  content: string;
+  timestamp: number;
+}
+
 interface WorkerStateData {
   runtimeState: WorkerRuntimeState;
   conversation: ConversationEntry[];
+  inbox: InboxMessage[];
 }
 
 export class WorkerState extends BaseWayangState {
@@ -34,6 +41,7 @@ export class WorkerState extends BaseWayangState {
         task: { id: '', description: '' },
       },
       conversation: [],
+      inbox: [],
     };
 
     super(initialData, [

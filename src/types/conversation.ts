@@ -32,6 +32,8 @@ export enum ESignalSubtype {
   WorkerFailed = 'worker_failed',
   /** System heartbeat — periodic check-in while workers are running. */
   Heartbeat = 'heartbeat',
+  /** Worker requesting permission for a sensitive operation. */
+  PermissionRequest = 'permission_request',
 }
 
 // --- Tool record types ---

@@ -6,7 +6,7 @@ import { theme } from '@/tui/theme';
 import type { ConversationEntry } from '@/types/conversation';
 import type { ActiveWorkerInfo } from '@/types/index';
 import type { TaskDetail } from '@/types/task';
-import type { BaseWayangState } from '@/infra/state/base-state';
+import type { Subscribable } from '@/infra/state/subscribable';
 
 /** Max visible entries in worker detail view. */
 const MAX_VISIBLE_ENTRIES = 15;
@@ -17,22 +17,22 @@ const TOOL_CONTENT_MAX_LENGTH = 80;
 
 export function WorkerDetailPage({ workerId, onBack }: { workerId: string; onBack: () => void }) {
   const supervisor = useSupervisor();
-  const liveState = supervisor.engine.getWorkerState(workerId);
-  const [cachedState, setCachedState] = useState<BaseWayangState | null>(null);
+  const liveWorker = supervisor.engine.getWorkerState(workerId);
+  const [cachedWorker, setCachedWorker] = useState<Subscribable | null>(null);
 
-  // Cache the worker state so it survives removal from the engine's workers Map.
+  // Cache the worker so it survives removal from the engine's workers Map.
   // When the worker finishes, removeWorkerTracking deletes it after setTimeout(0),
-  // causing getWorkerState() to return null. We keep the last-known state to
+  // causing getWorkerState() to return null. We keep the last-known worker to
   // continue rendering the completed worker's conversation and result.
   useEffect(() => {
-    if (liveState) {
-      setCachedState(liveState);
+    if (liveWorker) {
+      setCachedWorker(liveWorker);
     }
-  }, [liveState]);
+  }, [liveWorker]);
 
-  const workerState = liveState ?? cachedState;
+  const worker = liveWorker ?? cachedWorker;
 
-  if (!workerState) {
+  if (!worker) {
     return (
       <Box flexDirection="column" padding={1}>
         <Text color="red">Worker {workerId} not found</Text>
@@ -41,15 +41,15 @@ export function WorkerDetailPage({ workerId, onBack }: { workerId: string; onBac
     );
   }
 
-  return <WorkerContent workerState={workerState} workerId={workerId} />;
+  return <WorkerContent worker={worker} workerId={workerId} />;
 }
 
-function WorkerContent({ workerState, workerId }: { workerState: BaseWayangState; workerId: string }) {
+function WorkerContent({ worker, workerId }: { worker: Subscribable; workerId: string }) {
   const supervisor = useSupervisor();
-  const taskInfo = useWayangState<any>(workerState, 'runtimeState.task');
-  const conversation = useWayangState<ConversationEntry[]>(workerState, 'conversation');
+  const taskInfo = useWayangState<any>(worker, 'runtimeState.task');
+  const conversation = useWayangState<ConversationEntry[]>(worker, 'conversation');
   const activeWorkers = useWayangState<ActiveWorkerInfo[]>(
-    supervisor.engine.workerState, 'activeWorkers',
+    supervisor.engine, 'activeWorkers',
   );
 
   // Cache the last known workerInfo so header (emoji, type, title) survives removal
@@ -65,7 +65,7 @@ function WorkerContent({ workerState, workerId }: { workerState: BaseWayangState
   const isRunning = !!workerInfo;
 
   // Look up the task in history to get completion status and result/error
-  const taskHistory = useWayangState<TaskDetail[]>(supervisor.engine.taskState, 'tasks.history');
+  const taskHistory = useWayangState<TaskDetail[]>(supervisor.engine, 'tasks.history');
   const completedTask = useMemo(
     () => (taskHistory ?? []).find(t => t.workerSessionId === workerId),
     [taskHistory, workerId],

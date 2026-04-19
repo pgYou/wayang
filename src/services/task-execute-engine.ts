@@ -21,6 +21,8 @@ import type { Logger } from '@/infra/logger';
 import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo } from '@/types/index';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import { BaseWayangState } from '@/infra/state/base-state';
+import type { Subscribable } from '@/infra/state/subscribable';
+import type { StateEvent } from '@/infra/state/base-state';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 
 /** Runtime-only observable state — no file persistence, no restore needed. */
@@ -33,20 +35,26 @@ class RuntimeState extends BaseWayangState {
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
 import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { createWorkerTools } from '@/services/tools/index';
+import { wrapWithPermissionMiddleware, type PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
 
 const PUPPET_WORKER_TYPE = 'puppet';
 
+/**
+ * Bash commands matching these patterns require controller approval.
+ * Matches at command start or after shell operators (|, ;, &&) to reduce
+ * false positives from quoted strings.
+ */
+const DANGEROUS_BASH_PATTERN = /(?:^|\||;|&&)\s*(?:rm\s|sudo\b|chmod\b|chown\b|mkfs\b|dd\s|shutdown\b|reboot\b|kill\s+-9)/;
+
 // ---------------------------------------------------------------------------
 // TaskExecuteEngine
 // ---------------------------------------------------------------------------
 
-export class TaskExecuteEngine {
-  /** Expose task state for TUI subscription via useWayangState. */
-  readonly taskState: TaskPoolState;
-  /** Expose active worker state for TUI subscription. Runtime-only, not persisted. */
-  readonly workerState: RuntimeState;
+export class TaskExecuteEngine implements Subscribable {
+  private taskState: TaskPoolState;
+  private workerState: RuntimeState;
 
   private readonly logger: Logger;
   private readonly maxConcurrency: number;
@@ -57,6 +65,8 @@ export class TaskExecuteEngine {
   private workers = new Map<string, IWorkerInstance>();
   /** Reverse mapping: workerId → taskId. */
   private workerTaskMap = new Map<string, string>();
+  /** Permission middleware resolvers keyed by workerId. */
+  private permissionResolvers = new Map<string, PermissionMiddlewareResult>();
 
   constructor(
     private readonly ctx: SystemContext,
@@ -70,6 +80,22 @@ export class TaskExecuteEngine {
     // Internal state objects
     this.taskState = new TaskPoolState(ctx);
     this.workerState = new RuntimeState({ activeWorkers: [] as ActiveWorkerInfo[] });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Subscribable
+  // ---------------------------------------------------------------------------
+
+  subscribe(path: string, callback: (event: StateEvent) => void): () => void {
+    if (path.startsWith('tasks.')) return this.taskState.on(path, callback);
+    if (path === 'activeWorkers' || path.startsWith('activeWorkers.')) return this.workerState.on(path, callback);
+    throw new Error(`TaskExecuteEngine: unknown subscription path "${path}"`);
+  }
+
+  getSnapshot<T>(path: string): T {
+    if (path.startsWith('tasks.')) return this.taskState.get(path);
+    if (path === 'activeWorkers' || path.startsWith('activeWorkers.')) return this.workerState.get(path);
+    throw new Error(`TaskExecuteEngine: unknown snapshot path "${path}"`);
   }
 
   // ---------------------------------------------------------------------------
@@ -168,15 +194,34 @@ export class TaskExecuteEngine {
     return this.workerState.get<ActiveWorkerInfo[]>('activeWorkers');
   }
 
-  getWorkerState(workerId: string) {
-    return this.workers.get(workerId)?.getState() ?? null;
+  getWorkerState(workerId: string): Subscribable | null {
+    const worker = this.workers.get(workerId);
+    return worker ?? null;
+  }
+
+  /** Send a message to a running worker. Returns false if worker not found. */
+  sendMessageToWorker(workerId: string, message: string): boolean {
+    const worker = this.workers.get(workerId);
+    if (!worker) return false;
+    worker.acceptMessage(message);
+    return true;
+  }
+
+  /** Resolve a pending permission request. Returns false if not found. */
+  resolvePermission(requestId: string, approved: boolean, reason?: string): boolean {
+    for (const resolver of this.permissionResolvers.values()) {
+      if (resolver.resolvePermission(requestId, approved, reason)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   getWorkerConversation(taskId: string): any[] {
     for (const [workerId, tId] of this.workerTaskMap) {
       if (tId === taskId) {
         const worker = this.workers.get(workerId);
-        return worker?.getState()?.get<any[]>('conversation') ?? [];
+        return worker?.getConversation() ?? [];
       }
     }
     return [];
@@ -228,6 +273,7 @@ export class TaskExecuteEngine {
       if (tId === taskId) {
         const worker = this.workers.get(workerId);
         worker?.abort();
+        this.permissionResolvers.get(workerId)?.cleanup();
         this.logger.info({ workerId, taskId }, 'Worker aborted');
         return;
       }
@@ -240,6 +286,11 @@ export class TaskExecuteEngine {
     for (const worker of this.workers.values()) {
       worker.abort();
     }
+    // Clean up all pending permission resolvers
+    for (const resolver of this.permissionResolvers.values()) {
+      resolver.cleanup();
+    }
+    this.permissionResolvers.clear();
     // Cancel all running tasks
     const running = this.list('running');
     for (const task of running) {
@@ -376,7 +427,7 @@ export class TaskExecuteEngine {
     const workerMeta = getWorkerMeta(workerType, this.workerConfigs);
 
     // Puppet workers need Wayang tools; third-party workers don't use them
-    const tools = workerType === PUPPET_WORKER_TYPE
+    let tools = workerType === PUPPET_WORKER_TYPE
       ? createWorkerTools({
           listTasks: (status?: TaskDetail['status']) => this.list(status),
           cwd: this.ctx.workspaceDir,
@@ -396,6 +447,46 @@ export class TaskExecuteEngine {
           },
         })
       : {};
+
+    // Apply permission middleware for puppet workers
+    if (workerType === PUPPET_WORKER_TYPE) {
+      const middleware = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['bash'],
+        needsPermission: (toolName, args) => {
+          if (toolName === 'bash') {
+            const cmd: string = args.command ?? '';
+            return DANGEROUS_BASH_PATTERN.test(cmd);
+          }
+          return false;
+        },
+        describeCall: (toolName, args) => {
+          if (toolName === 'bash') return `Execute shell command: ${args.command}`;
+          return `${toolName}: ${JSON.stringify(args)}`;
+        },
+      }, {
+        workerId,
+        taskId: task.id,
+        taskTitle: task.title,
+        workerType,
+        emoji: workerMeta.emoji,
+        signalQueue: this.signalQueue,
+      });
+      tools = middleware.wrappedTools;
+      this.permissionResolvers.set(workerId, middleware);
+    }
+
+    // Wire signal context for ClaudeCodeWorker (canUseTool + acceptMessage)
+    if (worker instanceof ClaudeCodeWorker) {
+      worker.setSignalContext({
+        signalQueue: this.signalQueue,
+        workerId,
+        taskId: task.id,
+        taskTitle: task.title,
+        workerType,
+        emoji: workerMeta.emoji,
+      });
+      this.permissionResolvers.set(workerId, worker.permissionHandler);
+    }
 
     this.logger.info({ workerId, taskId: task.id, workerType }, 'Worker starting');
 
@@ -465,6 +556,8 @@ export class TaskExecuteEngine {
   private removeWorkerTracking(workerId: string): void {
     // Delayed removal: wait for UI to unmount
     setTimeout(() => {
+      this.permissionResolvers.get(workerId)?.cleanup();
+      this.permissionResolvers.delete(workerId);
       this.workers.delete(workerId);
       this.workerTaskMap.delete(workerId);
     }, 0);

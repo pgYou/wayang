@@ -22,7 +22,7 @@ function AppContent() {
   const { exit } = useApp();
   const supervisor = useSupervisor();
   const { route, navigate } = useRouter();
-  const busy = useWayangState<boolean>(supervisor.controllerAgent.state, 'dynamicState.busy') ?? false;
+  const busy = useWayangState<boolean>(supervisor.controllerAgent, 'dynamicState.busy') ?? false;
   const lastCtrlC = useRef<number>(0);
 
   const handleExit = useMemoizedFn(() => {

@@ -20,14 +20,15 @@ export function StatusBar({
     return () => clearInterval(timer);
   }, [activeWorkers.length]);
 
-  const workerRows = useMemo(() =>{
-    
+  const workerRows = useMemo(() => {
+
     return activeWorkers.map(w => {
       const task = runningTasks.find(t => t.id === w.taskId);
       const elapsed = Math.round((now - w.startedAt) / 1000);
-      const label = task ? (task.title || task.description.slice(0, 10)) : w.taskId.slice(0, 8);
+      const label = task ? ((task.title || task.description).slice(0, 20)) : w.taskId.slice(0, 8);
       return { workerId: w.workerId, label, elapsed };
-    })},
+    })
+  },
     [activeWorkers, runningTasks, now],
   );
 
@@ -36,7 +37,7 @@ export function StatusBar({
   }
 
   const parts: string[] = [];
-   if (pendingTasks.length > 0) {
+  if (pendingTasks.length > 0) {
     parts.push(`pending tasks:${pendingTasks.length}`);
   }
   if (activeWorkers.length > 0) {

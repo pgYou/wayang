@@ -18,6 +18,8 @@ import { inquireTool } from './inquire';
 import { doneTool } from './done';
 import { failTool } from './fail';
 import { updateProgressTool } from './update-progress';
+import { chatWorkerTool } from './chat-worker';
+import { respondPermissionTool } from './respond-permission';
 
 export interface ControllerToolDeps {
   addTask: (task: TaskDetail) => void;
@@ -43,6 +45,10 @@ export interface ControllerToolDeps {
   setNotebook: (content: string, mode: 'replace' | 'append') => void;
   /** Ask the user a structured question and wait for the answer. */
   inquire: (question: InquireQuestion) => Promise<string>;
+  /** Send a message to a running worker's inbox. */
+  sendMessageToWorker: (workerId: string, message: string) => boolean;
+  /** Respond to a worker's permission request. */
+  resolvePermission: (requestId: string, approved: boolean, reason?: string) => boolean;
 }
 
 export interface WorkerToolDeps {
@@ -76,6 +82,12 @@ export function createControllerTools(deps: ControllerToolDeps) {
     update_notebook: updateNotebookTool({ setNotebook: deps.setNotebook }),
     search_files: searchFilesTool({ cwd: deps.cwd }),
     inquire: inquireTool({ inquire: deps.inquire }),
+    chat_worker: chatWorkerTool({
+      sendMessageToWorker: deps.sendMessageToWorker,
+    }),
+    respond_permission: respondPermissionTool({
+      respondPermission: deps.resolvePermission,
+    }),
   };
 }
 

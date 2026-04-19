@@ -30,7 +30,7 @@ export function editFileTool(deps: { cwd?: string }) {
 
       const count = content.split(old_string).length - 1;
       if (count === 0)
-        return `[ERROR] edit_file: old_string not found in ${path}`;
+        return `[ERROR] edit_file: old_string not found in ${path}, read the file content and provide a correct old_string.`;
       if (count > 1)
         return `[ERROR] edit_file: old_string found ${count} times in ${path}. Provide more surrounding context to make it unique.`;
 

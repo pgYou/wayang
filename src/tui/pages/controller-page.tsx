@@ -30,37 +30,37 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
   const chatContentWidth = terminalCols - 4;
 
   const conversation = useWayangState<ConversationEntry[]>(
-    supervisor.controllerAgent.state, 'conversation',
+    supervisor.controllerAgent, 'conversation',
   );
 
   const streamingEntries = useWayangState<ConversationEntry[]>(
-    supervisor.controllerAgent.state, 'dynamicState.streamingEntries',
+    supervisor.controllerAgent, 'dynamicState.streamingEntries',
   );
 
   // Subscribe to signals so useMemo recomputes when signals change
   const signals = useWayangState<ControllerSignal[]>(
-    supervisor.signalQueue.stateRef, 'signals',
+    supervisor.signalQueue, 'signals',
   );
 
   // Subscribe to active workers & tasks for status display
   const activeWorkers = useWayangState<ActiveWorkerInfo[]>(
-    supervisor.engine.workerState, 'activeWorkers',
+    supervisor.engine, 'activeWorkers',
   );
   const pendingTasks = useWayangState<TaskDetail[]>(
-    supervisor.engine.taskState, 'tasks.pending',
+    supervisor.engine, 'tasks.pending',
   );
   const runningTasks = useWayangState<TaskDetail[]>(
-    supervisor.engine.taskState, 'tasks.running',
+    supervisor.engine, 'tasks.running',
   );
 
   // Busy state from controller agent (dynamicState = not persisted)
   const agentBusy = useWayangState<boolean>(
-    supervisor.controllerAgent.state, 'dynamicState.busy',
+    supervisor.controllerAgent, 'dynamicState.busy',
   );
 
   // Pending inquiry from controller
   const pendingInquiry = useWayangState<InquireQuestion | null>(
-    supervisor.controllerAgent.state, 'runtimeState.pendingInquiry',
+    supervisor.controllerAgent, 'runtimeState.pendingInquiry',
   );
 
   // Build DisplayItem[]: conversation entries (read) + unread signals

@@ -4,10 +4,12 @@ import { ControllerAgentState } from '@/services/agents/controller-state';
 import { buildAssistantEntry } from './utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload } from '@/types/index';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload } from '@/types/index';
 import type { ConversationEntry, SignalEntry } from '@/types/conversation';
-import { EEntryType, ESignalSubtype } from '@/types/index';
+import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
+import type { StateEvent } from '@/infra/state/base-state';
+import type { Subscribable } from '@/infra/state/subscribable';
 import { generateText } from 'ai';
 import type { ToolSet } from 'ai';
 import {
@@ -20,8 +22,8 @@ import { SystemContext } from '@/infra/system-context';
 import type { TaskExecuteEngine } from '@/services/task-execute-engine';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 
-export class ControllerAgent extends BaseAgent {
-  readonly state: ControllerAgentState;
+export class ControllerAgent extends BaseAgent implements Subscribable {
+  private readonly state: ControllerAgentState;
   private readonly contextManager: ContextManager;
   private readonly tools: ToolSet;
   private readonly logger: Logger;
@@ -86,6 +88,8 @@ export class ControllerAgent extends BaseAgent {
         state.set('runtimeState.notebook', mode === 'append' ? (current ? current + '\n' + content : content) : content);
       },
       inquire: (question) => state.askInquiry(question),
+      sendMessageToWorker: (workerId, message) => engine.sendMessageToWorker(workerId, message),
+      resolvePermission: (requestId, approved, reason) => engine.resolvePermission(requestId, approved, reason),
     });
 
     return new ControllerAgent(ctx, state, provider, tools);
@@ -160,6 +164,45 @@ export class ControllerAgent extends BaseAgent {
       timestamp: nowISO(),
       message: { role: 'assistant' as const, content: '' },
     };
+  }
+
+  /** Restore persisted state (conversation, runtime). Called by Supervisor. */
+  async restore(): Promise<void> {
+    await this.state.restore();
+  }
+
+  /** Initialize session metadata. Called by Supervisor at start. */
+  initSession(session: { id: string; startedAt: number }): void {
+    this.state.set('runtimeState.session', session);
+  }
+
+  /** Resolve a pending inquiry with the user's answer. */
+  resolveInquiry(answer: string): void {
+    this.state.resolveInquiry(answer);
+  }
+
+  /** Surface an error in the UI as a system conversation entry. */
+  reportError(message: string): void {
+    this.state.set('dynamicState.streamingEntries', []);
+    this.state.append('conversation', {
+      type: EEntryType.System,
+      uuid: generateId('err'),
+      parentUuid: null,
+      sessionId: 'controller',
+      timestamp: nowISO(),
+      subtype: ESystemSubtype.Error,
+      content: message,
+    });
+  }
+
+  // --- Subscribable ---
+
+  subscribe(path: string, callback: (event: StateEvent) => void): () => void {
+    return this.state.on(path, callback);
+  }
+
+  getSnapshot<T>(path: string): T {
+    return this.state.get(path);
   }
 
   /** Check if context needs compaction. */
@@ -280,6 +323,17 @@ const signalConverters: Record<string, SignalConverter> = {
       subtype: ESignalSubtype.Heartbeat,
       taskTitle: 'heartbeat',
       content: `[HEARTBEAT] ${p.reason}\nIdle: ${Math.round(p.idleSinceMs / 1000)}s\nWorkers: ${workerSummary}\nPending tasks: ${p.pendingTaskCount}`,
+    };
+  },
+
+  permission_request: (sig, ts) => {
+    const p = sig.payload as PermissionRequestSignalPayload;
+    return {
+      ...signalBase(ts),
+      subtype: ESignalSubtype.PermissionRequest,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle,
+      content: `[PERMISSION REQUEST] Worker ${p.workerId} (task: ${p.taskTitle}) wants to run ${p.toolName}.\nDescription: ${p.description}\nRequest ID: ${p.requestId}\nUse respond_permission to approve or deny.`,
     };
   },
 };

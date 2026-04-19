@@ -1,5 +1,7 @@
 // --- Worker ---
 
+import type { Subscribable } from '@/infra/state/subscribable';
+
 export interface WorkerResult {
   status: 'completed' | 'failed';
   summary?: string;
@@ -20,7 +22,7 @@ export interface ActiveWorkerInfo {
 }
 
 /** Unified interface for all worker types (puppet, third-party). */
-export interface IWorkerInstance {
+export interface IWorkerInstance extends Subscribable {
   readonly id: string;
   /** Execute the task. Returns the final result. */
   run(
@@ -30,6 +32,10 @@ export interface IWorkerInstance {
   ): Promise<WorkerResult>;
   /** Abort the current execution. */
   abort(): void;
-  /** Get state for UI rendering (may return null if worker has no state). */
+  /** Get conversation entries for controller tool or audit. */
+  getConversation(): import('@/types/conversation').ConversationEntry[];
+  /** Get state for UI rendering. @deprecated Will be removed after TUI subscription refactor. */
   getState(): import('@/infra/state/base-state').BaseWayangState | null;
+  /** Accept a message from the controller during execution. Implementation varies by worker type. */
+  acceptMessage(message: string): void;
 }

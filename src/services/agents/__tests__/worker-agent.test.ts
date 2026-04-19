@@ -12,6 +12,7 @@ vi.mock('ai', () => ({
   streamText: vi.fn(),
   stepCountIs: vi.fn((n: number) => n),
   hasToolCall: vi.fn((name: string) => name),
+  tool: vi.fn((def: any) => def),
 }));
 
 import { streamText } from 'ai';
