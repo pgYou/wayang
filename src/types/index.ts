@@ -29,6 +29,7 @@ export type {
   ProgressSignalPayload,
   CancelledSignalPayload,
   HeartbeatSignalPayload,
+  PermissionRequestSignalPayload,
 } from './signal';
 export { getSignalField } from './signal';
 

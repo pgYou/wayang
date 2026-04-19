@@ -2,7 +2,7 @@
 
 export type SignalStatus = 'unread' | 'read' | 'discarded';
 export type SignalSource = 'user' | 'worker' | 'system';
-export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'heartbeat';
+export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'heartbeat' | 'permission_request';
 
 /** User input signal payload. */
 export interface InputSignalPayload {
@@ -82,6 +82,26 @@ export interface HeartbeatSignalPayload {
   pendingTaskCount: number;
 }
 
+/** Worker requesting permission for a sensitive tool operation. */
+export interface PermissionRequestSignalPayload {
+  /** Unique ID for matching request → response. */
+  requestId: string;
+  workerId: string;
+  taskId: string;
+  /** Task title for display context. */
+  taskTitle: string;
+  /** Worker type label (e.g. 'puppet', 'claude-code'). */
+  workerType?: string;
+  /** Display emoji for the worker type. */
+  emoji?: string;
+  /** Tool name that triggered the permission check. */
+  toolName: string;
+  /** Arguments passed to the tool. */
+  toolArgs: Record<string, any>;
+  /** Human-readable description of what the tool will do. */
+  description: string;
+}
+
 /** Discriminated union of all signal payloads by SignalType. */
 export type SignalPayloadMap = {
   input: InputSignalPayload;
@@ -90,6 +110,7 @@ export type SignalPayloadMap = {
   progress: ProgressSignalPayload;
   cancelled: CancelledSignalPayload;
   heartbeat: HeartbeatSignalPayload;
+  permission_request: PermissionRequestSignalPayload;
 };
 
 /** A typed signal where payload corresponds to the signal type. */

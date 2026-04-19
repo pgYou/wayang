@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { defineTool, safeExecute, validatePath } from './common';
+import { defineTool, safeExecute } from './common';
 
 /** Quote a string for safe shell argument usage. */
 function shellQuote(s: string): string {
@@ -27,9 +27,6 @@ export function searchContentTool(deps: { cwd?: string }) {
     }),
     execute: safeExecute('search_content', async ({ query, path, include }) => {
       const searchDir = path ? resolve(workspace, path) : workspace;
-      const err = validatePath(searchDir, workspace);
-      if (err) return `[ERROR] search_content: ${err}`;
-
       let cmd = `grep -rn${include ? ` --include=${shellQuote(include)}` : ''} -- ${shellQuote(query)} ${shellQuote(searchDir)}`;
 
       try {

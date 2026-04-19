@@ -3,13 +3,10 @@ import { resolve, relative } from 'node:path';
 
 const MAX_RESULT_CHARS = 8000;
 
-/** Validate that resolved path stays within workspace. */
-export function validatePath(resolved: string, workspace: string): string | null {
+/** Check whether a resolved path is inside the workspace directory. */
+export function isInsideWorkspace(resolved: string, workspace: string): boolean {
   const rel = relative(workspace, resolved);
-  if (rel.startsWith('..') || resolve(workspace, rel) !== resolved) {
-    return `Path escapes workspace: ${resolved} (workspace: ${workspace})`;
-  }
-  return null;
+  return !rel.startsWith('..') && resolve(workspace, rel) === resolved;
 }
 
 export function truncate(result: string): string {

@@ -3,7 +3,8 @@ import { Text } from 'ink';
 import { theme } from '@/tui/theme';
 
 /** Animated spinner prefix for streaming assistant messages. */
-export function StreamingSpinner() {
+export function StreamingSpinner(props: { spinning?: boolean }) {
+  const spinning = props.spinning ?? true;
   const [frame, setFrame] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => {
@@ -12,5 +13,7 @@ export function StreamingSpinner() {
     return () => clearInterval(timer);
   }, []);
 
-  return <Text color={theme.assistant.prefixColor} bold>{theme.spinner.frames[frame]}{' '}</Text>;
+  return <Text color={theme.assistant.prefixColor} bold>
+    {spinning ? (theme.spinner.frames[frame] + ' ') : ' '}
+  </Text>;
 }

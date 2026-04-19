@@ -8,16 +8,19 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { WorkerResult, TaskDetail, WorkerConfig } from '@/types/index';
+import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage, SDKUserMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import type { WorkerResult, TaskDetail, WorkerConfig, PermissionRequestSignalPayload } from '@/types/index';
 import type { IWorkerInstance } from '@/types/worker';
 import type { Logger } from '@/infra/logger';
+import type { StateEvent } from '@/infra/state/base-state';
 import { WorkerState } from './worker-state';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import { EEntryType } from '@/types/index';
 import { buildThirdPartyPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
+import type { SignalQueue } from '@/services/signal/signal-queue';
+import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 
 export class ClaudeCodeWorker implements IWorkerInstance {
   readonly id: string;
@@ -27,6 +30,45 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private readonly logger: Logger;
   private readonly abortController = new AbortController();
   private _terminalResult: WorkerResult | null = null;
+
+  // --- Controller messaging via streamInput ---
+  private _messageQueue: string[] = [];
+  private _messageResolve: ((value: void) => void) | null = null;
+
+  // --- Permission control via canUseTool ---
+  private readonly _pendingPermissions = new Map<string, {
+    resolve: (result: PermissionResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private static readonly PERMISSION_TIMEOUT_MS = 300_000;
+
+  /** Exposed for engine to resolve pending permission requests. */
+  readonly permissionHandler: PermissionMiddlewareResult = {
+    resolvePermission: (requestId: string, approved: boolean, reason?: string) => {
+      const entry = this._pendingPermissions.get(requestId);
+      if (!entry) return false;
+      clearTimeout(entry.timer);
+      this._pendingPermissions.delete(requestId);
+      entry.resolve(
+        approved
+          ? { behavior: 'allow' }
+          : { behavior: 'deny', message: reason ?? 'Denied by controller' },
+      );
+      return true;
+    },
+    cleanup: () => {
+      for (const [id, entry] of this._pendingPermissions) {
+        clearTimeout(entry.timer);
+        this._pendingPermissions.delete(id);
+        entry.resolve({ behavior: 'deny', message: 'Worker aborted' });
+      }
+    },
+    wrappedTools: {}, // not used for ClaudeCodeWorker
+  };
+
+  // Signal context set during run()
+  private _signalQueue: SignalQueue | null = null;
+  private _runContext: { workerId: string; taskId: string; taskTitle: string; workerType?: string; emoji?: string } | null = null;
 
   /**
    * Progress debounce mechanism.
@@ -77,16 +119,22 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     try {
       const options: Record<string, any> = {
         cwd: this.workspaceDir,
-        maxTurns: this.config.maxTurns ?? 10,
-        permissionMode: 'bypassPermissions',
+        maxTurns: this.config.maxTurns ?? 1000,
+        permissionMode: 'bypassPermissions' as const,
         abortController: this.abortController,
       };
       if (this.config.cliPath) {
         options.pathToClaudeCodeExecutable = this.config.cliPath;
       }
 
+      // Wire canUseTool for permission control if signal context is set
+      if (this._signalQueue && this._runContext) {
+        options.canUseTool = (toolName: string, input: Record<string, unknown>) =>
+          this.handleCanUseTool(toolName, input);
+      }
+
       const stream = query({
-        prompt: `${buildThirdPartyPrompt()}${task.description}`,
+        prompt: this.buildPromptIterable(task.description),
         options,
       });
 
@@ -112,6 +160,10 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       };
     }
 
+    // Cleanup
+    this.permissionHandler.cleanup();
+    this.flushMessageQueue();
+
     // Write final result entry
     this.state.append('conversation', {
       type: EEntryType.System,
@@ -126,13 +178,150 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     return this._terminalResult;
   }
 
+  /** Set signal context for permission requests. Called by engine before run(). */
+  setSignalContext(deps: {
+    signalQueue: SignalQueue;
+    workerId: string;
+    taskId: string;
+    taskTitle: string;
+    workerType?: string;
+    emoji?: string;
+  }): void {
+    this._signalQueue = deps.signalQueue;
+    this._runContext = deps;
+  }
+
   abort(): void {
     this.abortController.abort();
+    this.permissionHandler.cleanup();
+    this.flushMessageQueue();
   }
 
   /** Get state for UI rendering. */
   getState(): WorkerState {
     return this.state;
+  }
+
+  /** Get conversation entries. */
+  getConversation(): import('@/types/conversation').ConversationEntry[] {
+    return this.state.get<import('@/types/conversation').ConversationEntry[]>('conversation') ?? [];
+  }
+
+  // --- Subscribable ---
+
+  subscribe(path: string, callback: (event: StateEvent) => void): () => void {
+    return this.state.on(path, callback);
+  }
+
+  getSnapshot<T>(path: string): T {
+    return this.state.get(path);
+  }
+
+  /** Accept a message from the controller — injects into running session via streamInput. */
+  acceptMessage(message: string): void {
+    this._messageQueue.push(message);
+    if (this._messageResolve) {
+      this._messageResolve();
+      this._messageResolve = null;
+    }
+    this.logger.info({ workerId: this.id }, 'Controller message accepted');
+  }
+
+  // --- Permission control via canUseTool ---
+
+  /** Dangerous command patterns that require controller approval. */
+  private static readonly DANGEROUS_COMMAND_PATTERN = /\b(rm\s|sudo\b|chmod\b|chown\b|mkfs\b|dd\s|shutdown\b|reboot\b|kill\s+-9)/;
+
+  private async handleCanUseTool(toolName: string, input: Record<string, unknown>): Promise<PermissionResult> {
+    // Only gate Bash with dangerous commands
+    if (toolName !== 'Bash' || !this._signalQueue || !this._runContext) {
+      return { behavior: 'allow' };
+    }
+
+    const command = String(input.command ?? '');
+    if (!ClaudeCodeWorker.DANGEROUS_COMMAND_PATTERN.test(command)) {
+      return { behavior: 'allow' };
+    }
+
+    const requestId = generateId('perm');
+    const description = `Execute shell command: ${command}`;
+
+    this._signalQueue.enqueue({
+      source: 'worker',
+      type: 'permission_request',
+      payload: {
+        requestId,
+        workerId: this._runContext.workerId,
+        taskId: this._runContext.taskId,
+        taskTitle: this._runContext.taskTitle,
+        workerType: this._runContext.workerType,
+        emoji: this._runContext.emoji,
+        toolName,
+        toolArgs: input,
+        description,
+      } satisfies PermissionRequestSignalPayload,
+    });
+
+    return new Promise<PermissionResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this._pendingPermissions.delete(requestId);
+        resolve({ behavior: 'deny', message: 'Permission request timed out' });
+      }, ClaudeCodeWorker.PERMISSION_TIMEOUT_MS);
+
+      this._pendingPermissions.set(requestId, { resolve, timer });
+    });
+  }
+
+  // --- Prompt as AsyncIterable (supports follow-up messages) ---
+
+  private buildPromptIterable(initialPrompt: string): AsyncIterable<SDKUserMessage> {
+    return {
+      [Symbol.asyncIterator]: () => {
+        let sentInitial = false;
+        return {
+          next: async () => {
+            // First yield: the initial task prompt
+            if (!sentInitial) {
+              sentInitial = true;
+              return {
+                value: {
+                  type: 'user' as const,
+                  message: { role: 'user' as const, content: `${buildThirdPartyPrompt()}${initialPrompt}` },
+                  parent_tool_use_id: null,
+                } satisfies SDKUserMessage,
+                done: false,
+              };
+            }
+            // Subsequent yields: controller messages from the queue
+            while (this._messageQueue.length === 0) {
+              if (this.abortController.signal.aborted || this._terminalResult) {
+                return { value: undefined, done: true };
+              }
+              await new Promise<void>((resolve) => {
+                this._messageResolve = resolve;
+              });
+            }
+            const msg = this._messageQueue.shift()!;
+            return {
+              value: {
+                type: 'user' as const,
+                message: { role: 'user' as const, content: `[Controller message] ${msg}` },
+                parent_tool_use_id: null,
+              } satisfies SDKUserMessage,
+              done: false,
+            };
+          },
+        };
+      },
+    };
+  }
+
+  private flushMessageQueue(): void {
+    this._messageQueue.length = 0;
+    if (this._messageResolve) {
+      this._messageResolve();
+      this._messageResolve = null;
+    }
   }
 
   // --- Stream message processing ---
@@ -190,6 +379,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
 
   private handleResultMessage(msg: SDKResultSuccess | SDKResultError): void {
     // Cancel any pending progress — result supersedes it
+    this.flushMessageQueue();
     if (this._progressTimer) {
       clearTimeout(this._progressTimer);
       this._progressTimer = null;

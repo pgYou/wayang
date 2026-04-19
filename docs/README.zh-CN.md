@@ -166,11 +166,13 @@ npm run lint       # 类型检查 + lint
 
 ## 路线图
 
-- [ ] **Controller ↔ Worker 对话** — Controller 可与运行中的 Worker 直接对话，支持向用户请求审批
+- [x] **Controller ↔ Worker 对话** — Controller 可与运行中的 Worker 直接对话，支持向用户请求审批
+- [ ] **跨 Task 持久化 Worker** — Worker 完成任务后保持存活，接收后续任务，保留对话上下文，基于已有工作直接迭代调整，无需从零开始
+- [ ] **无会话长时运行 Agent** — 重新思考会话设计：始终继承上次执行的上下文 + 长期记忆，让 Wayang 成为持续运行的 Agent 而非会话式工具
 - [ ] **更多第三方 Worker** — 扩展集成，支持 Codex、Aider、Cursor agent 等
 - [ ] **TUI 优化** — Worker 详情页改进，状态展示更丰富，整体体验打磨
 - [ ] **GUI** — 超越终端，提供图形化界面
-- [ ] **无会话长时运行 Agent** — 重新思考会话设计：始终继承上次执行的上下文 + 长期记忆，让 Wayang 成为持续运行的 Agent 而非会话式工具
+- [ ] **插件化 Worker 生态** — 定义标准化 Worker 插件协议（能力、工具、资源），建设插件注册中心，提供开发脚手架，让社区能开发并共享自定义 Worker
 
 ## License
 
