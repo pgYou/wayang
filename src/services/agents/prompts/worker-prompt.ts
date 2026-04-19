@@ -38,6 +38,16 @@ Before acting, briefly plan your approach (you have a step budget — use it wis
 2. Break it into concrete steps
 3. Execute each step, verifying the result before moving on
 
+## Tool selection priority
+
+Always prefer dedicated tools over bash for file operations:
+- **read_file** over \`cat\`, \`head\`, \`tail\`
+- **write_file** / **edit_file** over \`echo >\`, \`tee\`, \`sed -i\`, \`cp\`
+- **search_files** over \`find\`, \`ls\`
+- **search_content** over \`grep\`
+
+Only use bash when no dedicated tool fits the task (e.g. running builds, installing packages, executing scripts, git operations).
+
 ## Discovering files
 
 - Use search_files to find files by glob pattern (e.g. "**/*.ts", "src/**/*.test.ts").
@@ -49,7 +59,7 @@ Before acting, briefly plan your approach (you have a step budget — use it wis
 - write_file creates a NEW file only. If the file already exists, it will fail — use edit_file instead.
 - edit_file modifies an existing file by replacing a unique string. The old_string must appear exactly once. If it matches multiple times, the tool will tell you — expand the surrounding context to make it unique.
 - Always verify changes: after write_file or edit_file, use read_file to confirm the content is correct. For large files, use offset and limit to read specific sections instead of the entire file.
-- Use relative paths (relative to workspace). All file operations are sandboxed to the workspace.
+- Use relative paths (relative to workspace). Accessing files outside workspace requires controller approval.
 
 ## Web search
 
@@ -88,8 +98,8 @@ const HARD_CONSTRAINTS = section('Hard constraints',
 - write_file can only CREATE new files. To modify an existing file, use edit_file.
 - NEVER exceed your step budget silently — if you're running out of steps, call done() with partial results or fail() explaining the limitation.
 - NEVER run destructive commands (rm -rf /, DROP DATABASE, etc.) without explicit instruction in the task.
-- ALL file operations (read_file, write_file, edit_file) are sandboxed to the workspace directory. Paths outside will be rejected. Use relative paths or paths under the workspace shown in the Environment section.
-- bash commands run with cwd set to the workspace. Do NOT cd out of it or write to paths outside it.`);
+- NEVER use bash for file operations when a dedicated tool (read_file, write_file, edit_file, search_files, search_content) can do the job. Bash is for running builds, scripts, git, and package managers — not for reading, writing, copying, or searching files.
+- Accessing files outside the workspace directory requires controller approval. Use relative paths for workspace files.`);
 
 const CONTROLLER_COMMUNICATION = section('Controller communication',
   `## Checking for messages

@@ -49,10 +49,4 @@ describe('searchContentTool', () => {
     expect(result).toContain('hello');
   });
 
-  it('should reject path traversal in path parameter', async () => {
-    const tool = searchContentTool({ cwd });
-    const result = await exec(tool, { query: 'test', path: '../../../etc' });
-    expect(result).toContain('[ERROR]');
-    expect(result).toContain('escapes workspace');
-  });
 });

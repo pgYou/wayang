@@ -67,17 +67,6 @@ describe('editFileTool', () => {
     expect(result).toContain('File not found');
   });
 
-  it('should reject path traversal', async () => {
-    const tool = editFileTool({ cwd });
-    const result = await exec(tool, {
-      path: '../../../etc/passwd',
-      old_string: 'x',
-      new_string: 'y',
-    });
-    expect(result).toContain('[ERROR]');
-    expect(result).toContain('escapes workspace');
-  });
-
   it('should preserve content outside the replaced region', async () => {
     writeFileSync(join(cwd, 'code.ts'), 'line1\nline2\nline3', 'utf-8');
     const tool = editFileTool({ cwd });

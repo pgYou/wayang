@@ -38,15 +38,40 @@ import { createWorkerTools } from '@/services/tools/index';
 import { wrapWithPermissionMiddleware, type PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
+import { isInsideWorkspace } from '@/services/tools/common';
+import { resolve } from 'node:path';
 
 const PUPPET_WORKER_TYPE = 'puppet';
 
 /**
- * Bash commands matching these patterns require controller approval.
+ * Bash commands matching these patterns always require controller approval.
  * Matches at command start or after shell operators (|, ;, &&) to reduce
  * false positives from quoted strings.
  */
 const DANGEROUS_BASH_PATTERN = /(?:^|\||;|&&)\s*(?:rm\s|sudo\b|chmod\b|chown\b|mkfs\b|dd\s|shutdown\b|reboot\b|kill\s+-9)/;
+
+/** Matches absolute Unix paths in a command string (e.g. /Users/foo, /tmp/file). */
+const ABSOLUTE_PATH_RE = /\/[a-zA-Z0-9_][a-zA-Z0-9_.\/-]*/g;
+
+/** File tools gated by the permission middleware for out-of-workspace paths. */
+const FILE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'search_files', 'search_content'] as const;
+
+/** Check whether a file tool call targets a path outside the workspace. */
+function needsFilePermission(workspace: string, args: Record<string, unknown>): boolean {
+  const rawPath = args.path;
+  if (typeof rawPath !== 'string' || !rawPath) return false;
+  return !isInsideWorkspace(resolve(workspace, rawPath), workspace);
+}
+
+/** Check whether a bash command needs controller approval. */
+function needsBashPermission(workspace: string, command: string): boolean {
+  // Tier 1: dangerous commands always need permission
+  if (DANGEROUS_BASH_PATTERN.test(command)) return true;
+
+  // Tier 2: commands referencing absolute paths outside workspace
+  const paths = command.match(ABSOLUTE_PATH_RE) ?? [];
+  return paths.some(p => !isInsideWorkspace(p, workspace));
+}
 
 // ---------------------------------------------------------------------------
 // TaskExecuteEngine
@@ -450,17 +475,25 @@ export class TaskExecuteEngine implements Subscribable {
 
     // Apply permission middleware for puppet workers
     if (workerType === PUPPET_WORKER_TYPE) {
+      const workspace = this.ctx.workspaceDir;
       const middleware = wrapWithPermissionMiddleware(tools, {
-        gatedTools: ['bash'],
+        gatedTools: ['bash', ...FILE_TOOL_NAMES],
         needsPermission: (toolName, args) => {
           if (toolName === 'bash') {
-            const cmd: string = args.command ?? '';
-            return DANGEROUS_BASH_PATTERN.test(cmd);
+            return needsBashPermission(workspace, args.command ?? '');
+          }
+          if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
+            return needsFilePermission(workspace, args);
           }
           return false;
         },
         describeCall: (toolName, args) => {
           if (toolName === 'bash') return `Execute shell command: ${args.command}`;
+          if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
+            const rawPath = typeof args.path === 'string' ? args.path : '';
+            const resolved = rawPath ? resolve(workspace, rawPath) : workspace;
+            return `${toolName}: ${rawPath || '(workspace root)'} (resolved: ${resolved})`;
+          }
           return `${toolName}: ${JSON.stringify(args)}`;
         },
       }, {
