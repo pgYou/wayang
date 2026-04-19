@@ -166,7 +166,7 @@ npm run lint       # type check + lint
 
 ## Roadmap
 
-- [ ] **Controller ↔ Worker Chat** — Allow the controller to chat with a running worker and ask for human approval when needed
+- [x] **Controller ↔ Worker Chat** — Allow the controller to chat with a running worker and ask for human approval when needed
 - [ ] **Persistent Workers Across Tasks** — Allow workers to survive task completion and receive follow-up tasks, retaining conversation context for iterative refinement without starting from scratch
 - [ ] **Sessionless Long-Running Agent** — Rethink session design: always inherit context from the previous run + long-term memory, making Wayang a continuously running agent rather than a session-based tool
 - [ ] **More Third-Party Worker Agents** — Expand integrations beyond Claude Code (e.g. Codex, Aider, Cursor agent)
