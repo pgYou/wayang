@@ -55,10 +55,4 @@ describe('searchFilesTool', () => {
     expect(result).toBe('No files matched the pattern');
   });
 
-  it('should reject path traversal in path parameter', async () => {
-    const tool = searchFilesTool({ cwd });
-    const result = await exec(tool, { pattern: '**/*.ts', path: '../../../etc' });
-    expect(result).toContain('[ERROR]');
-    expect(result).toContain('escapes workspace');
-  });
 });

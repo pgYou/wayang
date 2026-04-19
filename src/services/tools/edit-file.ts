@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { defineTool, safeExecute, validatePath } from './common';
+import { defineTool, safeExecute } from './common';
 
 export function editFileTool(deps: { cwd?: string }) {
   const workspace = deps.cwd ?? process.cwd();
@@ -10,7 +10,7 @@ export function editFileTool(deps: { cwd?: string }) {
     description:
       'Edit a file by replacing a unique string. old_string must appear exactly once in the file — if it matches multiple times, expand the surrounding context to make it unique.',
     parameters: z.object({
-      path: z.string().describe('File path (relative to workspace)'),
+      path: z.string().describe('File path (relative to workspace or absolute)'),
       old_string: z
         .string()
         .describe('Exact text to find (must be unique in file)'),
@@ -18,9 +18,6 @@ export function editFileTool(deps: { cwd?: string }) {
     }),
     execute: safeExecute('edit_file', async ({ path, old_string, new_string }) => {
       const resolved = resolve(workspace, path);
-      const err = validatePath(resolved, workspace);
-      if (err) return `[ERROR] edit_file: ${err}`;
-
       let content: string;
       try {
         content = readFileSync(resolved, 'utf-8');

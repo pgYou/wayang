@@ -1,7 +1,7 @@
 import fg from 'fast-glob';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { defineTool, safeExecute, validatePath } from './common';
+import { defineTool, safeExecute } from './common';
 
 export function searchFilesTool(deps: { cwd?: string }) {
   const workspace = deps.cwd ?? process.cwd();
@@ -20,9 +20,6 @@ export function searchFilesTool(deps: { cwd?: string }) {
     }),
     execute: safeExecute('search_files', async ({ pattern, path }) => {
       const basePath = path ? resolve(workspace, path) : workspace;
-      const err = validatePath(basePath, workspace);
-      if (err) return `[ERROR] search_files: ${err}`;
-
       const entries = await fg(pattern, {
         cwd: basePath,
         onlyFiles: true,
