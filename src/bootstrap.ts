@@ -6,7 +6,7 @@
  */
 
 import { Supervisor, type SupervisorOptions } from './services/supervisor';
-import { getSession } from './infra/session-helpers';
+import { getSession, getLatestSessionForWorkspace } from './infra/session-helpers';
 import { renderInkUI } from './tui/render';
 import { loadConfig } from './onboard';
 import { selectSessionInteractive } from './session-select';
@@ -19,8 +19,13 @@ export interface BootstrapOptions {
   workspaceDir: string;
   logLevel?: string;
   /**
+   * Start a brand-new session, ignoring any prior context for this workspace.
+   * Mutually exclusive with `resume`.
+   */
+  fresh?: boolean;
+  /**
    * Resume mode:
-   * - undefined → new session
+   * - undefined → sessionless default: inherit latest session for this workspace
    * - '' (empty string) → interactive session select
    * - '<id>' → resume specific session
    */
@@ -46,8 +51,16 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     homeDir: options.homeDir,
   };
 
-  if (options.resume === undefined) {
-    // New session — homeDir already set
+  if (options.fresh) {
+    // Explicit new session — do not inherit prior context.
+  } else if (options.resume === undefined) {
+    // Sessionless default: inherit the latest session for this workspace.
+    // If none exists, fall through to a new session.
+    const latest = getLatestSessionForWorkspace(options.homeDir, options.workspaceDir);
+    if (latest) {
+      supervisorOpts.resume = { sessionId: latest.sessionId, sessionDir: latest.sessionDir };
+      console.log(`  Resuming session ${latest.sessionId}`);
+    }
   } else if (options.resume === '') {
     // Interactive session select (--resume without ID)
     const result = await selectSessionInteractive(options.homeDir, options.workspaceDir, options.showAll ?? false);

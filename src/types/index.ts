@@ -30,6 +30,7 @@ export type {
   CancelledSignalPayload,
   HeartbeatSignalPayload,
   PermissionRequestSignalPayload,
+  PreviousSessionTasksSignalPayload,
 } from './signal';
 export { getSignalField } from './signal';
 

@@ -36,6 +36,14 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     );
   }
 
+  /**
+   * Execute a task.
+   *
+   * Multi-stage safe: this method may be called more than once on the same
+   * instance (via the engine's assignToExistingWorker path). Each call resets
+   * the terminal result and appends the new task description as a user message,
+   * so the worker's accumulated conversation carries forward across stages.
+   */
   async run(
     task: TaskDetail & { workerId: string },
     tools: Record<string, any>,

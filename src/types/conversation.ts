@@ -34,6 +34,8 @@ export enum ESignalSubtype {
   Heartbeat = 'heartbeat',
   /** Worker requesting permission for a sensitive operation. */
   PermissionRequest = 'permission_request',
+  /** Unfinished tasks carried over from a previous session (sessionless resume). */
+  PreviousSessionTasks = 'previous_session_tasks',
 }
 
 // --- Tool record types ---
