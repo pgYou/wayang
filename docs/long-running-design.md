@@ -1,13 +1,22 @@
-# 长时运行：Worker 按需驻留 与 Sessionless Controller
+# 长时运行：Worker 按需驻留 与 Per-workspace Sessionless
 
-> 状态：设计草案
+> 状态：已实施（Phase A + Phase B）
 > 关联 Roadmap：
 > - Persistent Workers Across Tasks
 > - Sessionless Long-Running Agent
 
-本文档记录"让 Controller 和 Worker 活得更久"这一方向的讨论结论、整体设计与分阶段实施计划。
+本文档记录"让 Controller 和 Worker 活得更久"这一方向的设计与实现。两个特性独立落地、互不阻塞。
 
 ---
+
+## 0. 定位
+
+本次迭代把 Wayang 的定位明确为**项目编排器**（单 workspace 内的多智能体大脑，"多智能体版 Claude Code"），并据此给用户**常驻感**：
+
+- **Worker 驻留**：对任何定位都是纯增益，先做。
+- **Sessionless**：采用 **per-workspace**（按 workspace 索引的最新会话继承），**不是**全局一条连续流。这样 workspace 概念保住、权限边界（`isInsideWorkspace`）不破、跨项目污染消失，同时拿到"一直都在"的体感。
+
+明确**不做**：机器级 AI 管家（需 daemon + 持久记忆 + 新安全模型，是另一个项目，不寄生在本轮）。
 
 ## 1. 背景与动机
 
@@ -47,66 +56,69 @@ pending ──► running ──┬──► completed ──► disposed   (默
 ```
 
 - `idle` 态：任务本身标记为阶段性 `completed`，但 Worker 实例 + `WorkerState` 保留。
-- 从 `idle` 回到 `running`：通过 `TaskExecuteEngine` 新增的 "assign-to-existing-worker" 路径，而不是 `createWorker`。
+- 从 `idle` 回到 `running`：通过 `TaskExecuteEngine.assignToExistingWorker(workerId, task)` 路径，**复用同一实例**，重装配工具/权限中间件后再次 `run()`。
+- 失败永不驻留：`multiStage=true` 但任务 `failed` 时，仍走销毁路径（只有成功才进 idle）。
 - 回收兜底：
-  - 超时未被复用 → 自动销毁（可配置，默认例如 30 分钟）。
-  - 计入 `maxConcurrency`：idle worker 也占坑，防止用户不知情攒一堆。
-  - 显式 `cancel_task` / 用户从 TUI 手动销毁。
+  - 超时未被复用 → 自动销毁（默认 30 分钟，config `idleTimeoutMs` 可覆盖）。
+  - 计入 `maxConcurrency`：idle worker 也占坑（`getOccupiedSlots()` = running + idle），防止用户不知情攒一堆。
+  - 显式 `dispose_worker` 工具 / 用户从 TUI 手动销毁（`abortByWorkerId`）。
 
-**Controller ↔ Worker 工具改动**：
+**Controller ↔ Worker 工具改动**（采用方案 A：复用 `add_task`，减少工具数量）：
 
-- Controller 工具 `add_task` 新增字段：`multiStage: boolean`（默认 false）。
-- Controller 新增或复用工具用于"把下一阶段任务派发给某个 idle worker"：
-  - 方案 A：`add_task` 增加 `assignToWorker?: string` 字段。
-  - 方案 B：新增独立工具 `continue_worker(workerId, task)`。
-  - 倾向方案 A：减少工具数量，语义"创建任务 + 可选指定 worker"足够清晰。
+- Controller 工具 `add_task` 新增字段：
+  - `multiStage: boolean`（默认 false）。
+  - `assignToWorker?: string` —— 把本任务派发给某个 idle worker（workerId 来自上一阶段完成信号）。省略 = 新建 worker。
+- Controller 新增工具 `dispose_worker(workerId)`：手动回收一个不再需要的 idle worker，立即释放占坑。
 - Worker 的 `done` 语义分化：
   - `multiStage=false`：同现状，任务完成 → Worker 销毁。
   - `multiStage=true`：任务完成 → Worker 进入 `idle`，不销毁。
   - 不新增 `pause` 工具，Worker 自己不主动决定驻留。
 
+**Task 字段**：`TaskDetail` 新增 `multiStage?: boolean`、`assignToWorker?: string`、`assignedFromWorkerId?: string`（派发到 idle worker 时记录来源）。
+
 **Worker 实现改动**：
 
-- `WorkerAgent`（puppet）：`collectLoop` 目前是"跑完就返回"。需要支持"返回时保留 state"，下次接任务时从保留的 conversation 恢复继续。`WorkerState` 三段式结构已具备，无需新增持久化设施。
-- `ClaudeCodeWorker`：Claude Agent SDK 本身支持多轮 session，复用相对容易；需要确认 SDK 侧的 session 句柄也能跨任务保留。
+- `WorkerAgent`（puppet）：`collectLoop` "跑完就返回"，`run()` 设计为**可重入**——每次重置 `_terminalResult` 并追加新任务描述为 user message，已有 conversation 自然延续。puppet 是 multiStage 的主要受益者。
+- `ClaudeCodeWorker`：**修复了 `_terminalResult` 不重置的重入 bug**（`run()` 开头置 null）。但 Claude Agent SDK 的 `query()` 每次开启新 session，所以 claude-code 的 multiStage 只复用实例与持久化的对话日志，**底层 Claude 进程重新开始**——multiStage 对它收益有限，已在代码注释中说明。
 
 **TUI 改动**：
 
-- active worker 列表区分 `running` / `idle`。
-- worker-detail-page 显示 idle 状态与上一阶段任务摘要，方便用户判断要不要手动销毁。
+- active worker 列表（`worker-list-overlay`）区分 `running` / `idle`（idle 灰色 + ⏸ 标记 + 计时切换为 idle 时长）。
+- worker-detail-page 显示 idle 状态、`⏸ idle` 徽章、上一阶段 `lastStageSummary`，并提示"等待后续任务 / 超时自动回收"。
 
-### 3.2 Sessionless Controller
+### 3.2 Per-workspace Sessionless Controller
 
-**语义**：Controller 默认就继承上一次运行的上下文，Wayang 从"一次会话一用"变成"一直都在"。真正的"全新开始"需要显式 flag。
+**语义**：Controller 默认就继承**本 workspace** 上一次运行的上下文。真正的"全新开始"需要显式 `--fresh`。Workspace 概念保住，权限边界不破，跨项目不污染。
 
-**关键决策（已与用户确认）**：
+**关键决策**：
 
 | 决策点 | 选择 | 说明 |
 |---|---|---|
-| 跨 workspace 继承 | **全局一条连续流**，忽略 workspace 切换 | 简单直接；Controller 自己判断相关性。若后续发现污染严重再退化为"按 workspace 索引" |
-| 上一次未完成任务 | **由 Controller LLM 启动时判断** | 不自动恢复 Worker；把上次 task snapshot 作为一条系统 signal 注入，LLM 自行决定重新 dispatch 还是视作历史 |
+| 跨 workspace 继承 | **per-workspace**（按 workspace 索引最新会话） | 不做"全局一条流"。workspace 是承重概念（工具 cwd、权限判定边界），全局流会破坏它并引入跨项目污染 |
+| 上一次未完成任务 | **作为 `previous_session_tasks` signal 注入，由 Controller LLM 判断** | 不自动恢复 Worker；LLM 自行决定重新 dispatch / 视作历史 / 询问用户 |
 | 长期记忆 | **不做** | notebook 工具承担"主动记忆"职责 |
+| 全局流 / 机器级管家 | **不做** | 那是另一个项目（需 daemon + 持久记忆 + 新安全模型） |
 
 **启动流程反转**：
 
-- `wayang`（默认）：继承上一次 session 上下文。
-- `wayang --fresh`（或 `--new-session`）：显式全新会话。
-- `--resume` 退化为默认行为（或保留为别名）。
+- `wayang`（默认）：继承本 workspace 最近一次 session（`getLatestSessionForWorkspace`）；若该 workspace 无历史 session，则新建。
+- `wayang --fresh`（别名 `-n` / `--new-session`）：显式全新会话。
+- `wayang --resume` / `wayang --resume <id>` / `wayang --resume --all`：保留为**显式选择历史 session**（交互式列表 / 指定 ID / 跨 workspace 列表），不废弃。
 
 **冷启动压缩**：
 
-长时运行必然面临 token 爆炸。启动时不能原样 append 全量历史，需要做一次**启动压缩**：
+长时运行必然面临 token 爆炸。继承的对话尾部可能已经超阈值。处理：
 
-- 复用 `ControllerAgent` 已有的 LLM-based context compaction。
-- 启动时对"上一次 conversation 尾部"做一次压缩，摘要化注入 system / 初始消息。
+- 在 `Supervisor.start()` 中、Controller loop 启动前，检查 `controllerAgent.needsCompaction()`，若超阈值则调一次 `performCompaction()`。
+- 复用 `ControllerAgent` 已有的 LLM-based context compaction，**不新增压缩设施**。
 - 压缩策略的 fallback 链：LLM 摘要失败 → half-truncation（现有）→ 空上下文。
 
 **未完成任务的处理**：
 
-启动时：
+启动时（`Supervisor.restore()`）：
 
-1. 读取上一次 session 的 task snapshot（pending / running 状态的任务）。
-2. 做成一条结构化 system signal 注入 `SignalQueue`（例如 `previous_session_tasks`）。
+1. 在 `engine.restore()` 运行 `recoverCrashedTasks`（把 running 标 failed）**之前**，用 `readSessionUnfinishedTasks` 快照上次 session 的 pending + running 任务。
+2. 把快照做成一条 `previous_session_tasks` signal 注入 `SignalQueue`。
 3. Controller LLM 在第一次循环中看到这条 signal，自行决定：
    - 视作历史，直接忽略；
    - 重新 `add_task` 某几条；
@@ -114,8 +126,9 @@ pending ──► running ──┬──► completed ──► disposed   (默
 
 **不做**：
 
-- 不做自动恢复 running worker。启动时任何 idle worker / running worker 都不复活，避免意外副作用。
+- 不做自动恢复 running worker。启动时任何 idle/running worker 都不复活（与现有 `recoverCrashedTasks` 标 failed 一致），避免意外副作用。
 - 不做跨 session 的 worker 驻留（驻留只在单次 Controller 运行内有效）。
+- 不做全局流 sessionless（明确 per-workspace）。
 
 ### 3.3 两个特性的边界
 
@@ -127,74 +140,92 @@ pending ──► running ──┬──► completed ──► disposed   (默
 
 | 改动点 | 主要涉及模块 |
 |---|---|
-| `add_task` 增加 `multiStage` / `assignToWorker` | `src/services/tools/`（controller tools） |
-| Worker 状态机增加 `idle` | `src/services/TaskExecuteEngine` |
-| `assignToExistingWorker` 派发路径 | `src/services/TaskExecuteEngine` |
-| Worker 完成后进入 idle 的语义 | `WorkerAgent` / `ClaudeCodeWorker` |
-| idle worker 超时回收 | `TaskExecuteEngine`（配合 config） |
-| TUI 区分 running / idle | `src/tui/`（worker 列表 + detail page） |
-| 启动默认继承上次 | `src/bootstrap.ts` + `src/services/session/` |
-| `--fresh` flag | `src/cli.ts`（meow 定义） |
-| 冷启动压缩 | `ControllerAgent` 启动路径 + 现有 compaction 复用 |
-| 未完成任务注入为 signal | `src/services/session/` + `SignalQueue` |
+| `add_task` 增加 `multiStage` / `assignToWorker` | `src/services/tools/add-task.ts` |
+| 新增 `dispose_worker` 工具 | `src/services/tools/dispose-worker.ts` |
+| Worker 状态机增加 `idle` + `assignToExistingWorker` 派发路径 | `src/services/task-execute-engine.ts` |
+| 抽取 `wireWorker`（工具+权限+signal 装配，新建与复用共用） | `src/services/task-execute-engine.ts` |
+| idle worker 超时回收 / 占坑 / 手动销毁 | `src/services/task-execute-engine.ts`（配合 `idleTimeoutMs`） |
+| `worker:idle` 生命周期 hook | `src/services/lifecycle-hooks.ts` |
+| Worker 完成后进入 idle 的语义（multiStage 分支） | `task-execute-engine.ts`（`handleDone`） |
+| ClaudeCodeWorker 重入修复 | `src/services/agents/claude-code-worker.ts` |
+| TUI 区分 running / idle | `src/tui/components/worker-list-overlay.tsx`、`src/tui/pages/worker-detail-page.tsx` |
+| 启动默认继承本 workspace | `src/bootstrap.ts` + `src/infra/session-helpers.ts` |
+| `--fresh` flag | `src/cli.ts` |
+| 冷启动压缩 | `src/services/supervisor.ts`（`start()` 内） |
+| 未完成任务注入为 signal | `src/infra/session-helpers.ts`（`readSessionUnfinishedTasks`）+ `src/services/supervisor.ts` + `SignalQueue` |
+| `previous_session_tasks` signal 类型/转换器 | `src/types/signal.ts`、`src/services/agents/controller-agent.ts` |
 
-## 5. 分阶段实施计划
+## 5. 实施记录（已完成）
 
-两个特性独立推进，各自内部再拆阶段。建议先做 **Worker 驻留**（范围更收敛，风险更低），再做 **Sessionless**。
+两个特性独立推进，先 A 后 B。
 
 ### Phase A：Worker 按需驻留
 
-**A1. 机制骨架（不接 LLM）**
-- `TaskExecuteEngine` 增加 `idle` 态与状态迁移。
-- 新增 `assignToExistingWorker(workerId, task)` 路径。
-- `add_task` 工具增加 `multiStage` / `assignToWorker` 字段（先不写 prompt 引导）。
-- 单测覆盖状态机与派发路径。
+**A1. 类型层**
+- `ActiveWorkerInfo` 加 `status: 'running'|'idle'`、`lastStageSummary`、`idleSinceMs`。
+- `TaskDetail` 加 `multiStage`、`assignToWorker`、`assignedFromWorkerId`。
 
-**A2. Worker 侧适配**
-- `WorkerAgent` 的 `collectLoop` 改造为"支持返回后保留 state，再次唤醒继续"。
-- `ClaudeCodeWorker` 验证 SDK session 句柄复用。
-- 集成测试：连续两次派发同一个 worker，验证上下文确实延续。
+**A2. 引擎状态机 + 派发路径（核心）**
+- 抽取 `spawnWorker` 中的"装配工具 + 权限中间件 + signal context"为 `wireWorker`，新建与复用共用。
+- `assignToExistingWorker(workerId, task)`：校验 idle → 清除 TTL → 转 running → `wireWorker` 重装配 → 复用实例 `run()`。
+- `handleDone`：失败一律销毁；成功 + `multiStage` → 进 idle（保留实例、记 summary、启动 TTL）；成功 + 非 multiStage → 销毁。
+- `getOccupiedSlots()` = running + idle；`scheduleNext` 据此占坑。
+- idle TTL 回收：`idleTimers` Map + `disposeIdleWorker`（abort + 移除 + 发 `cancelled` signal）。
+- `abortByWorkerId` / `abortAll` / `cancel` 处理 idle 销毁。
+- 新建 `task-execute-engine.test.ts`（此前无）：覆盖状态机、assign 复用、idle 占坑、TTL 回收、multiStage 分支、手动销毁、shutdown（10 例）。
 
-**A3. Prompt & TUI**
-- Controller system prompt 增加"何时用 multiStage"的引导。
-- TUI active worker 区分 running/idle，worker-detail 显示 idle 状态 + 上一阶段摘要。
-- idle worker 超时回收 + 计入 `maxConcurrency`。
+**A3. Controller 工具**
+- `add_task` 加 `multiStage` / `assignToWorker`（含 `validateIdleWorker` 前置校验）。
+- 新增 `dispose_worker` 工具。
+- `ControllerToolDeps` + `controller-agent` factory 接线。
 
-**A4. 回归与打磨**
-- 全量 `npm test` 回归。
-- 手动跑一轮典型多阶段场景（方案 → review → 实现）。
+**A4. Worker 侧适配 + bug 修复**
+- `WorkerAgent.run()` 补 multiStage 可重入注释。
+- `ClaudeCodeWorker.run()` 开头 `this._terminalResult = null`（修复重入 bug）+ 类注释说明 SDK session 局限。
 
-### Phase B：Sessionless Controller
+**A5. TUI**
+- `worker-list-overlay`：区分 running/idle，idle 灰色 + ⏸，计时切 idle 时长。
+- `worker-detail-page`：`⏸ idle` 徽章 + 上一阶段摘要 + "等待后续任务/超时回收"提示。
+
+**A6. Prompt + 回归**
+- controller-prompt 加 "Multi-stage work" 段落（何时用 / 如何 assign / dispose 清理）。
+- 全量回归：tsc 零错误，293 测试通过。
+
+### Phase B：Per-workspace Sessionless
 
 **B1. 启动流程反转**
-- `cli.ts` 增加 `--fresh` flag；无 flag 时默认继承上一次。
-- `--resume` 保留为别名或显式版本（按向后兼容考虑）。
-- Session 存储结构：保持现有 `~/.wayang/`，但查询策略变成"全局最新"。
+- `cli.ts`：`--fresh`（别名 `-n`）；无 flag 时默认继承。
+- `bootstrap.ts`：无 `--fresh` 且无 `--resume` → `getLatestSessionForWorkspace`，找到则 resume，找不到则新建。
+- `session-helpers.ts`：`getLatestSessionForWorkspace`（复用现有 `listSessions` 排序 + workspace 过滤取首条）。
 
 **B2. 冷启动压缩**
-- `ControllerAgent` 启动时若存在上次 conversation：调用现有 compaction 做一次摘要注入。
-- fallback 链：LLM 失败 → half-truncation → 空上下文。
-- 单测：mock 超长历史，验证启动后 token 在合理范围。
+- `supervisor.start()`：loop 启动前若 `needsCompaction()` 则 `performCompaction()`（复用现有压缩 + fallback 链，不新增设施）。
 
 **B3. 未完成任务注入**
-- 定义 `previous_session_tasks` signal schema。
-- 启动时读取上次 task snapshot 并注入 `SignalQueue`。
-- Controller prompt 增加"如何处理这条 signal"的引导。
-- 明确约束：不自动恢复 Worker。
+- `types/signal.ts`：`previous_session_tasks` SignalType + `PreviousSessionTasksSignalPayload` + `PreviousSessionTask`。
+- `types/conversation.ts`：`ESignalSubtype.PreviousSessionTasks`。
+- `controller-agent.ts`：`signalConverters` 加对应 converter。
+- `session-helpers.ts`：`readSessionUnfinishedTasks`（读 session 的 `tasks.json` 的 pending + running）。
+- `supervisor.ts`：restore 时快照（在 recoverCrashedTasks 之前）+ 注入 signal；`injectPreviousTasks` 选项可关。
+- controller-prompt 加 "[PREVIOUS SESSION]" 处理引导。
+- 边界：不自动恢复 Worker。
 
-**B4. 回归与打磨**
-- 全量测试。
-- 手动验证：连续三次启动，上下文是否合理延续、是否污染、是否可用 `--fresh` 断开。
+**B4. 回归**
+- tsc 零错误，293 测试通过（含 5 个新 session-helpers 解析测试）。
 
 ## 6. 不在本轮范围内
 
 - 长期记忆 / 向量检索 / 跨运行摘要归档。
 - Worker 池化 / 全局常驻 Worker。
-- 按 workspace 索引的历史（保留为未来若出现污染问题时的退化方案）。
+- 全局流 sessionless / 机器级 AI 管家（daemon + 持久记忆 + 新安全模型）。
 - 跨 Controller 运行的 Worker 驻留。
 
-## 7. 待进一步确认的小点
+## 7. 已确认的决策点
 
-- `assignToWorker` 放进 `add_task` vs 独立工具 `continue_worker`：倾向前者，正式实现前再确认一次。
-- idle worker 默认超时阈值（建议 30 分钟，可在 config 中覆盖）。
-- `--resume` 这个 flag 在 sessionless 之后的命运：保留为别名 / 废弃 / 改语义为"列出并选择历史 session"。
+| 决策点 | 结论 |
+|---|---|
+| `assignToWorker` 放进 `add_task` vs 独立 `continue_worker` | 采用 `add_task` 内字段（方案 A，减少工具数量） |
+| idle worker 默认超时阈值 | 30 分钟，config `idleTimeoutMs` 可覆盖 |
+| Sessionless 继承范围 | **per-workspace**（不做全局流） |
+| `--resume` 的命运 | 保留为"显式选择历史 session"（交互列表 / 指定 ID / 跨 workspace 列表），不废弃 |
+| claude-code 的 multiStage | 落地但收益有限（SDK 每次新 session），已文档化；puppet 为主要受益者 |
