@@ -59,6 +59,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     const latest = getLatestSessionForWorkspace(options.homeDir, options.workspaceDir);
     if (latest) {
       supervisorOpts.resume = { sessionId: latest.sessionId, sessionDir: latest.sessionDir };
+      // Only the sessionless path surfaces unfinished tasks as a signal — an
+      // explicit --resume means "continue this exact session as-is".
+      supervisorOpts.injectPreviousTasks = true;
       console.log(`  Resuming session ${latest.sessionId}`);
     }
   } else if (options.resume === '') {

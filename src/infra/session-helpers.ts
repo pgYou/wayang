@@ -85,13 +85,18 @@ export function readSessionUnfinishedTasks(
     };
     const pending = data.tasks?.pending ?? [];
     const running = data.tasks?.running ?? [];
-    const pick = (t: any) => ({
+    const pick = (status: 'pending' | 'running') => (t: any) => ({
       id: t.id,
       title: t.title,
       description: t.description,
-      status: t.status as 'pending' | 'running',
+      status,
     });
-    return [...running.map(pick), ...pending.map(pick)];
+    // Tag by the bucket each task came from (defensive: ignore malformed entries)
+    const tagged = [
+      ...running.filter(Boolean).map(pick('running')),
+      ...pending.filter(Boolean).map(pick('pending')),
+    ];
+    return tagged.filter(t => typeof t.id === 'string' && typeof t.title === 'string');
   } catch {
     return null;
   }

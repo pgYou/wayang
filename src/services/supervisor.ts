@@ -20,7 +20,10 @@ export interface SupervisorOptions {
   homeDir?: string;
   /**
    * Whether to inject a `previous_session_tasks` signal at resume when the
-   * resumed session has unfinished tasks. Defaults to true (sessionless).
+   * resumed session has unfinished tasks. Defaults to false — only the
+   * sessionless default-inherit path (bootstrap, not --resume) sets this true,
+   * so an explicit `--resume` is treated as "continue this exact session"
+   * without re-surfacing stale tasks.
    */
   injectPreviousTasks?: boolean;
 }
@@ -40,7 +43,7 @@ export class Supervisor {
   constructor(options: SupervisorOptions) {
     const { config, workspaceDir, logLevel } = options;
     this.resumeSessionDir = options.resume?.sessionDir;
-    this.injectPreviousTasks = options.injectPreviousTasks ?? true;
+    this.injectPreviousTasks = options.injectPreviousTasks ?? false;
 
     // Create session manager
     if (options.resume) {

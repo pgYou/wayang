@@ -30,6 +30,8 @@ export enum ESignalSubtype {
   WorkerCompleted = 'worker_completed',
   /** Worker failed a task. */
   WorkerFailed = 'worker_failed',
+  /** Idle (multi-stage) worker disposed — reaped by timeout or manually. No task failed. */
+  WorkerDisposed = 'worker_disposed',
   /** System heartbeat — periodic check-in while workers are running. */
   Heartbeat = 'heartbeat',
   /** Worker requesting permission for a sensitive operation. */
