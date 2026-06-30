@@ -18,6 +18,7 @@ import { nowISO } from '@/utils/time';
 import { EEntryType } from '@/types/index';
 import { buildThirdPartyPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 export class ClaudeCodeWorker implements IWorkerInstance {
   readonly id: string;
@@ -42,17 +43,20 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private _progressTimer: ReturnType<typeof setTimeout> | null = null;
   private _pendingProgress: string | null = null;
   private readonly ctx: SystemContext;
+  private readonly skills: SkillRegistry;
   constructor(
     config: WorkerConfig,
     sessionDir: string,
     workspaceDir: string,
     ctx: SystemContext,
+    skills: SkillRegistry,
   ) {
     this.id = generateId('cw');
     this.ctx = ctx;
     this.config = config;
     this.workspaceDir = workspaceDir;
     this.logger = ctx.logger;
+    this.skills = skills;
     this.state = new WorkerState(sessionDir, this.id, ctx.logger);
   }
 
@@ -86,7 +90,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       }
 
       const stream = query({
-        prompt: `${buildThirdPartyPrompt()}${task.description}`,
+        prompt: `${buildThirdPartyPrompt(this.skills)}${task.description}`,
         options,
       });
 

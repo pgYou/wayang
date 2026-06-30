@@ -7,8 +7,9 @@
 
 import type { WorkerConfig } from '@/types/config';
 import { PUPPET_DEFAULTS } from '../worker-defaults';
-import { assemble, buildEnvironment, section } from './prompt-utils';
+import { assemble, buildEnvironment, buildSkillCatalog, section } from './prompt-utils';
 import { SystemContext } from '@/infra/system-context';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 // ---------------------------------------------------------------------------
 // Static sections (cacheable, never change between calls)
@@ -227,7 +228,7 @@ export interface ControllerDynamicContext {
 }
 
 /** Build the full Controller system prompt. */
-export function buildControllerSystemPrompt(ctx: SystemContext): string {
+export function buildControllerSystemPrompt(ctx: SystemContext, skills: SkillRegistry): string {
   return assemble(
     IDENTITY,
     RESPONSE_STYLE,
@@ -236,6 +237,7 @@ export function buildControllerSystemPrompt(ctx: SystemContext): string {
     SIGNAL_HANDLING,
     HARD_CONSTRAINTS,
     buildWorkerList(ctx.config.workers),
+    buildSkillCatalog(skills),
     buildEnvironment(ctx),
   );
 }

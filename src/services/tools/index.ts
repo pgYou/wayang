@@ -18,6 +18,8 @@ import { inquireTool } from './inquire';
 import { doneTool } from './done';
 import { failTool } from './fail';
 import { updateProgressTool } from './update-progress';
+import { useSkillTool } from './use-skill';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 export interface ControllerToolDeps {
   addTask: (task: TaskDetail) => void;
@@ -43,6 +45,8 @@ export interface ControllerToolDeps {
   setNotebook: (content: string, mode: 'replace' | 'append') => void;
   /** Ask the user a structured question and wait for the answer. */
   inquire: (question: InquireQuestion) => Promise<string>;
+  /** Shared skill registry backing the use_skill tool. */
+  registry: SkillRegistry;
 }
 
 export interface WorkerToolDeps {
@@ -55,6 +59,8 @@ export interface WorkerToolDeps {
   onFail: (error: string) => void;
   /** Tavily API key for web_search. Optional — tool returns error if unset. */
   tavilyApiKey?: string;
+  /** Shared skill registry backing the use_skill tool. */
+  registry: SkillRegistry;
 }
 
 export function createControllerTools(deps: ControllerToolDeps) {
@@ -76,6 +82,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
     update_notebook: updateNotebookTool({ setNotebook: deps.setNotebook }),
     search_files: searchFilesTool({ cwd: deps.cwd }),
     inquire: inquireTool({ inquire: deps.inquire }),
+    use_skill: useSkillTool({ registry: deps.registry }),
   };
 }
 
@@ -92,5 +99,6 @@ export function createWorkerTools(deps: WorkerToolDeps) {
     update_progress: updateProgressTool({ reportProgress: deps.reportProgress }),
     done: doneTool({ onComplete: deps.onComplete }),
     fail: failTool({ onFail: deps.onFail }),
+    use_skill: useSkillTool({ registry: deps.registry }),
   };
 }

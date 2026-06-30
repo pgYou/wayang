@@ -11,6 +11,7 @@ import { WORKER_AGENT_MAX_STEP } from './constants';
 
 import { buildWorkerSystemPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   readonly state: WorkerState;
@@ -20,7 +21,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private contextManager: ContextManager;
   private readonly ctx: SystemContext;
 
-  constructor(provider: ProviderConfig, ctx: SystemContext) {
+  constructor(provider: ProviderConfig, ctx: SystemContext, skills: SkillRegistry) {
     super(provider);
     this.ctx = ctx;
     this.logger = ctx.logger;
@@ -28,7 +29,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     this.state = new WorkerState(ctx.sessionDir, this.id, ctx.logger);
     this.contextManager = new ContextManager(
       this.state,
-      buildWorkerSystemPrompt(this.ctx),
+      buildWorkerSystemPrompt(this.ctx, skills),
     );
   }
 

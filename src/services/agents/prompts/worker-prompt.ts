@@ -6,7 +6,8 @@
  */
 
 import { SystemContext } from '@/infra/system-context';
-import { assemble, buildEnvironment, section } from './prompt-utils';
+import type { SkillRegistry } from '@/services/skills/registry';
+import { assemble, buildEnvironment, buildSkillCatalog, section } from './prompt-utils';
 
 // ---------------------------------------------------------------------------
 // Static sections
@@ -114,7 +115,7 @@ Good: "Failed: npm install timed out after 30s, network may be unreachable"`);
 // ---------------------------------------------------------------------------
 
 /** Build the full Worker system prompt (static + dynamic). */
-export function buildWorkerSystemPrompt(ctx: SystemContext): string {
+export function buildWorkerSystemPrompt(ctx: SystemContext, skills: SkillRegistry): string {
   return assemble(
     IDENTITY,
     LANGUAGE_RULES,
@@ -123,6 +124,7 @@ export function buildWorkerSystemPrompt(ctx: SystemContext): string {
     QUALITY_RULES,
     HARD_CONSTRAINTS,
     PROGRESS_REPORTING,
+    buildSkillCatalog(skills),
     buildEnvironment(ctx)
   );
 }

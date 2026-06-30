@@ -32,6 +32,8 @@ export interface WayangConfig {
   workers?: Record<string, WorkerConfig>;
   /** Tavily API key for web_search tool. Optional — tool returns error if unset. */
   tavilyApiKey?: string;
+  /** Extra directories to scan for skills (in addition to global + workspace). */
+  skillsDirs?: string[];
 }
 
 /** Validate required fields, return error message or null */

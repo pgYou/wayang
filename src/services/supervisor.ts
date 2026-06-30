@@ -4,6 +4,8 @@ import { TaskExecuteEngine } from '@/services/task-execute-engine';
 import { ControllerLoop } from '@/services/controller-loop';
 import { SessionManager } from '@/services/session/session-manager';
 import { ControllerAgent } from './agents/controller-agent';
+import { SkillRegistry } from '@/services/skills/registry';
+import { resolveSkillDirs } from '@/services/skills/skill-dir';
 import type { WayangConfig } from '@/types/index';
 
 /** Parameters for Supervisor initialization. */
@@ -23,6 +25,8 @@ export class Supervisor {
   readonly engine: TaskExecuteEngine;
   readonly controllerAgent: ControllerAgent;
   readonly sessionManager: SessionManager;
+  /** Shared skill registry — discovered at startup, used by all agents. */
+  readonly skills: SkillRegistry;
   private controllerLoop: ControllerLoop;
 
   constructor(options: SupervisorOptions) {
@@ -52,13 +56,21 @@ export class Supervisor {
 
     // Create services
     this.signalQueue = new SignalQueue(this.ctx);
-    this.engine = new TaskExecuteEngine(this.ctx, this.signalQueue);
+
+    // Shared skill registry (global + project + config dirs).
+    this.skills = new SkillRegistry(
+      resolveSkillDirs(workspaceDir, config.skillsDirs),
+      this.ctx.logger,
+    );
+
+    this.engine = new TaskExecuteEngine(this.ctx, this.signalQueue, this.skills);
     this.controllerAgent = ControllerAgent.create({
       ctx: this.ctx,
       provider: this.ctx.controllerProvider,
       config,
       engine: this.engine,
       signalQueue: this.signalQueue,
+      skills: this.skills,
     });
 
     this.controllerLoop = new ControllerLoop(
