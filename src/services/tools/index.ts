@@ -20,6 +20,8 @@ import { failTool } from './fail';
 import { updateProgressTool } from './update-progress';
 import { chatWorkerTool } from './chat-worker';
 import { respondPermissionTool } from './respond-permission';
+import { useSkillTool } from './use-skill';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 export interface ControllerToolDeps {
   addTask: (task: TaskDetail) => void;
@@ -49,6 +51,8 @@ export interface ControllerToolDeps {
   sendMessageToWorker: (workerId: string, message: string) => boolean;
   /** Respond to a worker's permission request. */
   resolvePermission: (requestId: string, approved: boolean, reason?: string) => boolean;
+  /** Shared skill registry backing the use_skill tool. */
+  registry: SkillRegistry;
 }
 
 export interface WorkerToolDeps {
@@ -61,6 +65,8 @@ export interface WorkerToolDeps {
   onFail: (error: string) => void;
   /** Tavily API key for web_search. Optional — tool returns error if unset. */
   tavilyApiKey?: string;
+  /** Shared skill registry backing the use_skill tool. */
+  registry: SkillRegistry;
 }
 
 export function createControllerTools(deps: ControllerToolDeps) {
@@ -88,6 +94,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
     respond_permission: respondPermissionTool({
       respondPermission: deps.resolvePermission,
     }),
+    use_skill: useSkillTool({ registry: deps.registry }),
   };
 }
 
@@ -104,5 +111,6 @@ export function createWorkerTools(deps: WorkerToolDeps) {
     update_progress: updateProgressTool({ reportProgress: deps.reportProgress }),
     done: doneTool({ onComplete: deps.onComplete }),
     fail: failTool({ onFail: deps.onFail }),
+    use_skill: useSkillTool({ registry: deps.registry }),
   };
 }

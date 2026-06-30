@@ -119,6 +119,47 @@ wayang --resume --all             # list all sessions to pick
 | `--resume [id]`       | Resume a session        | —                       |
 | `--verbose`           | Enable verbose logging  | —                       |
 
+## Skills
+
+**Skills** are on-demand expertise packages (Anthropic-style `SKILL.md` + optional resource scripts) that any agent — Controller or Worker — can load at runtime via the `use_skill` tool. Skills are discovered once at startup and shared across all agents through the in-memory registry.
+
+### Discovery
+
+Wayang scans these directories (later ones override earlier ones on name conflict):
+
+1. `~/.wayang/skills/` — global, cross-project skills
+2. `<workspace>/.wayang/skills/` — project-level skills (commit these to share with your team)
+3. Any extra dirs listed in `config.skillsDirs`
+
+Each skill is a directory containing a `SKILL.md` with YAML frontmatter. Only `description` is required:
+
+```
+.wayang/skills/
+└── my-skill/
+    ├── SKILL.md          # required, with `description` frontmatter
+    └── run.sh            # optional resource files (scripts, templates, ...)
+```
+
+```markdown
+---
+description: One-line summary the LLM sees in the skill catalog.
+---
+
+# my-skill
+
+Detailed instructions the agent loads on demand via use_skill.
+Resource scripts are invoked by the worker's own shell tool — Wayang never
+executes them for you.
+```
+
+### How agents share skills
+
+- **Controller** sees the skill catalog in its system prompt and can call `use_skill` to load domain knowledge before writing a task description.
+- **Puppet Worker** sees the same catalog and has the `use_skill` tool, so it can load skill instructions while executing a task.
+- **Claude Code Worker** has no Wayang tools, so its catalog lists each skill's directory — it reads `SKILL.md` with its own file tools.
+
+Skills are read-only config: a worker that has already started won't pick up newly added skills until the next session (or the next worker spawn).
+
 ## Project Structure
 
 ```
@@ -132,10 +173,11 @@ src/
 │   ├── supervisor.ts     DI container + lifecycle
 │   ├── controller-loop.ts Main control loop
 │   ├── agents/           Agent layer (Controller + Worker + Prompts + State)
+│   ├── skills/           Skill registry (discovery + lazy content loading)
 │   ├── task/             Task domain (pool + scheduler + state)
 │   ├── signal/           Signal domain (queue + event sourcing state)
 │   ├── session/          Session domain (manager + state)
-│   └── tools/            Tool implementations (13 tools)
+│   └── tools/            Tool implementations (incl. use_skill)
 ├── infra/                Infrastructure (event-bus, logger, state framework, persistence)
 ├── types/                Shared types
 └── utils/                Utility functions

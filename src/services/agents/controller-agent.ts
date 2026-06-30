@@ -34,6 +34,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     state: ControllerAgentState,
     provider: ProviderConfig,
     tools: ToolSet,
+    skills: import('@/services/skills/registry').SkillRegistry,
   ) {
     super(provider);
     this.ctx = ctx;
@@ -43,7 +44,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 
     this.contextManager = new ContextManager(
       state,
-      buildControllerSystemPrompt(this.ctx),
+      buildControllerSystemPrompt(this.ctx, skills),
     );
     this.setHooks({
       beforeLLM: ({ messages }) => {
@@ -67,8 +68,9 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     config: WayangConfig;
     engine: TaskExecuteEngine;
     signalQueue: SignalQueue;
+    skills: import('@/services/skills/registry').SkillRegistry;
   }): ControllerAgent {
-    const { ctx, provider, config, engine, signalQueue } = opts;
+    const { ctx, provider, config, engine, signalQueue, skills } = opts;
     const state = new ControllerAgentState(ctx);
 
     const tools = createControllerTools({
@@ -90,9 +92,10 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       inquire: (question) => state.askInquiry(question),
       sendMessageToWorker: (workerId, message) => engine.sendMessageToWorker(workerId, message),
       resolvePermission: (requestId, approved, reason) => engine.resolvePermission(requestId, approved, reason),
+      registry: skills,
     });
 
-    return new ControllerAgent(ctx, state, provider, tools);
+    return new ControllerAgent(ctx, state, provider, tools, skills);
   }
 
   /** Run the controller agent — streams text chunks while updating streamingEntries in state. */

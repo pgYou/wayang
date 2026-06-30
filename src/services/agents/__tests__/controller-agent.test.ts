@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ControllerAgentState } from '@/services/agents/controller-state';
 import type { ControllerSignal } from '@/types/index';
+import { SkillRegistry } from '@/services/skills/registry';
 import { mockProvider, createMockCtx } from '@/__tests__/helpers';
+
+// Empty registry — controller needs it for prompt building.
+const skills = new SkillRegistry([]);
 
 // Mock model-factory to avoid real SDK calls
 vi.mock('../model-factory.js', () => ({
@@ -54,6 +58,7 @@ describe('ControllerAgent', () => {
       state as ControllerAgentState,
       mockProvider,
       {}, // tools
+      skills,
     );
   });
 

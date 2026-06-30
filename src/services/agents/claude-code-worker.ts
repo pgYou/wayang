@@ -21,6 +21,7 @@ import { buildThirdPartyPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 export class ClaudeCodeWorker implements IWorkerInstance {
   readonly id: string;
@@ -84,17 +85,20 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private _progressTimer: ReturnType<typeof setTimeout> | null = null;
   private _pendingProgress: string | null = null;
   private readonly ctx: SystemContext;
+  private readonly skills: SkillRegistry;
   constructor(
     config: WorkerConfig,
     sessionDir: string,
     workspaceDir: string,
     ctx: SystemContext,
+    skills: SkillRegistry,
   ) {
     this.id = generateId('cw');
     this.ctx = ctx;
     this.config = config;
     this.workspaceDir = workspaceDir;
     this.logger = ctx.logger;
+    this.skills = skills;
     this.state = new WorkerState(sessionDir, this.id, ctx.logger);
   }
 
@@ -286,7 +290,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
               return {
                 value: {
                   type: 'user' as const,
-                  message: { role: 'user' as const, content: `${buildThirdPartyPrompt()}${initialPrompt}` },
+                  message: { role: 'user' as const, content: `${buildThirdPartyPrompt(this.skills)}${initialPrompt}` },
                   parent_tool_use_id: null,
                 } satisfies SDKUserMessage,
                 done: false,

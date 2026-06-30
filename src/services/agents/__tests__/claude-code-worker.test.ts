@@ -4,7 +4,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
 import type { WorkerConfig, TaskDetail } from '@/types/index';
+import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx } from '@/__tests__/helpers';
+
+// Empty registry — worker needs it for prompt building.
+const skills = new SkillRegistry([]);
 
 // Mock the Claude Agent SDK
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
@@ -93,7 +97,7 @@ describe('ClaudeCodeWorker', () => {
   });
 
   function createWorker(cfg: WorkerConfig = config) {
-    return new ClaudeCodeWorker(cfg, tempDir, tempDir, createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any));
+    return new ClaudeCodeWorker(cfg, tempDir, tempDir, createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any), skills);
   }
 
   it('should have a valid id', () => {

@@ -6,6 +6,7 @@
  */
 
 import { SystemContext } from '@/infra/system-context';
+import type { SkillRegistry } from '@/services/skills/registry';
 import os from 'node:os';
 
 /** Join non-empty sections into a single prompt string. */
@@ -62,4 +63,31 @@ export function buildEnvironment(ctx: SystemContext, opts?: EnvironmentExtra): s
   };
 
   return section('Environment', kvBlock(pairs));
+}
+
+// ---------------------------------------------------------------------------
+// Skills catalog section
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the "Skills" section listing discovered skills.
+ *
+ * Returns an empty string when no skills are found so `assemble()` drops it.
+ * Both Controller and Worker prompts inject this so agents know what is
+ * available; the body is loaded on demand via the `use_skill` tool.
+ *
+ * @param includeDir When true, append each skill's directory path. Intended
+ *   for third-party workers (e.g. Claude Code) that lack the `use_skill` tool
+ *   and must read `SKILL.md` with their own file tools.
+ */
+export function buildSkillCatalog(registry: SkillRegistry, includeDir = false): string {
+  const items = registry.list().sort((a, b) => a.name.localeCompare(b.name));
+  if (items.length === 0) return '';
+  const lines = items
+    .map((s) => `- \`${s.name}\` — ${s.description}${includeDir ? ` (${s.dir})` : ''}`)
+    .join('\n');
+  return section(
+    'Skills',
+    `On-demand expertise (workflows, conventions, scripts). Call the \`use_skill\` tool with a name to load its full instructions when a task matches.\n\n${lines}`,
+  );
 }

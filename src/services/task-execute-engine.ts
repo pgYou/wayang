@@ -24,6 +24,7 @@ import { BaseWayangState } from '@/infra/state/base-state';
 import type { Subscribable } from '@/infra/state/subscribable';
 import type { StateEvent } from '@/infra/state/base-state';
 import { WorkerAgent } from '@/services/agents/worker-agent';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 /** Runtime-only observable state — no file persistence, no restore needed. */
 class RuntimeState extends BaseWayangState {
@@ -85,6 +86,7 @@ export class TaskExecuteEngine implements Subscribable {
   private readonly maxConcurrency: number;
   private readonly workerProvider: ProviderConfig;
   private readonly workerConfigs?: Record<string, WorkerConfig>;
+  private readonly skills: SkillRegistry;
 
   /** Worker instance tracking. */
   private workers = new Map<string, IWorkerInstance>();
@@ -96,11 +98,13 @@ export class TaskExecuteEngine implements Subscribable {
   constructor(
     private readonly ctx: SystemContext,
     private readonly signalQueue: SignalQueue,
+    skills: SkillRegistry,
   ) {
     this.logger = ctx.logger;
     this.maxConcurrency = ctx.maxConcurrency;
     this.workerProvider = ctx.workerProvider;
     this.workerConfigs = ctx.config.workers;
+    this.skills = skills;
 
     // Internal state objects
     this.taskState = new TaskPoolState(ctx);
@@ -423,7 +427,7 @@ export class TaskExecuteEngine implements Subscribable {
     const type = workerType ?? PUPPET_WORKER_TYPE;
 
     if (type === PUPPET_WORKER_TYPE) {
-      return new WorkerAgent(this.workerProvider, this.ctx);
+      return new WorkerAgent(this.workerProvider, this.ctx, this.skills);
     }
 
     const config = this.workerConfigs?.[type];
@@ -436,7 +440,7 @@ export class TaskExecuteEngine implements Subscribable {
 
     switch (config.type) {
       case 'claude-code':
-        return new ClaudeCodeWorker(config, this.ctx.sessionDir, this.ctx.workspaceDir, this.ctx);
+        return new ClaudeCodeWorker(config, this.ctx.sessionDir, this.ctx.workspaceDir, this.ctx, this.skills);
       default:
         throw new Error(`Unsupported worker type: "${config.type}"`);
     }
@@ -457,6 +461,7 @@ export class TaskExecuteEngine implements Subscribable {
           listTasks: (status?: TaskDetail['status']) => this.list(status),
           cwd: this.ctx.workspaceDir,
           tavilyApiKey: this.ctx.config.tavilyApiKey,
+          registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {
             this.signalQueue.enqueue({
               source: 'worker',
