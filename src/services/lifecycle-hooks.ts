@@ -19,6 +19,10 @@ export interface HookMap {
   'task:failed': { taskId: string; error: string };
   'task:cancelled': { taskId: string };
 
+  // --- Worker lifecycle ---
+  /** Emitted when a multi-stage worker parks in idle (not disposed). */
+  'worker:idle': { workerId: string; taskId: string };
+
   // --- Controller loop lifecycle ---
   'controller:loop-start': { signals: ControllerSignal[] };
   'controller:loop-end': { lastWakeAt: number };

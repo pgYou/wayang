@@ -19,6 +19,12 @@ export interface ActiveWorkerInfo {
   taskTitle: string;
   /** Display emoji for the worker type. */
   emoji: string;
+  /** Lifecycle phase. `idle` = a multi-stage worker parked between stages. */
+  status: 'running' | 'idle';
+  /** For idle workers: summary of the last completed stage. */
+  lastStageSummary?: string;
+  /** For idle workers: timestamp (ms) when it entered idle. */
+  idleSinceMs?: number;
 }
 
 /** Unified interface for all worker types (puppet, third-party). */

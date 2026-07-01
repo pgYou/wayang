@@ -175,7 +175,7 @@ describe('ControllerLoop heartbeat', () => {
   it('should inject heartbeat after idle interval when workers are running', async () => {
     vi.mocked(mocks.heartbeat.getRunningCount).mockReturnValue(1);
     vi.mocked(mocks.heartbeat.getActiveWorkers).mockReturnValue([
-      { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now() - 5000, emoji: '🧸' },
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now() - 5000, emoji: '🧸', status: 'running' },
     ]);
 
     await startLoop({ heartbeatIntervalMs: 10_000 });
@@ -201,7 +201,7 @@ describe('ControllerLoop heartbeat', () => {
   it('should reset timer when signal:enqueued fires', async () => {
     vi.mocked(mocks.heartbeat.getRunningCount).mockReturnValue(1);
     vi.mocked(mocks.heartbeat.getActiveWorkers).mockReturnValue([
-      { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now(), emoji: '🧸' },
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now(), emoji: '🧸', status: 'running' },
     ]);
 
     await startLoop({ heartbeatIntervalMs: 30_000 });
@@ -217,7 +217,7 @@ describe('ControllerLoop heartbeat', () => {
   it('should clean up timer on shutdown', async () => {
     vi.mocked(mocks.heartbeat.getRunningCount).mockReturnValue(1);
     vi.mocked(mocks.heartbeat.getActiveWorkers).mockReturnValue([
-      { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now(), emoji: '🧸' },
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Test', workerType: 'puppet', startedAt: Date.now(), emoji: '🧸', status: 'running' },
     ]);
 
     const loop = await startLoop({ heartbeatIntervalMs: 10_000 });
@@ -233,7 +233,7 @@ describe('ControllerLoop heartbeat', () => {
     vi.mocked(mocks.heartbeat.getRunningCount).mockReturnValue(1);
     vi.mocked(mocks.heartbeat.getPendingCount).mockReturnValue(2);
     vi.mocked(mocks.heartbeat.getActiveWorkers).mockReturnValue([
-      { workerId: 'w1', taskId: 't1', taskTitle: 'Write code', workerType: 'puppet', startedAt, emoji: '🧸' },
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Write code', workerType: 'puppet', startedAt, emoji: '🧸', status: 'running' },
     ]);
 
     await startLoop({ heartbeatIntervalMs: 10_000 });

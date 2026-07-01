@@ -23,7 +23,8 @@ import { bootstrap } from './bootstrap';
 
 const cli = meow(`
   Usage
-    $ wayang                       New session
+    $ wayang                       Resume latest session for this workspace (or new)
+    $ wayang --fresh               Start a brand-new session (ignore prior context)
     $ wayang --resume              Interactive session select
     $ wayang --resume <id>         Resume specific session
     $ wayang --resume --all        Show all workspaces
@@ -32,7 +33,8 @@ const cli = meow(`
     --home-dir <path>       Root directory for sessions & config (default: $HOME)
     --workspace-dir, -w     Working directory for tools (default: pwd)
     --config, -c            Config file path
-    --resume, -r            Resume a previous session
+    --fresh, -n             Start a new session (do not inherit prior context)
+    --resume, -r            Pick a session to resume (interactive, or <id>)
     --all                   List sessions across all workspaces (with --resume)
     --verbose, -v           Enable debug logging
 `, {
@@ -50,6 +52,11 @@ const cli = meow(`
     config: {
       type: 'string',
       shortFlag: 'c',
+    },
+    fresh: {
+      type: 'boolean',
+      shortFlag: 'n',
+      default: false,
     },
     resume: {
       type: 'boolean',
@@ -83,6 +90,7 @@ bootstrap({
   homeDir: path.join(homeDir, '.wayang'),
   workspaceDir,
   logLevel: cli.flags.verbose ? 'debug' : 'info',
+  fresh: cli.flags.fresh,
   resume: resumeFlag ? (resumeId ?? '') : undefined,
   showAll: cli.flags.all,
 }).catch((err) => {

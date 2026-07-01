@@ -4,7 +4,7 @@ import { ControllerAgentState } from '@/services/agents/controller-state';
 import { buildAssistantEntry } from './utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload } from '@/types/index';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload } from '@/types/index';
 import type { ConversationEntry, SignalEntry } from '@/types/conversation';
 import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -76,6 +76,8 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     const tools = createControllerTools({
       addTask: (task: TaskDetail) => engine.add(task),
       validateWorkerType: (type: string) => engine.validateWorkerType(type),
+      assignToWorker: (workerId: string, task: TaskDetail) => engine.assignToExistingWorker(workerId, task),
+      validateIdleWorker: (workerId: string) => engine.validateIdleWorker(workerId),
       listTasks: (status?: TaskDetail['status']) => engine.list(status),
       getTask: (taskId: string) => engine.get(taskId),
       getWorkerConversation: (taskId: string) => engine.getWorkerConversation(taskId),
@@ -93,6 +95,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       sendMessageToWorker: (workerId, message) => engine.sendMessageToWorker(workerId, message),
       resolvePermission: (requestId, approved, reason) => engine.resolvePermission(requestId, approved, reason),
       registry: skills,
+      disposeWorker: (workerId) => engine.abortByWorkerId(workerId),
     });
 
     return new ControllerAgent(ctx, state, provider, tools, skills);
@@ -337,6 +340,28 @@ const signalConverters: Record<string, SignalConverter> = {
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
       content: `[PERMISSION REQUEST] Worker ${p.workerId} (task: ${p.taskTitle}) wants to run ${p.toolName}.\nDescription: ${p.description}\nRequest ID: ${p.requestId}\nUse respond_permission to approve or deny.`,
+    };
+  },
+
+  cancelled: (sig, ts) => {
+    const p = sig.payload as CancelledSignalPayload;
+    return {
+      ...signalBase(ts),
+      subtype: ESignalSubtype.WorkerDisposed,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: 'worker_disposed',
+      content: `[WORKER DISPOSED] Idle (multi-stage) worker ${p.workerId} was disposed (reaped by timeout or manually). No task failed — its last stage already completed. If you still need this worker's context, create a fresh multi-stage task instead.`,
+    };
+  },
+
+  previous_session_tasks: (sig, ts) => {
+    const p = sig.payload as PreviousSessionTasksSignalPayload;
+    const lines = p.tasks.map(t => `- [${t.status}] ${t.title} (id: ${t.taskId}): ${t.description}`);
+    return {
+      ...signalBase(ts),
+      subtype: ESignalSubtype.PreviousSessionTasks,
+      taskTitle: 'previous_session_tasks',
+      content: `[PREVIOUS SESSION] ${p.tasks.length} unfinished task(s) from session ${p.sessionId} (last active ${new Date(p.lastActiveAt).toLocaleString()}):\n${lines.join('\n')}\nWorkers were NOT resumed. Decide: re-dispatch with add_task, treat as stale, or ask the user.`,
     };
   },
 };

@@ -5,6 +5,13 @@
  * Independent implementation (does NOT extend BaseAgent).
  * Conversation entries are written for UI display and audit only —
  * never read back for context recovery.
+ *
+ * Multi-stage note: the Claude Agent SDK's `query()` starts a fresh session
+ * each call, so unlike the puppet WorkerAgent this worker does NOT carry SDK
+ * session context across stages. Assigning a follow-up task reuses the worker
+ * instance (and its persisted conversation log), but the underlying Claude
+ * process begins anew. `multiStage` therefore provides less benefit here than
+ * for puppet workers.
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -107,6 +114,11 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     _tools: Record<string, any>,
     onProgress?: (msg: string) => void,
   ): Promise<WorkerResult> {
+    // Reset per-run state. A multi-stage worker's run() is called more than
+    // once; without this reset a stale terminal result from the previous stage
+    // would short-circuit the new stage.
+    this._terminalResult = null;
+
     // Set task info in state
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
 

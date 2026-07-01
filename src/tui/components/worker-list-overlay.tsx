@@ -44,20 +44,23 @@ export function WorkerListOverlay({ workers, onSelect, onDismiss }: WorkerListOv
       <Text bold dimColor>Workers ({workers.length})</Text>
       {workers.map((w, i) => {
         const isSelected = i === selectedIndex;
-        const elapsed = Math.round((Date.now() - w.startedAt) / 1000);
+        const isIdle = w.status === 'idle';
+        const baseTs = isIdle ? (w.idleSinceMs ?? w.startedAt) : w.startedAt;
+        const elapsed = Math.round((Date.now() - baseTs) / 1000);
         const mins = Math.floor(elapsed / 60);
         const secs = elapsed % 60;
         const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+        const stateTag = isIdle ? '⏸ idle' : 'running';
 
         return (
           <Box key={w.workerId}>
             <Text color={isSelected ? theme.baseToken.color.accent : undefined}>
               {isSelected ? '▸ ' : '  '}
             </Text>
-            <Text bold={isSelected} color={isSelected ? theme.baseToken.color.accent : theme.baseToken.color.textNormal}>
+            <Text bold={isSelected} color={isSelected ? theme.baseToken.color.accent : (isIdle ? 'gray' : theme.baseToken.color.textNormal)}>
               {w.emoji} {w.taskTitle}
             </Text>
-            <Text dimColor> {w.workerType} · {w.taskId} · {timeStr}</Text>
+            <Text dimColor> {w.workerType} · {stateTag} {timeStr}</Text>
           </Box>
         );
       })}

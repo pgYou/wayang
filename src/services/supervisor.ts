@@ -6,6 +6,7 @@ import { SessionManager } from '@/services/session/session-manager';
 import { ControllerAgent } from './agents/controller-agent';
 import { SkillRegistry } from '@/services/skills/registry';
 import { resolveSkillDirs } from '@/services/skills/skill-dir';
+import { readSessionUnfinishedTasks } from '@/infra/session-helpers';
 import type { WayangConfig } from '@/types/index';
 
 /** Parameters for Supervisor initialization. */
@@ -17,6 +18,14 @@ export interface SupervisorOptions {
   resume?: { sessionId: string; sessionDir: string };
   /** Home directory for sessions storage. Required for new sessions. */
   homeDir?: string;
+  /**
+   * Whether to inject a `previous_session_tasks` signal at resume when the
+   * resumed session has unfinished tasks. Defaults to false — only the
+   * sessionless default-inherit path (bootstrap, not --resume) sets this true,
+   * so an explicit `--resume` is treated as "continue this exact session"
+   * without re-surfacing stale tasks.
+   */
+  injectPreviousTasks?: boolean;
 }
 
 export class Supervisor {
@@ -28,9 +37,13 @@ export class Supervisor {
   /** Shared skill registry — discovered at startup, used by all agents. */
   readonly skills: SkillRegistry;
   private controllerLoop: ControllerLoop;
+  private readonly resumeSessionDir?: string;
+  private readonly injectPreviousTasks: boolean;
 
   constructor(options: SupervisorOptions) {
     const { config, workspaceDir, logLevel } = options;
+    this.resumeSessionDir = options.resume?.sessionDir;
+    this.injectPreviousTasks = options.injectPreviousTasks ?? false;
 
     // Create session manager
     if (options.resume) {
@@ -88,12 +101,41 @@ export class Supervisor {
   // --- Lifecycle ---
 
   async restore(): Promise<void> {
+    // Snapshot unfinished tasks from the resumed session BEFORE engine.restore
+    // runs recoverCrashedTasks (which marks running tasks as failed). This way
+    // the controller still sees what was pending/in-flight.
+    let previousTasks: { id: string; title: string; description: string; status: 'pending' | 'running' }[] | null = null;
+    if (this.resumeSessionDir && this.injectPreviousTasks) {
+      previousTasks = readSessionUnfinishedTasks(this.resumeSessionDir);
+    }
+
     await Promise.all([
       this.sessionManager.restore(),
       this.controllerAgent.restore(),
       this.engine.restore(),
       this.signalQueue.restore(),
     ]);
+
+    // Inject the previous-session-tasks signal so the controller can decide
+    // whether to re-dispatch. Workers are NOT auto-resumed (recoverCrashedTasks
+    // already marked running tasks as failed).
+    if (previousTasks && previousTasks.length > 0) {
+      this.signalQueue.enqueue({
+        source: 'system',
+        type: 'previous_session_tasks',
+        payload: {
+          sessionId: this.ctx.sessionId,
+          lastActiveAt: Date.now(),
+          tasks: previousTasks.map(t => ({
+            taskId: t.id,
+            title: t.title,
+            description: t.description,
+            status: t.status,
+          })),
+        },
+      });
+      this.ctx.logger.info({ count: previousTasks.length }, 'Injected previous_session_tasks signal');
+    }
 
     this.ctx.logger.info('Supervisor restored');
   }
@@ -104,6 +146,15 @@ export class Supervisor {
       id: this.ctx.sessionId,
       startedAt: this.ctx.startedAt,
     });
+
+    // Cold-start compaction: when resuming (notably the sessionless default),
+    // the inherited conversation tail may already exceed the context window.
+    // Compact once before the loop starts so the first signal isn't processed
+    // against an overflowing context. No-op when already within budget.
+    if (this.controllerAgent.needsCompaction()) {
+      this.ctx.logger.info('Cold-start: inherited context exceeds budget, compacting');
+      await this.controllerAgent.performCompaction();
+    }
 
     // Start controller loop (fire-and-forget, runs until abort)
     this.controllerLoop.start().catch((err) => {
