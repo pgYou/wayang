@@ -7,8 +7,9 @@
 
 import type { WorkerConfig } from '@/types/config';
 import { PUPPET_DEFAULTS } from '../worker-defaults';
-import { assemble, buildEnvironment, section } from './prompt-utils';
+import { assemble, buildEnvironment, buildSkillCatalog, section } from './prompt-utils';
 import { SystemContext } from '@/infra/system-context';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 // ---------------------------------------------------------------------------
 // Static sections (cacheable, never change between calls)
@@ -87,7 +88,25 @@ Good: "Write a 200-word Chinese prose essay about autumn. Save to sanwen.txt in 
 
 ## After creating a task
 
-Give the user a brief one-line acknowledgement, then STOP. Do not speculate about results.`);
+Give the user a brief one-line acknowledgement, then STOP. Do not speculate about results.
+
+## Multi-stage work (multiStage + assignToWorker)
+
+Some work proceeds in stages with a checkpoint in between (e.g. draft a design → user/you review → implement). For these, create the first task with \`multiStage: true\`. When that task completes, its worker parks in **idle** instead of being destroyed, keeping its accumulated context.
+
+To continue the work on the SAME worker, create the follow-up task with \`assignToWorker: "<workerId>"\` (the workerId from the completion). The worker resumes with full context — no need to re-explain what was already done.
+
+When to use multiStage:
+- The next stage genuinely depends on the worker's prior context (explored files, partial artifacts, decisions made).
+- A review/checkpoint happens between stages.
+
+When NOT to use it:
+- One-shot tasks (most tasks). Default is multiStage=false.
+- Independent tasks — just create separate tasks normally.
+
+Housekeeping:
+- An idle worker occupies a concurrency slot and is auto-disposed after a timeout. If you decide a parked worker is no longer needed, call \`dispose_worker(workerId)\` to free the slot.
+- Keep idle worker count small. Do not accumulate many idle workers "just in case".`);
 
 const PLANNING_TOOLS = section('Planning tools',
   `## Notebook (planning scratchpad)
@@ -217,7 +236,16 @@ Do NOT call skip_reply for permission requests — you MUST respond with respond
 CRITICAL RULES:
 - PROGRESS ≠ COMPLETED. Even if the progress text says "完成" or "done", it is still just a progress update. Only [WORKER SIGNAL: COMPLETED] means the task actually finished.
 - Do NOT call list_tasks or get_task_detail after receiving a signal. The signal already contains the information.
-- skip_reply is a TERMINAL action — it ends the turn. You MUST NOT generate any text content in the same response. Your response must contain ONLY the skip_reply tool call and nothing else.`);
+- skip_reply is a TERMINAL action — it ends the turn. You MUST NOT generate any text content in the same response. Your response must contain ONLY the skip_reply tool call and nothing else.
+
+## [PREVIOUS SESSION ...] — unfinished tasks from the last run
+
+You resumed a previous session that had unfinished tasks. Workers were NOT automatically resumed — these tasks are informational only. Decide for each:
+- Still relevant → re-dispatch with add_task (you can reuse the description).
+- Stale / superseded → ignore it.
+- Unclear → briefly tell the user what was pending and ask whether to continue.
+
+Do NOT blindly re-create everything. The user may have moved on. Prefer to summarize and ask unless the intent is obvious.`);
 
 const HARD_CONSTRAINTS = section('Hard constraints',
   `- NEVER execute commands or write files yourself. Delegate via add_task（worker will execute）.
@@ -250,7 +278,7 @@ export interface ControllerDynamicContext {
 }
 
 /** Build the full Controller system prompt. */
-export function buildControllerSystemPrompt(ctx: SystemContext): string {
+export function buildControllerSystemPrompt(ctx: SystemContext, skills: SkillRegistry): string {
   return assemble(
     IDENTITY,
     RESPONSE_STYLE,
@@ -259,6 +287,7 @@ export function buildControllerSystemPrompt(ctx: SystemContext): string {
     SIGNAL_HANDLING,
     HARD_CONSTRAINTS,
     buildWorkerList(ctx.config.workers),
+    buildSkillCatalog(skills),
     buildEnvironment(ctx),
   );
 }

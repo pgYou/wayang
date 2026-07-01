@@ -24,6 +24,7 @@ import { BaseWayangState } from '@/infra/state/base-state';
 import type { Subscribable } from '@/infra/state/subscribable';
 import type { StateEvent } from '@/infra/state/base-state';
 import { WorkerAgent } from '@/services/agents/worker-agent';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 /** Runtime-only observable state — no file persistence, no restore needed. */
 class RuntimeState extends BaseWayangState {
@@ -42,6 +43,9 @@ import { isInsideWorkspace } from '@/services/tools/common';
 import { resolve } from 'node:path';
 
 const PUPPET_WORKER_TYPE = 'puppet';
+
+/** Default idle timeout: idle workers are reaped after 30 minutes if not reused. */
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Bash commands matching these patterns always require controller approval.
@@ -85,6 +89,7 @@ export class TaskExecuteEngine implements Subscribable {
   private readonly maxConcurrency: number;
   private readonly workerProvider: ProviderConfig;
   private readonly workerConfigs?: Record<string, WorkerConfig>;
+  private readonly skills: SkillRegistry;
 
   /** Worker instance tracking. */
   private workers = new Map<string, IWorkerInstance>();
@@ -92,15 +97,22 @@ export class TaskExecuteEngine implements Subscribable {
   private workerTaskMap = new Map<string, string>();
   /** Permission middleware resolvers keyed by workerId. */
   private permissionResolvers = new Map<string, PermissionMiddlewareResult>();
+  /** Idle-reaping timers keyed by workerId (multi-stage workers only). */
+  private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Idle TTL (ms). Idle workers are disposed after this if not reused. */
+  private readonly idleTimeoutMs: number;
 
   constructor(
     private readonly ctx: SystemContext,
     private readonly signalQueue: SignalQueue,
+    skills: SkillRegistry,
   ) {
     this.logger = ctx.logger;
     this.maxConcurrency = ctx.maxConcurrency;
     this.workerProvider = ctx.workerProvider;
     this.workerConfigs = ctx.config.workers;
+    this.skills = skills;
+    this.idleTimeoutMs = ctx.config.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
 
     // Internal state objects
     this.taskState = new TaskPoolState(ctx);
@@ -219,6 +231,19 @@ export class TaskExecuteEngine implements Subscribable {
     return this.workerState.get<ActiveWorkerInfo[]>('activeWorkers');
   }
 
+  /** Count slots occupied by running + idle workers (both count against maxConcurrency). */
+  getOccupiedSlots(): number {
+    return this.getActiveWorkers().length;
+  }
+
+  /** Check whether a worker is idle and reusable. Returns error message or null. */
+  validateIdleWorker(workerId: string): string | null {
+    const info = this.getActiveWorkers().find(w => w.workerId === workerId);
+    if (!info) return `Worker "${workerId}" not found.`;
+    if (info.status !== 'idle') return `Worker "${workerId}" is not idle (status: ${info.status}).`;
+    return null;
+  }
+
   getWorkerState(workerId: string): Subscribable | null {
     const worker = this.workers.get(workerId);
     return worker ?? null;
@@ -262,7 +287,8 @@ export class TaskExecuteEngine implements Subscribable {
 
   /** Attempt to schedule pending tasks up to maxConcurrency. */
   scheduleNext(): void {
-    while (this.hasPending() && this.getRunningCount() < this.maxConcurrency) {
+    // Idle workers also occupy a concurrency slot, so they count here.
+    while (this.hasPending() && this.getOccupiedSlots() < this.maxConcurrency) {
       const task = this.peekHighestPriority();
       if (!task) break;
 
@@ -278,6 +304,7 @@ export class TaskExecuteEngine implements Subscribable {
         workerType: meta.label,
         taskTitle: task.title,
         emoji: meta.emoji,
+        status: 'running',
       });
 
       // Fire-and-forget worker run
@@ -306,16 +333,40 @@ export class TaskExecuteEngine implements Subscribable {
     this.logger.warn({ taskId }, 'No running worker found for task abort');
   }
 
+  /**
+   * Dispose a worker directly by id. Handles both running and idle workers.
+   * Used to manually reap an idle multi-stage worker.
+   */
+  abortByWorkerId(workerId: string): boolean {
+    const info = this.getActiveWorkers().find(w => w.workerId === workerId);
+    if (!info) return false;
+
+    if (info.status === 'idle') {
+      this.disposeIdleWorker(workerId, 'manual dispose');
+      return true;
+    }
+
+    const worker = this.workers.get(workerId);
+    worker?.abort();
+    this.permissionResolvers.get(workerId)?.cleanup();
+    this.logger.info({ workerId }, 'Worker aborted by id');
+    return true;
+  }
+
   /** Abort all workers. Used during shutdown. */
   abortAll(): void {
-    for (const worker of this.workers.values()) {
-      worker.abort();
-    }
-    // Clean up all pending permission resolvers
+    // Cancel any pending permission resolvers
     for (const resolver of this.permissionResolvers.values()) {
       resolver.cleanup();
     }
     this.permissionResolvers.clear();
+    // Clear all idle reapers
+    for (const workerId of this.idleTimers.keys()) {
+      this.clearIdleTimer(workerId);
+    }
+    for (const worker of this.workers.values()) {
+      worker.abort();
+    }
     // Cancel all running tasks
     const running = this.list('running');
     for (const task of running) {
@@ -323,6 +374,8 @@ export class TaskExecuteEngine implements Subscribable {
     }
     this.workers.clear();
     this.workerTaskMap.clear();
+    // Drop all active worker entries (idle + running)
+    this.workerState.set('activeWorkers', []);
   }
 
   // ---------------------------------------------------------------------------
@@ -407,12 +460,87 @@ export class TaskExecuteEngine implements Subscribable {
     this.workerState.append('activeWorkers', info);
   }
 
+  private updateActiveWorker(workerId: string, updates: Partial<ActiveWorkerInfo>): void {
+    const workers = this.workerState.get<ActiveWorkerInfo[]>('activeWorkers');
+    const idx = workers.findIndex(w => w.workerId === workerId);
+    if (idx === -1) return;
+    workers[idx] = { ...workers[idx], ...updates };
+    this.workerState.set('activeWorkers', [...workers]);
+  }
+
   private removeActiveWorker(workerId: string): void {
     const workers = this.workerState.get<ActiveWorkerInfo[]>('activeWorkers');
     const idx = workers.findIndex(w => w.workerId === workerId);
     if (idx !== -1) {
       this.workerState.remove('activeWorkers', idx);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private: idle worker lifecycle
+  // ---------------------------------------------------------------------------
+
+  /** Park a multi-stage worker in `idle`, keeping its instance + context. */
+  private moveToIdle(workerId: string, task: TaskDetail, summary: string): void {
+    this.updateActiveWorker(workerId, {
+      status: 'idle',
+      lastStageSummary: summary,
+      idleSinceMs: Date.now(),
+    });
+    this.startIdleTimer(workerId);
+    this.ctx.hooks.emit('worker:idle', { workerId, taskId: task.id });
+    this.logger.info({ workerId, taskId: task.id }, 'Worker entered idle (multi-stage)');
+  }
+
+  /** Start the reaper timer for an idle worker. */
+  private startIdleTimer(workerId: string): void {
+    this.clearIdleTimer(workerId);
+    const timer = setTimeout(() => {
+      this.disposeIdleWorker(workerId, 'idle timeout');
+    }, this.idleTimeoutMs);
+    // Allow the process to exit even if a timer is pending
+    if (typeof timer === 'object' && timer && 'unref' in timer) {
+      (timer as { unref: () => void }).unref();
+    }
+    this.idleTimers.set(workerId, timer);
+  }
+
+  private clearIdleTimer(workerId: string): void {
+    const timer = this.idleTimers.get(workerId);
+    if (timer) {
+      clearTimeout(timer);
+      this.idleTimers.delete(workerId);
+    }
+  }
+
+  /**
+   * Dispose an idle worker: abort, drop tracking, emit a signal so the
+   * controller knows the worker is gone. No task-state change (the stage
+   * task already completed).
+   */
+  private disposeIdleWorker(workerId: string, reason: string): void {
+    const info = this.getActiveWorkers().find(w => w.workerId === workerId);
+    if (!info || info.status !== 'idle') return;
+
+    const worker = this.workers.get(workerId);
+    worker?.abort();
+    this.clearIdleTimer(workerId);
+
+    this.signalQueue.enqueue({
+      source: 'system',
+      type: 'cancelled',
+      payload: {
+        taskId: info.taskId,
+        workerId,
+        workerType: info.workerType,
+        emoji: info.emoji,
+      },
+    });
+
+    this.removeActiveWorker(workerId);
+    this.removeWorkerTracking(workerId);
+    this.logger.info({ workerId, reason }, 'Idle worker disposed');
+    this.scheduleNext();
   }
 
   // ---------------------------------------------------------------------------
@@ -423,7 +551,7 @@ export class TaskExecuteEngine implements Subscribable {
     const type = workerType ?? PUPPET_WORKER_TYPE;
 
     if (type === PUPPET_WORKER_TYPE) {
-      return new WorkerAgent(this.workerProvider, this.ctx);
+      return new WorkerAgent(this.workerProvider, this.ctx, this.skills);
     }
 
     const config = this.workerConfigs?.[type];
@@ -436,7 +564,7 @@ export class TaskExecuteEngine implements Subscribable {
 
     switch (config.type) {
       case 'claude-code':
-        return new ClaudeCodeWorker(config, this.ctx.sessionDir, this.ctx.workspaceDir, this.ctx);
+        return new ClaudeCodeWorker(config, this.ctx.sessionDir, this.ctx.workspaceDir, this.ctx, this.skills);
       default:
         throw new Error(`Unsupported worker type: "${config.type}"`);
     }
@@ -449,6 +577,94 @@ export class TaskExecuteEngine implements Subscribable {
     this.workers.set(workerId, worker);
     this.workerTaskMap.set(workerId, task.id);
 
+    const onProgress = this.buildProgressEmitter(workerId, task, workerType);
+    const tools = this.wireWorker(worker, task, workerId, workerType);
+    this.logger.info({ workerId, taskId: task.id, workerType }, 'Worker starting');
+
+    return worker.run({ ...task, workerId }, tools, onProgress);
+  }
+
+  /**
+   * Dispatch a follow-up task to an existing idle (multi-stage) worker.
+   * Reuses the worker instance + its accumulated conversation context.
+   * Returns false if the worker is missing or not idle.
+   */
+  assignToExistingWorker(workerId: string, task: TaskDetail): boolean {
+    const err = this.validateIdleWorker(workerId);
+    if (err) {
+      this.logger.warn({ workerId, taskId: task.id, err }, 'Cannot assign to worker');
+      return false;
+    }
+
+    const worker = this.workers.get(workerId);
+    if (!worker) {
+      this.logger.warn({ workerId }, 'Idle worker instance missing');
+      return false;
+    }
+
+    const workerType = task.workerType ?? PUPPET_WORKER_TYPE;
+    const meta = getWorkerMeta(workerType, this.workerConfigs);
+
+    // Cancel the idle reaper — worker is being reused
+    this.clearIdleTimer(workerId);
+
+    // Transition task → running, flip the worker back to running
+    const taskWithOrigin: TaskDetail = { ...task, assignedFromWorkerId: workerId };
+    this.moveToRunning(task.id, workerId);
+    this.workerTaskMap.set(workerId, task.id);
+    this.updateActiveWorker(workerId, {
+      status: 'running',
+      taskId: task.id,
+      taskTitle: task.title,
+      workerType: meta.label,
+      emoji: meta.emoji,
+      startedAt: Date.now(),
+      lastStageSummary: undefined,
+      idleSinceMs: undefined,
+    });
+
+    const onProgress = this.buildProgressEmitter(workerId, task, workerType);
+    const tools = this.wireWorker(worker, task, workerId, workerType);
+    this.logger.info({ workerId, taskId: task.id, workerType }, 'Idle worker reused');
+
+    // Fire-and-forget, same lifecycle as spawnWorker
+    worker.run({ ...taskWithOrigin, workerId }, tools, onProgress)
+      .then((result) => this.handleDone(workerId, taskWithOrigin, result))
+      .catch((err) => this.handleFail(workerId, taskWithOrigin, formatLlmError(err)));
+
+    return true;
+  }
+
+  /**
+   * Build the onProgress callback that emits a worker progress signal.
+   * Shared between spawn and assign paths.
+   */
+  private buildProgressEmitter(
+    workerId: string,
+    task: TaskDetail,
+    workerType: string,
+  ): (msg: string) => void {
+    const meta = getWorkerMeta(workerType, this.workerConfigs);
+    return (msg: string) => {
+      this.signalQueue.enqueue({
+        source: 'worker',
+        type: 'progress',
+        payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: meta.emoji, message: msg },
+      });
+    };
+  }
+
+  /**
+   * Wire Wayang tools + permission middleware + signal context onto a worker.
+   * Shared between fresh-spawn and idle-reuse paths.
+   * Returns the tool set ready for `worker.run()`.
+   */
+  private wireWorker(
+    worker: IWorkerInstance,
+    task: TaskDetail,
+    workerId: string,
+    workerType: string,
+  ): Record<string, any> {
     const workerMeta = getWorkerMeta(workerType, this.workerConfigs);
 
     // Puppet workers need Wayang tools; third-party workers don't use them
@@ -457,6 +673,7 @@ export class TaskExecuteEngine implements Subscribable {
           listTasks: (status?: TaskDetail['status']) => this.list(status),
           cwd: this.ctx.workspaceDir,
           tavilyApiKey: this.ctx.config.tavilyApiKey,
+          registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {
             this.signalQueue.enqueue({
               source: 'worker',
@@ -521,36 +738,15 @@ export class TaskExecuteEngine implements Subscribable {
       this.permissionResolvers.set(workerId, worker.permissionHandler);
     }
 
-    this.logger.info({ workerId, taskId: task.id, workerType }, 'Worker starting');
-
-    return worker.run(
-      { ...task, workerId },
-      tools,
-      (msg: string) => {
-        this.signalQueue.enqueue({
-          source: 'worker',
-          type: 'progress',
-          payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: workerMeta.emoji, message: msg },
-        });
-      },
-    );
+    return tools;
   }
 
   private handleDone(workerId: string, task: TaskDetail, result: WorkerResult): void {
     const workerType = task.workerType ?? PUPPET_WORKER_TYPE;
     const meta = getWorkerMeta(workerType, this.workerConfigs);
 
-    if (result.status === 'completed') {
-      this.completeTask(task.id, result.summary ?? '');
-      this.signalQueue.enqueue({
-        source: 'worker',
-        type: 'completed',
-        payload: {
-          taskId: task.id, workerId, taskTitle: task.title,
-          workerType, emoji: meta.emoji, summary: result.summary,
-        },
-      });
-    } else {
+    // Failure is never a "stage": always dispose, regardless of multiStage.
+    if (result.status !== 'completed') {
       this.failTask(task.id, result.error ?? 'Unknown error');
       this.signalQueue.enqueue({
         source: 'worker',
@@ -560,8 +756,38 @@ export class TaskExecuteEngine implements Subscribable {
           workerType, emoji: meta.emoji, error: result.error ?? 'Unknown error',
         },
       });
+      this.removeActiveWorker(workerId);
+      this.removeWorkerTracking(workerId);
+      this.scheduleNext();
+      return;
     }
 
+    // Completed. Multi-stage workers park in `idle` instead of being disposed.
+    if (task.multiStage) {
+      this.completeTask(task.id, result.summary ?? '');
+      this.signalQueue.enqueue({
+        source: 'worker',
+        type: 'completed',
+        payload: {
+          taskId: task.id, workerId, taskTitle: task.title,
+          workerType, emoji: meta.emoji, summary: result.summary,
+        },
+      });
+      this.moveToIdle(workerId, task, result.summary ?? '');
+      this.scheduleNext();
+      return;
+    }
+
+    // Default path: completed → dispose
+    this.completeTask(task.id, result.summary ?? '');
+    this.signalQueue.enqueue({
+      source: 'worker',
+      type: 'completed',
+      payload: {
+        taskId: task.id, workerId, taskTitle: task.title,
+        workerType, emoji: meta.emoji, summary: result.summary,
+      },
+    });
     this.removeActiveWorker(workerId);
     this.removeWorkerTracking(workerId);
     this.scheduleNext();
@@ -587,6 +813,8 @@ export class TaskExecuteEngine implements Subscribable {
   }
 
   private removeWorkerTracking(workerId: string): void {
+    // Clear any pending idle reaper (shouldn't exist for disposed workers, but be safe)
+    this.clearIdleTimer(workerId);
     // Delayed removal: wait for UI to unmount
     setTimeout(() => {
       this.permissionResolvers.get(workerId)?.cleanup();

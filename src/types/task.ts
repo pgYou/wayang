@@ -15,4 +15,14 @@ export interface TaskDetail {
   workerSessionId?: string;
   /** Worker type: 'puppet' (default) or a configured worker ID (e.g. 'claude-code'). */
   workerType?: string;
+  /**
+   * Multi-stage task: when true, the worker enters `idle` (not disposed) after
+   * completion, so a follow-up task can be assigned to it with full context.
+   * Controller decides this at add_task time.
+   */
+  multiStage?: boolean;
+  /** When assigned to an existing idle worker: that worker's id. */
+  assignToWorker?: string;
+  /** When this task was dispatched to an idle worker: the worker id that ran it. */
+  assignedFromWorkerId?: string;
 }

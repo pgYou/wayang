@@ -14,6 +14,7 @@ import { checkControllerMessagesTool } from '@/services/tools/check-messages';
 
 import { buildWorkerSystemPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly state: WorkerState;
@@ -23,7 +24,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private contextManager: ContextManager;
   private readonly ctx: SystemContext;
 
-  constructor(provider: ProviderConfig, ctx: SystemContext) {
+  constructor(provider: ProviderConfig, ctx: SystemContext, skills: SkillRegistry) {
     super(provider);
     this.ctx = ctx;
     this.logger = ctx.logger;
@@ -31,10 +32,18 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     this.state = new WorkerState(ctx.sessionDir, this.id, ctx.logger);
     this.contextManager = new ContextManager(
       this.state,
-      buildWorkerSystemPrompt(this.ctx),
+      buildWorkerSystemPrompt(this.ctx, skills),
     );
   }
 
+  /**
+   * Execute a task.
+   *
+   * Multi-stage safe: this method may be called more than once on the same
+   * instance (via the engine's assignToExistingWorker path). Each call resets
+   * the terminal result and appends the new task description as a user message,
+   * so the worker's accumulated conversation carries forward across stages.
+   */
   async run(
     task: TaskDetail & { workerId: string },
     tools: Record<string, any>,

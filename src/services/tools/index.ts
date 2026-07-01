@@ -2,6 +2,7 @@ import type { TaskDetail, ControllerSignal, InquireQuestion } from '@/types/inde
 import { addTaskTool } from './add-task';
 import { listTasksTool } from './list-tasks';
 import { cancelTaskTool } from './cancel-task';
+import { disposeWorkerTool } from './dispose-worker';
 import { getTaskDetailTool } from './get-task-detail';
 import { updateTaskTool } from './update-task';
 import { querySignalsTool } from './query-signals';
@@ -20,11 +21,17 @@ import { failTool } from './fail';
 import { updateProgressTool } from './update-progress';
 import { chatWorkerTool } from './chat-worker';
 import { respondPermissionTool } from './respond-permission';
+import { useSkillTool } from './use-skill';
+import type { SkillRegistry } from '@/services/skills/registry';
 
 export interface ControllerToolDeps {
   addTask: (task: TaskDetail) => void;
   /** Validate workerType. Returns null if valid, error message if invalid. */
   validateWorkerType?: (workerType: string) => string | null;
+  /** Assign a task to an existing idle worker. Returns true if assigned. */
+  assignToWorker?: (workerId: string, task: TaskDetail) => boolean;
+  /** Validate that a worker exists and is idle. Returns error message or null. */
+  validateIdleWorker?: (workerId: string) => string | null;
   listTasks: (status?: TaskDetail['status']) => TaskDetail[];
   getTask: (taskId: string) => TaskDetail | undefined;
   cancelTask: (taskId: string) => boolean;
@@ -49,6 +56,10 @@ export interface ControllerToolDeps {
   sendMessageToWorker: (workerId: string, message: string) => boolean;
   /** Respond to a worker's permission request. */
   resolvePermission: (requestId: string, approved: boolean, reason?: string) => boolean;
+  /** Shared skill registry backing the use_skill tool. */
+  registry: SkillRegistry;
+  /** Dispose a worker by id (running or idle). Returns true if found. */
+  disposeWorker: (workerId: string) => boolean;
 }
 
 export interface WorkerToolDeps {
@@ -61,11 +72,18 @@ export interface WorkerToolDeps {
   onFail: (error: string) => void;
   /** Tavily API key for web_search. Optional — tool returns error if unset. */
   tavilyApiKey?: string;
+  /** Shared skill registry backing the use_skill tool. */
+  registry: SkillRegistry;
 }
 
 export function createControllerTools(deps: ControllerToolDeps) {
   return {
-    add_task: addTaskTool({ addTask: deps.addTask, validateWorkerType: deps.validateWorkerType }),
+    add_task: addTaskTool({
+      addTask: deps.addTask,
+      validateWorkerType: deps.validateWorkerType,
+      assignToWorker: deps.assignToWorker,
+      validateIdleWorker: deps.validateIdleWorker,
+    }),
     list_tasks: listTasksTool({ listTasks: deps.listTasks }),
     cancel_task: cancelTaskTool({
       cancelTask: deps.cancelTask,
@@ -88,6 +106,8 @@ export function createControllerTools(deps: ControllerToolDeps) {
     respond_permission: respondPermissionTool({
       respondPermission: deps.resolvePermission,
     }),
+    use_skill: useSkillTool({ registry: deps.registry }),
+    dispose_worker: disposeWorkerTool({ disposeWorker: deps.disposeWorker }),
   };
 }
 
@@ -104,5 +124,6 @@ export function createWorkerTools(deps: WorkerToolDeps) {
     update_progress: updateProgressTool({ reportProgress: deps.reportProgress }),
     done: doneTool({ onComplete: deps.onComplete }),
     fail: failTool({ onFail: deps.onFail }),
+    use_skill: useSkillTool({ registry: deps.registry }),
   };
 }

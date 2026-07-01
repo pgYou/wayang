@@ -32,6 +32,10 @@ export interface WayangConfig {
   workers?: Record<string, WorkerConfig>;
   /** Tavily API key for web_search tool. Optional — tool returns error if unset. */
   tavilyApiKey?: string;
+  /** Extra directories to scan for skills (in addition to global + workspace). */
+  skillsDirs?: string[];
+  /** Idle timeout (ms) for multi-stage workers before they are reaped. Defaults to 30 min. */
+  idleTimeoutMs?: number;
 }
 
 /** Validate required fields, return error message or null */

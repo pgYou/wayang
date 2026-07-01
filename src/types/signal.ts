@@ -2,7 +2,7 @@
 
 export type SignalStatus = 'unread' | 'read' | 'discarded';
 export type SignalSource = 'user' | 'worker' | 'system';
-export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'heartbeat' | 'permission_request';
+export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'heartbeat' | 'permission_request' | 'previous_session_tasks';
 
 /** User input signal payload. */
 export interface InputSignalPayload {
@@ -102,6 +102,29 @@ export interface PermissionRequestSignalPayload {
   description: string;
 }
 
+/** Snapshot of an unfinished task carried over from a previous session. */
+export interface PreviousSessionTask {
+  taskId: string;
+  title: string;
+  description: string;
+  status: 'pending' | 'running';
+}
+
+/**
+ * System signal injected at sessionless resume: tasks that were pending or
+ * running when the previous session ended. The controller decides whether to
+ * re-dispatch them, treat them as stale, or ask the user. Workers are NOT
+ * auto-resumed — this is purely informational.
+ */
+export interface PreviousSessionTasksSignalPayload {
+  /** Session these tasks came from. */
+  sessionId: string;
+  /** When that session was last active (ms epoch). */
+  lastActiveAt: number;
+  /** Unfinished task snapshots (pending + running from the previous session). */
+  tasks: PreviousSessionTask[];
+}
+
 /** Discriminated union of all signal payloads by SignalType. */
 export type SignalPayloadMap = {
   input: InputSignalPayload;
@@ -111,6 +134,7 @@ export type SignalPayloadMap = {
   cancelled: CancelledSignalPayload;
   heartbeat: HeartbeatSignalPayload;
   permission_request: PermissionRequestSignalPayload;
+  previous_session_tasks: PreviousSessionTasksSignalPayload;
 };
 
 /** A typed signal where payload corresponds to the signal type. */

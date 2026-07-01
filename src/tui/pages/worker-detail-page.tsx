@@ -75,6 +75,9 @@ function WorkerContent({ worker, workerId }: { worker: Subscribable; workerId: s
   const workerType = displayInfo?.workerType ?? 'puppet';
   const taskTitle = displayInfo?.taskTitle ?? taskInfo?.title ?? 'N/A';
 
+  // An idle worker still appears in activeWorkers (parked, not disposed).
+  const isIdle = workerInfo?.status === 'idle';
+
   // Derive completion info from the task history
   const taskStatus = completedTask?.status;
   const isCompleted = taskStatus === 'completed';
@@ -86,11 +89,18 @@ function WorkerContent({ worker, workerId }: { worker: Subscribable; workerId: s
         <Text color="yellow" bold>{emoji} {workerType}</Text>
         <Text dimColor> · </Text>
         <Text bold>{taskTitle}</Text>
+        {isIdle && <Text color="yellow" bold> · ⏸ idle</Text>}
       </Box>
 
       <Box flexDirection="column" flexGrow={1} padding={1}>
         <Text bold>Task:</Text>
         <Text>  {taskInfo?.description ?? 'N/A'}</Text>
+        {isIdle && workerInfo?.lastStageSummary && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>Last stage result:</Text>
+            <Text color="gray">  {workerInfo.lastStageSummary.slice(0, 200)}</Text>
+          </Box>
+        )}
         <Text bold>Conversation ({conversation?.length ?? 0} entries):</Text>
         {(conversation ?? []).slice(-MAX_VISIBLE_ENTRIES).map((entry, i) => (
           <ConversationRow key={`${entry.uuid}-${i}`} entry={entry} />
@@ -99,7 +109,10 @@ function WorkerContent({ worker, workerId }: { worker: Subscribable; workerId: s
 
       <Box paddingX={1} justifyContent="space-between">
         <Text dimColor>Press Esc to go back</Text>
-        {isRunning && <WorkerTimer startedAt={workerInfo!.startedAt} />}
+        {isRunning && isIdle && (
+          <Text color="yellow">⏸ Idle — awaiting follow-up task (auto-reaped after timeout)</Text>
+        )}
+        {isRunning && !isIdle && <WorkerTimer startedAt={workerInfo!.startedAt} />}
         {!isRunning && isCompleted && (
           <Text color="green">Done — {completedTask?.result ?? ''}</Text>
         )}

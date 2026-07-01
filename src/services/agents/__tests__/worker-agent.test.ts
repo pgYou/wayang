@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WorkerAgent } from '@/services/agents/worker-agent';
+import { SkillRegistry } from '@/services/skills/registry';
 import { mockProvider, createMockCtx } from '@/__tests__/helpers';
+
+// Empty registry shared across tests — workers need it for prompt building.
+const skills = new SkillRegistry([]);
 
 // Mock model-factory to avoid real SDK calls
 vi.mock('../model-factory.js', () => ({
@@ -32,19 +36,19 @@ describe('WorkerAgent', () => {
   });
 
   it('should create worker with unique id', () => {
-    const w1 = new WorkerAgent(mockProvider, createMockCtx());
-    const w2 = new WorkerAgent(mockProvider, createMockCtx());
+    const w1 = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const w2 = new WorkerAgent(mockProvider, createMockCtx(), skills);
     expect(w1.id).not.toBe(w2.id);
   });
 
   it('should return completed result via complete() callback', () => {
-    const worker = new WorkerAgent(mockProvider, createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
     worker.complete('All done successfully');
     expect(worker['_terminalResult']).toEqual({ status: 'completed', summary: 'All done successfully' });
   });
 
   it('should return failed result via fail() callback', () => {
-    const worker = new WorkerAgent(mockProvider, createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
     worker.fail('Something went wrong');
     expect(worker['_terminalResult']).toEqual({ status: 'failed', error: 'Something went wrong' });
   });
@@ -52,7 +56,7 @@ describe('WorkerAgent', () => {
   it('should return stream text when max steps reached without done/fail', async () => {
     mockStreamResponse('some text without calling done');
 
-    const worker = new WorkerAgent(mockProvider, createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
     const result = await worker.run(
       { id: 't-5', title: 'test', description: 'test', workerId: 'w-5', priority: 'normal', status: 'running', createdAt: Date.now() },
       {},
@@ -65,7 +69,7 @@ describe('WorkerAgent', () => {
   it('should return failed when abort signal is already set before run', async () => {
     mockStreamResponse('');
 
-    const worker = new WorkerAgent(mockProvider, createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
     worker.abort();
 
     const result = await worker.run(
@@ -78,7 +82,7 @@ describe('WorkerAgent', () => {
   });
 
   it('should return terminal result when complete() called via done tool', async () => {
-    const worker = new WorkerAgent(mockProvider, createMockCtx());
+    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
 
     // Simulate: LLM calls done tool → complete() is invoked during stream
     vi.mocked(streamText).mockImplementation(((opts: any) => {
