@@ -1,6 +1,6 @@
 {
   "name": "wayang-ai",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Multi-agent orchestration platform",
   "type": "module",
   "license": "MIT",
@@ -48,7 +48,7 @@
     "@ai-sdk/openai": "^3.0.50",
     "@anthropic-ai/claude-agent-sdk": "^0.2.98",
     "@types/react": "^18.3.28",
-    "ai": "^6.0.145",
+    "ai": "^6.0.218",
     "fast-glob": "^3.3.3",
     "ink": "^4.4.1",
     "lodash-es": "^4.18.1",

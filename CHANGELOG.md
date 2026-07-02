@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.1 (2026-07-02)
+
+### Fixes & Improvements
+
+**AI SDK system-in-messages warning** — `streamText` now passes `allowSystemInMessages: true`. Worker signals are emitted as `system`-role messages inside `messages` (in-band, order-sensitive notifications from the orchestration system), but AI SDK ≥6.0.x warns that any system message in `messages` may be a prompt-injection risk unless explicitly opted in. Our signals are trusted system-generated content, so opting in is the correct and intended usage — preserving the `system` semantics and conversation ordering without rewriting the converter
+
+### Dependencies
+
+Pinned `ai` to `^6.0.218` (dev environment previously resolved 6.0.149, which predates the system-message guard; aligning dev with the released version that surfaces the warning)
+
 ## v0.4.0 (2026-07-01)
 
 ### Features

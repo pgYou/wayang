@@ -81,6 +81,10 @@ export abstract class BaseAgent {
         stopWhen: stopConditions.length > 0 ? stopConditions : undefined,
         abortSignal: this.abortController.signal,
         onStepFinish: opts.onStep,
+        // SignalEntry entries are trusted system-generated notifications emitted
+        // as `system`-role messages (in-band, order-sensitive). AI SDK v6 warns
+        // on any system message inside `messages` unless this is opted in.
+        allowSystemInMessages: true,
       });
     } catch (err: any) {
       if (this.abortController.signal.aborted) {
