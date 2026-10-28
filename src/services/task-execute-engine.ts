@@ -55,7 +55,7 @@ const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DANGEROUS_BASH_PATTERN = /(?:^|\||;|&&)\s*(?:rm\s|sudo\b|chmod\b|chown\b|mkfs\b|dd\s|shutdown\b|reboot\b|kill\s+-9)/;
 
 /** Matches absolute Unix paths in a command string (e.g. /Users/foo, /tmp/file). */
-const ABSOLUTE_PATH_RE = /\/[a-zA-Z0-9_][a-zA-Z0-9_.\/-]*/g;
+const ABSOLUTE_PATH_RE = /\/[a-zA-Z0-9_][a-zA-Z0-9_./-]*/g;
 
 /** File tools gated by the permission middleware for out-of-workspace paths. */
 const FILE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'search_files', 'search_content'] as const;
@@ -608,9 +608,18 @@ export class TaskExecuteEngine implements Subscribable {
     // Cancel the idle reaper — worker is being reused
     this.clearIdleTimer(workerId);
 
-    // Transition task → running, flip the worker back to running
-    const taskWithOrigin: TaskDetail = { ...task, assignedFromWorkerId: workerId };
-    this.moveToRunning(task.id, workerId);
+    // Transition task → running. This task never went through `add()` (it was
+    // assigned straight to the idle worker), so append to running directly —
+    // moveToRunning would no-op on the pending-list miss and the task would
+    // stay invisible to every view (list_tasks, TUI, history).
+    const taskWithOrigin: TaskDetail = {
+      ...task,
+      assignedFromWorkerId: workerId,
+      status: 'running' as const,
+      startedAt: Date.now(),
+      workerSessionId: workerId,
+    };
+    this.taskState.append('tasks.running', taskWithOrigin);
     this.workerTaskMap.set(workerId, task.id);
     this.updateActiveWorker(workerId, {
       status: 'running',

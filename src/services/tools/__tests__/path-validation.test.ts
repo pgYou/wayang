@@ -61,7 +61,7 @@ describe('write_file path validation', () => {
     // Cleanup
     const { unlinkSync } = await import('node:fs');
     const { resolve } = await import('node:path');
-    try { unlinkSync(resolve(process.cwd(), '__wayang_test_tmp__.txt')); } catch {}
+    try { unlinkSync(resolve(process.cwd(), '__wayang_test_tmp__.txt')); } catch { /* already gone */ }
   });
 
   it('should reject writing to an existing file', async () => {

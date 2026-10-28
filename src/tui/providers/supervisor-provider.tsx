@@ -1,10 +1,10 @@
 import React, { createContext, useContext } from 'react';
-import type { Supervisor } from '@/services/supervisor';
+import type { RemoteSupervisor } from '@/client/remote-supervisor';
 
-const SupervisorContext = createContext<Supervisor | null>(null);
+const SupervisorContext = createContext<RemoteSupervisor | null>(null);
 
 export function SupervisorProvider({ supervisor, children }: {
-  supervisor: Supervisor;
+  supervisor: RemoteSupervisor;
   children: React.ReactNode;
 }) {
   return (
@@ -14,7 +14,7 @@ export function SupervisorProvider({ supervisor, children }: {
   );
 }
 
-export function useSupervisor(): Supervisor {
+export function useSupervisor(): RemoteSupervisor {
   const ctx = useContext(SupervisorContext);
   if (!ctx) throw new Error('useSupervisor must be used within SupervisorProvider');
   return ctx;

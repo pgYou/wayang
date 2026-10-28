@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.5.0 (2026-10-28)
+
+### Architecture
+
+**Headless logic process (`wayang server`)** — The orchestration core (Supervisor, ControllerAgent, TaskExecuteEngine, SignalQueue, SkillRegistry) now runs in a separate process with zero ink/react dependencies. `wayang` spawns the server as a child and connects over stdio; interactive UX (onboard, session select) stays in the client process. E2E tests drive the exact binary + protocol the TUI uses
+
+**RPC v1 (`src/rpc/`)** — Transport-agnostic protocol over newline-delimited JSON on stdio. Command surface: `submit_input`, `resolve_inquiry`, `list_tasks`, `cancel_task`, `update_task`, `respond_permission`, `chat_worker`, `dispose_worker`, `perform_compaction`, `abort_controller`, `get_status`, `get_snapshot`, `subscribe`, `unsubscribe`, `shutdown`. State surface: per-path subscriptions where every event carries the full value at the subscribed path (idempotent client-side cache, snapshot returned on subscribe). WebSocket transport reserved for the 0.6 WebUI
+
+**TUI slimmed to a thin client** — New `RemoteSupervisor` (`src/client/`) presents the same consumption surface over RPC. Removed worker-list overlay, worker-detail page and routing; `/workers` is now a text listing; slash commands became async. The TUI keeps basic conversation, `/tasks`, approval/inquiry prompts
+
+### Testing
+
+**E2E framework** — Fake OpenAI-compatible provider (`src/__tests__/fake-openai-provider.ts`) replaying scripted SSE with content-based matching (immune to controller/worker request races); harness spawning `dist/cli.js server` and driving it over RPC; three scenarios: single-task full chain, permission approval (chmod intercepted → approved via RPC → really executed), multi-stage worker reuse (same workerId across stages)
+
+**Unit/integration** — New suites for rpc transport/server/client (in-memory stream pairs) and WayangServer-over-RPC (in-process, fake provider). Totals: 332 unit tests + 3 e2e scenarios
+
+**CI (GitHub Actions)** — lint + unit + build + e2e on every push and pull request
+
+### Fixes
+
+**Assigned-task invisibility** — Tasks dispatched straight to an idle multi-stage worker were never recorded in `running`/`history` (`moveToRunning` no-ops on the pending-list miss), so they executed and signalled but stayed invisible to `list_tasks` and every view. `assignToExistingWorker` now appends to `running` directly; regression-covered by unit + e2e tests
+
+**bash tool error detail** — Non-zero exits with empty stderr (spawn failures, timeout kills) now include the thrown message instead of a bare `Exit code 1`
+
+**Pre-existing lint errors** — `no-useless-escape`, `no-empty`, `prefer-const` fixed so the new CI lint gate can land
+
+### Documentation
+
+Added v0.5 design doc (`docs/v0.5-server-rpc-design.md`) and the 0.5→1.0 roadmap (`docs/roadmap-0.5-1.0.md`)
+
 ## v0.4.1 (2026-07-02)
 
 ### Fixes & Improvements

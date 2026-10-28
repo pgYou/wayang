@@ -27,7 +27,7 @@ export function searchContentTool(deps: { cwd?: string }) {
     }),
     execute: safeExecute('search_content', async ({ query, path, include }) => {
       const searchDir = path ? resolve(workspace, path) : workspace;
-      let cmd = `grep -rn${include ? ` --include=${shellQuote(include)}` : ''} -- ${shellQuote(query)} ${shellQuote(searchDir)}`;
+      const cmd = `grep -rn${include ? ` --include=${shellQuote(include)}` : ''} -- ${shellQuote(query)} ${shellQuote(searchDir)}`;
 
       try {
         const output = execSync(cmd, {

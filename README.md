@@ -32,6 +32,7 @@ Complex AI workflows need more than a single chat. Wayang acts as an intelligent
 - **Rich TUI** — Ink-powered (React for CLI) interface with streaming output, slash commands, and keyboard shortcuts
 - **Session Recovery** — `wayang --resume` restores interrupted sessions with automatic crash cleanup
 - **Extensible Workers** — Built-in Puppet Worker and Claude Code Worker; plug in custom third-party Workers
+- **Headless Server + RPC** — `wayang server` runs the orchestration core as a headless process driven over a JSON-RPC-style stdio protocol; the TUI is a thin client on the same protocol (WebSocket reserved for the upcoming WebUI)
 - **Context Compression** — Automatic compact to prevent token overflow
 
 ## Architecture
@@ -164,11 +165,14 @@ Skills are read-only config: a worker that has already started won't pick up new
 
 ```
 src/
-├── cli.ts               CLI entry point
-├── bootstrap.ts          Startup orchestration
-├── onboard.ts            First-run setup
-├── session-select.ts     Session picker
-├── ui/                   UI layer (Ink components + hooks + pages)
+├── cli.ts               CLI entry point (client + `server` subcommand)
+├── bootstrap.ts         Client startup orchestration (config/session/spawn)
+├── onboard.ts           First-run setup
+├── session-select.ts    Session picker
+├── rpc/                 RPC v1 protocol, stdio transport, server & client
+├── server/              Headless logic process (`wayang server`)
+├── client/              Client-side RemoteSupervisor + server connector
+├── tui/                 TUI layer (Ink components + hooks + page)
 ├── services/
 │   ├── supervisor.ts     DI container + lifecycle
 │   ├── controller-loop.ts Main control loop
@@ -181,6 +185,8 @@ src/
 ├── infra/                Infrastructure (event-bus, logger, state framework, persistence)
 ├── types/                Shared types
 └── utils/                Utility functions
+
+e2e/                      E2E tests (fake OpenAI provider + server harness + scenarios)
 ```
 
 ## Tech Stack
@@ -201,10 +207,12 @@ src/
 ## Testing
 
 ```bash
-npm test           # 27 test files, 277 tests
-npm run test:watch # watch mode
+npm test           # 39 test files, 332 tests
+npm run test:e2e   # build + e2e scenarios (spawns dist server, fake LLM provider)
 npm run lint       # type check + lint
 ```
+
+CI runs lint + unit + build + e2e on every push and pull request.
 
 ## Roadmap
 
@@ -212,7 +220,7 @@ Full plan with per-version scope and acceptance criteria: [docs/roadmap-0.5-1.0.
 
 | Version | Theme | Highlights |
 | --- | --- | --- |
-| 0.5 | Architecture foundation | Headless logic process + RPC (stdio/WS) + e2e test harness + CI |
+| 0.5 ✅ | Architecture foundation | Headless logic process + RPC (stdio/WS) + e2e test harness + CI |
 | 0.6 | Workbench MVP | WebUI (chat / task board / approval center) + human-readable task IDs (`WAY-N`) |
 | 0.7 | Collaboration core | Task groups, dependencies, structured planning, git worktree isolation, worker-to-worker channel |
 | 0.8 | Open integration | ACP client — connect Gemini CLI, Claude Code, Codex, OpenCode as workers |

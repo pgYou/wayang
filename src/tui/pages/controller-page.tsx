@@ -6,9 +6,7 @@ import { InputArea } from '@/tui/components/input-area';
 import { InquiryPrompt } from '@/tui/components/inquiry-prompt';
 import { StatusBar } from '@/tui/components/status-bar';
 import { OverlayPanel } from '@/tui/components/overlay-panel';
-import { WorkerListOverlay } from '@/tui/components/worker-list-overlay';
 import { useSupervisor } from '@/tui/providers/supervisor-provider';
-import { useRouter } from '@/tui/providers/route-provider';
 import { useWayangState } from '@/tui/hooks/use-wayang-state';
 import { useSlashCommands } from '@/tui/hooks/use-slash-commands';
 import type { ConversationEntry } from '@/types/conversation';
@@ -24,7 +22,6 @@ interface ControllerPageProps {
 
 export function ControllerPage({ onExit }: ControllerPageProps) {
   const supervisor = useSupervisor();
-  const { navigate } = useRouter();
   const { stdout } = useStdout();
   const terminalCols = stdout?.columns ?? 80;
   const chatContentWidth = terminalCols - 4;
@@ -87,31 +84,12 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
 
   const dismissOverlay = useMemoizedFn(() => setOverlay(null));
 
-  const slashCtx = useMemo(() => ({
-    navigate,
-  }), [navigate]);
+  const { handleCommand } = useSlashCommands(supervisor);
 
-  const { handleCommand } = useSlashCommands(supervisor, slashCtx);
-
-  const handleSubmit = useMemoizedFn((input: string) => {
-    const cmdResult = handleCommand(input);
+  const handleSubmit = useMemoizedFn(async (input: string) => {
+    const cmdResult = await handleCommand(input);
     if (cmdResult.handled) {
       if (cmdResult.output === '__EXIT__') { onExit(); return; }
-      if (cmdResult.navigate) { navigate(cmdResult.navigate); return; }
-      if (cmdResult.action === 'workers') {
-        setOverlay({
-          kind: 'component',
-          render: () => (
-            <WorkerListOverlay
-              workers={activeWorkers ?? []}
-              onSelect={(workerId) => { dismissOverlay(); navigate({ page: 'worker', workerId }); }}
-              onDismiss={dismissOverlay}
-            />
-          ),
-          hint: '↑↓ select · enter to view · esc to dismiss',
-        });
-        return;
-      }
       if (cmdResult.action === 'compact') {
         setOverlay(cmdResult.output ? { kind: 'text', content: cmdResult.output } : null);
         supervisor.controllerAgent.performCompaction()
@@ -131,7 +109,6 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
       type: 'input',
       payload: { text: input },
     });
-    supervisor.sessionManager.onUserInput(input);
   });
 
   return (

@@ -2,18 +2,13 @@ import { useRef } from 'react';
 import { useMemoizedFn } from './hooks/use-memoized-fn';
 import { Box, useApp, useInput } from 'ink';
 import { SupervisorProvider, useSupervisor } from './providers/supervisor-provider';
-import { RouteProvider, useRouter } from './providers/route-provider';
 import { ControllerPage } from './pages/controller-page';
-import { WorkerDetailPage } from './pages/worker-detail-page';
 import { useWayangState } from './hooks/use-wayang-state';
-import type { Supervisor } from '@/services/supervisor';
 
-export function App({ supervisor }: { supervisor: Supervisor }) {
+export function App({ supervisor }: { supervisor: import('@/client/remote-supervisor').RemoteSupervisor }) {
   return (
     <SupervisorProvider supervisor={supervisor}>
-      <RouteProvider>
-        <AppContent />
-      </RouteProvider>
+      <AppContent />
     </SupervisorProvider>
   );
 }
@@ -21,7 +16,6 @@ export function App({ supervisor }: { supervisor: Supervisor }) {
 function AppContent() {
   const { exit } = useApp();
   const supervisor = useSupervisor();
-  const { route, navigate } = useRouter();
   const busy = useWayangState<boolean>(supervisor.controllerAgent, 'dynamicState.busy') ?? false;
   const lastCtrlC = useRef<number>(0);
 
@@ -31,10 +25,6 @@ function AppContent() {
 
   // Global keybindings
   useInput((_ch, key) => {
-    if (key.escape && route.page === 'worker') {
-      navigate({ page: 'controller' });
-    }
-
     // Ctrl+C handling
     if (key.ctrl && _ch === 'c') {
       if (busy) {
@@ -55,12 +45,7 @@ function AppContent() {
 
   return (
     <Box flexDirection="column">
-      <Box display={route.page === 'controller' ? 'flex' : 'none'} flexDirection="column">
-        <ControllerPage onExit={handleExit} />
-      </Box>
-      {route.page === 'worker' && (
-        <WorkerDetailPage workerId={route.workerId} onBack={() => navigate({ page: 'controller' })} />
-      )}
+      <ControllerPage onExit={handleExit} />
     </Box>
   );
 }

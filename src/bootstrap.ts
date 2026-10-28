@@ -1,11 +1,12 @@
 /**
  * Wayang — shared bootstrap logic
  *
- * Orchestrates: config loading → session resolution → Supervisor startup.
- * Interactive flows (onboard, session select) are in separate modules.
+ * Orchestrates: config loading → session resolution → headless server
+ * spawn → TUI render. Interactive flows (onboard, session select) stay
+ * in this (client) process; the logic process never prompts.
  */
 
-import { Supervisor, type SupervisorOptions } from './services/supervisor';
+import { connectRemoteServer } from './client/connect';
 import { getSession, getLatestSessionForWorkspace } from './infra/session-helpers';
 import { renderInkUI } from './tui/render';
 import { loadConfig } from './onboard';
@@ -42,14 +43,13 @@ function die(msg: string): never {
 // --- Bootstrap ---
 
 export async function bootstrap(options: BootstrapOptions): Promise<void> {
-  const config = await loadConfig(options.configPath);
+  // Client-side load keeps interactive onboarding in the terminal; the
+  // server reloads the (now persisted) config non-interactively.
+  await loadConfig(options.configPath);
 
-  const supervisorOpts: SupervisorOptions = {
-    config,
-    workspaceDir: options.workspaceDir,
-    logLevel: options.logLevel,
-    homeDir: options.homeDir,
-  };
+  let session: 'new' | { resume: string } = 'new';
+  let injectPreviousTasks = false;
+  let workspaceDir = options.workspaceDir;
 
   if (options.fresh) {
     // Explicit new session — do not inherit prior context.
@@ -58,17 +58,17 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     // If none exists, fall through to a new session.
     const latest = getLatestSessionForWorkspace(options.homeDir, options.workspaceDir);
     if (latest) {
-      supervisorOpts.resume = { sessionId: latest.sessionId, sessionDir: latest.sessionDir };
+      session = { resume: latest.sessionId };
       // Only the sessionless path surfaces unfinished tasks as a signal — an
       // explicit --resume means "continue this exact session as-is".
-      supervisorOpts.injectPreviousTasks = true;
+      injectPreviousTasks = true;
       console.log(`  Resuming session ${latest.sessionId}`);
     }
   } else if (options.resume === '') {
     // Interactive session select (--resume without ID)
     const result = await selectSessionInteractive(options.homeDir, options.workspaceDir, options.showAll ?? false);
-    supervisorOpts.workspaceDir = result.meta.workspace;
-    supervisorOpts.resume = { sessionId: result.sessionId, sessionDir: result.sessionDir };
+    workspaceDir = result.meta.workspace;
+    session = { resume: result.sessionId };
     console.log(`  Resuming session ${result.sessionId}`);
   } else {
     // Resume specific session (--resume <id>)
@@ -76,21 +76,25 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     if (!existing) {
       die(`Session "${options.resume}" not found.`);
     }
-    supervisorOpts.workspaceDir = existing.meta.workspace;
-    supervisorOpts.resume = { sessionId: existing.sessionId, sessionDir: existing.sessionDir };
+    workspaceDir = existing.meta.workspace;
+    session = { resume: existing.sessionId };
     console.log(`  Resuming session ${existing.sessionId}`);
   }
 
-  const supervisor = new Supervisor(supervisorOpts);
-
-  await supervisor.restore();
-  await supervisor.start();
+  const { remote, stop } = await connectRemoteServer({
+    configPath: options.configPath,
+    homeDir: options.homeDir,
+    workspaceDir,
+    session,
+    injectPreviousTasks,
+    logLevel: options.logLevel,
+  });
 
   // Graceful shutdown on SIGTERM (external kill)
   process.on('SIGTERM', () => {
-    supervisor.shutdown().then(() => process.exit(0));
+    void stop().then(() => process.exit(0));
   });
 
-  await renderInkUI(supervisor);
-  await supervisor.shutdown();
+  await renderInkUI(remote);
+  await stop();
 }
