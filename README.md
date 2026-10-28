@@ -208,13 +208,20 @@ npm run lint       # type check + lint
 
 ## Roadmap
 
-- [x] **Controller ↔ Worker Chat** — Allow the controller to chat with a running worker and ask for human approval when needed
-- [ ] **Persistent Workers Across Tasks** — Allow workers to survive task completion and receive follow-up tasks, retaining conversation context for iterative refinement without starting from scratch
-- [ ] **Sessionless Long-Running Agent** — Rethink session design: always inherit context from the previous run + long-term memory, making Wayang a continuously running agent rather than a session-based tool
-- [ ] **More Third-Party Worker Agents** — Expand integrations beyond Claude Code (e.g. Codex, Aider, Cursor agent)
-- [ ] **TUI Improvements** — Better worker detail pages, richer status display, and overall UX polish
-- [ ] **GUI** — Bring Wayang to a graphical interface beyond the terminal
-- [ ] **Pluggable Worker Ecosystem** — Standardize a Worker plugin protocol (capabilities, tools, resources), build a plugin registry, and provide scaffolding so the community can develop and share custom Workers
+Full plan with per-version scope and acceptance criteria: [docs/roadmap-0.5-1.0.md](docs/roadmap-0.5-1.0.md) (Chinese). Goal: evolve from a multi-agent CLI into a **multi-agent collaboration workbench**.
+
+| Version | Theme | Highlights |
+| --- | --- | --- |
+| 0.5 | Architecture foundation | Headless logic process + RPC (stdio/WS) + e2e test harness + CI |
+| 0.6 | Workbench MVP | WebUI (chat / task board / approval center) + human-readable task IDs (`WAY-N`) |
+| 0.7 | Collaboration core | Task groups, dependencies, structured planning, git worktree isolation, worker-to-worker channel |
+| 0.8 | Open integration | ACP client — connect Gemini CLI, Claude Code, Codex, OpenCode as workers |
+| 0.9 | Execution power | MCP tool mounting, richer built-in tools, hardening |
+| 0.10 | Always-on & remote | Daemon, remote access, notifications, scheduled backlog ("perpetual" mode with human checkpoints) |
+| 0.11 | Memory & quality loop | Workspace knowledge base, review worker, test-as-definition-of-done |
+| 1.0 | Ecosystem & stability | Worker plugin protocol + scaffolding, skill registry, sandboxing, distribution |
+
+Done so far: Controller ↔ Worker chat & permission approval (v0.3), persistent multi-stage workers & sessionless long-running (v0.4).
 
 ## License
 
