@@ -1,6 +1,6 @@
 {
   "name": "wayang-ai",
-  "version": "0.5.0",
+  "version": "0.5.0-rc.1",
   "description": "Multi-agent orchestration platform",
   "type": "module",
   "license": "MIT",
@@ -23,8 +23,8 @@
     "claude"
   ],
   "bin": {
-    "wayang": "./dist/cli.js",
-    "waya": "./dist/cli.js"
+    "wayang": "dist/cli.js",
+    "waya": "dist/cli.js"
   },
   "files": [
     "dist",
