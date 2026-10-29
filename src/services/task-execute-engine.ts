@@ -37,45 +37,15 @@ import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
 import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { createWorkerTools } from '@/services/tools/index';
 import { wrapWithPermissionMiddleware, type PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
+import { FILE_TOOL_NAMES, needsBashPermission, needsFilePermission } from '@/services/tools/permission-rules';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
-import { isInsideWorkspace } from '@/services/tools/common';
 import { resolve } from 'node:path';
 
 const PUPPET_WORKER_TYPE = 'puppet';
 
 /** Default idle timeout: idle workers are reaped after 30 minutes if not reused. */
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
-
-/**
- * Bash commands matching these patterns always require controller approval.
- * Matches at command start or after shell operators (|, ;, &&) to reduce
- * false positives from quoted strings.
- */
-const DANGEROUS_BASH_PATTERN = /(?:^|\||;|&&)\s*(?:rm\s|sudo\b|chmod\b|chown\b|mkfs\b|dd\s|shutdown\b|reboot\b|kill\s+-9)/;
-
-/** Matches absolute Unix paths in a command string (e.g. /Users/foo, /tmp/file). */
-const ABSOLUTE_PATH_RE = /\/[a-zA-Z0-9_][a-zA-Z0-9_./-]*/g;
-
-/** File tools gated by the permission middleware for out-of-workspace paths. */
-const FILE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'search_files', 'search_content'] as const;
-
-/** Check whether a file tool call targets a path outside the workspace. */
-function needsFilePermission(workspace: string, args: Record<string, unknown>): boolean {
-  const rawPath = args.path;
-  if (typeof rawPath !== 'string' || !rawPath) return false;
-  return !isInsideWorkspace(resolve(workspace, rawPath), workspace);
-}
-
-/** Check whether a bash command needs controller approval. */
-function needsBashPermission(workspace: string, command: string): boolean {
-  // Tier 1: dangerous commands always need permission
-  if (DANGEROUS_BASH_PATTERN.test(command)) return true;
-
-  // Tier 2: commands referencing absolute paths outside workspace
-  const paths = command.match(ABSOLUTE_PATH_RE) ?? [];
-  return paths.some(p => !isInsideWorkspace(p, workspace));
-}
 
 // ---------------------------------------------------------------------------
 // TaskExecuteEngine
