@@ -24,9 +24,16 @@ export function conversationToSdkMessages(entries: ConversationEntry[]): ModelMe
 
         // Build assistant content parts
         const parts: Array<
+          { type: 'reasoning'; text: string } |
           { type: 'text'; text: string } |
           { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
         > = [];
+
+        // Thinking models (DeepSeek/GLM-style) require the reasoning to be
+        // passed back on assistant messages, especially tool-calling turns.
+        if (entry.message.reasoning) {
+          parts.push({ type: 'reasoning' as const, text: entry.message.reasoning });
+        }
 
         if (effectiveContent) {
           parts.push({ type: 'text' as const, text: effectiveContent });

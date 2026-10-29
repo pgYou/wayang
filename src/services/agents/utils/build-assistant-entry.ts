@@ -15,12 +15,12 @@ export function buildAssistantEntry(
 ): AssistantEntry {
   const ts = nowISO();
   const text = event.text ?? '';
-  const reasoning =
-    event.reasoningText &&
-    event.reasoningText !== '[]' &&
-    event.reasoningText.length > 0
-      ? event.reasoningText
-      : undefined;
+  const reasoningText =
+    event.reasoningText?.trim() ||
+    // Fallback: join per-part reasoning when reasoningText is not populated
+    (event.reasoning ?? []).map((r) => r.text).filter(Boolean).join('\n') ||
+    undefined;
+  const reasoning = reasoningText && reasoningText !== '[]' ? reasoningText : undefined;
 
   // Extract tool call records
   const toolCalls: ToolCallRecord[] | undefined =
