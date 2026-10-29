@@ -123,7 +123,7 @@ if (cli.input[0] === 'server') {
 
   bootstrap({
     configPath,
-    homeDir: path.join(homeDir, '.wayang'),
+    homeDir,
     workspaceDir,
     logLevel: cli.flags.verbose ? 'debug' : 'info',
     fresh: cli.flags.fresh,

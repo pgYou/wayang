@@ -38,27 +38,51 @@ export interface E2ESetup {
   client: RpcClient;
   workspaceDir: string;
   homeDir: string;
+  /** E2E root dir (holds home/, workspace/ and config.json); reusable across setups. */
+  root: string;
+  /** Session id reported by the server's ready notification. */
+  sessionId: string;
+  /** Session dir reported by the server's ready notification. */
+  sessionDir: string;
   state: E2EState;
   /** Latest workerId from `completed` signals (for assignToWorker scripts). */
   lastCompletedWorkerId(): string | undefined;
   submit(text: string): Promise<void>;
   waitFor(what: string, predicate: (state: E2EState) => boolean, timeoutMs?: number): Promise<void>;
-  dispose(): Promise<void>;
+  /**
+   * Graceful shutdown + cleanup. Pass `keep` to preserve the tmp root and/or
+   * the fake provider for a follow-up setup (e.g. resume across restarts).
+   */
+  dispose(keep?: { root?: boolean; provider?: boolean }): Promise<void>;
 }
 
-export async function setupE2E(script: ScriptEntry[]): Promise<E2ESetup> {
-  const provider = await startFakeProvider(script);
+export interface E2EOptions {
+  /**
+   * Value for the server's `--session` flag: 'new' (default) or
+   * 'resume:<id>' — mirrors what the TUI client spawns.
+   */
+  session?: string;
+  /** Reuse an existing e2e root (config.json + home/ with prior sessions). */
+  root?: string;
+  /** Reuse a fake provider so the endpoint in the reused config stays valid. */
+  provider?: FakeProvider;
+}
 
-  const root = mkdtempSync(join(tmpdir(), 'wayang-e2e-'));
+export async function setupE2E(script: ScriptEntry[], options: E2EOptions = {}): Promise<E2ESetup> {
+  const provider = options.provider ?? await startFakeProvider(script);
+
+  const root = options.root ?? mkdtempSync(join(tmpdir(), 'wayang-e2e-'));
   const homeDir = join(root, 'home');
   const workspaceDir = join(root, 'workspace');
-  mkdirSync(workspaceDir, { recursive: true });
   const configPath = join(root, 'config.json');
-  writeFileSync(configPath, JSON.stringify({
-    providers: { fake: { endpoint: provider.baseURL, apiKey: 'e2e-key', modelName: 'fake-model' } },
-    controller: { provider: 'fake' },
-    worker: { provider: 'fake', maxConcurrency: 1 },
-  }));
+  if (!options.root) {
+    mkdirSync(workspaceDir, { recursive: true });
+    writeFileSync(configPath, JSON.stringify({
+      providers: { fake: { endpoint: provider.baseURL, apiKey: 'e2e-key', modelName: 'fake-model' } },
+      controller: { provider: 'fake' },
+      worker: { provider: 'fake', maxConcurrency: 1 },
+    }));
+  }
 
   const child: ChildProcess = spawn(process.execPath, [
     CLI_ENTRY,
@@ -66,7 +90,7 @@ export async function setupE2E(script: ScriptEntry[]): Promise<E2ESetup> {
     '--config', configPath,
     '--home-dir', homeDir,
     '--workspace-dir', workspaceDir,
-    '--session', 'new',
+    '--session', options.session ?? 'new',
     '--log-level', 'silent',
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
@@ -84,12 +108,12 @@ export async function setupE2E(script: ScriptEntry[]): Promise<E2ESetup> {
   const client = new RpcClient(transport);
   const store = new RemoteStateStore(client);
 
-  const ready = new Promise<void>((resolve) => {
-    client.on(NOTIFY.READY, () => resolve());
+  const ready = new Promise<Record<string, unknown>>((resolve) => {
+    client.on(NOTIFY.READY, (params) => resolve(params));
   });
-  await Promise.race([
+  const readyParams = await Promise.race([
     ready,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`server not ready. stderr:\n${stderrTail}`)), 30_000)),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`server not ready. stderr:\n${stderrTail}`)), 30_000)),
   ]);
 
   // Collect live state via remote subscriptions.
@@ -114,6 +138,9 @@ export async function setupE2E(script: ScriptEntry[]): Promise<E2ESetup> {
     client,
     workspaceDir,
     homeDir,
+    root,
+    sessionId: String(readyParams.sessionId ?? ''),
+    sessionDir: String(readyParams.sessionDir ?? ''),
     state,
     lastCompletedWorkerId() {
       const completed = state.signals.filter((s) => s.type === 'completed');
@@ -140,7 +167,7 @@ export async function setupE2E(script: ScriptEntry[]): Promise<E2ESetup> {
         await new Promise((r) => setTimeout(r, 100));
       }
     },
-    async dispose(): Promise<void> {
+    async dispose(keep?: { root?: boolean; provider?: boolean }): Promise<void> {
       if (disposed) return;
       disposed = true;
       try {
@@ -156,8 +183,8 @@ export async function setupE2E(script: ScriptEntry[]): Promise<E2ESetup> {
         }),
       ]);
       client.close();
-      await provider.close();
-      rmSync(root, { recursive: true, force: true });
+      if (!keep?.provider) await provider.close();
+      if (!keep?.root) rmSync(root, { recursive: true, force: true });
     },
   };
 

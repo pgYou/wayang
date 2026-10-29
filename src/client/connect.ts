@@ -11,7 +11,7 @@ import { RemoteSupervisor } from './remote-supervisor';
 
 export interface ConnectOptions {
   configPath: string;
-  /** Wayang home dir (the `~/.wayang` equivalent). */
+  /** Root dir for the `--home-dir` flag (the server joins `.wayang` itself). */
   homeDir: string;
   workspaceDir: string;
   session: 'new' | { resume: string };
@@ -60,7 +60,7 @@ export async function connectRemoteServer(options: ConnectOptions): Promise<Remo
   const transport = createStreamTransport(child.stdout!, child.stdin!);
   const rpc = new RpcClient(transport);
 
-  await waitForReady(child, rpc, exited, stderrTail, options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS);
+  await waitForReady(child, rpc, exited, () => stderrTail, options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS);
 
   const store = new RemoteStateStore(rpc);
   let stopping = false;
@@ -106,7 +106,7 @@ function waitForReady(
   child: ChildProcess,
   rpc: RpcClient,
   exited: Promise<number | null>,
-  stderrTail: string,
+  getStderrTail: () => string,
   timeoutMs: number,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -121,11 +121,16 @@ function waitForReady(
     };
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      finish(new Error(`Wayang server did not become ready within ${timeoutMs}ms.\n${stderrTail}`));
+      finish(new Error(`Wayang server did not become ready within ${timeoutMs}ms.\n${getStderrTail()}`));
     }, timeoutMs);
     const offReady = rpc.on(NOTIFY.READY, () => finish());
     void exited.then((code) => {
-      finish(new Error(`Wayang server exited before becoming ready (code ${code}).\n${stderrTail}`));
+      // Defer one tick: a real child can emit 'exit' before its final stderr
+      // chunks flush, and without that grace the error would omit the
+      // server's actual fatal message.
+      setImmediate(() => {
+        finish(new Error(`Wayang server exited before becoming ready (code ${code}).\n${getStderrTail()}`));
+      });
     });
   });
 }
