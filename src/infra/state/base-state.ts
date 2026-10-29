@@ -1,6 +1,6 @@
 import { get, set, cloneDeep } from 'lodash-es';
 import type { StateEvent } from '@/types/index';
-import type { IPersistenceHelper } from './persistence/types';
+import type { IPersistenceHelper, PersistOp } from './persistence/types';
 
 export type { StateEvent };
 
@@ -38,7 +38,7 @@ export abstract class BaseWayangState {
   set(path: string, value: unknown): void {
     const prev = get(this.data, path);
     set(this.data, path, value);
-    this.persist(path);
+    this.persist(path, 'set');
     this.notify(path, 'set', prev);
   }
 
@@ -50,7 +50,7 @@ export abstract class BaseWayangState {
     } else {
       set(this.data, path, partial);
     }
-    this.persist(path);
+    this.persist(path, 'update');
     this.notify(path, 'update', prev);
   }
 
@@ -62,7 +62,7 @@ export abstract class BaseWayangState {
     arr.push(entry);
     // Replace with new array reference so React detects the change
     set(this.data, path, [...arr]);
-    this.persist(path);
+    this.persist(path, 'append', entry);
     this.notify(path, 'append', undefined);
   }
 
@@ -77,7 +77,7 @@ export abstract class BaseWayangState {
     } else {
       arr.splice(idx, 1);
     }
-    this.persist(path);
+    this.persist(path, 'remove');
     this.notify(path, 'remove', prev);
   }
 
@@ -97,28 +97,21 @@ export abstract class BaseWayangState {
 
   // --- Persistence ---
 
-  private persist(path: string): void {
+  /**
+   * Hand the change to whichever helper owns this field, with enough context
+   * for the helper to pick its own strategy. Snapshot helpers replace the
+   * file; append helpers write only the new entry and ignore window edits.
+   */
+  private persist(path: string, op: PersistOp, entry?: unknown): void {
     const topKey = path.split('.')[0];
     for (const mapping of this.persistMappings) {
       if (mapping.path !== topKey) continue;
-
-      if (mapping.helper.mode === 'save') {
-        // JSON: full overwrite for this top-level key
-        mapping.helper.write(this.data[topKey]);
-      } else if (mapping.helper.mode === 'append') {
-        // JSONL: only written on append operations
-        // set/remove only update memory; callers should use append for JSONL data
-      }
-    }
-  }
-
-  /** Append-mode persistence for subclasses to call directly. */
-  protected persistAppend(path: string, entry: unknown): void {
-    const topKey = path.split('.')[0];
-    for (const mapping of this.persistMappings) {
-      if (mapping.path === topKey && mapping.helper.mode === 'append') {
-        mapping.helper.write(entry);
-      }
+      mapping.helper.write({
+        path: topKey,
+        op,
+        value: this.data[topKey],
+        entry,
+      });
     }
   }
 

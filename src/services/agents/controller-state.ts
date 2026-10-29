@@ -104,14 +104,6 @@ export class ControllerAgentState extends BaseWayangState {
     }, 'ControllerAgentState restored');
   }
 
-  /** Override append to ensure JSONL write-per-entry. */
-  append(path: string, entry: unknown): void {
-    super.append(path, entry);
-    if (path === 'conversation') {
-      this.persistAppend(path, entry);
-    }
-  }
-
   /** Set a pending inquiry and return a Promise that resolves when the user answers. */
   askInquiry(question: InquireQuestion): Promise<string> {
     return new Promise<string>((resolve) => {

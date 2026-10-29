@@ -57,6 +57,11 @@ export interface WayangConfig {
   skillsDirs?: string[];
   /** Idle timeout (ms) for multi-stage workers before they are reaped. Defaults to 30 min. */
   idleTimeoutMs?: number;
+  /**
+   * Number of processed (read/discarded) signals retained in the hot window.
+   * Unread signals are always kept. Defaults to 2000.
+   */
+  signalWindowSize?: number;
 }
 
 /** Validate required fields, return error message or null */

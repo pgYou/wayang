@@ -64,12 +64,4 @@ export class WorkerState extends BaseWayangState {
     }
     this.logger.info('WorkerState restored');
   }
-
-  /** Override append to ensure JSONL write-per-entry. */
-  append(path: string, entry: unknown): void {
-    super.append(path, entry);
-    if (path === 'conversation') {
-      this.persistAppend(path, entry);
-    }
-  }
 }
