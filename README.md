@@ -100,6 +100,12 @@ Or create `~/.wayang.config.json` manually:
 
 API key can be set via config or the `WAYANG_LLM_API_KEY` environment variable.
 
+Workers default to `"toolChoice": "required"` — every step must emit a tool call, so a worker always finishes via its `done`/`fail` tools. Some OpenAI-compatible endpoints (e.g. internal llmproxy proxies) reject `tool_choice: "required"` with HTTP 400; for those, opt out per-endpoint in the `worker` section:
+
+```json
+"worker": { "provider": "my-model", "maxConcurrency": 3, "toolChoice": "auto" }
+```
+
 ### Run
 
 ```bash

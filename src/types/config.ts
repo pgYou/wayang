@@ -1,5 +1,16 @@
 // --- Config ---
 
+/**
+ * LLM tool-choice mode passed through to the provider (OpenAI `tool_choice`).
+ * - 'required': force the model to emit a tool call on every step. This is the
+ *   default for puppet workers — it guarantees the worker eventually finishes
+ *   via the done/fail tools instead of stopping on plain text.
+ * - 'auto': let the model decide. Needed for OpenAI-compatible endpoints that
+ *   reject `tool_choice: "required"` with HTTP 400 (e.g. internal llmproxy).
+ * - 'none': disable tool calls.
+ */
+export type ToolChoice = 'auto' | 'required' | 'none';
+
 export interface ProviderConfig {
   endpoint: string;
   apiKey: string;
@@ -27,7 +38,17 @@ export interface WorkerConfig {
 export interface WayangConfig {
   providers: Record<string, ProviderConfig>;
   controller: { provider: string };
-  worker: { provider: string; maxConcurrency: number };
+  worker: {
+    provider: string;
+    maxConcurrency: number;
+    /**
+     * Tool-choice mode for puppet workers. Defaults to 'required' — the worker
+     * is forced to call tools each step so it must terminate via done/fail.
+     * Some OpenAI-compatible endpoints (e.g. internal llmproxy) reject
+     * `tool_choice: "required"` with HTTP 400; set to 'auto' for those.
+     */
+    toolChoice?: ToolChoice;
+  };
   /** Third-party worker definitions, keyed by worker ID. */
   workers?: Record<string, WorkerConfig>;
   /** Tavily API key for web_search tool. Optional — tool returns error if unset. */

@@ -1,6 +1,6 @@
 import { streamText, stepCountIs, hasToolCall, type OnStepFinishEvent, type ModelMessage, type ToolSet } from 'ai';
 import { createModel } from './model-factory';
-import type { ProviderConfig } from '@/types/index';
+import type { ProviderConfig, ToolChoice } from '@/types/index';
 import { generateId } from '@/utils/id';
 
 // --- Stream Loop Types ---
@@ -18,11 +18,15 @@ export interface StreamLoopOptions {
   system: string;
   messages: ModelMessage[];
   tools: ToolSet;
-  toolChoice?: 'required' | 'auto';
+  /** Tool-choice mode forwarded to the provider. Omit for SDK default (auto). */
+  toolChoice?: ToolChoice;
   maxSteps?: number;
   /** Tool names that signal the loop should stop after execution (e.g. 'done', 'fail'). */
   stopTools?: string[];
   onStep?: (event: OnStepFinishEvent) => void;
+  /** Called when the LLM stream errors (e.g. HTTP 400/403 from the provider).
+   *  Without this, textStream silently drops error parts. */
+  onStreamError?: (error: unknown) => void;
 }
 
 export interface AgentHooks {
@@ -81,6 +85,9 @@ export abstract class BaseAgent {
         stopWhen: stopConditions.length > 0 ? stopConditions : undefined,
         abortSignal: this.abortController.signal,
         onStepFinish: opts.onStep,
+        onError: ({ error }) => {
+          opts.onStreamError?.(error);
+        },
         // SignalEntry entries are trusted system-generated notifications emitted
         // as `system`-role messages (in-band, order-sensitive). AI SDK v6 warns
         // on any system message inside `messages` unless this is opted in.

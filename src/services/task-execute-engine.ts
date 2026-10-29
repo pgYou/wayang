@@ -551,7 +551,7 @@ export class TaskExecuteEngine implements Subscribable {
     const type = workerType ?? PUPPET_WORKER_TYPE;
 
     if (type === PUPPET_WORKER_TYPE) {
-      return new WorkerAgent(this.workerProvider, this.ctx, this.skills);
+      return new WorkerAgent(this.workerProvider, this.ctx, this.skills, this.ctx.config.worker.toolChoice);
     }
 
     const config = this.workerConfigs?.[type];

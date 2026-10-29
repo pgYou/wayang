@@ -4,7 +4,7 @@ import { WorkerState, type InboxMessage } from '@/services/agents/worker-state';
 import { buildAssistantEntry } from './utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { WorkerResult, TaskDetail, ProviderConfig, IWorkerInstance } from '@/types/index';
+import type { WorkerResult, TaskDetail, ProviderConfig, ToolChoice, IWorkerInstance } from '@/types/index';
 import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -21,14 +21,24 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly logger: Logger;
   private _terminalResult: WorkerResult | null = null;
   private readonly workspaceDir: string;
+  private readonly toolChoice: ToolChoice | undefined;
   private contextManager: ContextManager;
   private readonly ctx: SystemContext;
 
-  constructor(provider: ProviderConfig, ctx: SystemContext, skills: SkillRegistry) {
+  constructor(
+    provider: ProviderConfig,
+    ctx: SystemContext,
+    skills: SkillRegistry,
+    /** Tool-choice mode (worker.toolChoice in config). Falls back to 'required' —
+     *  forces a tool call every step so the worker must finish via done/fail.
+     *  Set to 'auto' for endpoints that reject `tool_choice: "required"` (HTTP 400). */
+    toolChoice?: ToolChoice,
+  ) {
     super(provider);
     this.ctx = ctx;
     this.logger = ctx.logger;
     this.workspaceDir = ctx.workspaceDir;
+    this.toolChoice = toolChoice;
     this.state = new WorkerState(ctx.sessionDir, this.id, ctx.logger);
     this.contextManager = new ContextManager(
       this.state,
@@ -79,9 +89,12 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       system: this.contextManager.getSystemPrompt(),
       messages: this.contextManager.getMessages(),
       tools: allTools,
-      toolChoice: 'required',
+      toolChoice: this.toolChoice ?? 'required',
       maxSteps: WORKER_AGENT_MAX_STEP,
       stopTools: ['done', 'fail'],
+      onStreamError: (err) => {
+        this.logger.error({ workerId: this.id, err }, 'LLM stream error');
+      },
       onStep: (event) => {
         const entry = buildAssistantEntry(event, this.id);
         this.state.append('conversation', entry);
