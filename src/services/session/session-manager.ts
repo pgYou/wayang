@@ -8,6 +8,8 @@
 
 import * as path from 'node:path';
 import { formatTimestamp } from '@/utils/id';
+import { sessionDisplayTitle } from '@/infra/session-helpers';
+import type { SessionMeta } from '@/infra/session-helpers';
 import { SessionState } from './session-state';
 
 export class SessionManager {
@@ -71,5 +73,33 @@ export class SessionManager {
       this.state.set('meta.firstInput', text);
     }
     this.state.set('meta.lastActiveAt', Date.now());
+  }
+
+  /** Current display label: explicit title, else first input. */
+  get displayTitle(): string | null {
+    return sessionDisplayTitle(this.state.get<SessionMeta>('meta'));
+  }
+
+  /** Whether this session is archived (hidden from the default list). */
+  get archived(): boolean {
+    return this.state.get<boolean | undefined>('meta.archived') ?? false;
+  }
+
+  /**
+   * Rename the session. Passing null/empty clears the explicit title, so the
+   * session falls back to showing its first input.
+   */
+  rename(title: string | null): void {
+    const trimmed = title?.trim();
+    this.state.set('meta.title', trimmed && trimmed.length > 0 ? trimmed : undefined);
+  }
+
+  /**
+   * Toggle the archived flag. Archiving hides the session from the default
+   * list without deleting its transcript; unarchiving restores visibility.
+   */
+  setArchived(archived: boolean): void {
+    this.state.set('meta.archived', archived);
+    this.state.set('meta.archivedAt', archived ? Date.now() : undefined);
   }
 }

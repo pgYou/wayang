@@ -4,6 +4,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createSessionIndex } from './session-index';
+import type { ListSessionsQuery } from './session-index';
 
 export interface SessionMeta {
   sessionId: string;
@@ -11,38 +13,37 @@ export interface SessionMeta {
   firstInput: string | null;
   createdAt: number;
   lastActiveAt: number;
+  /**
+   * User-assigned session name. When absent (legacy sessions, or never renamed),
+   * consumers fall back to `firstInput`. Persisted so renames survive restarts.
+   */
+  title?: string;
+  /**
+   * Hidden from the default session list without deleting the transcript.
+   * Absent means not archived (kept optional for backward compatibility with
+   * meta.json files written before archiving existed).
+   */
+  archived?: boolean;
+  /** Timestamp of the most recent archive/unarchive toggle, if ever archived. */
+  archivedAt?: number;
+}
+
+/** Effective display label for a session: explicit title wins, else first input. */
+export function sessionDisplayTitle(meta: SessionMeta): string | null {
+  if (meta.title && meta.title.trim().length > 0) return meta.title;
+  return meta.firstInput;
 }
 
 /** List all sessions under homeDir, sorted by creation date (newest first). */
-export function listSessions(homeDir: string): SessionMeta[] {
-  const sessionsDir = path.join(homeDir, 'sessions');
-  if (!fs.existsSync(sessionsDir)) return [];
-
-  return fs.readdirSync(sessionsDir)
-    .filter(name => fs.existsSync(path.join(sessionsDir, name, 'meta.json')))
-    .map(name => {
-      try {
-        return JSON.parse(fs.readFileSync(path.join(sessionsDir, name, 'meta.json'), 'utf-8')) as SessionMeta;
-      } catch {
-        return null;
-      }
-    })
-    .filter((m): m is SessionMeta => m !== null)
-    .sort((a, b) => b.createdAt - a.createdAt);
+export function listSessions(homeDir: string, query: ListSessionsQuery = {}): SessionMeta[] {
+  return createSessionIndex(homeDir)
+    .list(query)
+    .map(e => e.meta);
 }
 
 /** Get a specific session by ID. Returns null if not found. */
 export function getSession(homeDir: string, sessionId: string): { sessionId: string; sessionDir: string; meta: SessionMeta } | null {
-  const sessionDir = path.join(homeDir, 'sessions', sessionId);
-  const metaPath = path.join(sessionDir, 'meta.json');
-  if (!fs.existsSync(metaPath)) return null;
-
-  try {
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as SessionMeta;
-    return { sessionId, sessionDir, meta };
-  } catch {
-    return null;
-  }
+  return createSessionIndex(homeDir).get(sessionId);
 }
 
 /**
@@ -58,12 +59,7 @@ export function getLatestSessionForWorkspace(
   homeDir: string,
   workspaceDir: string,
 ): { sessionId: string; sessionDir: string; meta: SessionMeta } | null {
-  const sessions = listSessions(homeDir).filter(m => m.workspace === workspaceDir);
-  if (sessions.length === 0) return null;
-  // listSessions returns newest-first already
-  const meta = sessions[0];
-  const sessionDir = path.join(homeDir, 'sessions', meta.sessionId);
-  return { sessionId: meta.sessionId, sessionDir, meta };
+  return createSessionIndex(homeDir).latestForWorkspace(workspaceDir);
 }
 
 /**
