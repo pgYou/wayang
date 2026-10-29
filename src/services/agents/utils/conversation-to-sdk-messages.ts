@@ -1,5 +1,5 @@
 import type { ModelMessage } from 'ai';
-import type { ConversationEntry } from '@/types/index';
+import type { ConversationEntry, AssistantEntry } from '@/types/index';
 import { EEntryType } from '@/types/index';
 import type { SignalEntry } from '@/types/index';
 
@@ -9,6 +9,15 @@ import type { SignalEntry } from '@/types/index';
  * Each AssistantEntry maps directly to 1-2 ModelMessages — no merging needed.
  */
 export function conversationToSdkMessages(entries: ConversationEntry[]): ModelMessage[] {
+  // Thinking endpoints (DeepSeek/GLM) require every replayed assistant message
+  // to carry reasoning_content and reject the whole request otherwise. If any
+  // entry captured reasoning, the model is a thinking model: backfill entries
+  // that lack it (steps where the model skipped thinking). The placeholder must
+  // be non-empty — the provider serialization drops empty-string reasoning parts.
+  const isThinkingModel = entries.some(
+    (e) => e.type === EEntryType.Assistant && Boolean((e as AssistantEntry).message.reasoning),
+  );
+
   const messages: ModelMessage[] = [];
 
   for (const entry of entries) {
@@ -24,9 +33,18 @@ export function conversationToSdkMessages(entries: ConversationEntry[]): ModelMe
 
         // Build assistant content parts
         const parts: Array<
+          { type: 'reasoning'; text: string } |
           { type: 'text'; text: string } |
           { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
         > = [];
+
+        // Thinking models (DeepSeek/GLM-style) require the reasoning to be
+        // passed back on assistant messages; missing reasoning on a single
+        // entry gets a placeholder so the replay is not rejected.
+        const reasoningText = entry.message.reasoning || (isThinkingModel ? ' ' : undefined);
+        if (reasoningText) {
+          parts.push({ type: 'reasoning' as const, text: reasoningText });
+        }
 
         if (effectiveContent) {
           parts.push({ type: 'text' as const, text: effectiveContent });

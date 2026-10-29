@@ -1,5 +1,17 @@
 // --- Config ---
 
+/**
+ * LLM tool-choice mode passed through to the provider (OpenAI `tool_choice`).
+ * - 'auto': let the model decide. This is the default for puppet workers —
+ *   thinking endpoints (DeepSeek/GLM) reject `tool_choice: "required"` with
+ *   HTTP 400, so forcing tool calls cannot be the universal default; the
+ *   worker system prompt already instructs finishing via done/fail.
+ * - 'required': force the model to emit a tool call on every step. Use only
+ *   on endpoints that support it, to guarantee termination via done/fail.
+ * - 'none': disable tool calls.
+ */
+export type ToolChoice = 'auto' | 'required' | 'none';
+
 export interface ProviderConfig {
   endpoint: string;
   apiKey: string;
@@ -27,7 +39,17 @@ export interface WorkerConfig {
 export interface WayangConfig {
   providers: Record<string, ProviderConfig>;
   controller: { provider: string };
-  worker: { provider: string; maxConcurrency: number };
+  worker: {
+    provider: string;
+    maxConcurrency: number;
+    /**
+     * Tool-choice mode for puppet workers. Defaults to 'required' — the worker
+     * is forced to call tools each step so it must terminate via done/fail.
+     * Some OpenAI-compatible endpoints (e.g. internal llmproxy) reject
+     * `tool_choice: "required"` with HTTP 400; set to 'auto' for those.
+     */
+    toolChoice?: ToolChoice;
+  };
   /** Third-party worker definitions, keyed by worker ID. */
   workers?: Record<string, WorkerConfig>;
   /** Tavily API key for web_search tool. Optional — tool returns error if unset. */
@@ -36,6 +58,11 @@ export interface WayangConfig {
   skillsDirs?: string[];
   /** Idle timeout (ms) for multi-stage workers before they are reaped. Defaults to 30 min. */
   idleTimeoutMs?: number;
+  /**
+   * Number of processed (read/discarded) signals retained in the hot window.
+   * Unread signals are always kept. Defaults to 2000.
+   */
+  signalWindowSize?: number;
 }
 
 /** Validate required fields, return error message or null */

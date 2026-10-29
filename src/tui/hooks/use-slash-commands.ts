@@ -1,33 +1,26 @@
 import { useMemoizedFn } from './use-memoized-fn';
-import type { Supervisor } from '@/services/supervisor';
-import type { TaskDetail, ActiveWorkerInfo } from '@/types/index';
+import type { RemoteSupervisor } from '@/client/remote-supervisor';
+import type { TaskDetail } from '@/types/index';
 
 /** Slash command definitions for autocomplete suggestions. */
 export const SLASH_COMMANDS = [
   { name: 'tasks', args: '[status]', description: 'List tasks' },
   { name: 'workers', description: 'List active workers' },
-  { name: 'worker', args: '[id]', description: 'View worker detail' },
   { name: 'cancel', args: '<id>', description: 'Cancel a task' },
   { name: 'compact', description: 'Compact context' },
   { name: 'exit', description: 'Quit' },
   { name: 'help', description: 'Show help' },
 ] as const;
 
-export interface SlashCommandContext {
-  navigate: (route: { page: 'controller' } | { page: 'worker'; workerId: string }) => void;
-}
-
 export interface SlashCommandResult {
   handled: boolean;
   output?: string;
   /** Trigger an async action after command handling. */
   action?: 'compact' | 'workers';
-  /** Navigate to a different route. */
-  navigate?: { page: 'worker'; workerId: string };
 }
 
-export function useSlashCommands(supervisor: Supervisor, ctx: SlashCommandContext) {
-  const handleCommand = useMemoizedFn((input: string): SlashCommandResult => {
+export function useSlashCommands(supervisor: RemoteSupervisor) {
+  const handleCommand = useMemoizedFn(async (input: string): Promise<SlashCommandResult> => {
     if (!input.startsWith('/')) return { handled: false };
 
     const parts = input.slice(1).split(/\s+/);
@@ -40,7 +33,7 @@ export function useSlashCommands(supervisor: Supervisor, ctx: SlashCommandContex
 
       case 'tasks': {
         const status = parts[1] as TaskDetail['status'] | undefined;
-        const tasks = supervisor.engine.list(status);
+        const tasks = await supervisor.engine.list(status);
         if (tasks.length === 0) return { handled: true, output: 'No tasks' };
         const lines = tasks.map(t =>
           `[${t.status}] ${t.id}: ${t.description}${t.result ? ` → ${t.result}` : ''}`,
@@ -49,23 +42,14 @@ export function useSlashCommands(supervisor: Supervisor, ctx: SlashCommandContex
       }
 
       case 'workers': {
-        return { handled: true, action: 'workers' };
-      }
-
-      case 'worker': {
-        const workerId = parts[1];
-        if (!workerId) {
-          // List all workers
-          const activeWorkers = supervisor.engine.getActiveWorkers();
-          if (!activeWorkers || activeWorkers.length === 0) {
-            return { handled: true, output: 'No active workers. Usage: /worker <id>' };
-          }
-          const lines = activeWorkers.map(w =>
-            `${w.workerId} → task ${w.taskId}`,
-          );
-          return { handled: true, output: lines.join('\n') };
+        const activeWorkers = supervisor.engine.getActiveWorkers();
+        if (!activeWorkers || activeWorkers.length === 0) {
+          return { handled: true, output: 'No active workers' };
         }
-        return { handled: true, navigate: { page: 'worker', workerId } };
+        const lines = activeWorkers.map(w =>
+          `${w.workerId} [${w.status}] → task ${w.taskId ?? '-'}`,
+        );
+        return { handled: true, output: lines.join('\n') };
       }
 
       case 'cancel': {
@@ -73,7 +57,7 @@ export function useSlashCommands(supervisor: Supervisor, ctx: SlashCommandContex
         if (!taskId) {
           return { handled: true, output: 'Usage: /cancel <taskId>' };
         }
-        supervisor.engine.cancel(taskId);
+        await supervisor.engine.cancel(taskId);
         return { handled: true, output: `Task ${taskId} cancelled` };
       }
 
@@ -87,7 +71,6 @@ export function useSlashCommands(supervisor: Supervisor, ctx: SlashCommandContex
             'Commands:',
             '  /tasks [status]   — List tasks',
             '  /workers          — List active workers',
-            '  /worker [id]      — View worker detail or list all',
             '  /cancel <id>      — Cancel a task and abort its worker',
             '  /compact          — Compact conversation context',
             '  /exit             — Quit',

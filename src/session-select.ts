@@ -6,12 +6,13 @@
  */
 
 import prompts from 'prompts';
-import { listSessions, getSession } from './infra/session-helpers';
+import { listSessions, getSession, sessionDisplayTitle } from './infra/session-helpers';
 import type { SessionMeta } from './infra/session-helpers';
 
 function formatSessionChoice(meta: SessionMeta, showWorkspace: boolean): string {
   const date = new Date(meta.createdAt).toLocaleString();
-  const label = meta.firstInput ? `"${meta.firstInput}"` : '(no input yet)';
+  const display = sessionDisplayTitle(meta);
+  const label = display ? `"${display}"` : '(no input yet)';
   const ws = showWorkspace ? `  [${meta.workspace}]` : '';
   return `${meta.sessionId}  ${date}  ${label}${ws}`;
 }
@@ -29,11 +30,7 @@ export async function selectSessionInteractive(
   workspaceDir: string,
   showAll: boolean,
 ): Promise<{ sessionId: string; sessionDir: string; meta: SessionMeta }> {
-  let sessions = listSessions(homeDir);
-
-  if (!showAll) {
-    sessions = sessions.filter(m => m.workspace === workspaceDir);
-  }
+  const sessions = listSessions(homeDir, showAll ? {} : { workspace: workspaceDir });
 
   if (sessions.length === 0) {
     const scope = showAll ? 'any workspace' : `workspace ${workspaceDir}`;

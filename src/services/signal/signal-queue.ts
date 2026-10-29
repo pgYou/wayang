@@ -1,6 +1,6 @@
 import type { ControllerSignal, NewSignalInput, SignalStatus, SignalSource, SignalType } from '@/types/index';
 import type { Logger } from '@/infra/logger';
-import { SignalState } from '@/services/signal/signal-state';
+import { SignalState, DEFAULT_SIGNAL_WINDOW_SIZE } from '@/services/signal/signal-state';
 import type { SystemContext } from '@/infra/system-context';
 import type { Subscribable } from '@/infra/state/subscribable';
 import type { StateEvent } from '@/infra/state/base-state';
@@ -22,17 +22,19 @@ export class SignalQueue implements Subscribable {
   private readonly state: SignalState;
   private readonly logger: Logger;
   private readonly ctx: SystemContext;
+  /** Max processed (read + discarded) signals retained in the hot window. */
+  private readonly windowSize: number;
 
   constructor(ctx: SystemContext) {
     this.ctx = ctx;
     this.state = new SignalState(ctx);
     this.logger = ctx.logger;
+    this.windowSize = ctx.config?.signalWindowSize ?? DEFAULT_SIGNAL_WINDOW_SIZE;
 
-    const sigs = this.state.get<ControllerSignal[]>('signals');
-    this.counter = sigs.reduce((max, s) => {
-      const n = parseInt(s.id.replace('sig-', ''), 10);
-      return isNaN(n) ? max : Math.max(max, n);
-    }, 0);
+    // Continue id allocation from the snapshot's high-water mark. Falling back
+    // to the window maximum would let ids be reused after trimming.
+    const mark = this.state.getIdHighWaterMark();
+    this.counter = Math.max(mark, this.maxIdInWindow());
   }
 
   // --- Subscribable ---
@@ -46,9 +48,12 @@ export class SignalQueue implements Subscribable {
   }
 
   enqueue(sig: NewSignalInput): void {
+    const id = `sig-${++this.counter}`;
+    this.state.setIdHighWaterMark(this.counter);
+
     const full = {
       ...sig,
-      id: `sig-${++this.counter}`,
+      id,
       status: 'unread' as const,
       timestamp: Date.now(),
     } as ControllerSignal;
@@ -58,7 +63,7 @@ export class SignalQueue implements Subscribable {
       const { workerId } = sig.payload;
       if (workerId) {
         const allSigs = this.state.get<ControllerSignal[]>('signals');
-        let changed = false;
+        const discarded: ControllerSignal[] = [];
         for (const old of allSigs) {
           if (
             old.status === 'unread'
@@ -67,16 +72,20 @@ export class SignalQueue implements Subscribable {
             && old.payload.workerId === workerId
           ) {
             old.status = 'discarded';
-            changed = true;
+            discarded.push(old);
           }
         }
-        if (changed) {
+        if (discarded.length > 0) {
           this.state.set('signals', [...allSigs]);
+          for (const old of discarded) {
+            this.state.recordTransition(old.id, 'unread', 'discarded');
+          }
         }
       }
     }
 
     this.state.append('signals', full);
+    this.state.recordEnqueued(full);
     this.logger.debug({ sigId: full.id, type: full.type }, 'Signal enqueued');
 
     // Wake up waiting controller loop
@@ -93,12 +102,19 @@ export class SignalQueue implements Subscribable {
     const all = this.state.get<ControllerSignal[]>('signals');
     const unread = all.filter(s => s.status === 'unread');
     this.logger.debug({ total: all.length, unreadCount: unread.length, unreadIds: unread.map(s => s.id), allStatuses: all.map(s => `${s.id}=${s.status}`) }, 'dequeueUnread');
+
+    if (unread.length === 0) return unread;
+
     for (const sig of unread) {
       sig.status = 'read';
     }
-    if (unread.length > 0) {
-      this.state.set('signals', [...all]);
+
+    // Trim and status change land in ONE snapshot write.
+    this.state.set('signals', this.trimWindow(all));
+    for (const sig of unread) {
+      this.state.recordTransition(sig.id, 'unread', 'read');
     }
+
     return unread;
   }
 
@@ -115,12 +131,9 @@ export class SignalQueue implements Subscribable {
 
   async restore(): Promise<void> {
     await this.state.restore();
-    // Re-initialize counter from restored state
-    const sigs = this.state.get<ControllerSignal[]>('signals');
-    this.counter = sigs.reduce((max, s) => {
-      const n = parseInt(s.id.replace('sig-', ''), 10);
-      return isNaN(n) ? max : Math.max(max, n);
-    }, 0);
+    // Re-initialize counter from the restored high-water mark
+    const mark = this.state.getIdHighWaterMark();
+    this.counter = Math.max(mark, this.maxIdInWindow());
   }
 
   /** Get all unread signals without modifying state. Used by UI to display pending signals. */
@@ -147,5 +160,35 @@ export class SignalQueue implements Subscribable {
       }
       return true;
     });
+  }
+
+  /**
+   * Keep every unread signal, plus only the most recent `windowSize` processed
+   * ones. Unread signals are never dropped, so total size may exceed the window
+   * when a backlog accumulates.
+   */
+  trimWindow(all: ControllerSignal[]): ControllerSignal[] {
+    const processedCount = all.reduce((n, s) => (s.status === 'unread' ? n : n + 1), 0);
+    if (processedCount <= this.windowSize) return all;
+
+    // How many of the oldest processed signals to drop.
+    let toDrop = processedCount - this.windowSize;
+    const result: ControllerSignal[] = [];
+    for (const sig of all) {
+      if (sig.status !== 'unread' && toDrop > 0) {
+        toDrop -= 1;
+        continue;
+      }
+      result.push(sig);
+    }
+    return result;
+  }
+
+  private maxIdInWindow(): number {
+    const sigs = this.state.get<ControllerSignal[]>('signals') ?? [];
+    return sigs.reduce((max, s) => {
+      const n = parseInt(String(s.id).replace('sig-', ''), 10);
+      return Number.isNaN(n) ? max : Math.max(max, n);
+    }, 0);
   }
 }

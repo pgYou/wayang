@@ -164,6 +164,96 @@ describe('conversationToSdkMessages', () => {
       : [];
     expect(textParts).toHaveLength(0);
   });
+
+  it('should emit reasoning part before text and tool calls', () => {
+    const entries = [{
+      type: EEntryType.Assistant,
+      uuid: 'a1',
+      parentUuid: null,
+      sessionId: 's1',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: 'Let me look.', reasoning: 'thinking about it' },
+      toolCalls: [{
+        toolCallId: 'tc1',
+        toolName: 'bash',
+        arguments: '{"command":"ls"}',
+      }],
+    }];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    const assistant = msgs[0] as any;
+    expect(Array.isArray(assistant.content)).toBe(true);
+    expect(assistant.content[0]).toEqual({ type: 'reasoning', text: 'thinking about it' });
+    expect(assistant.content[1]).toEqual({ type: 'text', text: 'Let me look.' });
+    expect(assistant.content[2]).toEqual(expect.objectContaining({ type: 'tool-call', toolName: 'bash' }));
+  });
+
+  it('should emit reasoning part for text-only entries', () => {
+    const entries = [{
+      type: EEntryType.Assistant,
+      uuid: 'a1',
+      parentUuid: null,
+      sessionId: 's1',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: 'Done.', reasoning: 'hmm' },
+    }];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    const assistant = msgs[0] as any;
+    expect(Array.isArray(assistant.content)).toBe(true);
+    expect(assistant.content).toEqual([
+      { type: 'reasoning', text: 'hmm' },
+      { type: 'text', text: 'Done.' },
+    ]);
+  });
+
+  it('should backfill a placeholder reasoning part for entries without reasoning in a thinking conversation', () => {
+    // Regression: the model sometimes skips thinking on a step; replaying that
+    // assistant message without reasoning_content makes thinking endpoints
+    // (DeepSeek) reject the whole request.
+    const entries = [
+      {
+        type: EEntryType.Assistant,
+        uuid: 'a1',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: new Date().toISOString(),
+        message: { role: 'assistant', content: '', reasoning: 'thought hard' },
+        toolCalls: [{
+          toolCallId: 'tc1',
+          toolName: 'bash',
+          arguments: '{"command":"ls"}',
+        }],
+      },
+      {
+        type: EEntryType.Assistant,
+        uuid: 'a2',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: new Date().toISOString(),
+        message: { role: 'assistant', content: '好的，稍等。' }, // no reasoning — model skipped thinking
+      },
+    ];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    const noReasoning = msgs.filter((m: any) => m.role === 'assistant')[1] as any;
+    expect(noReasoning.content[0]).toEqual({ type: 'reasoning', text: ' ' });
+    expect(noReasoning.content[1]).toEqual({ type: 'text', text: '好的，稍等。' });
+  });
+
+  it('should NOT backfill reasoning when the conversation has no thinking evidence', () => {
+    const entries = [{
+      type: EEntryType.Assistant,
+      uuid: 'a1',
+      parentUuid: null,
+      sessionId: 's1',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: 'Hi there' },
+    }];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    expect(msgs[0]).toEqual({ role: 'assistant', content: 'Hi there' });
+  });
 });
 
 // --- buildAssistantEntry ---
@@ -216,6 +306,35 @@ describe('buildAssistantEntry', () => {
     const event = { text: 'x', usage: undefined, finishReason: 'stop' };
     const entry = buildAssistantEntry(event as any, 's1', 'custom-uuid');
     expect(entry.uuid).toBe('custom-uuid');
+  });
+
+  it('should capture reasoningText when present', () => {
+    const event = {
+      text: 'ok',
+      reasoningText: 'step-by-step thought',
+      toolCalls: [],
+      toolResults: [],
+      usage: undefined,
+      finishReason: 'stop',
+    };
+
+    const entry = buildAssistantEntry(event as any, 's1');
+    expect(entry.message.reasoning).toBe('step-by-step thought');
+  });
+
+  it('should fall back to joining reasoning parts when reasoningText is empty', () => {
+    const event = {
+      text: 'ok',
+      reasoningText: undefined,
+      reasoning: [{ type: 'reasoning', text: 'part one' }, { type: 'reasoning', text: 'part two' }],
+      toolCalls: [],
+      toolResults: [],
+      usage: undefined,
+      finishReason: 'stop',
+    };
+
+    const entry = buildAssistantEntry(event as any, 's1');
+    expect(entry.message.reasoning).toBe('part one\npart two');
   });
 
   it('should generate uuid when not provided', () => {

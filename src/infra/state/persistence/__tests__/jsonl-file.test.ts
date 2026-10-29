@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, appendFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
 
 describe('JSONLFileHelper', () => {
   let tempDir: string;
   let filePath: string;
-  let helper: JSONLFileHelper;
+  let helper: JSONLFileHelper<any>;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'wayang-test-'));
@@ -19,13 +19,15 @@ describe('JSONLFileHelper', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  const append = (entry: unknown) => helper.write({ path: 'data', op: 'append', value: [], entry });
+
   it('should return empty array when file does not exist', () => {
     expect(helper.read()).toEqual([]);
   });
 
   it('should append and read entries', () => {
-    helper.write({ id: 1, text: 'first' });
-    helper.write({ id: 2, text: 'second' });
+    append({ id: 1, text: 'first' });
+    append({ id: 2, text: 'second' });
 
     const entries = helper.read() as any[];
     expect(entries).toHaveLength(2);
@@ -34,14 +36,12 @@ describe('JSONLFileHelper', () => {
   });
 
   it('should read from end until stop condition', () => {
-    helper.write({ type: 'start', msg: 'a' });
-    helper.write({ type: 'data', msg: 'b' });
-    helper.write({ type: 'data', msg: 'c' });
-    helper.write({ type: 'marker' });
+    append({ type: 'start', msg: 'a' });
+    append({ type: 'data', msg: 'b' });
+    append({ type: 'data', msg: 'c' });
+    append({ type: 'marker' });
 
     const result = helper.readFromEnd((e: any) => e.type === 'start');
-    // readFromEnd reads from end, stops when hitting 'start'
-    // So it should get 'marker', 'data' (c), 'data' (b)
     expect(result).toHaveLength(3);
     expect(result[0].msg).toBe('b');
     expect(result[1].msg).toBe('c');
@@ -49,23 +49,23 @@ describe('JSONLFileHelper', () => {
   });
 
   it('should return all entries when stop condition never matches', () => {
-    helper.write({ id: 1 });
-    helper.write({ id: 2 });
+    append({ id: 1 });
+    append({ id: 2 });
 
     const result = helper.readFromEnd(() => false);
     expect(result).toHaveLength(2);
   });
 
   it('should clear file', () => {
-    helper.write({ id: 1 });
+    append({ id: 1 });
     helper.clear();
     expect(helper.read()).toEqual([]);
   });
 
   it('should handle mixed types', () => {
-    helper.write('plain string');
-    helper.write(42);
-    helper.write({ key: 'value' });
+    append('plain string');
+    append(42);
+    append({ key: 'value' });
 
     const entries = helper.read();
     expect(entries).toEqual(['plain string', 42, { key: 'value' }]);
@@ -73,5 +73,49 @@ describe('JSONLFileHelper', () => {
 
   it('should report mode as append', () => {
     expect(helper.mode).toBe('append');
+  });
+
+  // --- Immutable history semantics ---
+
+  it('should not rewrite history when the in-memory window shrinks (set)', () => {
+    append({ id: 1 });
+    append({ id: 2 });
+    append({ id: 3 });
+
+    // A window edit must NOT truncate the file — history stays complete.
+    helper.write({ path: 'data', op: 'set', value: [{ id: 3 }] });
+    helper.write({ path: 'data', op: 'remove', value: [{ id: 1 }, { id: 2 }] });
+
+    const entries = helper.read() as any[];
+    expect(entries.map(e => e.id)).toEqual([1, 2, 3]);
+  });
+
+  it('should ignore append calls with no entry', () => {
+    helper.write({ path: 'data', op: 'append', value: [] });
+    expect(helper.read()).toEqual([]);
+  });
+
+  // --- Torn-line tolerance ---
+
+  it('should skip a torn trailing line instead of failing the whole read', () => {
+    append({ id: 1 });
+    appendFileSync(filePath, '{"id":2,"partial":tr');
+
+    const entries = helper.read() as any[];
+    expect(entries).toEqual([{ id: 1 }]);
+  });
+
+  it('should skip corrupt lines in the middle of the file', () => {
+    append({ id: 1 });
+    appendFileSync(filePath, 'not json at all\n');
+    append({ id: 3 });
+
+    const entries = helper.read() as any[];
+    expect(entries.map(e => e.id)).toEqual([1, 3]);
+  });
+
+  it('should return empty array for an empty file', () => {
+    writeFileSync(filePath, '');
+    expect(helper.read()).toEqual([]);
   });
 });

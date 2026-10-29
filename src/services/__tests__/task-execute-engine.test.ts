@@ -164,6 +164,18 @@ describe('TaskExecuteEngine — multi-stage worker lifecycle', () => {
     const active = engine.getActiveWorkers();
     expect(active[0].status).toBe('running');
     expect(active[0].taskId).toBe('t2');
+
+    // Regression (v0.5): the assigned task must be state-tracked — visible in
+    // running, then history with its origin — not just executed invisibly.
+    const running = engine.list('running').find((t) => t.id === 't2');
+    expect(running).toBeTruthy();
+    expect(running?.status).toBe('running');
+
+    await resolveAndSettle(worker, { status: 'completed', summary: 's2' });
+    const done = engine.list('completed').find((t) => t.id === 't2');
+    expect(done?.status).toBe('completed');
+    expect(done?.result).toBe('s2');
+    expect(done?.assignedFromWorkerId).toBe(idleId);
   });
 
   it('assignToExistingWorker rejects a non-existent or running worker', () => {

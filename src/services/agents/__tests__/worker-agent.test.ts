@@ -66,6 +66,32 @@ describe('WorkerAgent', () => {
     expect(result.summary).toBe('some text without calling done');
   });
 
+  it('should default toolChoice to auto when not configured', async () => {
+    mockStreamResponse('some text');
+
+    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    await worker.run(
+      { id: 't-tc1', title: 'test', description: 'test', workerId: 'w-tc1', priority: 'normal', status: 'running', createdAt: Date.now() },
+      {},
+    );
+
+    // 'required' is rejected by thinking endpoints (DeepSeek/GLM) with HTTP 400,
+    // so the safe default lets the model decide; done/fail is prompt-enforced
+    expect(vi.mocked(streamText).mock.calls[0][0]).toMatchObject({ toolChoice: 'auto' });
+  });
+
+  it('should pass configured toolChoice through to the LLM call', async () => {
+    mockStreamResponse('some text');
+
+    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills, 'auto');
+    await worker.run(
+      { id: 't-tc2', title: 'test', description: 'test', workerId: 'w-tc2', priority: 'normal', status: 'running', createdAt: Date.now() },
+      {},
+    );
+
+    expect(vi.mocked(streamText).mock.calls[0][0]).toMatchObject({ toolChoice: 'auto' });
+  });
+
   it('should return failed when abort signal is already set before run', async () => {
     mockStreamResponse('');
 

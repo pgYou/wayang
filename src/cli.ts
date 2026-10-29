@@ -6,6 +6,7 @@
  *   wayang --resume              List sessions, interactive select
  *   wayang --resume <id>         Resume specific session
  *   wayang --resume --all        List all sessions (cross-workspace)
+ *   wayang server                Headless logic process (RPC over stdio)
  *   wayang -v                    Verbose logging
  *
  * Options:
@@ -15,11 +16,17 @@
  *   --resume, -r                 Resume a previous session
  *   --all                        Show all sessions (with --resume)
  *   --verbose, -v                Enable debug logging
+ *
+ * Server-only options (with `wayang server`):
+ *   --session <new|resume:<id>>  Session decision made by the client
+ *   --inject-previous-tasks      Surface unfinished tasks on sessionless resume
+ *   --log-level <level>          Log level for the server process
  */
 
 import * as path from 'node:path';
 import meow from 'meow';
 import { bootstrap } from './bootstrap';
+import { serverMain } from './server/main';
 
 const cli = meow(`
   Usage
@@ -28,15 +35,19 @@ const cli = meow(`
     $ wayang --resume              Interactive session select
     $ wayang --resume <id>         Resume specific session
     $ wayang --resume --all        Show all workspaces
+    $ wayang server                Run the headless logic process (RPC over stdio)
 
   Options
-    --home-dir <path>       Root directory for sessions & config (default: $HOME)
+    --home-dir <path>       Root directory for sessions and config (default: $HOME)
     --workspace-dir, -w     Working directory for tools (default: pwd)
     --config, -c            Config file path
     --fresh, -n             Start a new session (do not inherit prior context)
     --resume, -r            Pick a session to resume (interactive, or <id>)
     --all                   List sessions across all workspaces (with --resume)
     --verbose, -v           Enable debug logging
+    --session <mode>        (server) "new" or "resume:<id>"
+    --inject-previous-tasks (server) surface unfinished tasks on resume
+    --log-level <level>     (server) log level
 `, {
   importMeta: import.meta,
   flags: {
@@ -72,6 +83,16 @@ const cli = meow(`
       shortFlag: 'v',
       default: false,
     },
+    session: {
+      type: 'string',
+    },
+    injectPreviousTasks: {
+      type: 'boolean',
+      default: false,
+    },
+    logLevel: {
+      type: 'string',
+    },
   },
 });
 
@@ -81,19 +102,32 @@ const configPath = cli.flags.config
   ? path.resolve(cli.flags.config)
   : path.join(homeDir, '.wayang.config.json');
 
-// --resume [id]: id is the first positional argument
-const resumeFlag = cli.flags.resume;
-const resumeId = resumeFlag ? (cli.input.at(0) || undefined) : undefined;
-
-bootstrap({
-  configPath,
-  homeDir: path.join(homeDir, '.wayang'),
-  workspaceDir,
-  logLevel: cli.flags.verbose ? 'debug' : 'info',
-  fresh: cli.flags.fresh,
-  resume: resumeFlag ? (resumeId ?? '') : undefined,
-  showAll: cli.flags.all,
-}).catch((err) => {
-  console.error('Fatal:', err);
+function fatal(err: unknown): never {
+  console.error('Fatal:', err instanceof Error ? err.message : err);
   process.exit(1);
-});
+}
+
+if (cli.input[0] === 'server') {
+  serverMain({
+    configPath,
+    homeDir: path.join(homeDir, '.wayang'),
+    workspaceDir,
+    session: cli.flags.session ?? 'new',
+    injectPreviousTasks: cli.flags.injectPreviousTasks,
+    logLevel: cli.flags.logLevel ?? (cli.flags.verbose ? 'debug' : 'info'),
+  }).catch(fatal);
+} else {
+  // --resume [id]: id is the first positional argument
+  const resumeFlag = cli.flags.resume;
+  const resumeId = resumeFlag ? (cli.input.at(0) || undefined) : undefined;
+
+  bootstrap({
+    configPath,
+    homeDir,
+    workspaceDir,
+    logLevel: cli.flags.verbose ? 'debug' : 'info',
+    fresh: cli.flags.fresh,
+    resume: resumeFlag ? (resumeId ?? '') : undefined,
+    showAll: cli.flags.all,
+  }).catch(fatal);
+}

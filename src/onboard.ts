@@ -140,14 +140,25 @@ async function buildConfigInteractive(): Promise<WayangConfig> {
   return config;
 }
 
+export interface LoadConfigOptions {
+  /** Server mode: never prompt and never write — missing config/env is a hard error. */
+  nonInteractive?: boolean;
+}
+
 /**
  * Load config from file, env vars, or interactive onboard.
  * Writes config to disk if newly created.
  */
-export async function loadConfig(configPath: string): Promise<WayangConfig> {
+export async function loadConfig(configPath: string, options: LoadConfigOptions = {}): Promise<WayangConfig> {
+  const { nonInteractive = false } = options;
   let config: WayangConfig;
   if (fs.existsSync(configPath)) {
-    config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      if (nonInteractive) throw new Error(`Invalid config JSON at ${configPath}: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
+    }
   } else {
     // Try env vars first, fall back to interactive onboard
     const envKey = process.env.WAYANG_LLM_API_KEY || '';
@@ -160,17 +171,22 @@ export async function loadConfig(configPath: string): Promise<WayangConfig> {
         controller: { provider: 'default' },
         worker: { provider: 'default', maxConcurrency: 3 },
       };
+    } else if (nonInteractive) {
+      throw new Error(`Config not found at ${configPath} and WAYANG_* env vars are incomplete. Run \`wayang\` once to configure.`);
     } else {
       config = await buildConfigInteractive();
     }
 
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    if (!nonInteractive) {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    }
   }
   fillApiKeys(config);
 
   const err = validateConfig(config);
   if (err) {
+    if (nonInteractive) throw new Error(`Invalid config: ${err}`);
     console.error(`Error: ${err}`);
     console.error('Run `wayang` without arguments to configure.');
     process.exit(1);

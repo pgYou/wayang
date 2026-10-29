@@ -19,7 +19,10 @@ export function bashTool(deps: { cwd?: string }) {
         return output || '(no output)';
       } catch (err: any) {
         const stderr = err.stderr?.toString() || '';
-        return `Exit code ${err.status ?? 1}\n${stderr}`;
+        // Include the thrown message when stderr is empty (e.g. spawn failures,
+        // timeout kills) — "Exit code 1" alone is undiagnosable.
+        const detail = stderr || err.message || '';
+        return `Exit code ${err.status ?? 1}\n${detail}`;
       }
     }),
   });

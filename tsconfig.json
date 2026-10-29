@@ -6,8 +6,6 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    "outDir": "./dist",
-    "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -17,6 +15,6 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "e2e/**/*"],
   "exclude": ["node_modules", "dist"]
 }

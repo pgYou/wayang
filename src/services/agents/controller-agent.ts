@@ -131,6 +131,9 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       tools: this.tools,
       maxSteps: 50,
       stopTools: ['skip_reply'],
+      onStreamError: (err) => {
+        this.logger.error({ agent: 'controller', err }, 'LLM stream error');
+      },
       onStep: (event) => {
         const streamingEntries = this.state.get<ConversationEntry[]>('dynamicState.streamingEntries');
         const streamingUuid = streamingEntries?.[0]?.uuid;
