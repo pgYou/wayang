@@ -12,7 +12,7 @@
 
 ### Features
 
-**Worker `toolChoice` configuration** — New `worker.toolChoice` config field (`auto` | `required` | `none`) forwarded to the provider's `tool_choice`. Puppet workers keep the `required` default — forcing a tool call every step so the worker must finish via `done`/`fail` — but can be set to `auto` for OpenAI-compatible endpoints that reject `tool_choice: "required"` with HTTP 400. LLM stream errors (HTTP 400/403, aborts) are now surfaced through an `onStreamError` hook and logged instead of being silently dropped by `textStream`
+**Worker `toolChoice` configuration** — New `worker.toolChoice` config field (`auto` | `required` | `none`) forwarded to the provider's `tool_choice`. Defaults to `auto` — thinking endpoints (DeepSeek/GLM) reject `tool_choice: "required"` with HTTP 400 ("Thinking mode does not support this tool_choice"), so forcing tool calls cannot be the universal default; the worker system prompt already instructs finishing via `done`/`fail`, and a text-only final turn still completes the task. LLM stream errors (HTTP 400/403, aborts) are now surfaced through an `onStreamError` hook and logged instead of being silently dropped by `textStream`
 
 ### Reliability
 

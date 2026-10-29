@@ -29,9 +29,10 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     provider: ProviderConfig,
     ctx: SystemContext,
     skills: SkillRegistry,
-    /** Tool-choice mode (worker.toolChoice in config). Falls back to 'required' —
-     *  forces a tool call every step so the worker must finish via done/fail.
-     *  Set to 'auto' for endpoints that reject `tool_choice: "required"` (HTTP 400). */
+    /** Tool-choice mode (worker.toolChoice in config). Falls back to 'auto' —
+     *  thinking endpoints (DeepSeek/GLM) reject `tool_choice: "required"` with
+     *  HTTP 400, so the safe default lets the model decide; the system prompt
+     *  still instructs workers to finish via done/fail. */
     toolChoice?: ToolChoice,
   ) {
     super(provider);
@@ -89,7 +90,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       system: this.contextManager.getSystemPrompt(),
       messages: this.contextManager.getMessages(),
       tools: allTools,
-      toolChoice: this.toolChoice ?? 'required',
+      toolChoice: this.toolChoice ?? 'auto',
       maxSteps: WORKER_AGENT_MAX_STEP,
       stopTools: ['done', 'fail'],
       onStreamError: (err) => {

@@ -66,7 +66,7 @@ describe('WorkerAgent', () => {
     expect(result.summary).toBe('some text without calling done');
   });
 
-  it('should default toolChoice to required when not configured', async () => {
+  it('should default toolChoice to auto when not configured', async () => {
     mockStreamResponse('some text');
 
     const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
@@ -75,8 +75,9 @@ describe('WorkerAgent', () => {
       {},
     );
 
-    // 'required' guarantees the worker must finish via done/fail, not plain text
-    expect(vi.mocked(streamText).mock.calls[0][0]).toMatchObject({ toolChoice: 'required' });
+    // 'required' is rejected by thinking endpoints (DeepSeek/GLM) with HTTP 400,
+    // so the safe default lets the model decide; done/fail is prompt-enforced
+    expect(vi.mocked(streamText).mock.calls[0][0]).toMatchObject({ toolChoice: 'auto' });
   });
 
   it('should pass configured toolChoice through to the LLM call', async () => {

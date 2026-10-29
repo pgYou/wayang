@@ -2,11 +2,12 @@
 
 /**
  * LLM tool-choice mode passed through to the provider (OpenAI `tool_choice`).
- * - 'required': force the model to emit a tool call on every step. This is the
- *   default for puppet workers — it guarantees the worker eventually finishes
- *   via the done/fail tools instead of stopping on plain text.
- * - 'auto': let the model decide. Needed for OpenAI-compatible endpoints that
- *   reject `tool_choice: "required"` with HTTP 400 (e.g. internal llmproxy).
+ * - 'auto': let the model decide. This is the default for puppet workers —
+ *   thinking endpoints (DeepSeek/GLM) reject `tool_choice: "required"` with
+ *   HTTP 400, so forcing tool calls cannot be the universal default; the
+ *   worker system prompt already instructs finishing via done/fail.
+ * - 'required': force the model to emit a tool call on every step. Use only
+ *   on endpoints that support it, to guarantee termination via done/fail.
  * - 'none': disable tool calls.
  */
 export type ToolChoice = 'auto' | 'required' | 'none';
