@@ -10,21 +10,46 @@
  * via `?? fallback`.
  */
 
-import type { RpcTransport } from './transport';
+import type { RpcTransport, TransportErrorEvent } from './transport';
 import { isRpcResponse, METHOD, NOTIFY, type RpcMessage, type RpcNotification } from './protocol';
 import type { Subscribable } from '@/infra/state/subscribable';
 import type { StateEvent } from '@/infra/state/base-state';
+
+export interface RpcClientOptions {
+  /** Invoked when the underlying channel fails or the peer goes away. */
+  onTransportError?: (event: TransportErrorEvent) => void;
+}
 
 export class RpcClient {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private notificationHandlers = new Map<string, Set<(params: Record<string, unknown>) => void>>();
 
-  constructor(private readonly transport: RpcTransport) {
+  constructor(
+    private readonly transport: RpcTransport,
+    options: RpcClientOptions = {},
+  ) {
     transport.onMessage((msg) => this.dispatch(msg));
+    transport.onError((event) => {
+      // The channel is gone: no response can ever arrive, so fail fast
+      // instead of leaving callers waiting for a reply that cannot come.
+      const err = new Error(
+        `RPC transport ${event.reason}${event.error ? `: ${event.error.message}` : ''}`,
+      );
+      const pending = [...this.pending.values()];
+      this.pending.clear();
+      for (const entry of pending) entry.reject(err);
+      options.onTransportError?.(event);
+    });
   }
 
   request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+    // Once the channel is gone no reply can ever arrive, and `send` silently
+    // drops frames on a closed transport — reject immediately instead of
+    // leaving the caller waiting forever.
+    if (this.transport.isClosed()) {
+      return Promise.reject(new Error('RPC transport closed: cannot send request'));
+    }
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, {
@@ -33,6 +58,11 @@ export class RpcClient {
       });
       this.transport.send({ id, method, params });
     });
+  }
+
+  /** Underlying channel characteristics (private pipe vs named endpoint). */
+  get capabilities(): RpcTransport['capabilities'] {
+    return this.transport.capabilities;
   }
 
   /** Subscribe to a server→client notification. Returns an unsubscribe fn. */

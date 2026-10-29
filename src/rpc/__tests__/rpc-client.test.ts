@@ -129,6 +129,44 @@ describe('RpcClient', () => {
     await flush();
     expect(seen).toEqual(['hi']);
   });
+
+  it('rejects pending requests when the transport dies', async () => {
+    const p = createPair();
+    const server = new RpcServer(p.serverTransport);
+    // A handler that never settles: the request stays in flight.
+    server.register('never_answered', () => new Promise(() => { /* never */ }));
+    const client = new RpcClient(p.clientTransport);
+
+    const inflight = client.request('never_answered');
+    // Attach the rejection handler up front so the teardown-triggered
+    // rejection is never observed as unhandled.
+    const assertion = expect(inflight).rejects.toThrow('RPC transport closed');
+    await flush();
+    // Peer goes away — no response can ever arrive.
+    p.serverTransport.close();
+    await assertion;
+  });
+
+  it('notifies onTransportError observers', async () => {
+    const p = createPair();
+    new RpcServer(p.serverTransport);
+    const reasons: string[] = [];
+    new RpcClient(p.clientTransport, {
+      onTransportError: (event) => reasons.push(event.reason),
+    });
+
+    p.clientTransport.close();
+    await flush();
+
+    expect(reasons).toEqual(['closed']);
+  });
+
+  it('exposes transport capabilities through the client', () => {
+    const p = createPair();
+    new RpcServer(p.serverTransport);
+    const client = new RpcClient(p.clientTransport);
+    expect(client.capabilities.privateChannel).toBe(true);
+  });
 });
 
 describe('RemoteStateStore + RemoteSubscribable', () => {
@@ -174,7 +212,7 @@ describe('RemoteStateStore + RemoteSubscribable', () => {
 
   it('getSnapshot returns undefined before the first subscribe completes', () => {
     const p = createPair();
-    new RpcServer(p.serverTransport); // eslint-disable-line no-new
+    new RpcServer(p.serverTransport);
     const client = new RpcClient(p.clientTransport);
     const store = new RemoteStateStore(client);
     const engine = new RemoteSubscribable(store, 'engine');

@@ -44,7 +44,7 @@ describe('RpcServer', () => {
 
   it('responds METHOD_NOT_FOUND for unknown methods', async () => {
     const { client, server } = createPair();
-    new RpcServer(server); // eslint-disable-line no-new
+    new RpcServer(server);
 
     const raw = useRawClient(client);
     raw.send({ id: 1, method: 'nope' });

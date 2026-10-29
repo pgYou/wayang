@@ -3,19 +3,27 @@
  * sends notifications. Transport-agnostic.
  */
 
-import type { RpcTransport } from './transport';
+import type { RpcTransport, TransportErrorEvent } from './transport';
 import { isRpcRequest, RpcError, RPC_ERROR, type RpcRequest, type RpcResponse } from './protocol';
 
 export type RpcHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
+export interface RpcServerOptions {
+  /** Invoked when the underlying channel fails or the peer goes away. */
+  onTransportError?: (event: TransportErrorEvent) => void;
+}
+
 export class RpcServer {
   private handlers = new Map<string, RpcHandler>();
 
-  constructor(private readonly transport: RpcTransport) {
+  constructor(private readonly transport: RpcTransport, options: RpcServerOptions = {}) {
     transport.onMessage((msg) => {
       if (isRpcRequest(msg)) void this.handleRequest(msg);
       // Responses from the client are not part of v1 — ignore.
     });
+    if (options.onTransportError) {
+      transport.onError(options.onTransportError);
+    }
   }
 
   register(method: string, handler: RpcHandler): void {
