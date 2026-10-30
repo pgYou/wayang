@@ -34,6 +34,8 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/', 'node_modules/', '*.js'],
+    // src/**/*.mjs: hand-run maintenance scripts (e.g. fixture generators).
+    // tsconfig has no allowJs, so the project service cannot resolve them.
+    ignores: ['dist/', 'node_modules/', '*.js', 'src/**/*.mjs'],
   },
 );
