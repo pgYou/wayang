@@ -71,6 +71,36 @@ describe('ClaudeCodeWorker controller messaging', () => {
     return new ClaudeCodeWorker(cfg, tempDir, tempDir, ctx, skills);
   }
 
+  it('uses permissionMode default (gate live) only when signal context is wired', async () => {
+    // Without signal context: bypass — canUseTool would never fire anyway.
+    const bare = makeWorker();
+    const { stream: s1, release: r1 } = gatedStream([assistant('working')], 'before-result');
+    let opts1: Record<string, any> | null = null;
+    mockQuery.mockImplementationOnce((({ options }: never) => { opts1 = options; return s1; }) as never);
+    const run1 = bare.run(makeTask(), {});
+    await settle();
+    expect(opts1!.permissionMode).toBe('bypassPermissions');
+    expect(opts1!.canUseTool).toBeUndefined();
+    r1();
+    await run1;
+
+    // With signal context: default — the dangerous-command gate is live
+    // (bypassPermissions makes the CLI skip canUseTool entirely; verified
+    // against the real CLI via scripts/poc-interrupt-permission.mjs).
+    const gated = makeWorker();
+    const ctx = createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir });
+    gated.setSignalContext({ signalQueue: new SignalQueue(ctx), workerId: 'cw-test', taskId: 't-1', taskTitle: 'Test' });
+    const { stream: s2, release: r2 } = gatedStream([assistant('working')], 'before-result');
+    let opts2: Record<string, any> | null = null;
+    mockQuery.mockImplementationOnce((({ options }: never) => { opts2 = options; return s2; }) as never);
+    const run2 = gated.run(makeTask(), {});
+    await settle();
+    expect(opts2!.permissionMode).toBe('default');
+    expect(typeof opts2!.canUseTool).toBe('function');
+    r2();
+    await run2;
+  });
+
   it('interrupts the active query immediately on acceptMessage (default policy)', async () => {
     const worker = makeWorker();
     const { stream, interrupt, release } = gatedStream([assistant('working')], 'never');

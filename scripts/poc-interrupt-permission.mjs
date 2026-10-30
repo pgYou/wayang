@@ -24,8 +24,10 @@ async function* promptStream() {
     message: { role: 'user', content: 'Run this exact command with the Bash tool: sudo ls /tmp — do nothing else first.' },
     parent_tool_use_id: null,
   };
-  // Park forever: the session stays alive awaiting follow-up input.
-  await new Promise(() => {});
+  // Bounded park: keep the session open for follow-up input, but end it after
+  // a grace period so the PoC always exits (an infinite park would hang the
+  // stream open after the final result).
+  await new Promise((r) => setTimeout(r, 90_000));
 }
 
 let pendingResolve = null;
@@ -35,7 +37,10 @@ const stream = query({
   prompt: promptStream(),
   options: {
     cwd: process.cwd(),
-    permissionMode: 'bypassPermissions',
+    // 'default', NOT 'bypassPermissions': under bypass the SDK never calls
+    // canUseTool (verified against the real CLI — dangerous commands would
+    // execute unchecked). 'default' routes tool permission checks here.
+    permissionMode: 'default',
     canUseTool: async (toolName, input) => {
       console.log(`[poc] canUseTool called: ${toolName} ${String(input.command).slice(0, 60)}`);
       return await new Promise((resolve) => {

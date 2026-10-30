@@ -186,10 +186,18 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     } as import('@/types/conversation').ConversationEntry, turnEnv));
 
     try {
+      // Permission mode: 'default' when canUseTool is wired (below) so tool
+      // permission checks actually route to our handler — under
+      // 'bypassPermissions' the CLI never calls canUseTool, and the
+      // dangerous-command gate silently never fires (verified against the
+      // real CLI; see scripts/poc-interrupt-permission.mjs). Without signal
+      // context there is no handler — keep bypass.
+      const wirePermissions = Boolean(this._signalQueue && this._runContext);
+
       const options: Record<string, any> = {
         cwd: this.workspaceDir,
         maxTurns: this.config.maxTurns ?? 1000,
-        permissionMode: 'bypassPermissions' as const,
+        permissionMode: (wirePermissions ? 'default' : 'bypassPermissions') as 'default' | 'bypassPermissions',
         abortController: this.abortController,
         // SDK MCP calls (ask_controller blocks up to 5 min waiting for the
         // controller) far exceed the default 60s stream-close timeout — raise
@@ -216,7 +224,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       }
 
       // Wire canUseTool for permission control if signal context is set
-      if (this._signalQueue && this._runContext) {
+      if (wirePermissions) {
         options.canUseTool = (toolName: string, input: Record<string, unknown>) =>
           this.handleCanUseTool(toolName, input);
       }

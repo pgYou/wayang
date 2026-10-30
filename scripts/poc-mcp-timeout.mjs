@@ -16,7 +16,9 @@ import { query, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
 const withOverride = process.argv.includes('--override');
-const SLEEP_MS = withOverride ? 90_000 : 63_000; // just over the 60s default
+// Default just over the documented 60s; POC_SLEEP_MS overrides for longer
+// probes (e.g. 300000 = the production ask_controller timeout).
+const SLEEP_MS = Number(process.env.POC_SLEEP_MS ?? (withOverride ? 90_000 : 63_000));
 
 const sleepTool = {
   name: 'sleep_tool',
