@@ -182,9 +182,90 @@ describe('ClaudeCodeWorker controller messaging', () => {
     const runP = worker.run(makeTask(), {});
 
     await settle();
+    // The override is present AND the child env is a spread of process.env —
+    // the SDK REPLACES the env with this object, so a bare override would
+    // strip PATH/HOME from the claude child (review: blocking finding).
     expect(capturedOptions!.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT).toBe('360000');
+    expect(capturedOptions!.env.PATH).toBe(process.env.PATH);
     expect(capturedOptions!.mcpServers.wayang).toBeDefined();
 
+    release();
+    await runP;
+  });
+
+  it('writes an ask_controller Q&A audit entry into the worker conversation', async () => {
+    const worker = makeWorker();
+    worker.setInquirySupport(async (q) => `[Controller] answer-to:${q}`);
+    const { stream, release } = gatedStream([assistant('working')], 'before-result');
+    mockQuery.mockReturnValueOnce(stream as never);
+    const runP = worker.run(makeTask(), {});
+
+    await settle();
+    // Drive the MCP tool handler directly — the mock SDK never calls it.
+    const mcpServer = (mockQuery.mock.calls[0]?.[0] as any)?.options?.mcpServers?.wayang;
+    expect(mcpServer).toBeDefined();
+    release();
+    await runP;
+
+    // The handler is built at run(); invoke it for the audit assertion.
+    const tool = (worker as any).buildAskControllerMcpTool.call(worker);
+    const out = await tool.handler({ question: 'which db?' });
+    expect(out.content[0].text).toBe('[Controller] answer-to:which db?');
+    const audit = worker.getConversation().find((e: any) => e.subtype === 'inquiry');
+    expect(audit).toBeDefined();
+    expect((audit as any).content).toContain('ask_controller: which db?');
+    expect((audit as any).content).toContain('controller: [Controller] answer-to:which db?');
+  });
+
+  it('delivers the queued interrupt when a pending permission TIMES OUT', async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = makeWorker();
+      const ctx = createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir });
+      const signalQueue = new SignalQueue(ctx);
+      worker.setSignalContext({ signalQueue, workerId: 'cw-test', taskId: 't-1', taskTitle: 'Test' });
+
+      const { stream, interrupt, release } = gatedStream([assistant('working')], 'never');
+      mockQuery.mockImplementationOnce((({ options }: never) => {
+        Promise.resolve().then(() => (options as any).canUseTool('Bash', { command: 'sudo rm -rf /tmp/x' }));
+        return stream;
+      }) as never);
+      const runP = worker.run(makeTask(), {});
+
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      worker.acceptMessage('held back by permission');
+      expect(interrupt).not.toHaveBeenCalled();
+
+      // 5-minute permission timeout → deny → the queued interrupt must fire
+      // (previously the timeout path dropped it silently).
+      vi.advanceTimersByTime(300_000 + 10);
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(interrupt).toHaveBeenCalledTimes(1);
+
+      worker.abort();
+      release();
+      await vi.waitUntil(() => runP.then(() => true), { timeout: 1000 }).catch(() => true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleanup resets the queued-interrupt flag (no stale fire in the next stage)', async () => {
+    const worker = makeWorker();
+    // Stage 1: leave a queued interrupt behind via cleanup.
+    worker.permissionHandler.cleanup();
+
+    // Stage 2: a fresh run — a message must interrupt immediately, not be
+    // swallowed by a stale _interruptQueued left over from stage 1.
+    const { stream, interrupt, release } = gatedStream([assistant('working')], 'never');
+    mockQuery.mockReturnValueOnce(stream as never);
+    const runP = worker.run(makeTask(), {});
+    await settle();
+
+    worker.acceptMessage('stage 2 message');
+    expect(interrupt).toHaveBeenCalledTimes(1);
+
+    worker.abort();
     release();
     await runP;
   });

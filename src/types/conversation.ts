@@ -22,6 +22,8 @@ export enum ESystemSubtype {
   Error = 'error',
   /** Third-party worker terminal result (success) — display/audit record only. */
   TaskResult = 'task_result',
+  /** ask_controller Q&A record (third-party workers) — audit only, never read back. */
+  Inquiry = 'inquiry',
 }
 
 /** SignalEntry event kind — worker notifications delivered to Controller. */

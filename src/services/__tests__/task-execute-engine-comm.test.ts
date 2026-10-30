@@ -128,15 +128,21 @@ describe('TaskExecuteEngine: ask_controller / respond_inquiry spine', () => {
     expect((timeouts[0].payload as any).question).toBe('stuck?');
   });
 
-  it('aborts pending inquiries when the task is cancelled (clean tool return, registry cleaned)', async () => {
-    const { engine } = makeEngine();
+  it('aborts pending inquiries when the task is cancelled (clean tool return, tombstoned id)', async () => {
+    const { engine, signalQueue } = makeEngine();
     const task = makeTask('t-comm-a');
     engine.add(task);
     const worker = lastWorker();
     const ask = worker.lastTools!.ask_controller.execute({ question: 'q' });
+    await flushMicrotasks();
+    const inquiryId = (signalQueue.query({ type: 'worker_inquiry' })[0].payload as any).inquiryId;
 
     engine.cancel(task.id);
     await expect(ask).resolves.toBe('[ABORTED] Worker is shutting down.');
+
+    // The aborted id is tombstoned: a late answer reports the worker as gone
+    // even though other registries may exist (not the misleading not_found).
+    expect(engine.resolveInquiry(inquiryId, 'late')).toBe('worker_gone');
   });
 });
 

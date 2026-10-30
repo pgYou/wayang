@@ -84,6 +84,12 @@ export class TaskExecuteEngine implements Subscribable {
   /** ask_controller blocking-request registries keyed by workerId. */
   private inquiryRegistries = new Map<string, BlockingRequestMap<WorkerInquiryResolution>>();
   /**
+   * Inquiry ids aborted by worker shutdown/cancel. Lets a late respond_inquiry
+   * distinguish "worker gone" from "timed out" even while other workers'
+   * registries are still alive.
+   */
+  private abortedInquiryIds = new Set<string>();
+  /**
    * Turn lineage of each active worker's current run: the execution turn id
    * (also handed to the worker for stamping its entries), the chain's root
    * turn, and the task id (used as signals' causationId).
@@ -320,14 +326,27 @@ export class TaskExecuteEngine implements Subscribable {
   /**
    * Answer a worker's pending ask_controller call.
    * - 'answered': the blocked worker received the answer and resumes.
-   * - 'not_found': known worker, but the inquiry already settled (timed out).
-   * - 'worker_gone': no registry — the worker is no longer running.
+   * - 'not_found': the inquiry already settled (timed out) on a live worker.
+   * - 'worker_gone': no registry has it — aborted/cancelled (tombstoned) or
+   *   no worker runs at all.
    */
   resolveInquiry(inquiryId: string, answer: string): 'answered' | 'not_found' | 'worker_gone' {
     for (const registry of this.inquiryRegistries.values()) {
       if (registry.resolve(inquiryId, { kind: 'answer', answer })) return 'answered';
     }
+    if (this.abortedInquiryIds.delete(inquiryId)) return 'worker_gone';
     return this.inquiryRegistries.size > 0 ? 'not_found' : 'worker_gone';
+  }
+
+  /** Abort a worker's pending inquiries (worker shutting down), tombstoning their ids. */
+  private cleanupInquiryRegistry(workerId: string): void {
+    const registry = this.inquiryRegistries.get(workerId);
+    if (!registry) return;
+    registry.cleanupAll((id) => {
+      this.abortedInquiryIds.add(id);
+      return { kind: 'aborted' };
+    });
+    this.inquiryRegistries.delete(workerId);
   }
 
   /**
@@ -450,7 +469,7 @@ export class TaskExecuteEngine implements Subscribable {
         const worker = this.workers.get(workerId);
         worker?.abort();
         this.permissionResolvers.get(workerId)?.cleanup();
-        this.inquiryRegistries.get(workerId)?.cleanupAll(() => ({ kind: 'aborted' }));
+        this.cleanupInquiryRegistry(workerId);
         this.logger.info({ workerId, taskId }, 'Worker aborted');
         return;
       }
@@ -474,7 +493,7 @@ export class TaskExecuteEngine implements Subscribable {
     const worker = this.workers.get(workerId);
     worker?.abort();
     this.permissionResolvers.get(workerId)?.cleanup();
-    this.inquiryRegistries.get(workerId)?.cleanupAll(() => ({ kind: 'aborted' }));
+    this.cleanupInquiryRegistry(workerId);
     this.logger.info({ workerId }, 'Worker aborted by id');
     return true;
   }
@@ -486,8 +505,8 @@ export class TaskExecuteEngine implements Subscribable {
       resolver.cleanup();
     }
     this.permissionResolvers.clear();
-    for (const registry of this.inquiryRegistries.values()) {
-      registry.cleanupAll(() => ({ kind: 'aborted' }));
+    for (const workerId of this.inquiryRegistries.keys()) {
+      this.cleanupInquiryRegistry(workerId);
     }
     this.inquiryRegistries.clear();
     // Clear all idle reapers
@@ -1046,8 +1065,7 @@ export class TaskExecuteEngine implements Subscribable {
     setTimeout(() => {
       this.permissionResolvers.get(workerId)?.cleanup();
       this.permissionResolvers.delete(workerId);
-      this.inquiryRegistries.get(workerId)?.cleanupAll(() => ({ kind: 'aborted' }));
-      this.inquiryRegistries.delete(workerId);
+      this.cleanupInquiryRegistry(workerId);
       this.workers.delete(workerId);
       this.workerTaskMap.delete(workerId);
     }, 0);

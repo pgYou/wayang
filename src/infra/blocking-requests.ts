@@ -30,14 +30,22 @@ export class BlockingRequestMap<T> {
   }
 
   wait(id: string, timeoutMs: number, makeTimeoutValue: () => T): Promise<T> {
+    // A duplicate id would silently corrupt both waiters (the second timer
+    // settles the first promise and the map entry gets crossed). Ids are
+    // caller-generated — treat a collision as a programming error.
+    if (this.pending.has(id)) {
+      throw new Error(`BlockingRequestMap: duplicate wait id "${id}"`);
+    }
     return new Promise<T>((resolve) => {
       const settle = (value: T) => {
         this.pending.delete(id);
         resolve(value);
       };
       const timer = setTimeout(() => {
-        const value = makeTimeoutValue();
-        settle(value);
+        // Delete BEFORE the side-effect factory runs, so factory code
+        // (e.g. deferred-interrupt delivery) sees this request as gone.
+        this.pending.delete(id);
+        resolve(makeTimeoutValue());
       }, timeoutMs);
       // Never hold the process open for a pending request.
       if (typeof timer === 'object' && timer && 'unref' in timer) {

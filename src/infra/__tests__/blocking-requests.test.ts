@@ -46,4 +46,25 @@ describe('BlockingRequestMap', () => {
     const map = new BlockingRequestMap<Resolution>();
     expect(map.resolve('missing', { kind: 'answer', answer: 'x' })).toBe(false);
   });
+
+  it('rejects a duplicate wait id instead of crossing the map entries', () => {
+    const map = new BlockingRequestMap<Resolution>();
+    map.wait('dup', 60_000, () => ({ kind: 'timeout' }));
+    expect(() => map.wait('dup', 60_000, () => ({ kind: 'timeout' }))).toThrow(/duplicate wait id "dup"/);
+  });
+
+  it('removes the entry BEFORE the timeout factory runs (factory sees it gone)', () => {
+    const map = new BlockingRequestMap<Resolution>();
+    const sizesSeen: number[] = [];
+    map.wait('other', 60_000, () => ({ kind: 'timeout' }));
+    const p = map.wait('timed', 5_000, () => {
+      sizesSeen.push(map.size);
+      return { kind: 'timeout' as const };
+    });
+
+    vi.advanceTimersByTime(5_000);
+    // 'timed' deleted first, 'other' still pending.
+    expect(sizesSeen).toEqual([1]);
+    return expect(p).resolves.toEqual({ kind: 'timeout' });
+  });
 });

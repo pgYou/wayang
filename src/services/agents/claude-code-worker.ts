@@ -31,6 +31,7 @@ import { buildThirdPartyPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
+import { BlockingRequestMap } from '@/infra/blocking-requests';
 import type { SkillRegistry } from '@/services/skills/registry';
 
 /** Stream-close timeout for SDK MCP calls — must exceed the 5-min inquiry timeout. */
@@ -61,40 +62,41 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private _askController: ((question: string, context?: string) => Promise<string>) | null = null;
 
   // --- Permission control via canUseTool ---
-  private readonly _pendingPermissions = new Map<string, {
-    resolve: (result: PermissionResult) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>();
+  private readonly _pendingPermissions = new BlockingRequestMap<PermissionResult>();
   private static readonly PERMISSION_TIMEOUT_MS = 300_000;
 
   /** Exposed for engine to resolve pending permission requests. */
   readonly permissionHandler: PermissionMiddlewareResult = {
     resolvePermission: (requestId: string, approved: boolean, reason?: string) => {
-      const entry = this._pendingPermissions.get(requestId);
-      if (!entry) return false;
-      clearTimeout(entry.timer);
-      this._pendingPermissions.delete(requestId);
-      entry.resolve(
+      const ok = this._pendingPermissions.resolve(
+        requestId,
         approved
           ? { behavior: 'allow' }
           : { behavior: 'deny', message: reason ?? 'Denied by controller' },
       );
-      // A controller message may be waiting for the permission to settle.
-      if (this._interruptQueued && this._pendingPermissions.size === 0) {
-        this._interruptQueued = false;
-        this.requestInterrupt();
-      }
-      return true;
+      if (ok) this.afterPermissionSettled();
+      return ok;
     },
     cleanup: () => {
-      for (const [id, entry] of this._pendingPermissions) {
-        clearTimeout(entry.timer);
-        this._pendingPermissions.delete(id);
-        entry.resolve({ behavior: 'deny', message: 'Worker aborted' });
-      }
+      // Worker dying: drop any queued interrupt so a stale flag cannot fire
+      // a spurious interrupt in the next stage.
+      this._interruptQueued = false;
+      this._pendingPermissions.cleanupAll(() => ({ behavior: 'deny', message: 'Worker aborted' }));
     },
     wrappedTools: {}, // not used for ClaudeCodeWorker
   };
+
+  /**
+   * A permission settled (approved / denied / timed out). If a controller
+   * message was waiting for the permission window to close, deliver its
+   * interrupt now — this runs on BOTH the resolve and the timeout path.
+   */
+  private afterPermissionSettled(): void {
+    if (this._interruptQueued && this._pendingPermissions.size === 0) {
+      this._interruptQueued = false;
+      this.requestInterrupt();
+    }
+  }
 
   // Signal context set during run()
   private _signalQueue: SignalQueue | null = null;
@@ -191,8 +193,12 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         abortController: this.abortController,
         // SDK MCP calls (ask_controller blocks up to 5 min waiting for the
         // controller) far exceed the default 60s stream-close timeout — raise
-        // it (see sdk.d.ts createSdkMcpServer note).
+        // it (see sdk.d.ts createSdkMcpServer note). NOTE: the SDK REPLACES
+        // the child env with this object (`{...options.env ?? process.env}`
+        // in cli.js) — spread process.env or the child loses PATH/HOME and
+        // ~/.claude resolution breaks.
         env: {
+          ...process.env,
           CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: String(INQUIRY_STREAM_CLOSE_TIMEOUT_MS),
         },
       };
@@ -392,13 +398,13 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       ...this._turnLineage,
     });
 
-    return new Promise<PermissionResult>((resolve) => {
-      const timer = setTimeout(() => {
-        this._pendingPermissions.delete(requestId);
-        resolve({ behavior: 'deny', message: 'Permission request timed out' });
-      }, ClaudeCodeWorker.PERMISSION_TIMEOUT_MS);
-
-      this._pendingPermissions.set(requestId, { resolve, timer });
+    // The timeout factory runs after the entry was removed from the map, so
+    // the deferred-interrupt delivery in afterPermissionSettled sees a clean
+    // window — the timeout path behaves exactly like an explicit resolution.
+    return this._pendingPermissions.wait(requestId, ClaudeCodeWorker.PERMISSION_TIMEOUT_MS, () => {
+      const value: PermissionResult = { behavior: 'deny', message: 'Permission request timed out' };
+      this.afterPermissionSettled();
+      return value;
     });
   }
 
@@ -473,9 +479,29 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         const question = String(args.question ?? '');
         const context = args.context !== undefined ? String(args.context) : undefined;
         const answer = await this._askController!(question, context);
+        // Audit record in the worker's conversation (display/audit only —
+        // never read back for context). Covers timeouts too: the notice IS
+        // the answer of record.
+        this.recordInquiryAudit(question, answer);
         return { content: [{ type: 'text' as const, text: answer }] };
       },
     };
+  }
+
+  /** Write one ask_controller Q&A into the worker conversation (audit only). */
+  private recordInquiryAudit(question: string, answer: string): void {
+    const ts = nowISO();
+    this.state.append('conversation', applyTurnEnvelope({
+      type: EEntryType.System,
+      uuid: generateId('s'),
+      parentUuid: null,
+      sessionId: this.ctx.sessionId,
+      timestamp: ts,
+      subtype: ESystemSubtype.Inquiry,
+      content: `ask_controller: ${question}\ncontroller: ${answer}`,
+      startedAt: ts,
+      endedAt: ts,
+    } as import('@/types/conversation').ConversationEntry, this._currentTurnEnv ?? undefined));
   }
 
   private flushMessageQueue(): void {
