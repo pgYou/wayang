@@ -8,22 +8,13 @@
  */
 
 import type { ContextUsage } from '@/types/index';
+import { formatTokenCount } from './format-tokens';
+import { truncateToWidth } from './text-width';
 
 /** Hard cap for every rendered line (terminal-safe). */
 export const CONTEXT_REPORT_MAX_WIDTH = 80;
 
-/**
- * Compact a token count: raw below 1k, "12.3k" below 1M, "1.2M" above.
- * Mirrors the status bar's segment formatter.
- */
-export function formatTokenCount(tokens: number): string {
-  if (!Number.isFinite(tokens)) return '0';
-  if (tokens < 1_000) return String(Math.round(tokens));
-  if (tokens < 1_000_000) {
-    return `${(tokens / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
-  }
-  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-}
+export { formatTokenCount } from './format-tokens';
 
 /** Group digits: 100000 → "100,000". */
 export function formatFullTokens(tokens: number): string {
@@ -101,5 +92,6 @@ export function formatContextReport(usage: ContextUsage | null | undefined): str
     lines.push(breakdownRow('total', breakdown.total, contextWindowTokens));
   }
 
-  return lines;
+  // Enforce the documented hard cap — no line may exceed the report width.
+  return lines.map(line => truncateToWidth(line, CONTEXT_REPORT_MAX_WIDTH));
 }

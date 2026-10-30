@@ -66,13 +66,15 @@ export function entryToDisplayItem(entry: ConversationEntry): DisplayItem | null
 
       const sections: DisplaySection[] = [];
 
-      // Reasoning (extended thinking)
-      if (entry.message.reasoning) {
-        sections.push({ kind: 'reasoning', id: 'reasoning', text: entry.message.reasoning });
+      // Reasoning (extended thinking). Providers may emit whitespace-only
+      // reasoning on pure tool-call steps — skip it so no empty
+      // "thinking:" row is rendered.
+      if (entry.message.reasoning?.trim()) {
+        sections.push({ kind: 'reasoning', id: 'reasoning', text: entry.message.reasoning.trim() });
       }
 
-      // Main text content
-      if (entry.message.content) {
+      // Main text content (whitespace-only content is skipped for the same reason)
+      if (entry.message.content?.trim()) {
         sections.push({ kind: 'content', id: 'content', text: entry.message.content });
       }
 

@@ -190,6 +190,36 @@ describe('entryToDisplayItem', () => {
 
 // --- signalToDisplayItem ---
 
+describe('entryToDisplayItem: whitespace-only sections', () => {
+  const base = {
+    type: EEntryType.Assistant,
+    uuid: 'a-ws',
+    parentUuid: null,
+    sessionId: 'controller',
+    timestamp: new Date().toISOString(),
+  } as const;
+
+  it('skips whitespace-only reasoning and content (no empty thinking row)', () => {
+    const item = entryToDisplayItem({
+      ...base,
+      message: { role: 'assistant', content: '  \n', reasoning: ' \n ' },
+      toolCalls: [{ toolCallId: 'tc-1', toolName: 'respond_permission', arguments: '{}' }],
+    } as AssistantEntry);
+    const kinds = item!.sections!.map(s => s.kind);
+    expect(kinds).not.toContain('reasoning');
+    expect(kinds).not.toContain('content');
+    expect(kinds).toContain('tool_call');
+  });
+
+  it('keeps non-empty reasoning, trimmed', () => {
+    const item = entryToDisplayItem({
+      ...base,
+      message: { role: 'assistant', content: '', reasoning: '\n Approve it.\n' },
+    } as AssistantEntry);
+    expect(item!.sections!.find(s => s.kind === 'reasoning')?.text).toBe('Approve it.');
+  });
+});
+
 describe('signalToDisplayItem', () => {
   it('should convert input signal to user display item', () => {
     const signal: ControllerSignal = {

@@ -16,12 +16,21 @@ const SUMMARIZED_TOOLS = new Set(['respond_permission', 'chat_worker', 'add_task
 /** Width available to secondary lines (indented under the row text). */
 const SECONDARY_WIDTH = TOOL_DETAIL_MAX_LENGTH - theme.secondary.indent;
 
+/**
+ * Width available to a summary header after its fixed lead-in ("· ✔ " —
+ * meta dot, space, status icon, space). Keeps the whole header within
+ * TOOL_DETAIL_MAX_LENGTH instead of overflowing by the prefix width.
+ */
+const HEADER_WIDTH = TOOL_DETAIL_MAX_LENGTH - 4;
+
 /** Render an assistant step with all its sections (content, reasoning, tool calls/results). */
 export function AssistantStepRow({ item, lookups = EMPTY_CHAT_LOOKUPS }: { item: DisplayItem; lookups?: ChatLookups }) {
   const sections = item.sections ?? [];
 
-  // No sections — fallback to simple text row
+  // No sections — fallback to simple text row. A whitespace-only step (no
+  // text, no tool calls) renders nothing rather than a bare prefix.
   if (sections.length === 0) {
+    if (!item.content?.trim()) return null;
     return (
       <Box>
         <Text color={theme.assistant.prefixColor} bold>
@@ -183,20 +192,24 @@ function PermissionResolutionRow({ section, result, lookups }: {
       toolName: section.toolName ?? 'respond_permission',
       arguments: section.text,
     },
-    TOOL_DETAIL_MAX_LENGTH,
+    HEADER_WIDTH,
     result ? { text: result.text, isError: result.isError } : undefined,
     request?.meta,
   );
-  const approved = summary.state === 'approved';
-  const color = approved ? theme.permission.approvedColor : theme.permission.deniedColor;
-  const icon = approved ? theme.permission.approvedPrefix : theme.permission.deniedPrefix;
+  const look = {
+    approved: { color: theme.permission.approvedColor, icon: theme.permission.approvedPrefix, verb: '已批准' },
+    denied: { color: theme.permission.deniedColor, icon: theme.permission.deniedPrefix, verb: '已拒绝' },
+    unknown: { color: theme.permission.unknownColor, icon: theme.permission.unknownPrefix, verb: '结果未知' },
+    pending: { color: theme.permission.pendingColor, icon: theme.permission.pendingPrefix, verb: '待审批' },
+  }[summary.state];
+  const { color, icon } = look;
   const workerTag = request?.worker ? formatWorkerTag(request.worker) : '';
 
   return (
     <Box flexDirection="column">
       <Box>
         <Text color={theme.meta.color}>{theme.meta.prefix} </Text>
-        <Text color={color} bold>{icon} {approved ? '已批准' : '已拒绝'}</Text>
+        <Text color={color} bold>{icon} {look.verb}</Text>
         {summary.toolName && <Text bold> {summary.toolName}</Text>}
         {summary.target && <Text> {summary.target}</Text>}
         {summary.requestShortId && <Text color={theme.secondary.color}> #{summary.requestShortId}</Text>}
@@ -285,7 +298,7 @@ function AddTaskRow({ section, result, lookups }: {
         </Text>
         <Text bold> {summary.title}</Text>
         {summary.taskShortId && <Text color={theme.secondary.color}> #{summary.taskShortId}</Text>}
-        <OutcomeMark outcome={summary.outcome === 'failed' ? 'failed' : 'pending'} ok="" failed="派发失败" />
+        <OutcomeMark outcome={summary.outcome} ok="已派发" failed="派发失败" />
       </Box>
       <SecondaryLine>{metaLine}</SecondaryLine>
       <PreviewLines lines={summary.lines} hidden={summary.hiddenLines} />

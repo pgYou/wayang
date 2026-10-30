@@ -5,18 +5,11 @@ import type { Subscribable } from '@/infra/state/subscribable';
 import { useWayangState } from '@/tui/hooks/use-wayang-state';
 import { CONTEXT_USAGE_STATE_PATH } from '@/client/remote-supervisor';
 import { theme } from '@/tui/theme';
+import { formatTokenCount } from '@/tui/utils/format-tokens';
+import { truncateToWidth } from '@/tui/utils/text-width';
 
 /** Hard cap for the context segment — the rest of the line yields to it. */
 export const CONTEXT_SEGMENT_MAX_WIDTH = 22;
-
-/** Compact a token count: raw below 1k, "12.3k" below 1M, "1.2M" above. */
-function formatTokenCount(tokens: number): string {
-  if (tokens < 1_000) return String(tokens);
-  if (tokens < 1_000_000) {
-    return `${(tokens / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
-  }
-  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-}
 
 /**
  * Format the persistent context segment, e.g. "ctx 12.3k/100k (12%)".
@@ -25,11 +18,8 @@ function formatTokenCount(tokens: number): string {
  */
 export function formatContextUsage(usedTokens: number, contextWindowTokens: number): string {
   const percent = contextWindowTokens > 0 ? Math.round((usedTokens / contextWindowTokens) * 100) : 0;
-  let text = `ctx ${formatTokenCount(usedTokens)}/${formatTokenCount(contextWindowTokens)} (${percent}%)`;
-  if (text.length > CONTEXT_SEGMENT_MAX_WIDTH) {
-    text = text.slice(0, CONTEXT_SEGMENT_MAX_WIDTH);
-  }
-  return text;
+  const text = `ctx ${formatTokenCount(usedTokens)}/${formatTokenCount(contextWindowTokens)} (${percent}%)`;
+  return truncateToWidth(text, CONTEXT_SEGMENT_MAX_WIDTH);
 }
 
 /**

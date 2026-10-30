@@ -80,12 +80,14 @@ export const theme = {
   },
   permission: {
     /** Status icons for permission request / resolution rows. */
-    pendingPrefix: '●', // ● filled circle — pending request
+    pendingPrefix: '•', // • bullet — pending request
     approvedPrefix: '✔', // ✔ check mark — approved
     deniedPrefix: '✘', // ✘ cross mark — denied
+    unknownPrefix: '?', // ? decision could not be determined
     pendingColor: baseToken.color.warning,
     approvedColor: baseToken.color.success,
     deniedColor: baseToken.color.error,
+    unknownColor: baseToken.color.textSubtle,
   },
   /** Controller actions on workers: dispatch a task, send a message. */
   action: {

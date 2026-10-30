@@ -22,7 +22,7 @@ import {
 } from './text-width';
 
 /** Lifecycle of a permission flow item. */
-export type PermissionSummaryState = 'pending' | 'approved' | 'denied';
+export type PermissionSummaryState = 'pending' | 'approved' | 'denied' | 'unknown';
 
 /** Summary of one permission request / resolution row. */
 export interface PermissionSummary {
@@ -262,9 +262,12 @@ export function summarizePermissionResolution(
   }
 
   const isApproved = approved === true;
+  // Neither arguments nor result tell us the decision — report it as
+  // unknown rather than claiming a denial.
+  const isUnknown = approved === undefined;
   const requestShortId = requestId ? shortId(requestId) : undefined;
   const idTag = requestShortId ? `#${requestShortId}` : '';
-  const verb = isApproved ? '已批准' : '已拒绝';
+  const verb = isApproved ? '已批准' : isUnknown ? '结果未知' : '已拒绝';
 
   // Target of the original request, fitted after "<verb> <tool> " and " #xxxx".
   let toolName: string | undefined;
@@ -276,9 +279,10 @@ export function summarizePermissionResolution(
   }
 
   const detailParts: string[] = [];
-  if (approved === undefined) {
+  if (isUnknown) {
     // Neither arguments nor result could be parsed — keep the raw call visible.
     detailParts.push(`原始参数: ${tc.arguments.slice(0, UNKNOWN_ARGS_PREFIX)}`);
+    if (result && !result.isError) detailParts.push(`结果: ${collapseWhitespace(result.text)}`);
   }
   if (result?.isError) {
     // The resolution did not take effect (not found / already resolved).
@@ -292,7 +296,7 @@ export function summarizePermissionResolution(
       maxWidth,
     ),
     detail: truncateToWidth(detailParts.join(' '), maxWidth),
-    state: isApproved ? 'approved' : 'denied',
+    state: isApproved ? 'approved' : isUnknown ? 'unknown' : 'denied',
     target,
     ...(toolName && { toolName }),
     ...(requestShortId && { requestShortId }),

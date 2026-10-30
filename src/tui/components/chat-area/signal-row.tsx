@@ -68,7 +68,8 @@ function DefaultSignalRow({ item }: { item: DisplayItem }) {
 function PermissionRequestRow({ item }: { item: DisplayItem }) {
   const dim = !item.read;
   const accent = dim ? theme.baseToken.color.textSubtle : theme.permission.pendingColor;
-  const summary = summarizePermissionRequest(item.permissionMeta!, TOOL_DETAIL_MAX_LENGTH);
+  // Budget excludes the "• " lead-in so the header stays within the row width.
+  const summary = summarizePermissionRequest(item.permissionMeta!, TOOL_DETAIL_MAX_LENGTH - 2);
 
   const workerTag = formatWorkerTag({ emoji: item.emoji, taskTitle: item.taskTitle, workerId: item.workerId });
   const contextLine = [workerTag, summary.requestShortId ? `#${summary.requestShortId}` : '']

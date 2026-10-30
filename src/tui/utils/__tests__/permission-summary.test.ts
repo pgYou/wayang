@@ -235,7 +235,9 @@ describe('summarizePermissionResolution', () => {
   it('keeps raw arguments visible when nothing can be parsed', () => {
     const bad: ToolCallRecord = { toolCallId: 'tc-3', toolName: 'respond_permission', arguments: '{bad json' };
     const s = summarizePermissionResolution(bad, 80);
-    expect(s.state).toBe('denied');
+    // Undeterminable — must not be reported as a denial.
+    expect(s.state).toBe('unknown');
+    expect(s.label.startsWith('结果未知')).toBe(true);
     expect(s.detail).toContain('原始参数');
     expect(s.detail).toContain('{bad json');
   });

@@ -87,7 +87,17 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
   const { handleCommand } = useSlashCommands(supervisor);
 
   const handleSubmit = useMemoizedFn(async (input: string) => {
-    const cmdResult = await handleCommand(input);
+    let cmdResult: Awaited<ReturnType<typeof handleCommand>>;
+    try {
+      cmdResult = await handleCommand(input);
+    } catch (err) {
+      // RPC-backed commands (/context, /tasks, /cancel, …) reject when the
+      // server is gone; surface it instead of an unhandled rejection that
+      // would take the TUI process down.
+      const reason = err instanceof Error ? err.message : String(err);
+      setOverlay({ kind: 'text', content: `Command failed: ${reason}`, hint: '(esc to dismiss)' });
+      return;
+    }
     if (cmdResult.handled) {
       if (cmdResult.output === '__EXIT__') { onExit(); return; }
       if (cmdResult.action === 'compact') {
