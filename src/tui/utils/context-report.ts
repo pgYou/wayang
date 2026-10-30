@@ -31,16 +31,16 @@ export function formatFullTokens(tokens: number): string {
   return String(Math.round(tokens)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-/** One-decimal percentage of `maxTokens`, e.g. "12.3%". */
-function formatPercent(tokens: number, maxTokens: number): string {
-  if (!(maxTokens > 0)) return '0.0%';
-  const percent = (tokens / maxTokens) * 100;
+/** One-decimal percentage of the context window, e.g. "12.3%". */
+function formatPercent(tokens: number, contextWindowTokens: number): string {
+  if (!(contextWindowTokens > 0)) return '0.0%';
+  const percent = (tokens / contextWindowTokens) * 100;
   return `${percent.toFixed(1)}%`;
 }
 
-/** Integer percentage of `maxTokens`, e.g. "12%" (matches the status bar). */
-function formatRoundedPercent(tokens: number, maxTokens: number): string {
-  const percent = maxTokens > 0 ? Math.round((tokens / maxTokens) * 100) : 0;
+/** Integer percentage of the context window, e.g. "12%" (matches the status bar). */
+function formatRoundedPercent(tokens: number, contextWindowTokens: number): string {
+  const percent = contextWindowTokens > 0 ? Math.round((tokens / contextWindowTokens) * 100) : 0;
   return `${percent}%`;
 }
 
@@ -49,8 +49,8 @@ const VALUE_WIDTH = 8;
 const PERCENT_WIDTH = 6;
 
 /** Align one breakdown row: "  system prompt        1.2k   1.2%". */
-function breakdownRow(label: string, tokens: number, maxTokens: number): string {
-  return `  ${label.padEnd(LABEL_WIDTH)}${formatTokenCount(tokens).padStart(VALUE_WIDTH)}${formatPercent(tokens, maxTokens).padStart(PERCENT_WIDTH)}`;
+function breakdownRow(label: string, tokens: number, contextWindowTokens: number): string {
+  return `  ${label.padEnd(LABEL_WIDTH)}${formatTokenCount(tokens).padStart(VALUE_WIDTH)}${formatPercent(tokens, contextWindowTokens).padStart(PERCENT_WIDTH)}`;
 }
 
 /**
@@ -68,9 +68,9 @@ export function formatContextReport(usage: ContextUsage | null | undefined): str
     return ['Context · no data yet'];
   }
 
-  const maxTokens = usage.maxTokens;
+  const contextWindowTokens = usage.contextWindowTokens;
   const lines: string[] = [
-    `Context · ${formatTokenCount(usage.usedTokens)} / ${formatTokenCount(maxTokens)} (${formatRoundedPercent(usage.usedTokens, maxTokens)}) · source=${usage.source}`,
+    `Context · ${formatTokenCount(usage.usedTokens)} / ${formatTokenCount(contextWindowTokens)} (${formatRoundedPercent(usage.usedTokens, contextWindowTokens)}) · source=${usage.source}`,
   ];
 
   if (usage.lastUsage) {
@@ -82,7 +82,7 @@ export function formatContextReport(usage: ContextUsage | null | undefined): str
     lines.push('Last step · no usage yet');
   }
 
-  lines.push(`Model limit · ${formatFullTokens(maxTokens)} tokens`);
+  lines.push(`Model limit · ${formatFullTokens(contextWindowTokens)} tokens`);
 
   const breakdown = usage.breakdown;
   if (breakdown) {
@@ -96,9 +96,9 @@ export function formatContextReport(usage: ContextUsage | null | undefined): str
     ];
     lines.push('Breakdown');
     for (const [label, tokens] of groups) {
-      if (tokens > 0) lines.push(breakdownRow(label, tokens, maxTokens));
+      if (tokens > 0) lines.push(breakdownRow(label, tokens, contextWindowTokens));
     }
-    lines.push(breakdownRow('total', breakdown.total, maxTokens));
+    lines.push(breakdownRow('total', breakdown.total, contextWindowTokens));
   }
 
   return lines;

@@ -163,14 +163,14 @@ describe('ContextManager', () => {
   });
 
   describe('context usage accessors', () => {
-    it('should return the injected maxTokens', () => {
+    it('should return the injected contextWindowTokens', () => {
       const cm = new ContextManager(createMockState(), 'STATIC PROMPT', 42_000);
-      expect(cm.getMaxTokens()).toBe(42_000);
+      expect(cm.getContextWindowTokens()).toBe(42_000);
     });
 
-    it('should default maxTokens to 100k when not injected', () => {
+    it('should default contextWindowTokens to 256k when not injected', () => {
       const cm = new ContextManager(createMockState(), 'STATIC PROMPT');
-      expect(cm.getMaxTokens()).toBe(100_000);
+      expect(cm.getContextWindowTokens()).toBe(256_000);
     });
 
     it('should count the system prompt even with an empty conversation', () => {

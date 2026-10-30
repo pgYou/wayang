@@ -50,6 +50,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     this.contextManager = new ContextManager(
       this.state,
       buildWorkerSystemPrompt(this.ctx, skills),
+      provider.contextWindowTokens,
     );
   }
 

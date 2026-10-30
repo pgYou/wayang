@@ -23,9 +23,9 @@ function formatTokenCount(tokens: number): string {
  * Percent is rounded to integer and not clamped to 100. Output is capped
  * at CONTEXT_SEGMENT_MAX_WIDTH.
  */
-export function formatContextUsage(usedTokens: number, maxTokens: number): string {
-  const percent = maxTokens > 0 ? Math.round((usedTokens / maxTokens) * 100) : 0;
-  let text = `ctx ${formatTokenCount(usedTokens)}/${formatTokenCount(maxTokens)} (${percent}%)`;
+export function formatContextUsage(usedTokens: number, contextWindowTokens: number): string {
+  const percent = contextWindowTokens > 0 ? Math.round((usedTokens / contextWindowTokens) * 100) : 0;
+  let text = `ctx ${formatTokenCount(usedTokens)}/${formatTokenCount(contextWindowTokens)} (${percent}%)`;
   if (text.length > CONTEXT_SEGMENT_MAX_WIDTH) {
     text = text.slice(0, CONTEXT_SEGMENT_MAX_WIDTH);
   }
@@ -104,7 +104,7 @@ export function buildStatusSegments(input: StatusSegmentsInput): StatusSegments 
   const countsText = parts.length > 0 ? parts.join(' │ ') : 'idle';
 
   const contextText = contextUsage
-    ? formatContextUsage(contextUsage.usedTokens, contextUsage.maxTokens)
+    ? formatContextUsage(contextUsage.usedTokens, contextUsage.contextWindowTokens)
     : '';
 
   // Width accounting: padding(2) + ' counts '(counts + 2) + context segment

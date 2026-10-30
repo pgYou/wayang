@@ -55,6 +55,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     this.contextManager = new ContextManager(
       state,
       buildControllerSystemPrompt(this.ctx, skills),
+      provider.contextWindowTokens,
     );
     this.setHooks({
       beforeLLM: ({ messages }) => {
@@ -251,7 +252,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
    * remain visible. dynamicState is never persisted.
    */
   private updateContextUsage(stepUsage?: { inputTokens?: number }): void {
-    const maxTokens = this.contextManager.getMaxTokens();
+    const contextWindowTokens = this.contextManager.getContextWindowTokens();
     const reported = stepUsage?.inputTokens;
     const hasReported = typeof reported === 'number' && Number.isFinite(reported) && reported > 0;
     if (hasReported) {
@@ -266,8 +267,8 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     const lastUsage = this.findLastStepUsage() ?? this.toLastUsage(stepUsage);
     const usage: ContextUsage = {
       usedTokens,
-      maxTokens,
-      ratio: maxTokens > 0 ? usedTokens / maxTokens : 0,
+      contextWindowTokens,
+      ratio: contextWindowTokens > 0 ? usedTokens / contextWindowTokens : 0,
       source: hasReported ? 'usage' : 'estimate',
       breakdown: this.contextManager.getContextBreakdown(),
       ...(lastUsage && { lastUsage }),

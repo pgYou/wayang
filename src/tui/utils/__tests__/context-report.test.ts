@@ -22,7 +22,7 @@ function stringWidth(s: string): number {
 
 const makeUsage = (overrides: Partial<ContextUsage> = {}): ContextUsage => ({
   usedTokens: 12_300,
-  maxTokens: 100_000,
+  contextWindowTokens: 256_000,
   ratio: 0.123,
   source: 'usage',
   lastUsage: { inputTokens: 12_100, outputTokens: 340, cachedInputTokens: 8_000 },
@@ -59,16 +59,16 @@ describe('formatContextReport', () => {
     const lines = formatContextReport(makeUsage());
 
     expect(lines).toHaveLength(10);
-    expect(lines[0]).toBe('Context · 12.3k / 100k (12%) · source=usage');
+    expect(lines[0]).toBe('Context · 12.3k / 256k (5%) · source=usage');
     expect(lines[1]).toBe('Last step · in 12.1k · out 340 · cached 8k');
-    expect(lines[2]).toBe('Model limit · 100,000 tokens');
+    expect(lines[2]).toBe('Model limit · 256,000 tokens');
     expect(lines[3]).toBe('Breakdown');
-    expect(lines[4]).toMatch(/^ {2}system prompt +1\.2k +1\.2%$/);
-    expect(lines[5]).toMatch(/^ {2}user +300 +0\.3%$/);
-    expect(lines[6]).toMatch(/^ {2}assistant +900 +0\.9%$/);
-    expect(lines[7]).toMatch(/^ {2}tool calls +2\.4k +2\.4%$/);
-    expect(lines[8]).toMatch(/^ {2}tool results +7\.5k +7\.5%$/);
-    expect(lines[9]).toMatch(/^ {2}total +12\.3k +12\.3%$/);
+    expect(lines[4]).toMatch(/^ {2}system prompt +1\.2k +0\.5%$/);
+    expect(lines[5]).toMatch(/^ {2}user +300 +0\.1%$/);
+    expect(lines[6]).toMatch(/^ {2}assistant +900 +0\.4%$/);
+    expect(lines[7]).toMatch(/^ {2}tool calls +2\.4k +0\.9%$/);
+    expect(lines[8]).toMatch(/^ {2}tool results +7\.5k +2\.9%$/);
+    expect(lines[9]).toMatch(/^ {2}total +12\.3k +4\.8%$/);
   });
 
   it('should print "no usage yet" and mark the estimate source when usage is absent', () => {
@@ -119,7 +119,7 @@ describe('formatContextReport', () => {
       makeUsage(),
       makeUsage({
         usedTokens: 1_250_000,
-        maxTokens: 2_000_000,
+        contextWindowTokens: 2_000_000,
         source: 'estimate',
         lastUsage: { inputTokens: 1_249_000, outputTokens: 12_345, cachedInputTokens: 1_000_000 },
         breakdown: {
@@ -142,7 +142,7 @@ describe('formatContextReport', () => {
   });
 
   it('should never emit undefined/NaN placeholders', () => {
-    const lines = formatContextReport(makeUsage({ maxTokens: 0, usedTokens: 0, breakdown: undefined }));
+    const lines = formatContextReport(makeUsage({ contextWindowTokens: 0, usedTokens: 0, breakdown: undefined }));
     for (const line of lines) {
       expect(line).not.toMatch(/undefined|NaN/);
     }

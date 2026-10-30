@@ -16,7 +16,7 @@ import type { ContextUsage } from '@/types/index';
 
 const USAGE: ContextUsage = {
   usedTokens: 1234,
-  maxTokens: 200_000,
+  contextWindowTokens: 200_000,
   ratio: 0.00617,
   source: 'usage',
 };

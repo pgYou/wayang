@@ -510,8 +510,8 @@ describe('ControllerAgent', () => {
     expect(usage).toBeDefined();
     expect(usage.source).toBe('usage');
     expect(usage.usedTokens).toBe(25_000);
-    expect(usage.maxTokens).toBe(100_000);
-    expect(usage.ratio).toBeCloseTo(0.25);
+    expect(usage.contextWindowTokens).toBe(256_000);
+    expect(usage.ratio).toBeCloseTo(25_000 / 256_000);
   });
 
   it('should fall back to the estimate when the step reports no input tokens', async () => {
@@ -546,7 +546,7 @@ describe('ControllerAgent', () => {
     expect(usage.source).toBe('estimate');
     // System prompt alone guarantees a positive estimate
     expect(usage.usedTokens).toBeGreaterThan(0);
-    expect(usage.maxTokens).toBe(100_000);
+    expect(usage.contextWindowTokens).toBe(256_000);
   });
 
   it('should seed contextUsage from the estimate after restore', async () => {

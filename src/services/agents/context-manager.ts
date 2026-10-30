@@ -8,10 +8,10 @@ import { nowISO } from '@/utils/time';
 
 // --- Configuration Constants ---
 
-/** Default context window: ~100k tokens (conservative for most models). */
-const DEFAULT_MAX_TOKENS = 100_000;
+/** Default context window budget: 256k tokens (fits most current models). */
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000;
 
-/** Trigger compaction at 90% of maxTokens, reserving 10% for output. */
+/** Trigger compaction at 90% of the context window, reserving 10% for output. */
 const COMPACT_THRESHOLD_RATIO = 0.9;
 
 /**
@@ -28,7 +28,10 @@ export const COMPACT_MAX_RETRIES = 2;
 // --- ContextManager ---
 
 export class ContextManager {
-  private readonly maxTokens: number;
+  /** Context window budget (input side) — NOT an output cap. Distinct from the
+   *  OpenAI-protocol `max_tokens` (max output tokens); this is the model's
+   *  context window the prompt must fit into. */
+  private readonly contextWindowTokens: number;
 
   /**
    * Cached compact state — updated by compact() and restoreCompact(), read by
@@ -63,9 +66,9 @@ export class ContextManager {
   constructor(
     private state: BaseWayangState,
     private staticPrompt: string,
-    maxTokens?: number,
+    contextWindowTokens?: number,
   ) {
-    this.maxTokens = maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.contextWindowTokens = contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
   }
 
   // --- Public API ---
@@ -114,12 +117,12 @@ export class ContextManager {
     // Real reported usage beats the estimate — max() covers the gap before
     // the first real usage arrives and right after a compaction.
     const effective = Math.max(promptTokens + convTokens, this.lastReportedTokens ?? 0);
-    return effective > this.maxTokens * COMPACT_THRESHOLD_RATIO;
+    return effective > this.contextWindowTokens * COMPACT_THRESHOLD_RATIO;
   }
 
   /** Get the configured context window budget (tokens). */
-  getMaxTokens(): number {
-    return this.maxTokens;
+  getContextWindowTokens(): number {
+    return this.contextWindowTokens;
   }
 
   /**

@@ -8,10 +8,10 @@ import {
 import { theme } from '@/tui/theme';
 import type { ContextUsage } from '@/types/index';
 
-const makeUsage = (usedTokens: number, maxTokens = 100_000): ContextUsage => ({
+const makeUsage = (usedTokens: number, contextWindowTokens = 100_000): ContextUsage => ({
   usedTokens,
-  maxTokens,
-  ratio: maxTokens > 0 ? usedTokens / maxTokens : 0,
+  contextWindowTokens,
+  ratio: contextWindowTokens > 0 ? usedTokens / contextWindowTokens : 0,
   source: 'usage',
 });
 

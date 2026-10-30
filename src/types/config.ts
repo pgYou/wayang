@@ -27,6 +27,13 @@ export interface ProviderConfig {
    * AssistantEntry.model when set. (Currently metadata-only.)
    */
   maxOutputTokens?: number;
+  /**
+   * Context window budget (input side) for this provider's model — NOT the
+   * OpenAI-protocol `max_tokens` (which caps output). Drives compaction:
+   * ControllerAgent/WorkerAgent trigger compaction at 90% of this budget.
+   * Optional — defaults to 256k tokens.
+   */
+  contextWindowTokens?: number;
 }
 
 /** Third-party worker configuration. */

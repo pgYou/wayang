@@ -50,9 +50,9 @@ export interface ContextUsage {
    * current prompt. See `breakdown`: the two are sampled at different times.
    */
   usedTokens: number;
-  /** Context window budget from ContextManager. */
-  maxTokens: number;
-  /** usedTokens / maxTokens — raw value, not clamped to 1. */
+  /** Context window budget (input side) from ContextManager — NOT an output cap. */
+  contextWindowTokens: number;
+  /** usedTokens / contextWindowTokens — raw value, not clamped to 1. */
   ratio: number;
   /** Whether usedTokens came from provider-reported usage or an estimate. */
   source: 'usage' | 'estimate';
