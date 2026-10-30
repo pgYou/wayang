@@ -225,20 +225,19 @@ CI runs lint + unit + build + e2e on every push and pull request.
 
 ## Roadmap
 
-Full plan with per-version scope and acceptance criteria: [docs/roadmap-0.5-1.0.md](docs/roadmap-0.5-1.0.md) (Chinese). Goal: evolve from a multi-agent CLI into a **multi-agent collaboration workbench**.
+**Vision:** evolve from a multi-agent CLI into a **multi-agent collaboration workbench**. The themes below are ordered by priority, not locked to specific versions — scope shifts as real usage feeds back.
 
-| Version | Theme | Highlights |
-| --- | --- | --- |
-| 0.5 ✅ | Architecture foundation | Headless logic process + RPC (stdio/WS) + e2e test harness + CI |
-| 0.6 | Workbench MVP | WebUI (chat / task board / approval center) + human-readable task IDs (`WAY-N`) |
-| 0.7 | Collaboration core | Task groups, dependencies, structured planning, git worktree isolation, worker-to-worker channel |
-| 0.8 | Open integration | ACP client — connect Gemini CLI, Claude Code, Codex, OpenCode as workers |
-| 0.9 | Execution power | MCP tool mounting, richer built-in tools, hardening |
-| 0.10 | Always-on & remote | Daemon, remote access, notifications, scheduled backlog ("perpetual" mode with human checkpoints) |
-| 0.11 | Memory & quality loop | Workspace knowledge base, review worker, test-as-definition-of-done |
-| 1.0 | Ecosystem & stability | Worker plugin protocol + scaffolding, skill registry, sandboxing, distribution |
+1. **Collaboration core** — structured planning (`plan` / `replan`), task groups & dependencies with topology-aware dispatch, human-readable task IDs (`WAY-N`), git worktree isolation so multiple workers can edit one repo in parallel, worker-to-worker channel, cross-session backlog
+2. **Execution power** — MCP tool mounting, richer built-in tools (git, code navigation, web fetch), per-worker tool allowlists & skill packs, long-session hardening
+3. **Open integration** — ACP client: run Gemini CLI, Claude Code, Codex CLI, and OpenCode as workers over the Agent Client Protocol
+4. **Workbench WebUI** — chat, task board, approval center, and worker session replay in the browser, with terminal and browser connected at the same time; lands once the collaboration core gives it a rich data model
+5. **Always-on & remote** — daemon mode with scheduled backlog ("perpetual" mode, human-in-the-loop), secure remote access, notifications
+6. **Memory & quality loop** — workspace knowledge base, searchable task archive, review worker, tests as the definition of done
+7. **Ecosystem** — worker plugin protocol + scaffolding, community skill directory, sandboxing, distribution
 
-Done so far: Controller ↔ Worker chat & permission approval (v0.3), persistent multi-stage workers & sessionless long-running (v0.4).
+**Standing principles:** the Controller stays the single orchestration source — LMs decide, code enforces mechanics; the TUI stays a thin chat client, richer interaction lands on the Web; everything mounts on the headless server + RPC foundation.
+
+Shipped: Controller ↔ Worker chat & permission approval (v0.3), persistent multi-stage workers & sessionless long-running (v0.4), headless server + RPC + e2e & CI (v0.5).
 
 ## License
 

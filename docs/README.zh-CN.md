@@ -172,13 +172,19 @@ npm run lint       # 类型检查 + lint
 
 ## 路线图
 
-- [x] **Controller ↔ Worker 对话** — Controller 可与运行中的 Worker 直接对话，支持向用户请求审批
-- [ ] **跨 Task 持久化 Worker** — Worker 完成任务后保持存活，接收后续任务，保留对话上下文，基于已有工作直接迭代调整，无需从零开始
-- [ ] **无会话长时运行 Agent** — 重新思考会话设计：始终继承上次执行的上下文 + 长期记忆，让 Wayang 成为持续运行的 Agent 而非会话式工具
-- [ ] **更多第三方 Worker** — 扩展集成，支持 Codex、Aider、Cursor agent 等
-- [ ] **TUI 优化** — Worker 详情页改进，状态展示更丰富，整体体验打磨
-- [ ] **GUI** — 超越终端，提供图形化界面
-- [ ] **插件化 Worker 生态** — 定义标准化 Worker 插件协议（能力、工具、资源），建设插件注册中心，提供开发脚手架，让社区能开发并共享自定义 Worker
+**愿景:** 从"多智能体 CLI"进化为**多 agent 协作 + 工作台**。以下主题按优先级排序,不与具体小版本绑定——范围随真实使用反馈调整。
+
+1. **协作核心** — 结构化规划(`plan` / `repl`)、任务组与依赖(拓扑派发)、人类可读的任务编号(`WAY-N`)、git worktree 隔离(多 worker 并行改同一仓库)、worker 间协作通道、跨会话待办池
+2. **执行增强** — MCP 工具挂载、内置工具拓展(git / 代码导航 / web fetch)、per-worker 工具 allowlist 与技能包、长会话硬化
+3. **开放接入** — ACP 客户端:经 Agent Client Protocol 接入 Gemini CLI、Claude Code、Codex CLI、OpenCode 作为 worker
+4. **WebUI 工作台** — 浏览器里的对话、任务看板、审批中心与 worker 会话回放,终端与浏览器可同时在线;待协作核心把数据模型做厚后落地
+5. **常驻与远程** — daemon 常驻 + 定时跑 backlog("永动机"形态,默认人在环)、远程安全接入、任务通知
+6. **记忆与质量闭环** — workspace 知识库、任务归档检索、review worker、以测试通过为完成标准(DoD)
+7. **生态与稳定** — worker 插件协议与脚手架、社区技能目录、沙箱、分发
+
+**贯穿原则:** Controller 是唯一编排源——LLM 负责决策,代码负责机制;TUI 冻结在"基础对话"客户端,更丰富的交互一律落在 Web;一切建立在无头 server + RPC 地基(0.5)之上。
+
+已交付:Controller ↔ Worker 对话与权限审批(v0.3)、跨 Task 持久化 Worker 与无会话长时运行(v0.4)、无头 server + RPC + e2e/CI(v0.5)。
 
 ## License
 
