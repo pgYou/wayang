@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.5.2 (2026-10-30)
+
+### Features
+
+**Context usage in the TUI** — The status bar now leads with a persistent context segment (`ctx 6.4k/256k (3%)`), turning yellow from 70% and red from 90%. New `/context` slash command prints a breakdown of the prompt by group (system prompt, user, assistant, tool calls, tool results, compact summary) next to the provider-reported usage of the last step, fetched from the server on demand
+
+**Structured action rows** — Permission requests render as `• 权限申请 <tool> <target>` with the asking worker and a `#xxxx` request handle on a secondary line; descriptions that only restate the args are dropped. Resolutions look the original request up by id and read `✔ 已批准 <tool> <target> #xxxx` (or `✘ 已拒绝` with the reason) instead of a bare id. `chat_worker` calls render as `✉ 发送给 <worker>` with delivery state and a message preview; `add_task` calls render as `▶ 派发任务 <title>` (or `↻ 续派任务` when reusing an idle worker) with worker type, priority and multi-stage flags, marked `✔ 已派发` once dispatched. The paired tool results of these calls are folded into the row
+
+**Per-provider context window** — New optional `providers.<name>.contextWindowTokens` declares the model's context window (input side; distinct from the protocol's `max_tokens`, which caps output). Controller compaction triggers at 90% of it. The default rises from 100k to 256k — **providers serving smaller-window models (e.g. 128k) should set it explicitly**, otherwise compaction will not trigger before the provider rejects the request. The onboarding wizard now asks for it, env-only setups can use `WAYANG_CONTEXT_WINDOW_TOKENS`, and config validation rejects anything but a positive integer. Workers do not compact yet, so the value only affects the controller
+
+### Reliability
+
+**LLM idle watchdog** — An LLM call that makes no progress (no text chunk, no step finish) for 5 minutes is aborted and surfaced as an `LLM call idle timeout` error instead of leaving the controller busy forever. Observed root cause: the proxy accepted a large request and then hung it silently, so the TUI stayed on the loading spinner until the process was killed. The watchdog is paused while a tool is executing — including waiting for a permission approval or a user's `inquire` answer — so slow approvals are not misread as a hung provider. It uses a per-call abort controller, so the long-lived agent stays reusable after a timeout
+
+**Compaction driven by real usage** — The provider-reported `inputTokens` of the latest step now feeds the compaction check (`max(estimate, reported)`), so compaction triggers even when the local estimate undercounts. On restore the check is seeded with the last real usage recorded after the latest compaction, so the cold-start compaction check sees real numbers. A successful compaction is now logged (`Compaction done`), and the status bar / `/context` refresh right after a compaction instead of on the next step
+
+### Fixes
+
+**Token estimate ignored tool payloads** — The local estimator stringified SDK message content arrays (`"[object Object]"`), so tool-call arguments and tool results — usually most of an agent prompt — were not counted. Estimates were far too low, the estimate-based compaction check almost never fired, and `/context` showed a usage total far below its own breakdown. Array content is now read part by part, so the estimate and the breakdown agree
+
+**Compaction fallback kept truncating** — When summarization failed, the half-truncation fallback left a stale real-usage mark (so every loop judged the context full and cut history again) and an out-of-range verbatim index (so, after an earlier successful compaction, no recent history was sent at all). Truncation now goes through the context manager, which clears the mark and shifts the index
+
+**Undeterminable approvals shown as denied** — A `respond_permission` call whose outcome cannot be parsed now renders as `? 结果未知` instead of a red `✘ 已拒绝`
+
+**Slash command failures** — A slash command whose RPC fails (e.g. `/context` after the server died) now shows `Command failed: …` instead of an unhandled rejection that could take the TUI down
+
+**Empty thinking rows** — Whitespace-only reasoning or content (emitted by some providers on pure tool-call steps) no longer renders an empty `thinking:` row
+
+**Lingering lint error** — Hand-run `.mjs` fixture generators under `src/**/__tests__/fixtures/` are excluded from eslint (the project service cannot resolve them without `allowJs`); any other `.mjs` under `src/` is still linted
+
+### Refactoring
+
+`ContextManager.maxTokens` / `ContextUsage.maxTokens` renamed to `contextWindowTokens` to avoid confusion with the OpenAI-protocol `max_tokens`. The stream watchdog option is named `llmIdleTimeoutMs`, distinct from the `idleTimeoutMs` config field (multi-stage worker reaping). Shared display-width and token-count formatting helpers extracted to `src/tui/utils/`. README worker `toolChoice` docs corrected (the default has been `auto` since 0.5.0)
+
+## v0.5.1 (2026-10-30)
+
+### Architecture
+
+**Conversation envelope** — `conversation-envelope` is now the single source for entry versioning, `parentId` chaining and compaction-boundary rules. Agent entries carry turn lineage (`turnId`, `rootTurnId`, `causationId`, `actor`) and step timestamps
+
+**Tool call recording** — New `tool-call-recorder` tracks each tool execution's start, end, status and duration by `toolCallId`, merged into the persisted `ToolCallRecord` / `ToolResultRecord` when the assistant entry is built
+
+**Conversation module** — New `src/services/conversation`: `conversation-index` groups entries into turns in memory (with backfill rules for legacy entries without `turnId`), and `turn-serialize` produces JSON-safe turns for the RPC layer; `wayang-server` and the RPC protocol are extended accordingly
+
+### Testing
+
+New and updated suites for the conversation envelope, entry envelope, tool call recorder, context manager and server conversation APIs; the resume e2e scenario is extended
+
 ## v0.5.0 (2026-10-28)
 
 ### Architecture
