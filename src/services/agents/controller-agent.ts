@@ -2,10 +2,12 @@ import { BaseAgent } from './base-agent';
 import { ContextManager, COMPACT_MAX_RETRIES } from './context-manager';
 import { ControllerAgentState } from '@/services/agents/controller-state';
 import { buildAssistantEntry } from './utils/build-assistant-entry';
+import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from './utils/entry-envelope';
+import { ToolCallRecorder, recordToolCalls } from './utils/tool-call-recorder';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload } from '@/types/index';
-import type { ConversationEntry, SignalEntry } from '@/types/conversation';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload } from '@/types/index';
+import type { ConversationEntry, ConversationIndex, SignalEntry, TurnView } from '@/types/conversation';
 import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import type { StateEvent } from '@/infra/state/base-state';
@@ -28,6 +30,11 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
   private readonly tools: ToolSet;
   private readonly logger: Logger;
   private readonly ctx: SystemContext;
+  private readonly provider: ProviderConfig;
+  /** Live tool execution records — merged into entries at step finish. */
+  private readonly recorder: ToolCallRecorder;
+  /** Turn id of the most recent run — used to stamp late error entries. */
+  private lastTurnId: string | null = null;
 
   constructor(
     ctx: SystemContext,
@@ -35,11 +42,14 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     provider: ProviderConfig,
     tools: ToolSet,
     skills: import('@/services/skills/registry').SkillRegistry,
+    recorder: ToolCallRecorder = new ToolCallRecorder(),
   ) {
     super(provider);
     this.ctx = ctx;
     this.state = state;
-    this.tools = tools;
+    this.provider = provider;
+    this.recorder = recorder;
+    this.tools = recordToolCalls(tools, recorder);
     this.logger = ctx.logger;
 
     this.contextManager = new ContextManager(
@@ -72,6 +82,9 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
   }): ControllerAgent {
     const { ctx, provider, config, engine, signalQueue, skills } = opts;
     const state = new ControllerAgentState(ctx);
+    // Recorder gets the logger so attachTask misses (no live tool-call
+    // record) surface as debug logs instead of silent no-ops.
+    const recorder = new ToolCallRecorder(ctx.logger);
 
     const tools = createControllerTools({
       addTask: (task: TaskDetail) => engine.add(task),
@@ -96,9 +109,16 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       resolvePermission: (requestId, approved, reason) => engine.resolvePermission(requestId, approved, reason),
       registry: skills,
       disposeWorker: (workerId) => engine.abortByWorkerId(workerId),
+      // Turn lineage for tasks created by add_task (read from dynamicState,
+      // which run() sets at the start of every controller activation).
+      getTurnContext: () => state.get<TurnEnvelope | null>('dynamicState.currentTurn') ?? undefined,
+      // toolCall→task audit link, consumed when the step entry is built.
+      onTaskDispatched: ({ toolCallId, taskId }) => {
+        if (toolCallId) recorder.attachTask(toolCallId, taskId);
+      },
     });
 
-    return new ControllerAgent(ctx, state, provider, tools, skills);
+    return new ControllerAgent(ctx, state, provider, tools, skills, recorder);
   }
 
   /** Run the controller agent — streams text chunks while updating streamingEntries in state. */
@@ -114,9 +134,33 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
   private async _run(signals: ControllerSignal[]): Promise<{ text: string }> {
     const ts = nowISO();
 
-    // Append incoming signals to conversation
+    // --- Turn identity: one controller activation = one turn ---
+    // User input starts a new chain (rootTurnId = this turn); a signal-triggered
+    // run inherits the signal's rootTurnId (the user turn that started the
+    // chain) and records the triggering signal as its cause.
+    const turnId = generateId('turn');
+    const hasUserInput = signals.some(s => s.type === 'input');
+    const rootTurnId = hasUserInput
+      ? turnId
+      : signals.find(s => s.rootTurnId !== undefined)?.rootTurnId;
+    const causationId = signals[0]?.id;
+    const turnEnv: TurnEnvelope = {
+      turnId,
+      ...(rootTurnId !== undefined && { rootTurnId }),
+      ...(causationId !== undefined && { causationId }),
+      actor: { kind: 'controller', id: this.id },
+    };
+    this.state.set('dynamicState.currentTurn', turnEnv);
+    this.lastTurnId = turnId;
+    this.recorder.beginTurn();
+
+    // Append incoming signals to conversation. Signal entries keep their own
+    // lineage (rootTurnId / causationId / actor from the originating worker)
+    // and join the consuming turn via turnId.
     for (const sig of signals) {
-      this.state.append('conversation', signalToEntry(sig, ts));
+      const entry = signalToEntry(sig, ts, this.ctx.sessionId);
+      applyTurnEnvelope(entry, turnEnv);
+      this.state.append('conversation', entry);
     }
 
     // Clear stale streaming entries from previous run
@@ -134,10 +178,18 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       onStreamError: (err) => {
         this.logger.error({ agent: 'controller', err }, 'LLM stream error');
       },
-      onStep: (event) => {
+      onStep: (event, meta) => {
         const streamingEntries = this.state.get<ConversationEntry[]>('dynamicState.streamingEntries');
         const streamingUuid = streamingEntries?.[0]?.uuid;
-        const entry = buildAssistantEntry(event, this.id, streamingUuid);
+        const entry = buildAssistantEntry(event, this.ctx.sessionId, streamingUuid, {
+          startedAt: meta?.startedAt,
+          firstTokenAt: meta?.firstTokenAt,
+          temperature: this.provider.temperature,
+          maxOutputTokens: this.provider.maxOutputTokens,
+          recordedToolCalls: (toolCallId) => this.recorder.lookup(toolCallId),
+        });
+        applyTurnEnvelope(entry, turnEnv);
+        syncStepTimestamps(entry);
         this.state.append('conversation', entry);
         // Clear streaming for this step; next chunk will start a fresh entry
         this.state.set('dynamicState.streamingEntries', []);
@@ -169,7 +221,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       type: EEntryType.Assistant as const,
       uuid: generateId('s'),
       parentUuid: null,
-      sessionId: 'controller',
+      sessionId: this.ctx.sessionId,
       timestamp: nowISO(),
       message: { role: 'assistant' as const, content: '' },
     };
@@ -178,6 +230,12 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
   /** Restore persisted state (conversation, runtime). Called by Supervisor. */
   async restore(): Promise<void> {
     await this.state.restore();
+    // Backfill the restored summary into the context manager so getMessages()
+    // prepends it and the verbatim zone covers the sliced window.
+    const summary = this.state.get<string>('compactSummary');
+    if (summary) {
+      this.contextManager.restoreCompact(summary);
+    }
   }
 
   /** Initialize session metadata. Called by Supervisor at start. */
@@ -193,15 +251,35 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
   /** Surface an error in the UI as a system conversation entry. */
   reportError(message: string): void {
     this.state.set('dynamicState.streamingEntries', []);
-    this.state.append('conversation', {
+    const errTs = nowISO();
+    const entry: ConversationEntry = {
       type: EEntryType.System,
       uuid: generateId('err'),
       parentUuid: null,
-      sessionId: 'controller',
-      timestamp: nowISO(),
+      sessionId: this.ctx.sessionId,
+      timestamp: errTs,
       subtype: ESystemSubtype.Error,
       content: message,
-    });
+      // Point-in-time event: startedAt/endedAt share the recording moment.
+      startedAt: errTs,
+      endedAt: errTs,
+    };
+    // Attach to the most recent turn so the error is grouped with the run that
+    // failed (reportError fires from the controller loop's catch path).
+    applyTurnEnvelope(entry, this.lastTurnId !== null
+      ? { turnId: this.lastTurnId, actor: { kind: 'controller', id: this.id } }
+      : undefined);
+    this.state.append('conversation', entry);
+  }
+
+  /** Read-only turn index over the controller conversation. */
+  getConversationIndex(): ConversationIndex {
+    return this.state.getConversationIndex();
+  }
+
+  /** Look up one turn by id. */
+  getTurn(turnId: string): TurnView | undefined {
+    return this.state.getTurn(turnId);
   }
 
   // --- Subscribable ---
@@ -227,28 +305,38 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
    */
   async performCompaction(): Promise<void> {
     try {
-      await this.contextManager.compact(async (entries) => {
-        const entryTexts = entries.map((e, i) => {
-          const content = e.message?.content ?? e.content ?? '';
-          return `[${i}] (${e.type}) ${String(content).slice(0, 300)}`;
-        });
+      // Capture the previous summary before compact() replaces it — the
+      // summarizer folds it in so repeated compactions stay incremental.
+      const previousSummary = this.contextManager.getCompactSummary();
 
-        let lastError: unknown;
-        for (let attempt = 0; attempt <= COMPACT_MAX_RETRIES; attempt++) {
-          try {
-            const { text } = await generateText({
-              model: this.model as any, // WayangModel opaque boundary
-              system: SUMMARIZER_SYSTEM_PROMPT,
-              prompt: buildSummarizerPrompt(entryTexts),
-            });
-            return text;
-          } catch (err) {
-            lastError = err;
-            this.logger.warn({ attempt: attempt + 1, error: String(err) }, 'Compaction summarizer failed');
+      await this.contextManager.compact(
+        async (entries) => {
+          const entryTexts = entries.map((e, i) => {
+            const content = e.message?.content ?? e.content ?? '';
+            return `[${i}] (${e.type}) ${String(content).slice(0, 300)}`;
+          });
+          if (previousSummary) {
+            entryTexts.unshift(`[Previous Summary]\n${previousSummary}`);
           }
-        }
-        throw lastError;
-      });
+
+          let lastError: unknown;
+          for (let attempt = 0; attempt <= COMPACT_MAX_RETRIES; attempt++) {
+            try {
+              const { text } = await generateText({
+                model: this.model as any, // WayangModel opaque boundary
+                system: SUMMARIZER_SYSTEM_PROMPT,
+                prompt: buildSummarizerPrompt(entryTexts),
+              });
+              return text;
+            } catch (err) {
+              lastError = err;
+              this.logger.warn({ attempt: attempt + 1, error: String(err) }, 'Compaction summarizer failed');
+            }
+          }
+          throw lastError;
+        },
+        { model: this.provider.modelName },
+      );
     } catch (err) {
       // All retries failed — fallback: truncate half of history in memory only
       this.logger.warn({ error: String(err) }, 'Compaction failed, falling back to half-truncation');
@@ -267,32 +355,42 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 // ---------------------------------------------------------------------------
 
 /** Common fields for all SignalEntry variants. */
-function signalBase(ts: string): Omit<SignalEntry, 'subtype' | 'content' | 'taskTitle'> {
+function signalBase(ts: string, sessionId: string): Omit<SignalEntry, 'subtype' | 'content' | 'taskTitle'> {
   return {
     type: EEntryType.Signal,
     uuid: generateId('sig'),
     parentUuid: null,
-    sessionId: 'controller',
+    sessionId,
     timestamp: ts,
   };
 }
 
-type SignalConverter = (sig: ControllerSignal, ts: string) => ConversationEntry;
+/** ISO string from a signal's epoch-ms timestamp. */
+function isoMs(ms: number | undefined): string | undefined {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return undefined;
+  return new Date(ms).toISOString();
+}
+
+type SignalConverter = (sig: ControllerSignal, ts: string, sessionId: string) => ConversationEntry;
 
 const signalConverters: Record<string, SignalConverter> = {
-  input: (sig, ts) => ({
+  input: (sig, ts, sessionId) => ({
     type: EEntryType.User,
     uuid: generateId('u'),
     parentUuid: null,
-    sessionId: 'controller',
+    sessionId,
     timestamp: ts,
+    actor: { kind: 'user', id: 'user' },
+    startedAt: isoMs(sig.timestamp),
+    // Delivery/processing of the input is complete when it is recorded here.
+    endedAt: ts,
     message: { role: 'user' as const, content: (sig.payload as InputSignalPayload).text },
   }),
 
-  completed: (sig, ts) => {
+  completed: (sig, ts, sessionId) => {
     const p = sig.payload as CompletedSignalPayload;
     return {
-      ...signalBase(ts),
+      ...signalBase(ts, sessionId),
       subtype: ESignalSubtype.WorkerCompleted,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
@@ -300,10 +398,10 @@ const signalConverters: Record<string, SignalConverter> = {
     };
   },
 
-  failed: (sig, ts) => {
+  failed: (sig, ts, sessionId) => {
     const p = sig.payload as FailedSignalPayload;
     return {
-      ...signalBase(ts),
+      ...signalBase(ts, sessionId),
       subtype: ESignalSubtype.WorkerFailed,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
@@ -311,10 +409,10 @@ const signalConverters: Record<string, SignalConverter> = {
     };
   },
 
-  progress: (sig, ts) => {
+  progress: (sig, ts, sessionId) => {
     const p = sig.payload as ProgressSignalPayload;
     return {
-      ...signalBase(ts),
+      ...signalBase(ts, sessionId),
       subtype: ESignalSubtype.WorkerProgress,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
@@ -322,23 +420,23 @@ const signalConverters: Record<string, SignalConverter> = {
     };
   },
 
-  heartbeat: (sig, ts) => {
+  heartbeat: (sig, ts, sessionId) => {
     const p = sig.payload as HeartbeatSignalPayload;
     const workerSummary = p.workers
       .map((w) => `${w.taskTitle} (${w.workerType}, running ${Math.round(w.runningForMs / 1000)}s)`)
       .join(', ');
     return {
-      ...signalBase(ts),
+      ...signalBase(ts, sessionId),
       subtype: ESignalSubtype.Heartbeat,
       taskTitle: 'heartbeat',
       content: `[HEARTBEAT] ${p.reason}\nIdle: ${Math.round(p.idleSinceMs / 1000)}s\nWorkers: ${workerSummary}\nPending tasks: ${p.pendingTaskCount}`,
     };
   },
 
-  permission_request: (sig, ts) => {
+  permission_request: (sig, ts, sessionId) => {
     const p = sig.payload as PermissionRequestSignalPayload;
     return {
-      ...signalBase(ts),
+      ...signalBase(ts, sessionId),
       subtype: ESignalSubtype.PermissionRequest,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
@@ -346,10 +444,10 @@ const signalConverters: Record<string, SignalConverter> = {
     };
   },
 
-  cancelled: (sig, ts) => {
+  cancelled: (sig, ts, sessionId) => {
     const p = sig.payload as CancelledSignalPayload;
     return {
-      ...signalBase(ts),
+      ...signalBase(ts, sessionId),
       subtype: ESignalSubtype.WorkerDisposed,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: 'worker_disposed',
@@ -357,11 +455,22 @@ const signalConverters: Record<string, SignalConverter> = {
     };
   },
 
-  previous_session_tasks: (sig, ts) => {
+  task_cancelled: (sig, ts, sessionId) => {
+    const p = sig.payload as TaskCancelledSignalPayload;
+    return {
+      ...signalBase(ts, sessionId),
+      subtype: ESignalSubtype.TaskCancelled,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle ?? 'task_cancelled',
+      content: `[TASK CANCELLED] Task ${p.taskId}${p.taskTitle ? ` (${p.taskTitle})` : ''} was cancelled by the user/controller. This is not a failure — the task terminated as cancelled.`,
+    };
+  },
+
+  previous_session_tasks: (sig, ts, sessionId) => {
     const p = sig.payload as PreviousSessionTasksSignalPayload;
     const lines = p.tasks.map(t => `- [${t.status}] ${t.title} (id: ${t.taskId}): ${t.description}`);
     return {
-      ...signalBase(ts),
+      ...signalBase(ts, sessionId),
       subtype: ESignalSubtype.PreviousSessionTasks,
       taskTitle: 'previous_session_tasks',
       content: `[PREVIOUS SESSION] ${p.tasks.length} unfinished task(s) from session ${p.sessionId} (last active ${new Date(p.lastActiveAt).toLocaleString()}):\n${lines.join('\n')}\nWorkers were NOT resumed. Decide: re-dispatch with add_task, treat as stale, or ask the user.`,
@@ -370,17 +479,46 @@ const signalConverters: Record<string, SignalConverter> = {
 };
 
 /** Convert a ControllerSignal to a ConversationEntry. */
-function signalToEntry(sig: ControllerSignal, ts: string): ConversationEntry {
+function signalToEntry(sig: ControllerSignal, ts: string, sessionId: string): ConversationEntry {
   const converter = signalConverters[sig.type];
-  if (converter) return converter(sig, ts);
+  let entry: ConversationEntry;
+  if (converter) {
+    entry = converter(sig, ts, sessionId);
+  } else {
+    // Fallback for unknown/cancelled signals
+    const p = sig.payload as FailedSignalPayload;
+    entry = {
+      ...signalBase(ts, sessionId),
+      subtype: ESignalSubtype.WorkerFailed,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle ?? sig.type,
+      content: JSON.stringify(sig.payload),
+    } as SignalEntry;
+  }
 
-  // Fallback for unknown/cancelled signals
-  const p = sig.payload as FailedSignalPayload;
-  return {
-    ...signalBase(ts),
-    subtype: ESignalSubtype.WorkerFailed,
-    workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
-    taskId: p.taskId, taskTitle: p.taskTitle ?? sig.type,
-    content: JSON.stringify(sig.payload),
-  } as SignalEntry;
+  // Stamp signal lineage onto SignalEntry records: the originating worker's
+  // chain (rootTurnId / causationId) plus the queue id. turnId is NOT copied —
+  // the entry joins the controller turn that consumes the signal (set by
+  // applyTurnEnvelope at the call site); the worker's own turn lives in the
+  // worker's conversation file. endedAt marks the delivery moment: the signal
+  // was consumed and recorded by this controller run.
+  if (entry.type === EEntryType.Signal) {
+    const s = entry as SignalEntry;
+    s.signalId = sig.id;
+    if (sig.rootTurnId !== undefined) s.rootTurnId = sig.rootTurnId;
+    if (sig.causationId !== undefined) s.causationId = sig.causationId;
+    s.startedAt = isoMs(sig.timestamp);
+    s.endedAt = ts;
+    const payload = sig.payload as unknown as Record<string, unknown>;
+    if (sig.source === 'worker' && typeof payload.workerId === 'string') {
+      s.actor = {
+        kind: 'worker',
+        id: payload.workerId,
+        ...(typeof payload.taskId === 'string' && { taskId: payload.taskId }),
+      };
+    } else if (sig.source === 'system') {
+      s.actor = { kind: 'system', id: 'system' };
+    }
+  }
+  return entry;
 }

@@ -12,6 +12,7 @@ import { getSession } from '@/infra/session-helpers';
 import { RpcServer } from '@/rpc/rpc-server';
 import { createStreamTransport } from '@/rpc/transport';
 import { METHOD, NOTIFY, RpcError, RPC_ERROR, type RpcTarget } from '@/rpc/protocol';
+import { serializeTurnView, summarizeTurn, DEFAULT_TURN_TEXT_LIMIT } from '@/services/conversation/turn-serialize';
 import type { Subscribable } from '@/infra/state/subscribable';
 import type { TaskDetail } from '@/types/index';
 
@@ -168,6 +169,30 @@ export async function runWayangServer(
     return { data: data === undefined ? null : data };
   });
 
+  // --- Read-only conversation index (WebUI / audit) ---
+
+  rpc.register(METHOD.CONVERSATION_LIST_TURNS, (params) => {
+    const index = supervisor.getConversationIndex();
+    const limit = optionalInt(params, 'limit', 50, 1, 500);
+    const offset = optionalInt(params, 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
+    const turns = index.turns
+      .slice(offset, offset + limit)
+      .map(view => summarizeTurn(view, { maxTextLength: optionalInt(params, 'previewLength', 200, 1, 2000) }));
+    return { total: index.turns.length, offset, limit, turns };
+  });
+
+  rpc.register(METHOD.CONVERSATION_GET_TURN, (params) => {
+    const turnId = requiredString(params, 'turnId');
+    const view = supervisor.getTurn(turnId);
+    if (!view) {
+      throw new RpcError(RPC_ERROR.INVALID_PARAMS, `Unknown turnId: ${turnId}`);
+    }
+    return serializeTurnView(view, {
+      // Optional — falls back to the serializer's DEFAULT_TURN_TEXT_LIMIT.
+      maxTextLength: optionalInt(params, 'maxTextLength', DEFAULT_TURN_TEXT_LIMIT, 1, 100_000),
+    });
+  });
+
   rpc.register(METHOD.SHUTDOWN, () => {
     // Resolve first so the response frame is written synchronously, then
     // exit from a macrotask — microtask continuation (response send) runs first.
@@ -201,4 +226,25 @@ function requiredString(params: Record<string, unknown>, key: string): string {
     throw new RpcError(RPC_ERROR.INVALID_PARAMS, `Missing required string param: ${key}`);
   }
   return value;
+}
+
+/** Optional integer param with default and inclusive bounds. Rejects non-integers. */
+function optionalInt(
+  params: Record<string, unknown>,
+  key: string,
+  defaultValue: number | undefined,
+  min: number,
+  max: number,
+): number {
+  const raw = params[key];
+  if (raw === undefined || raw === null) {
+    if (defaultValue === undefined) {
+      throw new RpcError(RPC_ERROR.INVALID_PARAMS, `Missing required number param: ${key}`);
+    }
+    return defaultValue;
+  }
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < min || raw > max) {
+    throw new RpcError(RPC_ERROR.INVALID_PARAMS, `Param ${key} must be an integer in [${min}, ${max}]`);
+  }
+  return raw;
 }

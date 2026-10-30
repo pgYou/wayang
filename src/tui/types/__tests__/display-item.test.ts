@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { entryToDisplayItem, signalToDisplayItem } from '@/tui/types/display-item';
-import { EEntryType, ESignalSubtype } from '@/types/conversation';
-import type { ConversationEntry, UserEntry, AssistantEntry, SignalEntry } from '@/types/conversation';
+import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/conversation';
+import type { ConversationEntry, UserEntry, AssistantEntry, SignalEntry, SystemEntry } from '@/types/conversation';
 import type { ControllerSignal } from '@/types/signal';
 
 // --- entryToDisplayItem ---
@@ -39,6 +39,17 @@ describe('entryToDisplayItem', () => {
     taskId: 't-001',
     taskTitle: 'Build module',
     content: 'Compiling...',
+    ...overrides,
+  });
+
+  const makeSystemEntry = (overrides?: Partial<SystemEntry>): SystemEntry => ({
+    type: EEntryType.System,
+    uuid: 'sys-1',
+    parentUuid: null,
+    sessionId: 'controller',
+    timestamp: new Date().toISOString(),
+    subtype: ESystemSubtype.Error,
+    content: 'something happened',
     ...overrides,
   });
 
@@ -105,6 +116,41 @@ describe('entryToDisplayItem', () => {
     expect(item!.emoji).toBeUndefined();
     expect(item!.taskId).toBeUndefined();
     expect(item!.taskTitle).toBe('Build module'); // still present from makeSignalEntry
+  });
+
+  it('should pass compactMeta through for system entries', () => {
+    const item = entryToDisplayItem(makeSystemEntry({
+      subtype: ESystemSubtype.Compact,
+      content: 'compaction summary',
+      compactMeta: { summarizedTokenCount: 42 },
+    }));
+    expect(item).toMatchObject({
+      role: 'system',
+      subtype: 'compact',
+      content: 'compaction summary',
+      compactMeta: { summarizedTokenCount: 42 },
+    });
+  });
+
+  it('should leave compactMeta undefined for entries without it', () => {
+    // Legacy subtype=compact record without compactMeta
+    const legacy = entryToDisplayItem(makeSystemEntry({
+      subtype: ESystemSubtype.Compact,
+      content: 'legacy worker success record',
+    }));
+    expect(legacy!.compactMeta).toBeUndefined();
+
+    // New-style task_result record
+    const taskResult = entryToDisplayItem(makeSystemEntry({
+      subtype: ESystemSubtype.TaskResult,
+      content: 'task finished successfully',
+    }));
+    expect(taskResult).toMatchObject({
+      role: 'system',
+      subtype: 'task_result',
+      content: 'task finished successfully',
+    });
+    expect(taskResult!.compactMeta).toBeUndefined();
   });
 });
 

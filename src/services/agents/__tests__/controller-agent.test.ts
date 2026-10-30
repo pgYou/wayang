@@ -16,11 +16,12 @@ vi.mock('../model-factory.js', () => ({
 // Mock streamText to avoid real LLM calls
 vi.mock('ai', () => ({
   streamText: vi.fn(),
+  generateText: vi.fn(),
   stepCountIs: vi.fn((n: number) => n),
   hasToolCall: vi.fn((name: string) => name),
 }));
 
-import { streamText } from 'ai';
+import { streamText, generateText } from 'ai';
 
 function createMockState(): any {
   const data: Record<string, any> = {
@@ -33,6 +34,7 @@ function createMockState(): any {
       data[path] = data[path] ?? [];
       data[path].push(entry);
     }),
+    restore: vi.fn(async () => {}),
   };
 }
 
@@ -53,6 +55,7 @@ describe('ControllerAgent', () => {
   beforeEach(() => {
     state = createMockState();
     vi.mocked(streamText).mockReset();
+    vi.mocked(generateText).mockReset();
     agent = new ControllerAgent(
       createMockCtx(),
       state as ControllerAgentState,
@@ -228,5 +231,250 @@ describe('ControllerAgent', () => {
       (call: any[]) => call[1]?.type === 'user',
     );
     expect(userCall[1].message.content).toBe('custom data');
+  });
+
+  it('should write the same sessionId on user, signal, and assistant entries', async () => {
+    // Fire onStepFinish so an assistant entry lands in the conversation
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-sid-1',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+      {
+        id: 'sig-sid-2',
+        source: 'worker',
+        type: 'completed',
+        payload: { summary: 'task done', taskId: 't-sid', workerId: 'w-sid', taskTitle: 'Sid task' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const entries = state.append.mock.calls
+      .filter((call: any[]) => call[0] === 'conversation')
+      .map((call: any[]) => call[1]);
+    expect(entries.length).toBeGreaterThanOrEqual(3);
+    const types = new Set(entries.map((e: any) => e.type));
+    expect(types.has('user')).toBe(true);
+    expect(types.has('signal')).toBe(true);
+    expect(types.has('assistant')).toBe(true);
+    // Mock ctx sessionId is 'test-session' — every entry must carry it
+    for (const entry of entries) {
+      expect(entry.sessionId).toBe('test-session');
+    }
+  });
+
+  it('should backfill the restored summary into the context manager on restore', async () => {
+    mockStreamResponse('ok');
+
+    // The state layer's restore() exposes the persisted compact summary
+    state.set('compactSummary', 'restored summary text');
+    await agent.restore();
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-restore-1',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello after restore' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
+    // System prompt carries the summary under [Conversation Summary]
+    expect(call.system).toContain('[Conversation Summary]');
+    expect(call.system).toContain('restored summary text');
+    // getMessages() prepends the summary as the first system message
+    expect(call.messages[0]).toEqual({
+      role: 'system',
+      content: '[Conversation Summary]\nrestored summary text',
+    });
+  });
+
+  it('should fold the previous summary into the summarizer input on compaction', async () => {
+    state.set('compactSummary', 'old summary to carry forward');
+    await agent.restore();
+
+    // compact() requires at least 4 conversation entries
+    for (let i = 0; i < 4; i++) {
+      state.append('conversation', {
+        type: 'user',
+        uuid: `u-comp-${i}`,
+        parentUuid: null,
+        sessionId: 'test-session',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: `entry ${i}` },
+      });
+    }
+    vi.mocked(generateText).mockResolvedValue({ text: 'new summary' } as any);
+
+    await agent.performCompaction();
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const prompt = (vi.mocked(generateText).mock.calls[0][0] as any).prompt as string;
+    expect(prompt).toContain('[Previous Summary]');
+    expect(prompt).toContain('old summary to carry forward');
+  });
+
+  it('should not add [Previous Summary] when no previous summary exists', async () => {
+    // Fresh agent — no restore, no prior compaction
+    for (let i = 0; i < 4; i++) {
+      state.append('conversation', {
+        type: 'user',
+        uuid: `u-noprev-${i}`,
+        parentUuid: null,
+        sessionId: 'test-session',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: `entry ${i}` },
+      });
+    }
+    vi.mocked(generateText).mockResolvedValue({ text: 'brand new summary' } as any);
+
+    await agent.performCompaction();
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const prompt = (vi.mocked(generateText).mock.calls[0][0] as any).prompt as string;
+    expect(prompt).not.toContain('[Previous Summary]');
+  });
+
+  it('should stamp compactMeta.model from the current provider config', async () => {
+    for (let i = 0; i < 4; i++) {
+      state.append('conversation', {
+        type: 'user',
+        uuid: `u-model-${i}`,
+        parentUuid: null,
+        sessionId: 'test-session',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: `entry ${i}` },
+      });
+    }
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary with model' } as any);
+
+    await agent.performCompaction();
+
+    const marker = state.append.mock.calls
+      .map((call: any[]) => call[1])
+      .find((e: any) => e?.type === 'system' && e?.subtype === 'compact');
+    expect(marker).toBeDefined();
+    expect(marker.compactMeta.model).toBe(mockProvider.modelName);
+  });
+
+  it('should omit compactMeta.model when the provider config carries no model name', async () => {
+    const noModelProvider = { ...mockProvider, modelName: undefined } as any;
+    const agentNoModel = new ControllerAgent(
+      createMockCtx(),
+      state as ControllerAgentState,
+      noModelProvider,
+      {},
+      skills,
+    );
+    for (let i = 0; i < 4; i++) {
+      state.append('conversation', {
+        type: 'user',
+        uuid: `u-nomodel-${i}`,
+        parentUuid: null,
+        sessionId: 'test-session',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: `entry ${i}` },
+      });
+    }
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary no model' } as any);
+
+    await agentNoModel.performCompaction();
+
+    const marker = state.append.mock.calls
+      .map((call: any[]) => call[1])
+      .find((e: any) => e?.type === 'system' && e?.subtype === 'compact');
+    expect(marker).toBeDefined();
+    // Never fabricated — absent config means absent field.
+    expect(marker.compactMeta.model).toBeUndefined();
+  });
+
+  it('should write endedAt on user and signal entries at delivery time', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-end-1',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello endedAt' },
+        timestamp: Date.now() - 5_000,
+        status: 'unread',
+      },
+      {
+        id: 'sig-end-2',
+        source: 'worker',
+        type: 'completed',
+        payload: { summary: 'task done', taskId: 't-end', workerId: 'w-end', taskTitle: 'Ended task' },
+        timestamp: Date.now() - 4_000,
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const entries = state.append.mock.calls
+      .filter((call: any[]) => call[0] === 'conversation')
+      .map((call: any[]) => call[1]);
+    const userEntry = entries.find((e: any) => e?.type === 'user');
+    const signalEntry = entries.find((e: any) => e?.type === 'signal');
+    expect(userEntry.endedAt).toEqual(expect.any(String));
+    expect(signalEntry.endedAt).toEqual(expect.any(String));
+    // endedAt (delivery) must not precede startedAt (queue time).
+    expect(new Date(signalEntry.endedAt!).getTime())
+      .toBeGreaterThanOrEqual(new Date(signalEntry.startedAt!).getTime());
+    // startedAt still reflects the queue time.
+    expect(signalEntry.startedAt).toEqual(new Date(signals[1].timestamp).toISOString());
+  });
+
+  it('should convert task_cancelled signals with the dedicated subtype', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-tc-1',
+        source: 'system',
+        type: 'task_cancelled',
+        payload: { taskId: 't-cancelled', taskTitle: 'Cancelled task' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find(
+      (call: any[]) => call[1]?.type === 'signal',
+    );
+    const entry = sigCall[1];
+    expect(entry.subtype).toBe('task_cancelled');
+    expect(entry.taskId).toBe('t-cancelled');
+    expect(entry.taskTitle).toBe('Cancelled task');
+    expect(entry.content).toContain('[TASK CANCELLED]');
+    expect(entry.endedAt).toEqual(expect.any(String));
   });
 });

@@ -20,6 +20,8 @@ export enum ESystemSubtype {
   Compact = 'compact',
   /** LLM or system error surfaced to the user. */
   Error = 'error',
+  /** Third-party worker terminal result (success) — display/audit record only. */
+  TaskResult = 'task_result',
 }
 
 /** SignalEntry event kind — worker notifications delivered to Controller. */
@@ -32,6 +34,8 @@ export enum ESignalSubtype {
   WorkerFailed = 'worker_failed',
   /** Idle (multi-stage) worker disposed — reaped by timeout or manually. No task failed. */
   WorkerDisposed = 'worker_disposed',
+  /** A dispatched task was cancelled (user/controller-initiated). Not a failure. */
+  TaskCancelled = 'task_cancelled',
   /** System heartbeat — periodic check-in while workers are running. */
   Heartbeat = 'heartbeat',
   /** Worker requesting permission for a sensitive operation. */
@@ -42,12 +46,27 @@ export enum ESignalSubtype {
 
 // --- Tool record types ---
 
+/** Lifecycle status of a tool call / tool result. */
+export type ToolRecordStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
 /** Tool call data stored within an AssistantEntry. */
 export interface ToolCallRecord {
   toolCallId: string;
   toolName: string;
   /** JSON string of tool input arguments. */
   arguments: string;
+  /** Task dispatched by this call (async tools like add_task). */
+  taskId?: string;
+  /**
+   * Execution status. For async dispatch tools (add_task) this reflects the
+   * dispatched task at write time ('running') and is never updated afterwards
+   * (append-only storage) — terminal state arrives via later signal entries.
+   */
+  status?: ToolRecordStatus;
+  startedAt?: string;
+  endedAt?: string;
+  /** Error classification (e.g. error class name) when status is 'failed'. */
+  errorType?: string;
 }
 
 /** Tool result data stored within an AssistantEntry. */
@@ -56,6 +75,50 @@ export interface ToolResultRecord {
   toolName: string;
   output: { type: 'text'; value: string };
   isError?: boolean;
+  status?: ToolRecordStatus;
+  errorType?: string;
+  startedAt?: string;
+  endedAt?: string;
+}
+
+// --- Envelope (optional fields shared by all entry kinds) ---
+
+/** Who produced an entry. */
+export interface EntryActor {
+  kind: 'user' | 'controller' | 'worker' | 'system' | 'tool';
+  id: string;
+  taskId?: string;
+}
+
+/**
+ * Optional envelope fields carried by every conversation entry.
+ *
+ * All fields are optional and additive — readers must ignore unknown fields,
+ * and writers must not make any of them required. `v` is the schema version
+ * of the envelope (new writes use 1).
+ */
+export interface ConversationEntryEnvelope {
+  /** Envelope schema version. New writes use 1. */
+  v?: number;
+  /**
+   * uuid of the previous entry in the same session's chain. `null` at the
+   * first entry of a chain and at compaction boundaries (the compact marker
+   * and the first entry after it). This is the real chain link — see the
+   * deprecated `parentUuid` on each entry kind.
+   */
+  parentId?: string | null;
+  /** One agent activation (one controller run / one worker run) = one turn. */
+  turnId?: string;
+  /** The user turn that originally triggered this chain; propagated via signal/task. */
+  rootTurnId?: string;
+  /** Who produced this entry. */
+  actor?: EntryActor;
+  /** What triggered this entry: a signal id, tool call id, or task id. */
+  causationId?: string;
+  /** ISO timestamp — when the recorded activity started. */
+  startedAt?: string;
+  /** ISO timestamp — when the recorded activity ended. */
+  endedAt?: string;
 }
 
 // --- Union type ---
@@ -78,9 +141,10 @@ export type ConversationEntry =
 
 // --- Interfaces ---
 
-export interface UserEntry {
+export interface UserEntry extends ConversationEntryEnvelope {
   type: EEntryType.User;
   uuid: string;
+  /** @deprecated Legacy chain field — always null. Use `parentId` instead. */
   parentUuid: string | null;
   sessionId: string;
   timestamp: string;
@@ -93,9 +157,10 @@ export interface UserEntry {
  * Contains text output, optional tool calls/results, and metadata.
  * One AssistantEntry = one LLM step (text + tool interactions are atomic).
  */
-export interface AssistantEntry {
+export interface AssistantEntry extends ConversationEntryEnvelope {
   type: EEntryType.Assistant;
   uuid: string;
+  /** @deprecated Legacy chain field — always null. Use `parentId` instead. */
   parentUuid: string | null;
   sessionId: string;
   timestamp: string;
@@ -104,7 +169,14 @@ export interface AssistantEntry {
     content: string;
     /** Extended thinking / chain-of-thought (if model supports it). */
     reasoning?: string;
-    usage?: { inputTokens: number; outputTokens: number };
+    /** Token usage of this single step (not cumulative). */
+    usage?: {
+      inputTokens: number;
+      outputTokens: number;
+      cachedInputTokens?: number;
+      reasoningTokens?: number;
+      totalTokens?: number;
+    };
   };
   /** Tool calls made by the LLM in this step. */
   toolCalls?: ToolCallRecord[];
@@ -112,16 +184,51 @@ export interface AssistantEntry {
   toolResults?: ToolResultRecord[];
   /** SDK finish reason for this step. */
   finishReason?: string;
+  /** Zero-based index of this step within its turn. */
+  stepIndex?: number;
+  /**
+   * Model that produced this step. provider/model are best effort from the
+   * SDK event; temperature/maxOutputTokens are backfilled from ProviderConfig
+   * (the values the run was configured with), never fabricated.
+   */
+  model?: {
+    provider?: string;
+    model?: string;
+    temperature?: number;
+    maxOutputTokens?: number;
+  };
+  /** Timing of this step (best effort from the SDK; firstTokenAt is approximate for streams). */
+  timing?: {
+    startedAt?: string;
+    firstTokenAt?: string;
+    endedAt?: string;
+    durationMs?: number;
+    retries?: number;
+  };
+  /**
+   * Provider response id, when the SDK exposes one. Absent means unavailable.
+   */
+  requestId?: string;
+  /**
+   * Distributed tracing ids — reserved fields, never fabricated.
+   * 待 telemetry 接入：no source provides these yet; they stay unwritten
+   * until a telemetry pipeline is wired in.
+   */
+  traceId?: string;
+  spanId?: string;
 }
 
 /** Worker signal entry — progress, completion, or failure notification. */
-export interface SignalEntry {
+export interface SignalEntry extends ConversationEntryEnvelope {
   type: EEntryType.Signal;
   uuid: string;
+  /** @deprecated Legacy chain field — always null. Use `parentId` instead. */
   parentUuid: string | null;
   sessionId: string;
   timestamp: string;
   subtype: ESignalSubtype;
+  /** Id of the originating signal in the SignalQueue (e.g. "sig-42"). */
+  signalId?: string;
   workerId?: string;
   workerType?: string;
   /** Display emoji for the worker type. */
@@ -131,14 +238,31 @@ export interface SignalEntry {
   content: string;
 }
 
-export interface SystemEntry {
+export interface SystemEntry extends ConversationEntryEnvelope {
   type: EEntryType.System;
   uuid: string;
+  /** @deprecated Legacy chain field — always null. Use `parentId` instead. */
   parentUuid: string | null;
   sessionId: string;
   timestamp: string;
   subtype: ESystemSubtype;
   content: string;
+  /**
+   * Present only on compaction markers written by ContextManager.compact().
+   * Distinguishes real markers from legacy subtype='compact' records that
+   * predate typed metadata (e.g. old ClaudeCodeWorker success entries).
+   */
+  compactMeta?: {
+    summarizedTokenCount?: number;
+    /** First entry id covered by the summary (inclusive). */
+    fromEntryId?: string;
+    /** Last entry id covered by the summary (inclusive). */
+    toEntryId?: string;
+    /** Model name used to produce the summary. */
+    model?: string;
+    /** ISO timestamp of when the summary was created. */
+    createdAt?: string;
+  };
 }
 
 // --- Type guards ---
@@ -146,6 +270,18 @@ export interface SystemEntry {
 /** Check whether entry is a SystemEntry. */
 export function isSystemEntry(entry: ConversationEntry): entry is SystemEntry {
   return entry.type === EEntryType.System;
+}
+
+/**
+ * Structural check for a compaction marker: a SystemEntry whose subtype is
+ * Compact AND that carries compactMeta. Records with subtype='compact' but no
+ * compactMeta are legacy non-marker entries and must not trigger restore
+ * windowing or compact-style rendering.
+ */
+export function isCompactMarker(entry: ConversationEntry): entry is SystemEntry {
+  return entry.type === EEntryType.System
+    && entry.subtype === ESystemSubtype.Compact
+    && entry.compactMeta !== undefined;
 }
 
 /** Check whether entry is a SignalEntry. */
@@ -165,3 +301,65 @@ export function getEntryContent(entry: ConversationEntry): string {
   }
   return entry.message.content;
 }
+
+// --- Derived, read-only view types (never persisted) ---
+
+/** Lifecycle status of a turn (derived by the index, never persisted). */
+export type ETurnStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+
+/** Tool call summary inside a TurnView. */
+export interface TurnToolCallView {
+  toolCallId: string;
+  toolName: string;
+  /** Task dispatched by this call, when the tool is an async dispatcher (add_task). */
+  taskId?: string;
+  status?: ToolRecordStatus;
+  startedAt?: string;
+  endedAt?: string;
+  /** Status of the matching tool result, when one exists. */
+  resultStatus?: ToolRecordStatus;
+}
+
+/** Token usage accumulated over a turn's assistant steps (missing values default to 0). */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+}
+
+/**
+ * One agent activation (turn) derived from a conversation.
+ *
+ * A turn aggregates its triggering input (userEntry and/or signals), the
+ * assistant steps it produced, their tool calls, and accumulated usage.
+ * Derived in memory by the conversation index — never written to disk.
+ */
+export interface TurnView {
+  turnId: string;
+  rootTurnId?: string;
+  actor?: EntryActor;
+  startedAt?: string;
+  endedAt?: string;
+  status: ETurnStatus;
+  steps: AssistantEntry[];
+  userEntry?: UserEntry;
+  signals: SignalEntry[];
+  toolCalls: TurnToolCallView[];
+  usage: TurnUsage;
+  entryIds: string[];
+}
+
+/** In-memory grouped view over one conversation (one JSONL file). */
+export interface ConversationIndex {
+  turns: TurnView[];
+  byEntryId: Map<string, TurnView>;
+}
+
+// --- Compat aliases (names used while the view types were first introduced) ---
+
+/** @deprecated Alias — use `TurnToolCallView`. */
+export type TurnViewToolCall = TurnToolCallView;
+/** @deprecated Alias — use `TurnUsage`. */
+export type TurnViewUsage = TurnUsage;

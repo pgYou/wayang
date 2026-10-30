@@ -7,7 +7,7 @@ import { ControllerAgent } from './agents/controller-agent';
 import { SkillRegistry } from '@/services/skills/registry';
 import { resolveSkillDirs } from '@/services/skills/skill-dir';
 import { readSessionUnfinishedTasks } from '@/infra/session-helpers';
-import type { WayangConfig } from '@/types/index';
+import type { ConversationIndex, TurnView, WayangConfig } from '@/types/index';
 
 /** Parameters for Supervisor initialization. */
 export interface SupervisorOptions {
@@ -169,6 +169,18 @@ export class Supervisor {
   /** Resolve a pending controller inquiry with the user's answer. */
   resolveInquiry(answer: string): void {
     this.controllerAgent.resolveInquiry(answer);
+  }
+
+  // --- Read-only conversation index (WebUI / audit) ---
+
+  /** Grouped turn view over the controller conversation. */
+  getConversationIndex(): ConversationIndex {
+    return this.controllerAgent.getConversationIndex();
+  }
+
+  /** Look up one turn of the controller conversation by id. */
+  getTurn(turnId: string): TurnView | undefined {
+    return this.controllerAgent.getTurn(turnId);
   }
 
   // --- Shutdown ---

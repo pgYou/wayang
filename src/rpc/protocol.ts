@@ -72,6 +72,10 @@ export const METHOD = {
   SUBSCRIBE: 'subscribe',
   UNSUBSCRIBE: 'unsubscribe',
   SHUTDOWN: 'shutdown',
+  /** Read-only: list turns of the controller conversation (limit/offset). */
+  CONVERSATION_LIST_TURNS: 'conversation_list_turns',
+  /** Read-only: one turn of the controller conversation by turnId. */
+  CONVERSATION_GET_TURN: 'conversation_get_turn',
 } as const;
 
 // --- Notifications (server → client) ---

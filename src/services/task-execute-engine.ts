@@ -18,7 +18,7 @@
 import type { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { Logger } from '@/infra/logger';
-import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo } from '@/types/index';
+import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo, NewSignalInput, SignalTurnLineage, TaskCancelledSignalPayload } from '@/types/index';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import { BaseWayangState } from '@/infra/state/base-state';
 import type { Subscribable } from '@/infra/state/subscribable';
@@ -67,6 +67,19 @@ export class TaskExecuteEngine implements Subscribable {
   private workerTaskMap = new Map<string, string>();
   /** Permission middleware resolvers keyed by workerId. */
   private permissionResolvers = new Map<string, PermissionMiddlewareResult>();
+  /**
+   * Turn lineage of each active worker's current run: the execution turn id
+   * (also handed to the worker for stamping its entries), the chain's root
+   * turn, and the task id (used as signals' causationId).
+   */
+  private workerTurnLineage = new Map<string, { turnId: string; rootTurnId?: string; taskId: string }>();
+  /**
+   * Running tasks cancelled via cancel(): their (aborted) worker resolution
+   * must not re-classify the task or emit a worker_failed signal — the
+   * task_cancelled signal was already emitted at cancel time. Cleared when
+   * the worker's run promise settles (handleDone/handleFail).
+   */
+  private cancelledTaskIds = new Set<string>();
   /** Idle-reaping timers keyed by workerId (multi-stage workers only). */
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Idle TTL (ms). Idle workers are disposed after this if not reused. */
@@ -144,8 +157,15 @@ export class TaskExecuteEngine implements Subscribable {
     const running = this.taskState.get<TaskDetail[]>('tasks.running');
     const runIdx = running.findIndex(t => t.id === id);
     if (runIdx !== -1) {
+      const task = running[runIdx];
+      const workerId = [...this.workerTaskMap.entries()].find(([, tId]) => tId === id)?.[0];
       this.abortByTaskId(id);
       this.moveToHistory(id, 'cancelled', {});
+      // Suppress the spurious worker_failed signal the aborted worker's
+      // resolution would otherwise emit (handleDone/handleFail consult the
+      // cancelled set) and announce the cancellation with its own subtype.
+      this.cancelledTaskIds.add(id);
+      this.emitTaskCancelled(task, workerId);
       this.logger.info({ taskId: id }, 'Running task cancelled');
       this.ctx.hooks.emit('task:cancelled', { taskId: id });
       return true;
@@ -162,6 +182,9 @@ export class TaskExecuteEngine implements Subscribable {
         status: 'cancelled',
         completedAt: Date.now(),
       });
+      // No worker was ever spawned — announce directly so the dispatching
+      // controller turn resolves as cancelled instead of running forever.
+      this.emitTaskCancelled(task);
       this.logger.info({ taskId: id }, 'Pending task cancelled');
       this.ctx.hooks.emit('task:cancelled', { taskId: id });
       return true;
@@ -169,6 +192,35 @@ export class TaskExecuteEngine implements Subscribable {
 
     this.logger.warn({ taskId: id }, 'Task not found for cancel');
     return false;
+  }
+
+  /**
+   * Announce a task cancellation on the signal queue (subtype
+   * task_cancelled — terminal for the dispatched task, but not a failure).
+   * Running tasks carry their worker's lineage; pending tasks fall back to
+   * the task's own chain fields.
+   */
+  private emitTaskCancelled(task: TaskDetail, workerId?: string): void {
+    const workerType = task.workerType ?? PUPPET_WORKER_TYPE;
+    const meta = getWorkerMeta(workerType, this.workerConfigs);
+    const payload: TaskCancelledSignalPayload = {
+      taskId: task.id,
+      ...(workerId !== undefined && { workerId }),
+      taskTitle: task.title,
+      workerType,
+      emoji: meta.emoji,
+    };
+    if (workerId !== undefined) {
+      this.enqueueWorkerSignal(workerId, { source: 'system', type: 'task_cancelled', payload });
+      return;
+    }
+    this.signalQueue.enqueue({
+      source: 'system',
+      type: 'task_cancelled',
+      payload,
+      ...((task.rootTurnId ?? task.turnId) !== undefined && { rootTurnId: task.rootTurnId ?? task.turnId }),
+      causationId: task.id,
+    } as NewSignalInput);
   }
 
   updatePending(id: string, updates: Partial<Pick<TaskDetail, 'description' | 'priority'>>): boolean {
@@ -249,6 +301,43 @@ export class TaskExecuteEngine implements Subscribable {
 
   getRunningCount(): number {
     return this.taskState.get<TaskDetail[]>('tasks.running').length;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Worker turn lineage
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Register the execution turn for a worker run and return it. The id is
+   * handed to the worker (stamped on its entries) and reused on every signal
+   * the engine emits for this worker, so the worker's conversation file and
+   * the controller's signal records share the same turn id.
+   */
+  private registerWorkerTurn(workerId: string, task: TaskDetail): string {
+    const executionTurnId = generateId('turn');
+    this.workerTurnLineage.set(workerId, {
+      turnId: executionTurnId,
+      ...(task.rootTurnId !== undefined && { rootTurnId: task.rootTurnId }),
+      ...(task.rootTurnId === undefined && task.turnId !== undefined && { rootTurnId: task.turnId }),
+      taskId: task.id,
+    });
+    return executionTurnId;
+  }
+
+  /** Turn lineage to attach to signals emitted for a worker. */
+  private workerLineage(workerId: string): SignalTurnLineage {
+    const lin = this.workerTurnLineage.get(workerId);
+    if (!lin) return {};
+    return {
+      turnId: lin.turnId,
+      ...(lin.rootTurnId !== undefined && { rootTurnId: lin.rootTurnId }),
+      causationId: lin.taskId,
+    };
+  }
+
+  /** Enqueue a worker signal with the worker's turn lineage attached. */
+  private enqueueWorkerSignal(workerId: string, sig: NewSignalInput): void {
+    this.signalQueue.enqueue({ ...sig, ...this.workerLineage(workerId) } as NewSignalInput);
   }
 
   // ---------------------------------------------------------------------------
@@ -496,7 +585,7 @@ export class TaskExecuteEngine implements Subscribable {
     worker?.abort();
     this.clearIdleTimer(workerId);
 
-    this.signalQueue.enqueue({
+    this.enqueueWorkerSignal(workerId, {
       source: 'system',
       type: 'cancelled',
       payload: {
@@ -547,11 +636,15 @@ export class TaskExecuteEngine implements Subscribable {
     this.workers.set(workerId, worker);
     this.workerTaskMap.set(workerId, task.id);
 
+    // Execution turn for this worker run — stamped on the worker's entries
+    // and on every signal the engine emits for it.
+    const executionTurnId = this.registerWorkerTurn(workerId, task);
+
     const onProgress = this.buildProgressEmitter(workerId, task, workerType);
     const tools = this.wireWorker(worker, task, workerId, workerType);
-    this.logger.info({ workerId, taskId: task.id, workerType }, 'Worker starting');
+    this.logger.info({ workerId, taskId: task.id, workerType, executionTurnId }, 'Worker starting');
 
-    return worker.run({ ...task, workerId }, tools, onProgress);
+    return worker.run({ ...task, workerId, executionTurnId }, tools, onProgress);
   }
 
   /**
@@ -591,6 +684,9 @@ export class TaskExecuteEngine implements Subscribable {
     };
     this.taskState.append('tasks.running', taskWithOrigin);
     this.workerTaskMap.set(workerId, task.id);
+    // New stage, new execution turn (the worker's conversation accumulates,
+    // but each run is its own agent activation).
+    const executionTurnId = this.registerWorkerTurn(workerId, taskWithOrigin);
     this.updateActiveWorker(workerId, {
       status: 'running',
       taskId: task.id,
@@ -604,10 +700,10 @@ export class TaskExecuteEngine implements Subscribable {
 
     const onProgress = this.buildProgressEmitter(workerId, task, workerType);
     const tools = this.wireWorker(worker, task, workerId, workerType);
-    this.logger.info({ workerId, taskId: task.id, workerType }, 'Idle worker reused');
+    this.logger.info({ workerId, taskId: task.id, workerType, executionTurnId }, 'Idle worker reused');
 
     // Fire-and-forget, same lifecycle as spawnWorker
-    worker.run({ ...taskWithOrigin, workerId }, tools, onProgress)
+    worker.run({ ...taskWithOrigin, workerId, executionTurnId }, tools, onProgress)
       .then((result) => this.handleDone(workerId, taskWithOrigin, result))
       .catch((err) => this.handleFail(workerId, taskWithOrigin, formatLlmError(err)));
 
@@ -625,7 +721,7 @@ export class TaskExecuteEngine implements Subscribable {
   ): (msg: string) => void {
     const meta = getWorkerMeta(workerType, this.workerConfigs);
     return (msg: string) => {
-      this.signalQueue.enqueue({
+      this.enqueueWorkerSignal(workerId, {
         source: 'worker',
         type: 'progress',
         payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: meta.emoji, message: msg },
@@ -654,7 +750,7 @@ export class TaskExecuteEngine implements Subscribable {
           tavilyApiKey: this.ctx.config.tavilyApiKey,
           registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {
-            this.signalQueue.enqueue({
+            this.enqueueWorkerSignal(workerId, {
               source: 'worker',
               type: 'progress',
               payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: workerMeta.emoji, message: msg },
@@ -699,6 +795,7 @@ export class TaskExecuteEngine implements Subscribable {
         workerType,
         emoji: workerMeta.emoji,
         signalQueue: this.signalQueue,
+        turnLineage: this.workerLineage(workerId),
       });
       tools = middleware.wrappedTools;
       this.permissionResolvers.set(workerId, middleware);
@@ -713,6 +810,7 @@ export class TaskExecuteEngine implements Subscribable {
         taskTitle: task.title,
         workerType,
         emoji: workerMeta.emoji,
+        turnLineage: this.workerLineage(workerId),
       });
       this.permissionResolvers.set(workerId, worker.permissionHandler);
     }
@@ -721,13 +819,23 @@ export class TaskExecuteEngine implements Subscribable {
   }
 
   private handleDone(workerId: string, task: TaskDetail, result: WorkerResult): void {
+    // Cancelled task: the task_cancelled signal was already emitted by
+    // cancel(); the worker's (aborted or race-completed) resolution must not
+    // re-classify the task or emit a worker_failed/completed signal.
+    if (this.consumeCancelled(task.id)) {
+      this.removeActiveWorker(workerId);
+      this.removeWorkerTracking(workerId);
+      this.scheduleNext();
+      return;
+    }
+
     const workerType = task.workerType ?? PUPPET_WORKER_TYPE;
     const meta = getWorkerMeta(workerType, this.workerConfigs);
 
     // Failure is never a "stage": always dispose, regardless of multiStage.
     if (result.status !== 'completed') {
       this.failTask(task.id, result.error ?? 'Unknown error');
-      this.signalQueue.enqueue({
+      this.enqueueWorkerSignal(workerId, {
         source: 'worker',
         type: 'failed',
         payload: {
@@ -744,7 +852,7 @@ export class TaskExecuteEngine implements Subscribable {
     // Completed. Multi-stage workers park in `idle` instead of being disposed.
     if (task.multiStage) {
       this.completeTask(task.id, result.summary ?? '');
-      this.signalQueue.enqueue({
+      this.enqueueWorkerSignal(workerId, {
         source: 'worker',
         type: 'completed',
         payload: {
@@ -759,7 +867,7 @@ export class TaskExecuteEngine implements Subscribable {
 
     // Default path: completed → dispose
     this.completeTask(task.id, result.summary ?? '');
-    this.signalQueue.enqueue({
+    this.enqueueWorkerSignal(workerId, {
       source: 'worker',
       type: 'completed',
       payload: {
@@ -773,11 +881,20 @@ export class TaskExecuteEngine implements Subscribable {
   }
 
   private handleFail(workerId: string, task: TaskDetail, error: string): void {
+    // Cancelled task: same short-circuit as handleDone — no failure signal,
+    // no state change (the task is already in history as cancelled).
+    if (this.consumeCancelled(task.id)) {
+      this.removeActiveWorker(workerId);
+      this.removeWorkerTracking(workerId);
+      this.scheduleNext();
+      return;
+    }
+
     const workerType = task.workerType ?? PUPPET_WORKER_TYPE;
     const meta = getWorkerMeta(workerType, this.workerConfigs);
 
     this.failTask(task.id, error);
-    this.signalQueue.enqueue({
+    this.enqueueWorkerSignal(workerId, {
       source: 'worker',
       type: 'failed',
       payload: {
@@ -791,9 +908,18 @@ export class TaskExecuteEngine implements Subscribable {
     this.scheduleNext();
   }
 
+  /** Whether the task was cancelled; clears the marker (one-shot). */
+  private consumeCancelled(taskId: string): boolean {
+    if (!this.cancelledTaskIds.has(taskId)) return false;
+    this.cancelledTaskIds.delete(taskId);
+    this.logger.info({ taskId }, 'Worker resolution for cancelled task suppressed');
+    return true;
+  }
+
   private removeWorkerTracking(workerId: string): void {
     // Clear any pending idle reaper (shouldn't exist for disposed workers, but be safe)
     this.clearIdleTimer(workerId);
+    this.workerTurnLineage.delete(workerId);
     // Delayed removal: wait for UI to unmount
     setTimeout(() => {
       this.permissionResolvers.get(workerId)?.cleanup();

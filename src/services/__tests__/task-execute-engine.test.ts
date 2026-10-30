@@ -283,3 +283,83 @@ describe('TaskExecuteEngine — multi-stage worker lifecycle', () => {
     expect(engine.getActiveWorkers()).toHaveLength(0);
   });
 });
+
+describe('TaskExecuteEngine — cancel semantics', () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'wayang-engine-test-'));
+    constructedWorkers.length = 0;
+    vi.useRealTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('cancelling a running task emits task_cancelled (not failed) and survives the aborted worker resolution', async () => {
+    const { engine, signalQueue } = makeEngine();
+    await engine.restore();
+
+    engine.add(makeTask('t1'));
+    const worker = lastWorker();
+    expect(engine.cancel('t1')).toBe(true);
+
+    // Task terminated as cancelled…
+    expect(engine.list('cancelled')).toHaveLength(1);
+    // …announced with the dedicated subtype, not a failure.
+    const cancelledSignals = signalQueue.getUnreadSignals().filter(s => s.type === 'task_cancelled');
+    expect(cancelledSignals).toHaveLength(1);
+    expect(cancelledSignals[0].payload).toMatchObject({ taskId: 't1' });
+    expect(signalQueue.getUnreadSignals().some(s => s.type === 'failed')).toBe(false);
+
+    // The aborted worker resolves 'failed' afterwards — no failed signal, no
+    // state override (task stays cancelled).
+    await resolveAndSettle(worker, { status: 'failed', error: 'Aborted' });
+    expect(engine.list('cancelled')).toHaveLength(1);
+    expect(engine.list('failed')).toHaveLength(0);
+    expect(signalQueue.getUnreadSignals().some(s => s.type === 'failed')).toBe(false);
+    expect(engine.getActiveWorkers()).toHaveLength(0);
+  });
+
+  it('cancelling a running task suppresses even a race-completed worker resolution', async () => {
+    const { engine, signalQueue } = makeEngine();
+    await engine.restore();
+
+    engine.add(makeTask('t1'));
+    const worker = lastWorker();
+    engine.cancel('t1');
+
+    await resolveAndSettle(worker, { status: 'completed', summary: 'done too late' });
+    expect(engine.list('cancelled')).toHaveLength(1);
+    expect(engine.list('completed')).toHaveLength(0);
+    expect(signalQueue.getUnreadSignals().some(s => s.type === 'completed')).toBe(false);
+  });
+
+  it('cancelling a pending task emits task_cancelled without spawning a worker', async () => {
+    const { engine, signalQueue } = makeEngine(0); // maxConcurrency 0 → stays pending
+    await engine.restore();
+
+    engine.add(makeTask('t1'));
+    expect(constructedWorkers).toHaveLength(0);
+    expect(engine.cancel('t1')).toBe(true);
+
+    expect(engine.list('pending')).toHaveLength(0);
+    expect(engine.list('cancelled')).toHaveLength(1);
+    const cancelledSignals = signalQueue.getUnreadSignals().filter(s => s.type === 'task_cancelled');
+    expect(cancelledSignals).toHaveLength(1);
+    expect(cancelledSignals[0].payload).toMatchObject({ taskId: 't1' });
+  });
+
+  it('a genuinely failed task still emits failed (cancel path does not shadow real failures)', async () => {
+    const { engine, signalQueue } = makeEngine();
+    await engine.restore();
+
+    engine.add(makeTask('t1'));
+    const worker = lastWorker();
+    await resolveAndSettle(worker, { status: 'failed', error: 'boom' });
+
+    expect(engine.list('failed')).toHaveLength(1);
+    const failedSignals = signalQueue.getUnreadSignals().filter(s => s.type === 'failed');
+    expect(failedSignals).toHaveLength(1);
+    expect(signalQueue.getUnreadSignals().some(s => s.type === 'task_cancelled')).toBe(false);
+  });
+});

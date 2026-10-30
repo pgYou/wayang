@@ -32,6 +32,8 @@ export interface DisplayItem {
   sections?: DisplaySection[];
   /** signal / system subtype discriminator. */
   subtype?: string;
+  /** system-only: compaction marker metadata — present iff this is a real compact marker. */
+  compactMeta?: { summarizedTokenCount?: number };
   isError?: boolean;
   /** Worker signal context: task and worker IDs. */
   taskId?: string;
@@ -105,7 +107,7 @@ export function entryToDisplayItem(entry: ConversationEntry): DisplayItem | null
       return { ...base, role: 'signal', subtype: entry.subtype, content: entry.content, taskId: entry.taskId, taskTitle: entry.taskTitle, workerId: entry.workerId, workerType: entry.workerType, emoji: entry.emoji };
 
     case EEntryType.System:
-      return { ...base, role: 'system', subtype: entry.subtype, content: entry.content };
+      return { ...base, role: 'system', subtype: entry.subtype, content: entry.content, compactMeta: entry.compactMeta };
   }
 }
 
@@ -116,6 +118,7 @@ const signalSubtypeMap: Record<string, ESignalSubtype> = {
   progress: ESignalSubtype.WorkerProgress,
   heartbeat: ESignalSubtype.Heartbeat,
   cancelled: ESignalSubtype.WorkerFailed,
+  task_cancelled: ESignalSubtype.TaskCancelled,
 };
 
 /** Convert an unread signal to a DisplayItem (always unread). */

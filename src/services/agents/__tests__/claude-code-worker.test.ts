@@ -242,4 +242,52 @@ describe('ClaudeCodeWorker', () => {
     // user entry + assistant entry + system result entry
     expect(conversation.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('should write the session id (not the worker id) on all conversation entries', async () => {
+    const messages = [
+      makeAssistantMessage('Working...'),
+      makeSuccessResult('Done'),
+    ];
+    mockQuery.mockReturnValue(asyncYield(messages) as any);
+
+    const worker = createWorker();
+    await worker.run(makeTask(), {});
+
+    const conversation = worker.getState().get<any[]>('conversation');
+    // user entry + assistant entry + system result entry
+    expect(conversation.length).toBeGreaterThanOrEqual(3);
+    const types = new Set(conversation.map((e: any) => e.type));
+    expect(types.has('user')).toBe(true);
+    expect(types.has('assistant')).toBe(true);
+    expect(types.has('system')).toBe(true);
+    // Mock ctx sessionId is 'test-session' — every entry must carry it
+    for (const entry of conversation) {
+      expect(entry.sessionId).toBe('test-session');
+      expect(entry.sessionId).not.toBe(worker.id);
+    }
+  });
+
+  it('should record the terminal result with task_result/error subtype, never compact', async () => {
+    // Success → task_result
+    mockQuery.mockReturnValue(asyncYield([
+      makeAssistantMessage('Working...'),
+      makeSuccessResult('All done'),
+    ]) as any);
+    const okWorker = createWorker();
+    await okWorker.run(makeTask(), {});
+    const okConversation = okWorker.getState().get<any[]>('conversation');
+    const okRecord = okConversation.find((e: any) => e.type === 'system');
+    expect(okRecord.subtype).toBe('task_result');
+    expect(okRecord.content).toBe('All done');
+    expect(okRecord.compactMeta).toBeUndefined();
+
+    // Failure → error
+    mockQuery.mockReturnValue(asyncYield([makeErrorResult('Boom')]) as any);
+    const failWorker = createWorker();
+    await failWorker.run(makeTask(), {});
+    const failConversation = failWorker.getState().get<any[]>('conversation');
+    const failRecord = failConversation.find((e: any) => e.type === 'system');
+    expect(failRecord.subtype).toBe('error');
+    expect(failRecord.content).toBe('Boom');
+  });
 });

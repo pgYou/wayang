@@ -1,11 +1,15 @@
 /**
  * Fake OpenAI-compatible provider — scripted SSE replay for tests/e2e.
  *
- * Serves `POST /v1/chat/completions`. Script entries are matched by request
- * content (NOT arrival order), so races between the controller's next step
- * and a freshly spawned worker's first call cannot scramble the script.
- * Each entry is consumed once; requests with no matching entry fail with 500
- * so tests fail loud instead of hanging.
+ * Serves `POST /v1/chat/completions` in two modes, mirroring the OpenAI API:
+ *  - `stream: true`  → text/event-stream replay (streamText path)
+ *  - no `stream`     → plain JSON chat.completion (generateText path, e.g.
+ *                      the compaction summarizer)
+ *
+ * Script entries are matched by request content (NOT arrival order), so races
+ * between the controller's next step and a freshly spawned worker's first
+ * call cannot scramble the script. Each entry is consumed once; requests
+ * with no matching entry fail with 500 so tests fail loud instead of hanging.
  */
 
 import * as http from 'node:http';
@@ -87,6 +91,13 @@ export async function startFakeProvider(script: ScriptEntry[] = []): Promise<Fak
       }
       const entry = queue.splice(index, 1)[0];
 
+      // Non-streaming request (generateText): plain JSON chat.completion.
+      if (body.stream !== true) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(encodeChatCompletionJson(entry)));
+        return;
+      }
+
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -116,11 +127,41 @@ export async function startFakeProvider(script: ScriptEntry[] = []): Promise<Fak
 }
 
 // ---------------------------------------------------------------------------
-// SSE encoding (OpenAI chat.completions stream format)
+// Response encoding (OpenAI chat.completions format)
 // ---------------------------------------------------------------------------
 
 function sseFrame(payload: unknown): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+/** Non-streaming response body for generateText-style requests. */
+function encodeChatCompletionJson(entry: ScriptEntry) {
+  const toolCalls = entry.toolCalls ?? [];
+  return {
+    id: 'chatcmpl-fake',
+    object: 'chat.completion',
+    created: 1_700_000_000,
+    model: 'fake',
+    choices: [{
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: entry.text ?? '',
+        ...(toolCalls.length > 0 && {
+          tool_calls: toolCalls.map((call, i) => {
+            const args = typeof call.args === 'function' ? call.args() : call.args;
+            return {
+              id: `call-fake-${i + 1}`,
+              type: 'function',
+              function: { name: call.name, arguments: JSON.stringify(args) },
+            };
+          }),
+        }),
+      },
+      finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
+    }],
+    usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+  };
 }
 
 export function* encodeChatCompletionSSE(entry: ScriptEntry): Generator<string> {
