@@ -15,9 +15,11 @@ const COMPACT_THRESHOLD_RATIO = 0.9;
 
 /**
  * Token budget for recent entries to keep alongside the summary.
- * Both getMessages() and restore() use this to ensure recent context is preserved.
+ * Shared by the state-layer restore() windowing (controller/worker) so the
+ * on-disk window and the in-memory compaction agree on how much recent
+ * context survives.
  */
-const RECENT_TOKEN_BUDGET = 20_000;
+export const RECENT_TOKEN_BUDGET = 20_000;
 
 /** Maximum retry attempts for the LLM summarizer call. */
 export const COMPACT_MAX_RETRIES = 2;
@@ -28,14 +30,23 @@ export class ContextManager {
   private readonly maxTokens: number;
 
   /**
-   * Cached compact state — updated by compact() and restore(), read by getMessages().
-   * Null means no compaction has occurred.
+   * Cached compact state — updated by compact() and restoreCompact(), read by
+   * getMessages()/getSystemPrompt(). Null means no compaction is active.
    */
   private compactSummary: string | null = null;
 
   /**
-   * Index into the conversation array: entries from this index onward are the
-   * "recent" entries that should be sent to the LLM alongside the summary.
+   * Index into the conversation array: entries from this index onward form the
+   * "verbatim zone" — entries sent to the LLM as-is alongside the summary.
+   *
+   * Semantics (unified):
+   * - After compact(): conversation.length. Only entries appended AFTER the
+   *   compaction belong to the verbatim zone; pre-compaction entries live on
+   *   in the summary (and in the append-only JSONL history).
+   * - After restoreCompact(): 0. The state layer has already sliced the
+   *   in-memory conversation to the restore window, so the whole array IS
+   *   the verbatim zone.
+   *
    * Updated together with compactSummary.
    */
   private compactStartIdx = 0;
@@ -88,6 +99,24 @@ export class ContextManager {
   }
 
   /**
+   * Restore compact state from a summary computed by the state layer.
+   *
+   * Call this after the state layer's restore() has already sliced the
+   * in-memory conversation to the restore window (entries before the cut are
+   * gone from memory). The window itself is the verbatim zone, so
+   * compactStartIdx resets to 0 — see the field's semantics note.
+   */
+  restoreCompact(summary: string): void {
+    this.compactSummary = summary;
+    this.compactStartIdx = 0;
+  }
+
+  /** Get the cached compaction summary, or null if no compaction is active. */
+  getCompactSummary(): string | null {
+    return this.compactSummary;
+  }
+
+  /**
    * Compact the conversation by summarizing all current entries.
    *
    * Appends a compact marker entry to the conversation (and JSONL file).
@@ -95,10 +124,20 @@ export class ContextManager {
    *
    * The summarizer receives ALL entries and returns a summary.
    * After compaction, getMessages() returns [summary] + entries appended after the marker.
+   *
+   * @param meta Optional provenance recorded on the marker (model name).
    */
-  async compact(summarizer: (entries: any[]) => Promise<string>): Promise<void> {
+  async compact(
+    summarizer: (entries: any[]) => Promise<string>,
+    meta?: { model?: string },
+  ): Promise<void> {
     const conversation = this.state.get<any[]>('conversation');
     if (conversation.length < 4) return;
+
+    // Range of entries covered by the summary — the in-memory conversation at
+    // compaction time (which may itself be a post-restore window).
+    const fromEntryId = conversation[0]?.uuid;
+    const toEntryId = conversation[conversation.length - 1]?.uuid;
 
     const summary = await summarizer(conversation);
 
@@ -107,74 +146,30 @@ export class ContextManager {
     this.compactSummary = summary;
     this.compactStartIdx = conversation.length;
 
-    // Append compact marker — a normal system entry persisted to JSONL
+    // Append compact marker — a normal system entry persisted to JSONL.
+    // The marker is a chain boundary: parentId stays null (the shared
+    // applyAppendEnvelope in the state layer) and the first entry after it
+    // anchors to null too.
+    const markerTs = nowISO();
     this.state.append('conversation', {
       type: EEntryType.System,
       uuid: generateId('compact'),
       parentUuid: null,
       sessionId: this.state.get<string>('runtimeState.session.id') ?? '',
-      timestamp: nowISO(),
+      timestamp: markerTs,
       subtype: ESystemSubtype.Compact,
       content: summary,
+      // System entries are point-in-time events: startedAt/endedAt share the
+      // marker's creation moment.
+      startedAt: markerTs,
+      endedAt: markerTs,
       compactMeta: {
         summarizedTokenCount: estimateConversationTokens(conversation),
+        ...(fromEntryId !== undefined && { fromEntryId }),
+        ...(toEntryId !== undefined && { toEntryId }),
+        ...(meta?.model !== undefined && { model: meta.model }),
+        createdAt: markerTs,
       },
     });
   }
-
-  /**
-   * Restore compact state from persisted conversation.
-   *
-   * Scans for the latest compact marker, then loads recent entries within
-   * the token budget. If loaded entries are fewer than RECENT_TOKEN_BUDGET,
-   * continues loading past the marker (overlap with summary is acceptable).
-   */
-  restoreFromEntries(entries: any[]): void {
-    // Find the latest compact marker (SystemEntry with Compact subtype)
-    const compactIdx = entries.findLastIndex(
-      (e) => e.type === EEntryType.System && e.subtype === ESystemSubtype.Compact,
-    );
-
-    if (compactIdx === -1) {
-      this.compactSummary = null;
-      this.compactStartIdx = 0;
-      return;
-    }
-
-    const summary = entries[compactIdx].content as string;
-
-    // From the marker, walk backwards to fill the token budget
-    let budget = RECENT_TOKEN_BUDGET;
-    let cutIdx = 0;
-    for (let i = compactIdx - 1; i >= 0; i--) {
-      const tokens = estimateEntryTokens(entries[i]);
-      budget -= tokens;
-      if (budget <= 0) {
-        cutIdx = i + 1;
-        break;
-      }
-    }
-
-    this.compactSummary = summary;
-    this.compactStartIdx = compactIdx - cutIdx;
-  }
-}
-
-// --- Helpers ---
-
-/** Estimate tokens for a single conversation entry. */
-function estimateEntryTokens(entry: any): number {
-  const content = entry.message?.content ?? entry.content ?? '';
-  let tokens = estimateTokens(String(content));
-  if (entry.toolCalls?.length) {
-    for (const tc of entry.toolCalls) {
-      tokens += estimateTokens(tc.arguments ?? '');
-    }
-  }
-  if (entry.toolResults?.length) {
-    for (const tr of entry.toolResults) {
-      tokens += estimateTokens(tr.output?.value ?? '');
-    }
-  }
-  return tokens;
 }

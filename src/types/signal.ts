@@ -2,7 +2,7 @@
 
 export type SignalStatus = 'unread' | 'read' | 'discarded';
 export type SignalSource = 'user' | 'worker' | 'system';
-export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'heartbeat' | 'permission_request' | 'previous_session_tasks';
+export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'task_cancelled' | 'heartbeat' | 'permission_request' | 'previous_session_tasks';
 
 /** User input signal payload. */
 export interface InputSignalPayload {
@@ -58,6 +58,23 @@ export interface CancelledSignalPayload {
   taskId: string;
   workerId: string;
   /** Worker type label. */
+  workerType?: string;
+  /** Display emoji for the worker type. */
+  emoji?: string;
+}
+
+/**
+ * Dispatched task cancelled by the user/controller. Distinct from
+ * `cancelled` (idle worker disposal): here the task itself terminated as
+ * cancelled — a terminal outcome, but not a failure.
+ */
+export interface TaskCancelledSignalPayload {
+  taskId: string;
+  /** Worker executing the task, when the cancel hit a running task. */
+  workerId?: string;
+  /** Task title for display context. */
+  taskTitle?: string;
+  /** Worker type label (e.g. 'puppet', 'claude-code'). */
   workerType?: string;
   /** Display emoji for the worker type. */
   emoji?: string;
@@ -132,10 +149,21 @@ export type SignalPayloadMap = {
   failed: FailedSignalPayload;
   progress: ProgressSignalPayload;
   cancelled: CancelledSignalPayload;
+  task_cancelled: TaskCancelledSignalPayload;
   heartbeat: HeartbeatSignalPayload;
   permission_request: PermissionRequestSignalPayload;
   previous_session_tasks: PreviousSessionTasksSignalPayload;
 };
+
+/** Turn lineage fields a signal producer can attach. All optional. */
+export interface SignalTurnLineage {
+  /** Turn that produced this signal (e.g. the worker's execution turn). */
+  turnId?: string;
+  /** Root user turn of the chain this signal belongs to. */
+  rootTurnId?: string;
+  /** What produced this signal — typically the task id for worker signals. */
+  causationId?: string;
+}
 
 /** A typed signal where payload corresponds to the signal type. */
 export type TypedControllerSignal = {
@@ -146,7 +174,7 @@ export type TypedControllerSignal = {
     type: K;
     payload: SignalPayloadMap[K];
     timestamp: number;
-  };
+  } & SignalTurnLineage;
 }[SignalType];
 
 /**
@@ -161,7 +189,7 @@ export type NewSignalInput = {
     source: SignalSource;
     type: K;
     payload: SignalPayloadMap[K];
-  };
+  } & SignalTurnLineage;
 }[SignalType];
 
 /**

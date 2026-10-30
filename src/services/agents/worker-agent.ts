@@ -2,6 +2,8 @@ import { BaseAgent } from './base-agent';
 import { ContextManager } from './context-manager';
 import { WorkerState, type InboxMessage } from '@/services/agents/worker-state';
 import { buildAssistantEntry } from './utils/build-assistant-entry';
+import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from './utils/entry-envelope';
+import { ToolCallRecorder, recordToolCalls } from './utils/tool-call-recorder';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import type { WorkerResult, TaskDetail, ProviderConfig, ToolChoice, IWorkerInstance } from '@/types/index';
@@ -22,8 +24,11 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private _terminalResult: WorkerResult | null = null;
   private readonly workspaceDir: string;
   private readonly toolChoice: ToolChoice | undefined;
+  private readonly provider: ProviderConfig;
   private contextManager: ContextManager;
   private readonly ctx: SystemContext;
+  /** Live tool execution records — merged into entries at step finish. */
+  private readonly recorder = new ToolCallRecorder();
 
   constructor(
     provider: ProviderConfig,
@@ -36,6 +41,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     toolChoice?: ToolChoice,
   ) {
     super(provider);
+    this.provider = provider;
     this.ctx = ctx;
     this.logger = ctx.logger;
     this.workspaceDir = ctx.workspaceDir;
@@ -67,23 +73,41 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     // Reset terminal result for this run
     this._terminalResult = null;
 
-    // Add task description as initial user message
-    this.state.append('conversation', {
+    // --- Turn identity: one worker run = one turn ---
+    // The engine passes the task's execution turn id; rootTurnId is inherited
+    // from the task (tracing back to the user turn that created it) and the
+    // task itself is the direct cause of this activation.
+    const turnEnv: TurnEnvelope = {
+      turnId: task.executionTurnId ?? generateId('turn'),
+      ...((task.rootTurnId ?? task.turnId) !== undefined && { rootTurnId: task.rootTurnId ?? task.turnId }),
+      causationId: task.id,
+      actor: { kind: 'worker', id: task.workerId, taskId: task.id },
+    };
+    this.recorder.beginTurn();
+
+    // Add task description as initial user message. The task prompt is written
+    // by the orchestration engine, not the human user — actor reflects that.
+    const promptTs = nowISO();
+    this.state.append('conversation', applyTurnEnvelope({
       type: EEntryType.User,
       uuid: generateId('u'),
       parentUuid: null,
-      sessionId: this.id,
-      timestamp: nowISO(),
+      sessionId: this.ctx.sessionId,
+      timestamp: promptTs,
+      actor: { kind: 'system', id: 'engine', taskId: task.id },
+      // Delivery of the task prompt completes at write time.
+      endedAt: promptTs,
       message: { role: 'user', content: task.description },
-    });
+    } satisfies ConversationEntry, turnEnv));
 
-    // Add internal tools for controller communication
-    const allTools = {
+    // Add internal tools for controller communication; wrap everything with
+    // the recorder so per-call status/timing lands on the step entries.
+    const allTools = recordToolCalls({
       ...tools,
       check_controller_messages: checkControllerMessagesTool({
         drainInbox: () => this.drainInbox(),
       }),
-    };
+    }, this.recorder);
 
     // streamLoop handles abort internally — collectLoop returns cleanly
     const result = await this.collectLoop({
@@ -96,8 +120,16 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       onStreamError: (err) => {
         this.logger.error({ workerId: this.id, err }, 'LLM stream error');
       },
-      onStep: (event) => {
-        const entry = buildAssistantEntry(event, this.id);
+      onStep: (event, meta) => {
+        const entry = buildAssistantEntry(event, this.ctx.sessionId, undefined, {
+          startedAt: meta?.startedAt,
+          firstTokenAt: meta?.firstTokenAt,
+          temperature: this.provider.temperature,
+          maxOutputTokens: this.provider.maxOutputTokens,
+          recordedToolCalls: (toolCallId) => this.recorder.lookup(toolCallId),
+        });
+        applyTurnEnvelope(entry, turnEnv);
+        syncStepTimestamps(entry);
         this.state.append('conversation', entry);
 
         // Log step details for debugging

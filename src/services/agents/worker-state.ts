@@ -1,9 +1,12 @@
 import { join } from 'node:path';
 import type { ConversationEntry } from '@/types/index';
+import { isCompactMarker } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
+import { RECENT_TOKEN_BUDGET } from './context-manager';
+import { estimateEntryTokens } from './utils/estimate-tokens';
 
 interface WorkerRuntimeState {
   session: { id: string; startedAt: number };
@@ -58,9 +61,28 @@ export class WorkerState extends BaseWayangState {
     if (runtimeState) {
       this.data.runtimeState = runtimeState;
     }
-    const conversation = this.jsonlFile.read() as ConversationEntry[];
-    if (conversation.length > 0) {
-      this.data.conversation = conversation;
+    const allEntries = this.jsonlFile.read() as ConversationEntry[];
+
+    // Same windowing as ControllerAgentState.restore: structural marker check
+    // (only system entries carrying compactMeta count), then walk backwards
+    // from the marker within RECENT_TOKEN_BUDGET using estimateEntryTokens.
+    const compactIdx = allEntries.findLastIndex(isCompactMarker);
+
+    if (compactIdx === -1) {
+      if (allEntries.length > 0) {
+        this.data.conversation = allEntries;
+      }
+    } else {
+      let budget = RECENT_TOKEN_BUDGET;
+      let cutIdx = 0;
+      for (let i = compactIdx - 1; i >= 0; i--) {
+        budget -= estimateEntryTokens(allEntries[i]);
+        if (budget <= 0) {
+          cutIdx = i + 1;
+          break;
+        }
+      }
+      this.data.conversation = allEntries.slice(cutIdx);
     }
     this.logger.info('WorkerState restored');
   }

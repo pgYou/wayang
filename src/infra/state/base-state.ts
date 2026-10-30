@@ -1,6 +1,8 @@
 import { get, set, cloneDeep } from 'lodash-es';
 import type { StateEvent } from '@/types/index';
+import type { ConversationEntry } from '@/types/index';
 import type { IPersistenceHelper, PersistOp } from './persistence/types';
+import { applyAppendEnvelope } from './conversation-envelope';
 
 export type { StateEvent };
 
@@ -59,10 +61,17 @@ export abstract class BaseWayangState {
     if (!Array.isArray(arr)) {
       throw new Error(`State.append: path "${path}" is not an array`);
     }
-    arr.push(entry);
+    // Conversation entries get v/parentId stamped by the shared envelope
+    // module (single source of truth, compaction-boundary aware), computed
+    // from the pre-append array value (the array reference is replaced by
+    // the set below).
+    const stamped = path === 'conversation'
+      ? applyAppendEnvelope(entry as ConversationEntry, arr as ConversationEntry[])
+      : entry;
+    arr.push(stamped);
     // Replace with new array reference so React detects the change
     set(this.data, path, [...arr]);
-    this.persist(path, 'append', entry);
+    this.persist(path, 'append', stamped);
     this.notify(path, 'append', undefined);
   }
 

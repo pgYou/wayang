@@ -60,6 +60,10 @@ export interface ControllerToolDeps {
   registry: SkillRegistry;
   /** Dispose a worker by id (running or idle). Returns true if found. */
   disposeWorker: (workerId: string) => boolean;
+  /** Current controller turn lineage — stamped onto tasks created by add_task. */
+  getTurnContext?: () => { turnId?: string; rootTurnId?: string; causationId?: string } | undefined;
+  /** Notify the agent that an add_task call dispatched a task (toolCall→task link). */
+  onTaskDispatched?: (info: { toolCallId?: string; taskId: string }) => void;
 }
 
 export interface WorkerToolDeps {
@@ -83,6 +87,8 @@ export function createControllerTools(deps: ControllerToolDeps) {
       validateWorkerType: deps.validateWorkerType,
       assignToWorker: deps.assignToWorker,
       validateIdleWorker: deps.validateIdleWorker,
+      getTurnContext: deps.getTurnContext,
+      onTaskDispatched: deps.onTaskDispatched,
     }),
     list_tasks: listTasksTool({ listTasks: deps.listTasks }),
     cancel_task: cancelTaskTool({

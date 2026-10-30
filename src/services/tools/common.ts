@@ -18,14 +18,17 @@ export function truncate(result: string): string {
  * Unified tool execute wrapper:
  * 1. try-catch → error returns [ERROR] msg (no throw to avoid breaking agentLoop)
  * 2. Result truncation → prevent context overflow
+ *
+ * The SDK's second execute argument (options, incl. toolCallId) is passed
+ * through to `fn` — tools that need their own toolCallId can read it.
  */
 export function safeExecute(
   name: string,
-  fn: (args: any) => Promise<string>,
-): (args: any, _options?: any) => Promise<string> {
-  return async (args: any, _options?: any): Promise<string> => {
+  fn: (args: any, options?: any) => Promise<string>,
+): (args: any, options?: any) => Promise<string> {
+  return async (args: any, options?: any): Promise<string> => {
     try {
-      const result = await fn(args);
+      const result = await fn(args, options);
       return truncate(typeof result === 'string' ? result : JSON.stringify(result));
     } catch (err: any) {
       return `[ERROR] ${name}: ${err.message ?? String(err)}`;

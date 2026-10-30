@@ -1,4 +1,5 @@
 import type { SignalQueue } from '@/services/signal/signal-queue';
+import type { SignalTurnLineage } from '@/types/index';
 import { generateId } from '@/utils/id';
 
 export interface PermissionMiddlewareConfig {
@@ -21,6 +22,8 @@ export interface PermissionMiddlewareDeps {
   emoji?: string;
   signalQueue: SignalQueue;
   timeoutMs?: number;
+  /** Turn lineage attached to emitted permission_request signals. */
+  turnLineage?: SignalTurnLineage;
 }
 
 interface PendingPermission {
@@ -76,6 +79,7 @@ export function wrapWithPermissionMiddleware(
             toolArgs: args,
             description,
           },
+          ...(deps.turnLineage ?? {}),
         });
 
         interface PermissionResult {

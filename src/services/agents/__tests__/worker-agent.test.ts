@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import { SkillRegistry } from '@/services/skills/registry';
 import { mockProvider, createMockCtx } from '@/__tests__/helpers';
+import { EEntryType } from '@/types/index';
 
 // Empty registry shared across tests — workers need it for prompt building.
 const skills = new SkillRegistry([]);
@@ -131,5 +135,45 @@ describe('WorkerAgent', () => {
 
     expect(result.status).toBe('completed');
     expect(result.summary).toBe('Task finished');
+  });
+
+  it('should write the session id (not the worker id) on conversation entries', async () => {
+    // Fire onStepFinish so an assistant entry lands in the conversation
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+      };
+    }) as any);
+
+    const tempDir = mkdtempSync(join(tmpdir(), 'wayang-wa-sid-'));
+    try {
+      // Mock ctx sessionId is 'test-session' — every entry must carry it
+      const ctx = createMockCtx({ sessionDir: tempDir });
+      const worker = new WorkerAgent(mockProvider, ctx, skills);
+      await worker.run(
+        { id: 't-sid', title: 'test', description: 'test session id', workerId: 'w-sid', priority: 'normal', status: 'running', createdAt: Date.now() },
+        {},
+      );
+
+      const conversation = worker.getConversation();
+      expect(conversation.length).toBeGreaterThanOrEqual(2);
+      const types = new Set(conversation.map((e) => e.type));
+      expect(types.has(EEntryType.User)).toBe(true);
+      expect(types.has(EEntryType.Assistant)).toBe(true);
+      for (const entry of conversation) {
+        expect(entry.sessionId).toBe('test-session');
+        expect(entry.sessionId).not.toBe(worker.id);
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

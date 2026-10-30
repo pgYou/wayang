@@ -21,9 +21,11 @@ import type { IWorkerInstance } from '@/types/worker';
 import type { Logger } from '@/infra/logger';
 import type { StateEvent } from '@/infra/state/base-state';
 import { WorkerState } from './worker-state';
+import { applyTurnEnvelope, type TurnEnvelope } from './utils/entry-envelope';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import { EEntryType } from '@/types/index';
+import { EEntryType, ESystemSubtype } from '@/types/index';
+import type { SignalTurnLineage } from '@/types/index';
 import { buildThirdPartyPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
@@ -77,6 +79,24 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   // Signal context set during run()
   private _signalQueue: SignalQueue | null = null;
   private _runContext: { workerId: string; taskId: string; taskTitle: string; workerType?: string; emoji?: string } | null = null;
+  /** Turn lineage for permission-request signals emitted by this worker. */
+  private _turnLineage: SignalTurnLineage = {};
+  /** Turn lineage stamped on entries written by the run in flight. */
+  private _currentTurnEnv: TurnEnvelope | null = null;
+
+  /**
+   * Turn identity: one worker run = one turn. The engine passes the task's
+   * execution turn id; rootTurnId is inherited from the task; the task is
+   * the direct cause of this activation.
+   */
+  private buildTurnEnv(task: TaskDetail & { workerId: string }): TurnEnvelope {
+    return {
+      turnId: task.executionTurnId ?? generateId('turn'),
+      ...((task.rootTurnId ?? task.turnId) !== undefined && { rootTurnId: task.rootTurnId ?? task.turnId }),
+      causationId: task.id,
+      actor: { kind: 'worker', id: task.workerId, taskId: task.id },
+    };
+  }
 
   /**
    * Progress debounce mechanism.
@@ -122,15 +142,26 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     // Set task info in state
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
 
-    // Write initial user entry
-    this.state.append('conversation', {
+    // Turn identity: one worker run = one turn. The engine passes the task's
+    // execution turn id; rootTurnId is inherited from the task; the task is
+    // the direct cause of this activation.
+    const turnEnv = this.buildTurnEnv(task);
+    this._currentTurnEnv = turnEnv;
+
+    // Write initial user entry. The task prompt is written by the orchestration
+    // engine, not the human user — actor reflects that.
+    const promptTs = nowISO();
+    this.state.append('conversation', applyTurnEnvelope({
       type: EEntryType.User,
       uuid: generateId('u'),
       parentUuid: null,
-      sessionId: this.id,
-      timestamp: nowISO(),
+      sessionId: this.ctx.sessionId,
+      timestamp: promptTs,
+      actor: { kind: 'system', id: 'engine', taskId: task.id },
+      // Delivery of the task prompt completes at write time.
+      endedAt: promptTs,
       message: { role: 'user', content: task.description },
-    });
+    } as import('@/types/conversation').ConversationEntry, turnEnv));
 
     try {
       const options: Record<string, any> = {
@@ -180,16 +211,20 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     this.permissionHandler.cleanup();
     this.flushMessageQueue();
 
-    // Write final result entry
-    this.state.append('conversation', {
+    // Write final result entry. Point-in-time event: startedAt/endedAt share
+    // the recording moment.
+    const resultTs = nowISO();
+    this.state.append('conversation', applyTurnEnvelope({
       type: EEntryType.System,
       uuid: generateId('s'),
       parentUuid: null,
-      sessionId: this.id,
-      timestamp: nowISO(),
-      subtype: this._terminalResult.status === 'completed' ? 'compact' : 'error',
+      sessionId: this.ctx.sessionId,
+      timestamp: resultTs,
+      subtype: this._terminalResult.status === 'completed' ? ESystemSubtype.TaskResult : ESystemSubtype.Error,
       content: this._terminalResult.summary ?? this._terminalResult.error ?? '',
-    });
+      startedAt: resultTs,
+      endedAt: resultTs,
+    } as import('@/types/conversation').ConversationEntry, turnEnv));
 
     return this._terminalResult;
   }
@@ -202,9 +237,12 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     taskTitle: string;
     workerType?: string;
     emoji?: string;
+    /** Turn lineage attached to signals emitted by this worker. */
+    turnLineage?: SignalTurnLineage;
   }): void {
     this._signalQueue = deps.signalQueue;
     this._runContext = deps;
+    this._turnLineage = deps.turnLineage ?? {};
   }
 
   abort(): void {
@@ -276,6 +314,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         toolArgs: input,
         description,
       } satisfies PermissionRequestSignalPayload,
+      ...this._turnLineage,
     });
 
     return new Promise<PermissionResult>((resolve) => {
@@ -363,11 +402,11 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     if (!text) return;
 
     // Append to conversation for UI/audit
-    this.state.append('conversation', {
+    this.state.append('conversation', applyTurnEnvelope({
       type: EEntryType.Assistant,
       uuid: generateId('a'),
       parentUuid: null,
-      sessionId: this.id,
+      sessionId: this.ctx.sessionId,
       timestamp: nowISO(),
       message: {
         role: 'assistant',
@@ -375,9 +414,12 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         usage: {
           inputTokens: msg.message.usage?.input_tokens ?? 0,
           outputTokens: msg.message.usage?.output_tokens ?? 0,
+          ...(msg.message.usage?.cache_read_input_tokens != null && {
+            cachedInputTokens: msg.message.usage.cache_read_input_tokens,
+          }),
         },
       },
-    });
+    } as import('@/types/conversation').ConversationEntry, this._currentTurnEnv ?? undefined));
 
     // Debounced progress: delay 500ms, cancel if result arrives first
     if (onProgress) {

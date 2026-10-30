@@ -367,4 +367,214 @@ describe('buildAssistantEntry', () => {
     expect(entry.toolResults![0].isError).toBe(true);
     expect(entry.toolResults![0].output.value).toContain('Schema validation failed');
   });
+
+  // --- SDK metadata fields (model / usage detail / requestId / stepIndex / timing) ---
+
+  it('should fill model, usage extensions, requestId, stepIndex and timing from SDK fields', () => {
+    // Field shapes verified against ai SDK StepResult:
+    // model: { provider, modelId }; usage: { inputTokens, outputTokens, totalTokens,
+    // inputTokenDetails.cacheReadTokens, outputTokenDetails.reasoningTokens };
+    // response: { id, timestamp }; stepNumber (zero-based).
+    const event = {
+      text: 'ok',
+      reasoningText: undefined,
+      toolCalls: [],
+      toolResults: [],
+      content: [],
+      usage: {
+        inputTokens: 100,
+        outputTokens: 40,
+        totalTokens: 140,
+        inputTokenDetails: { cacheReadTokens: 60 },
+        outputTokenDetails: { reasoningTokens: 12 },
+      },
+      finishReason: 'stop',
+      stepNumber: 2,
+      model: { provider: 'anthropic', modelId: 'claude-sonnet-4' },
+      response: { id: 'resp_abc123', timestamp: new Date('2026-10-30T10:00:00Z') },
+    };
+
+    const entry = buildAssistantEntry(event as any, 's1');
+    expect(entry.model).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' });
+    expect(entry.message.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 40,
+      cachedInputTokens: 60,
+      reasoningTokens: 12,
+      totalTokens: 140,
+    });
+    expect(entry.requestId).toBe('resp_abc123');
+    expect(entry.stepIndex).toBe(2);
+    expect(entry.timing?.startedAt).toBe('2026-10-30T10:00:00.000Z');
+    expect(entry.timing?.durationMs).toBeGreaterThanOrEqual(0);
+    // Trace ids must never be fabricated when the caller has no context.
+    expect(entry.traceId).toBeUndefined();
+    expect(entry.spanId).toBeUndefined();
+  });
+
+  it('should map deprecated top-level usage fields when token details are absent', () => {
+    const event = {
+      text: 'ok',
+      usage: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 4, reasoningTokens: 2 },
+      finishReason: 'stop',
+    };
+
+    const entry = buildAssistantEntry(event as any, 's1');
+    expect(entry.message.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      cachedInputTokens: 4,
+      reasoningTokens: 2,
+    });
+  });
+
+  it('should omit metadata fields when the SDK event does not provide them', () => {
+    const event = {
+      text: 'hi',
+      usage: { inputTokens: 5, outputTokens: 6 },
+      finishReason: 'stop',
+    };
+
+    const entry = buildAssistantEntry(event as any, 's1');
+    expect(entry.message.usage).toEqual({ inputTokens: 5, outputTokens: 6 });
+    expect(entry.model).toBeUndefined();
+    expect(entry.requestId).toBeUndefined();
+    expect(entry.stepIndex).toBeUndefined();
+    expect(entry.timing?.startedAt).toBeUndefined();
+    expect(entry.traceId).toBeUndefined();
+    expect(entry.spanId).toBeUndefined();
+  });
+
+  it('should accept caller-provided timing and trace ids via optional extras', () => {
+    const event = {
+      text: 'hi',
+      usage: { inputTokens: 5, outputTokens: 6 },
+      finishReason: 'stop',
+    };
+
+    const entry = buildAssistantEntry(event as any, 's1', 'step-uuid-1', {
+      startedAt: '2026-10-30T10:00:00.000Z',
+      endedAt: '2026-10-30T10:00:05.000Z',
+      firstTokenAt: '2026-10-30T10:00:01.000Z',
+      traceId: 'trace-42',
+      spanId: 'span-42',
+    });
+    expect(entry.uuid).toBe('step-uuid-1');
+    expect(entry.timing).toEqual({
+      startedAt: '2026-10-30T10:00:00.000Z',
+      firstTokenAt: '2026-10-30T10:00:01.000Z',
+      endedAt: '2026-10-30T10:00:05.000Z',
+      durationMs: 5000,
+    });
+    expect(entry.traceId).toBe('trace-42');
+    expect(entry.spanId).toBe('span-42');
+  });
+
+  it('should backfill temperature/maxOutputTokens from extras into the model section', () => {
+    const event = {
+      text: 'hi',
+      usage: { inputTokens: 5, outputTokens: 6 },
+      finishReason: 'stop',
+      model: { provider: 'openai-compatible', modelId: 'fake-model' },
+    };
+
+    const entry = buildAssistantEntry(event as any, 's1', undefined, {
+      temperature: 0.2,
+      maxOutputTokens: 4096,
+    });
+    expect(entry.model).toEqual({
+      provider: 'openai-compatible',
+      model: 'fake-model',
+      temperature: 0.2,
+      maxOutputTokens: 4096,
+    });
+  });
+
+  it('should create the model section from config extras alone when the SDK event has none', () => {
+    const event = { text: 'hi', usage: { inputTokens: 5, outputTokens: 6 }, finishReason: 'stop' };
+    const entry = buildAssistantEntry(event as any, 's1', undefined, { temperature: 0.7 });
+    expect(entry.model).toEqual({ temperature: 0.7 });
+  });
+
+  it('should omit temperature/maxOutputTokens entirely when neither source provides them', () => {
+    const event = {
+      text: 'hi',
+      usage: { inputTokens: 5, outputTokens: 6 },
+      finishReason: 'stop',
+      model: { provider: 'anthropic', modelId: 'claude-sonnet-4' },
+    };
+    const entry = buildAssistantEntry(event as any, 's1');
+    expect(entry.model).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' });
+  });
+
+  it('should prefer the SDK response.timestamp over the caller-provided startedAt', () => {
+    const event = {
+      text: 'hi',
+      usage: { inputTokens: 5, outputTokens: 6 },
+      finishReason: 'stop',
+      response: { id: 'resp_ts', timestamp: new Date('2026-10-30T09:00:00Z') },
+    };
+    const entry = buildAssistantEntry(event as any, 's1', undefined, {
+      startedAt: '2026-10-30T10:00:00.000Z',
+    });
+    expect(entry.timing?.startedAt).toBe('2026-10-30T09:00:00.000Z');
+  });
+
+  it('should still work with the pre-extras call signatures', () => {
+    const event = { text: 'legacy', usage: { inputTokens: 1, outputTokens: 1 }, finishReason: 'stop' };
+    // Two-arg form
+    const twoArg = buildAssistantEntry(event as any, 's1');
+    expect(twoArg.type).toBe(EEntryType.Assistant);
+    expect(twoArg.sessionId).toBe('s1');
+    // Three-arg form (uuid, no extras)
+    const threeArg = buildAssistantEntry(event as any, 's1', 'fixed-uuid');
+    expect(threeArg.uuid).toBe('fixed-uuid');
+    expect(threeArg.timing).toEqual({ endedAt: expect.any(String) });
+  });
+});
+
+// --- buildAssistantEntry: recorded tool execution metadata ---
+
+describe('buildAssistantEntry: recorded tool calls', () => {
+  it('merges recorder data (taskId / status / timing) into tool calls and results', async () => {
+    const { ToolCallRecorder } = await import('@/services/agents/utils/tool-call-recorder');
+    const rec = new ToolCallRecorder();
+    rec.start('tc1', 'add_task');
+    rec.finish('tc1', 'succeeded');
+    rec.attachTask('tc1', 't-42');
+
+    const event = {
+      text: '',
+      toolCalls: [{ toolCallId: 'tc1', toolName: 'add_task', args: { title: 'T' } }],
+      toolResults: [{ toolCallId: 'tc1', toolName: 'add_task', output: 'Task t-42 added' }],
+      usage: undefined,
+      finishReason: 'tool-calls',
+    };
+
+    const entry = buildAssistantEntry(event as any, 's1', undefined, {
+      recordedToolCalls: (id) => rec.lookup(id),
+    });
+    // Async dispatch semantics: the call stays 'running' with the task id.
+    expect(entry.toolCalls![0]).toMatchObject({
+      toolCallId: 'tc1', taskId: 't-42', status: 'running',
+    });
+    expect(entry.toolCalls![0].startedAt).toBeTruthy();
+    expect(entry.toolCalls![0].endedAt).toBeTruthy();
+    expect(entry.toolResults![0]).toMatchObject({ toolCallId: 'tc1', status: 'running' });
+    expect(entry.toolResults![0].startedAt).toBeTruthy();
+  });
+
+  it('marks SDK tool-error parts as failed with an error type', () => {
+    const event = {
+      text: '',
+      toolCalls: [{ toolCallId: 'tc1', toolName: 'bad_tool', args: {} }],
+      toolResults: [],
+      content: [{ type: 'tool-error', toolCallId: 'tc1', toolName: 'bad_tool', error: { message: 'nope' } }],
+      usage: undefined,
+      finishReason: 'tool-calls',
+    };
+    const entry = buildAssistantEntry(event as any, 's1');
+    expect(entry.toolResults![0].status).toBe('failed');
+    expect(entry.toolResults![0].errorType).toBe('ToolInputValidationError');
+  });
 });

@@ -16,6 +16,17 @@ export interface ProviderConfig {
   endpoint: string;
   apiKey: string;
   modelName: string;
+  /**
+   * Sampling temperature for this provider. Optional — recorded on
+   * AssistantEntry.model when set. (Currently metadata-only: requests use
+   * the provider default unless the endpoint is configured server-side.)
+   */
+  temperature?: number;
+  /**
+   * Max output tokens for this provider. Optional — recorded on
+   * AssistantEntry.model when set. (Currently metadata-only.)
+   */
+  maxOutputTokens?: number;
 }
 
 /** Third-party worker configuration. */

@@ -11,8 +11,20 @@ export type {
   SystemEntry,
   ToolCallRecord,
   ToolResultRecord,
+  ToolRecordStatus,
+  ConversationEntryEnvelope,
+  EntryActor,
+  ETurnStatus,
+  TurnView,
+  TurnToolCallView,
+  TurnUsage,
+  ConversationIndex,
+  /** @deprecated Alias of TurnToolCallView. */
+  TurnViewToolCall,
+  /** @deprecated Alias of TurnUsage. */
+  TurnViewUsage,
 } from './conversation';
-export { EEntryType, ESystemSubtype, ESignalSubtype, isSystemEntry, isSignalEntry, getEntryContent } from './conversation';
+export { EEntryType, ESystemSubtype, ESignalSubtype, isSystemEntry, isSignalEntry, isCompactMarker, getEntryContent } from './conversation';
 
 export type { TaskDetail } from './task';
 
@@ -23,11 +35,13 @@ export type {
   SignalSource,
   SignalType,
   SignalPayloadMap,
+  SignalTurnLineage,
   InputSignalPayload,
   CompletedSignalPayload,
   FailedSignalPayload,
   ProgressSignalPayload,
   CancelledSignalPayload,
+  TaskCancelledSignalPayload,
   HeartbeatSignalPayload,
   PermissionRequestSignalPayload,
   PreviousSessionTasksSignalPayload,

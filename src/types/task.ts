@@ -25,4 +25,16 @@ export interface TaskDetail {
   assignToWorker?: string;
   /** When this task was dispatched to an idle worker: the worker id that ran it. */
   assignedFromWorkerId?: string;
+  // --- Turn lineage (optional, audit only) ---
+  /** Controller turn that created this task (the add_task turn). */
+  turnId?: string;
+  /** Root user turn of the chain that led to this task. */
+  rootTurnId?: string;
+  /** What triggered the creating turn (signal id), when known. */
+  causationId?: string;
+  /**
+   * Turn id for the worker's execution of this task. Ephemeral — set by the
+   * engine on the per-run task copy handed to the worker, never persisted.
+   */
+  executionTurnId?: string;
 }

@@ -112,6 +112,99 @@ describe('BaseWayangState', () => {
     });
   });
 
+  // --- append: conversation envelope auto-fill ---
+
+  describe('append (conversation envelope)', () => {
+    let convState: TestState;
+
+    beforeEach(() => {
+      convState = new TestState({
+        conversation: [],
+        runtimeState: [] as Array<Record<string, unknown>>,
+      });
+    });
+
+    /** Minimal conversation entry shaped like the persisted JSONL records. */
+    const userEntry = (uuid: string, extra: Record<string, unknown> = {}) => ({
+      type: 'user',
+      uuid,
+      parentUuid: null,
+      sessionId: 's1',
+      timestamp: new Date().toISOString(),
+      message: { role: 'user', content: 'hi' },
+      ...extra,
+    });
+
+    it('should stamp v=1 and parentId=null on the first conversation entry', () => {
+      convState.append('conversation', userEntry('u1'));
+      const first = convState.get<Record<string, unknown>[]>('conversation')[0];
+      expect(first.v).toBe(1);
+      expect(first.parentId).toBeNull();
+    });
+
+    it('should chain parentId to the pre-append last entry uuid', () => {
+      convState.append('conversation', userEntry('u1'));
+      convState.append('conversation', userEntry('u2'));
+      const entries = convState.get<Record<string, unknown>[]>('conversation');
+      expect(entries[0].parentId).toBeNull();
+      expect(entries[1].parentId).toBe('u1');
+      expect(entries[1].v).toBe(1);
+    });
+
+    it('should not overwrite explicit v / parentId values (explicit null included)', () => {
+      convState.append('conversation', userEntry('u1'));
+      convState.append('conversation', userEntry('u2', { v: 2, parentId: null }));
+      convState.append('conversation', userEntry('u3', { parentId: 'custom-parent' }));
+
+      const entries = convState.get<Record<string, unknown>[]>('conversation');
+      expect(entries[1].v).toBe(2);
+      expect(entries[1].parentId).toBeNull();
+      expect(entries[2].parentId).toBe('custom-parent');
+    });
+
+    it('should anchor the compact marker and the first entry after it to parentId=null', () => {
+      convState.append('conversation', userEntry('u1'));
+      convState.append('conversation', {
+        type: 'system',
+        uuid: 'c1',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: new Date().toISOString(),
+        subtype: 'compact',
+        content: 'summary',
+        compactMeta: { summarizedTokenCount: 5 },
+      });
+      convState.append('conversation', userEntry('u2'));
+
+      const entries = convState.get<Record<string, unknown>[]>('conversation');
+      // A compaction boundary starts a fresh chain: the marker and the first
+      // entry after it both anchor to null (shared envelope semantics).
+      expect(entries[1].parentId).toBeNull();
+      expect(entries[2].parentId).toBeNull();
+      // Chaining resumes after the boundary.
+      convState.append('conversation', userEntry('u3'));
+      const after = convState.get<Record<string, unknown>[]>('conversation');
+      expect(after[3].parentId).toBe('u2');
+    });
+
+    it('should not chain or stamp version on non-conversation paths', () => {
+      convState.append('runtimeState', { note: 'a' });
+      convState.append('runtimeState', { note: 'b' });
+
+      const rt = convState.get<Record<string, unknown>[]>('runtimeState');
+      expect(rt[0].v).toBeUndefined();
+      expect(rt[0].parentId).toBeUndefined();
+      expect(rt[1].v).toBeUndefined();
+      expect(rt[1].parentId).toBeUndefined();
+    });
+
+    it('should leave non-object conversation entries untouched', () => {
+      convState.append('conversation', 'raw-string');
+      const entries = convState.get('conversation');
+      expect(entries).toEqual(['raw-string']);
+    });
+  });
+
   // --- remove ---
 
   describe('remove', () => {

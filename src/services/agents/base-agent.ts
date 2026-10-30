@@ -2,6 +2,7 @@ import { streamText, stepCountIs, hasToolCall, type OnStepFinishEvent, type Mode
 import { createModel } from './model-factory';
 import type { ProviderConfig, ToolChoice } from '@/types/index';
 import { generateId } from '@/utils/id';
+import { nowISO } from '@/utils/time';
 
 // --- Stream Loop Types ---
 
@@ -14,6 +15,20 @@ export interface StreamLoopResult {
   steps?: number;
 }
 
+/**
+ * Extra per-step metadata handed to onStep alongside the SDK event.
+ * - `startedAt` is approximate: stream creation time for the first step, the
+ *   previous step's finish time for later steps.
+ * - `firstTokenAt` is approximate: the time the first stream chunk after the
+ *   previous step boundary arrived (tool output is not part of textStream).
+ * Both are fallbacks — buildAssistantEntry prefers the SDK event's
+ * response.timestamp when the provider supplies one.
+ */
+export interface StepMeta {
+  startedAt?: string;
+  firstTokenAt?: string;
+}
+
 export interface StreamLoopOptions {
   system: string;
   messages: ModelMessage[];
@@ -23,7 +38,7 @@ export interface StreamLoopOptions {
   maxSteps?: number;
   /** Tool names that signal the loop should stop after execution (e.g. 'done', 'fail'). */
   stopTools?: string[];
-  onStep?: (event: OnStepFinishEvent) => void;
+  onStep?: (event: OnStepFinishEvent, meta: StepMeta) => void;
   /** Called when the LLM stream errors (e.g. HTTP 400/403 from the provider).
    *  Without this, textStream silently drops error parts. */
   onStreamError?: (error: unknown) => void;
@@ -73,9 +88,24 @@ export abstract class BaseAgent {
     }
 
     let startTime: number;
+    /** Time the first text chunk of the CURRENT step arrived (approximate). */
+    let firstChunkAt: string | undefined;
+    /** Time the CURRENT step started (approximate: stream start / previous step end). */
+    let stepStartedAt: string | undefined;
+    // Wrap onStep so the timing of the step that just finished is handed over
+    // and the trackers reset for the next step.
+    const onStep = opts.onStep
+      ? (event: OnStepFinishEvent) => {
+          const meta: StepMeta = { startedAt: stepStartedAt, firstTokenAt: firstChunkAt };
+          firstChunkAt = undefined;
+          stepStartedAt = nowISO();
+          opts.onStep!(event, meta);
+        }
+      : undefined;
     try {
       this.hooks.beforeLLM?.({ messageCount: opts.messages.length, messages: opts.messages });
       startTime = Date.now();
+      stepStartedAt = nowISO();
       stream = streamText({
         model: this.model,
         system: opts.system,
@@ -84,7 +114,7 @@ export abstract class BaseAgent {
         toolChoice: opts.toolChoice,
         stopWhen: stopConditions.length > 0 ? stopConditions : undefined,
         abortSignal: this.abortController.signal,
-        onStepFinish: opts.onStep,
+        onStepFinish: onStep,
         onError: ({ error }) => {
           opts.onStreamError?.(error);
         },
@@ -102,6 +132,7 @@ export abstract class BaseAgent {
 
     try {
       for await (const chunk of stream.textStream) {
+        if (chunk && firstChunkAt === undefined) firstChunkAt = nowISO();
         yield chunk;
       }
     } catch (err: any) {
