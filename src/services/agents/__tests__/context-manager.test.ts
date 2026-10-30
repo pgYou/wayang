@@ -425,4 +425,42 @@ describe('ContextManager', () => {
       expect(conversation).toHaveLength(1);
     });
   });
+
+  describe('real usage (reportRealUsage)', () => {
+    it('should trigger isFull on real usage even when the estimate is small', () => {
+      // Small conversation → small estimate; huge real usage must still win.
+      const conversation = [makeUser('u1', 'small message')];
+      const cm = new ContextManager(createMockState(conversation), 'STATIC PROMPT', 42_000);
+
+      expect(cm.isFull()).toBe(false); // estimate-only, well under 90% of 42k
+
+      cm.reportRealUsage(50_000); // real prompt size > 0.9 * 42_000
+      expect(cm.isFull()).toBe(true);
+    });
+
+    it('should ignore non-positive and non-finite reported values', () => {
+      const cm = new ContextManager(createMockState(), 'STATIC PROMPT', 42_000);
+      cm.reportRealUsage(0);
+      cm.reportRealUsage(-5);
+      cm.reportRealUsage(Number.NaN);
+      // None of the above may arm the real-usage override; estimate-only path.
+      expect(cm.isFull()).toBe(false);
+    });
+
+    it('should clear the real usage after a compaction', async () => {
+      const conversation = [
+        makeUser('u1', 'one'), makeUser('u2', 'two'),
+        makeUser('u3', 'three'), makeUser('u4', 'four'),
+      ];
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT', 42_000);
+
+      cm.reportRealUsage(50_000);
+      expect(cm.isFull()).toBe(true);
+
+      await cm.compact(async () => 'the summary');
+      // Stale pre-compaction usage must not keep triggering isFull.
+      expect(cm.isFull()).toBe(false);
+    });
+  });
 });

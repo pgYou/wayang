@@ -52,6 +52,14 @@ export class ContextManager {
    */
   private compactStartIdx = 0;
 
+  /**
+   * Last real provider-reported prompt size (inputTokens of the most recent
+   * step), if any. Real usage beats the local estimator — estimators
+   * undercount CJK text and tool JSON heavily, and undercounting lets the
+   * context grow past the model window without ever triggering compaction.
+   */
+  private lastReportedTokens: number | null = null;
+
   constructor(
     private state: BaseWayangState,
     private staticPrompt: string,
@@ -92,11 +100,21 @@ export class ContextManager {
     ];
   }
 
+  /** Record the provider-reported prompt size (inputTokens) of the latest step. */
+  reportRealUsage(inputTokens: number): void {
+    if (typeof inputTokens === 'number' && Number.isFinite(inputTokens) && inputTokens > 0) {
+      this.lastReportedTokens = inputTokens;
+    }
+  }
+
   /** Check if context exceeds the compaction threshold. */
   isFull(): boolean {
     const promptTokens = estimateTokens(this.getSystemPrompt());
     const convTokens = estimateConversationTokens(this.getMessages());
-    return promptTokens + convTokens > this.maxTokens * COMPACT_THRESHOLD_RATIO;
+    // Real reported usage beats the estimate — max() covers the gap before
+    // the first real usage arrives and right after a compaction.
+    const effective = Math.max(promptTokens + convTokens, this.lastReportedTokens ?? 0);
+    return effective > this.maxTokens * COMPACT_THRESHOLD_RATIO;
   }
 
   /** Get the configured context window budget (tokens). */
@@ -240,6 +258,9 @@ export class ContextManager {
     // (entries after this index — i.e. future entries — will be included verbatim)
     this.compactSummary = summary;
     this.compactStartIdx = conversation.length;
+    // The pre-compaction real usage is stale — the next call sends the
+    // summary instead. Let the next real usage re-arm it.
+    this.lastReportedTokens = null;
 
     // Append compact marker — a normal system entry persisted to JSONL.
     // The marker is a chain boundary: parentId stays null (the shared

@@ -29,6 +29,16 @@ export interface StepMeta {
   firstTokenAt?: string;
 }
 
+// --- Configuration Constants ---
+
+/**
+ * Default idle watchdog: abort the call when no progress (no text chunk and
+ * no step finish) for this long. Guards against proxies that accept a
+ * request and then hang it silently (observed with large prompts — the
+ * connection neither errors nor delivers data).
+ */
+const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
+
 export interface StreamLoopOptions {
   system: string;
   messages: ModelMessage[];
@@ -38,6 +48,9 @@ export interface StreamLoopOptions {
   maxSteps?: number;
   /** Tool names that signal the loop should stop after execution (e.g. 'done', 'fail'). */
   stopTools?: string[];
+  /** Idle watchdog (ms): abort when no progress — no text chunk and no step
+   *  finish — for this long. 0 disables. Default 5 minutes. */
+  idleTimeoutMs?: number;
   onStep?: (event: OnStepFinishEvent, meta: StepMeta) => void;
   /** Called when the LLM stream errors (e.g. HTTP 400/403 from the provider).
    *  Without this, textStream silently drops error parts. */
@@ -75,6 +88,37 @@ export abstract class BaseAgent {
    *  Catches abort signal internally so callers see a clean completion. */
   protected async *streamLoop(opts: StreamLoopOptions): AsyncGenerator<string, StreamLoopResult> {
     const step = 0;
+    const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+
+    // Per-call abort controller: the watchdog aborts only THIS call, leaving
+    // the agent's own controller intact so long-lived agents stay reusable.
+    const callAbort = new AbortController();
+    const forwardAbort = () => callAbort.abort();
+    if (this.abortController.signal.aborted) {
+      callAbort.abort();
+    } else {
+      this.abortController.signal.addEventListener('abort', forwardAbort);
+    }
+
+    // Idle watchdog — re-armed on every observable progress event (text
+    // chunk or step finish). When it fires, the call is aborted and surfaced
+    // as a timeout error instead of hanging forever.
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    const clearWatchdog = () => {
+      if (watchdog !== null) {
+        clearTimeout(watchdog);
+        watchdog = null;
+      }
+    };
+    const armWatchdog = () => {
+      if (idleTimeoutMs <= 0) return;
+      clearWatchdog();
+      watchdog = setTimeout(() => {
+        timedOut = true;
+        callAbort.abort();
+      }, idleTimeoutMs);
+    };
 
     let stream: Awaited<ReturnType<typeof streamText>>;
 
@@ -96,6 +140,7 @@ export abstract class BaseAgent {
     // and the trackers reset for the next step.
     const onStep = opts.onStep
       ? (event: OnStepFinishEvent) => {
+          armWatchdog(); // Step finish is progress — re-arm the watchdog.
           const meta: StepMeta = { startedAt: stepStartedAt, firstTokenAt: firstChunkAt };
           firstChunkAt = undefined;
           stepStartedAt = nowISO();
@@ -106,6 +151,7 @@ export abstract class BaseAgent {
       this.hooks.beforeLLM?.({ messageCount: opts.messages.length, messages: opts.messages });
       startTime = Date.now();
       stepStartedAt = nowISO();
+      armWatchdog();
       stream = streamText({
         model: this.model,
         system: opts.system,
@@ -113,7 +159,7 @@ export abstract class BaseAgent {
         tools: opts.tools,
         toolChoice: opts.toolChoice,
         stopWhen: stopConditions.length > 0 ? stopConditions : undefined,
-        abortSignal: this.abortController.signal,
+        abortSignal: callAbort.signal,
         onStepFinish: onStep,
         onError: ({ error }) => {
           opts.onStreamError?.(error);
@@ -124,6 +170,8 @@ export abstract class BaseAgent {
         allowSystemInMessages: true,
       });
     } catch (err: any) {
+      clearWatchdog();
+      this.abortController.signal.removeEventListener('abort', forwardAbort);
       if (this.abortController.signal.aborted) {
         return { text: '', toolResults: [], usage: undefined };
       }
@@ -132,15 +180,25 @@ export abstract class BaseAgent {
 
     try {
       for await (const chunk of stream.textStream) {
+        armWatchdog(); // A chunk is progress — re-arm the watchdog.
         if (chunk && firstChunkAt === undefined) firstChunkAt = nowISO();
         yield chunk;
       }
     } catch (err: any) {
+      // Watchdog fired — surface a timeout error, never a silent hang.
+      if (timedOut) {
+        throw new Error(
+          `LLM call idle timeout: no stream progress (text chunk or step finish) for ${idleTimeoutMs}ms`,
+        );
+      }
       // Abort is intentional (done/fail tool or external cancel) — return clean result
       if (this.abortController.signal.aborted) {
         return { text: '', toolResults: [], usage: undefined };
       }
       throw err;
+    } finally {
+      clearWatchdog();
+      this.abortController.signal.removeEventListener('abort', forwardAbort);
     }
     const duration = Date.now() - startTime;
     const text = await stream.text;

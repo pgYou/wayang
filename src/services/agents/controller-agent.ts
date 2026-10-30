@@ -254,6 +254,11 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     const maxTokens = this.contextManager.getMaxTokens();
     const reported = stepUsage?.inputTokens;
     const hasReported = typeof reported === 'number' && Number.isFinite(reported) && reported > 0;
+    if (hasReported) {
+      // Feed the real prompt size to the context manager so compaction
+      // triggers on real usage, not the (under)estimator.
+      this.contextManager.reportRealUsage(reported);
+    }
     const usedTokens = hasReported ? reported : this.contextManager.getEstimatedTokens();
     // Last provider usage: prefer the newest assistant entry in the conversation
     // (which already covers the step that just finished AND restore), falling
@@ -370,6 +375,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       // Capture the previous summary before compact() replaces it — the
       // summarizer folds it in so repeated compactions stay incremental.
       const previousSummary = this.contextManager.getCompactSummary();
+      const entryCount = this.state.get<ConversationEntry[]>('conversation').length;
 
       await this.contextManager.compact(
         async (entries) => {
@@ -398,6 +404,10 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
           throw lastError;
         },
         { model: this.provider.modelName },
+      );
+      this.logger.info(
+        { model: this.provider.modelName, summarizedEntries: entryCount },
+        'Compaction done',
       );
     } catch (err) {
       // All retries failed — fallback: truncate half of history in memory only
