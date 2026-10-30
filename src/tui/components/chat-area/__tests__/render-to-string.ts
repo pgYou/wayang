@@ -18,7 +18,10 @@ export function renderToString(element: ReactElement, columns = 100): string {
   const stdout = {
     columns,
     rows: 200,
-    write: (s: string) => { frame = s; return true; },
+    // Keep the last non-blank write: under CI=true ink's unmount() takes the
+    // isCi path even in debug mode and rewrites the stream with lastOutput —
+    // never set in debug — which would clobber the captured frame with '\n'.
+    write: (s: string) => { if (s.trim()) frame = s; return true; },
     on() { return stdout; },
     off() { return stdout; },
     removeListener() { return stdout; },
