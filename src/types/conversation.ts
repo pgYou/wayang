@@ -218,6 +218,23 @@ export interface AssistantEntry extends ConversationEntryEnvelope {
   spanId?: string;
 }
 
+/**
+ * Structured permission-request data attached to `permission_request` signal
+ * entries. Lets the TUI render per-tool summaries without re-parsing the
+ * flattened `content` text. Optional — legacy entries predate it and fall
+ * back to content-based rendering.
+ */
+export interface PermissionRequestMeta {
+  /** Unique ID for matching request → response. */
+  requestId: string;
+  /** Tool name that triggered the permission check. */
+  toolName: string;
+  /** Arguments passed to the tool. */
+  toolArgs: Record<string, unknown>;
+  /** Human-readable description of what the tool will do. */
+  description?: string;
+}
+
 /** Worker signal entry — progress, completion, or failure notification. */
 export interface SignalEntry extends ConversationEntryEnvelope {
   type: EEntryType.Signal;
@@ -236,6 +253,8 @@ export interface SignalEntry extends ConversationEntryEnvelope {
   taskId?: string;
   taskTitle: string;
   content: string;
+  /** Present on permission_request entries — structured data for summary rendering. */
+  permissionMeta?: PermissionRequestMeta;
 }
 
 export interface SystemEntry extends ConversationEntryEnvelope {

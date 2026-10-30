@@ -441,6 +441,14 @@ const signalConverters: Record<string, SignalConverter> = {
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
       content: `[PERMISSION REQUEST] Worker ${p.workerId} (task: ${p.taskTitle}) wants to run ${p.toolName}.\nDescription: ${p.description}\nRequest ID: ${p.requestId}\nUse respond_permission to approve or deny.`,
+      // Structured copy for per-tool summary rendering (content stays as the
+      // LLM-facing flattened text — do not remove).
+      permissionMeta: {
+        requestId: p.requestId,
+        toolName: p.toolName,
+        toolArgs: p.toolArgs,
+        description: p.description,
+      },
     };
   },
 

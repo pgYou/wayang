@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
 import type { DisplayItem, DisplaySection } from '@/tui/types/display-item';
 import { theme } from '@/tui/theme';
+import { summarizePermissionResolution } from '@/tui/utils/permission-summary';
 import { TOOL_DETAIL_MAX_LENGTH, LONG_MSG_MAX_LENGTH } from './constants';
 
 /** Render an assistant step with all its sections (content, reasoning, tool calls/results). */
@@ -19,6 +20,13 @@ export function AssistantStepRow({ item }: { item: DisplayItem }) {
     );
   }
 
+  // Pair tool results by toolCallId — permission resolution rows use the
+  // paired result to detect calls that did not take effect.
+  const resultSections = new Map<string, DisplaySection>();
+  for (const sec of sections) {
+    if (sec.kind === 'tool_result') resultSections.set(sec.id, sec);
+  }
+
   return (
     <Box flexDirection="column">
       {sections.map((sec) => {
@@ -29,7 +37,9 @@ export function AssistantStepRow({ item }: { item: DisplayItem }) {
           case 'content':
             return <ContentRow key={key} section={sec} />;
           case 'tool_call':
-            return <ToolCallRow key={key} section={sec} />;
+            return sec.toolName === 'respond_permission'
+              ? <PermissionResolutionRow key={key} section={sec} result={resultSections.get(sec.id)} />
+              : <ToolCallRow key={key} section={sec} />;
           case 'tool_result':
             return <ToolResultRow key={key} section={sec} />;
         }
@@ -68,6 +78,39 @@ function ToolCallRow({ section }: { section: DisplaySection }) {
       <Text color={theme.toolUse.color}>
         {theme.toolUse.callIcon} {section.toolName}: {section.text.slice(0, TOOL_DETAIL_MAX_LENGTH)}
       </Text>
+    </Box>
+  );
+}
+
+/** respond_permission tool call — approved/denied state instead of raw JSON. */
+function PermissionResolutionRow({ section, result }: { section: DisplaySection; result?: DisplaySection }) {
+  const summary = summarizePermissionResolution(
+    {
+      toolCallId: section.id,
+      toolName: section.toolName ?? 'respond_permission',
+      arguments: section.text,
+    },
+    TOOL_DETAIL_MAX_LENGTH,
+    result ? { text: result.text, isError: result.isError } : undefined,
+  );
+  const color = summary.state === 'approved'
+    ? theme.permission.approvedColor
+    : theme.permission.deniedColor;
+  const prefix = summary.state === 'approved'
+    ? theme.permission.approvedPrefix
+    : theme.permission.deniedPrefix;
+
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Text color={theme.meta.color}>{theme.meta.prefix} </Text>
+        <Text color={color}>{prefix} {summary.label}</Text>
+      </Box>
+      {summary.detail && (
+        <Box marginLeft={3}>
+          <Text dimColor color={color}>{summary.detail}</Text>
+        </Box>
+      )}
     </Box>
   );
 }

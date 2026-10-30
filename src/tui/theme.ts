@@ -13,6 +13,10 @@ const baseToken = {
     textSubtle: 'gray',
     /** Accent — interactive elements, assistant prefix. */
     accent: 'green',
+    /** Success states — approvals, positive outcomes. */
+    success: 'green',
+    /** Warning states — pending approvals, caution. */
+    warning: 'yellow',
     /** Error / danger states. */
     error: 'red',
     /** Borders and structural lines. */
@@ -71,6 +75,15 @@ export const theme = {
   signal: {
     prefix: baseToken.icon.flag,
     color: baseToken.color.textSubtle,
+  },
+  permission: {
+    /** Status icons for permission request / resolution rows. */
+    pendingPrefix: '●', // ● filled circle — pending request
+    approvedPrefix: '✔', // ✔ check mark — approved
+    deniedPrefix: '✘', // ✘ cross mark — denied
+    pendingColor: baseToken.color.warning,
+    approvedColor: baseToken.color.success,
+    deniedColor: baseToken.color.error,
   },
   meta: {
     prefix: baseToken.icon.dot,

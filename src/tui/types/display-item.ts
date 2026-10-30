@@ -1,5 +1,5 @@
-import type { ConversationEntry } from '@/types/conversation';
-import type { ControllerSignal } from '@/types/signal';
+import type { ConversationEntry, PermissionRequestMeta } from '@/types/conversation';
+import type { ControllerSignal, PermissionRequestSignalPayload } from '@/types/signal';
 import { getSignalField } from '@/types/signal';
 import { EEntryType, ESignalSubtype } from '@/types/conversation';
 
@@ -43,6 +43,8 @@ export interface DisplayItem {
   workerType?: string;
   /** Display emoji for the worker type. */
   emoji?: string;
+  /** signal-only: structured permission-request data (permission_request subtype). */
+  permissionMeta?: PermissionRequestMeta;
 }
 
 /** Convert a persisted conversation entry to a single DisplayItem, or null for hidden entries (e.g. skip_reply). */
@@ -104,7 +106,7 @@ export function entryToDisplayItem(entry: ConversationEntry): DisplayItem | null
     }
 
     case EEntryType.Signal:
-      return { ...base, role: 'signal', subtype: entry.subtype, content: entry.content, taskId: entry.taskId, taskTitle: entry.taskTitle, workerId: entry.workerId, workerType: entry.workerType, emoji: entry.emoji };
+      return { ...base, role: 'signal', subtype: entry.subtype, content: entry.content, taskId: entry.taskId, taskTitle: entry.taskTitle, workerId: entry.workerId, workerType: entry.workerType, emoji: entry.emoji, permissionMeta: entry.permissionMeta };
 
     case EEntryType.System:
       return { ...base, role: 'system', subtype: entry.subtype, content: entry.content, compactMeta: entry.compactMeta };
@@ -119,6 +121,7 @@ const signalSubtypeMap: Record<string, ESignalSubtype> = {
   heartbeat: ESignalSubtype.Heartbeat,
   cancelled: ESignalSubtype.WorkerFailed,
   task_cancelled: ESignalSubtype.TaskCancelled,
+  permission_request: ESignalSubtype.PermissionRequest,
 };
 
 /** Convert an unread signal to a DisplayItem (always unread). */
@@ -134,6 +137,29 @@ export function signalToDisplayItem(signal: ControllerSignal): DisplayItem {
       ...base,
       role: 'user',
       content: signal.payload.text,
+    };
+  }
+
+  // Permission requests carry structured data (tool name + args) that the
+  // generic summary/error/message content extraction below cannot reach.
+  if (signal.type === 'permission_request') {
+    const p = signal.payload as PermissionRequestSignalPayload;
+    return {
+      ...base,
+      role: 'signal',
+      subtype: ESignalSubtype.PermissionRequest,
+      content: p.description,
+      taskId: p.taskId,
+      taskTitle: p.taskTitle,
+      workerId: p.workerId,
+      workerType: p.workerType,
+      emoji: p.emoji,
+      permissionMeta: {
+        requestId: p.requestId,
+        toolName: p.toolName,
+        toolArgs: p.toolArgs,
+        description: p.description,
+      },
     };
   }
 
