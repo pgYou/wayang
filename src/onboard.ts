@@ -105,6 +105,13 @@ async function buildConfigInteractive(): Promise<WayangConfig> {
     },
     {
       type: 'number',
+      name: 'contextWindowTokens',
+      message: 'Model context window in tokens (input budget, not max output; compaction starts at 90%)',
+      initial: 256_000,
+      min: 1_000,
+    },
+    {
+      type: 'number',
       name: 'maxConcurrency',
       message: 'Max concurrent workers',
       initial: 3,
@@ -124,6 +131,7 @@ async function buildConfigInteractive(): Promise<WayangConfig> {
         endpoint: answers.endpoint,
         apiKey: answers.apiKey,
         modelName: answers.modelName,
+        ...(answers.contextWindowTokens > 0 && { contextWindowTokens: answers.contextWindowTokens }),
       },
     },
     controller: { provider: 'default' },
@@ -166,8 +174,17 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
     const envModel = process.env.WAYANG_MODEL || '';
 
     if (envKey && envEndpoint && envModel) {
+      // Optional — invalid values are reported by validateConfig below.
+      const envWindow = process.env.WAYANG_CONTEXT_WINDOW_TOKENS;
       config = {
-        providers: { default: { endpoint: envEndpoint, apiKey: envKey, modelName: envModel } },
+        providers: {
+          default: {
+            endpoint: envEndpoint,
+            apiKey: envKey,
+            modelName: envModel,
+            ...(envWindow && { contextWindowTokens: Number(envWindow) }),
+          },
+        },
         controller: { provider: 'default' },
         worker: { provider: 'default', maxConcurrency: 3 },
       };
