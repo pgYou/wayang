@@ -107,8 +107,8 @@ export function buildStatusSegments(input: StatusSegmentsInput): StatusSegments 
     ? formatContextUsage(contextUsage.usedTokens, contextUsage.contextWindowTokens)
     : '';
 
-  // Width accounting: padding(2) + ' counts '(counts + 2) + context segment
-  // with its ' │ ' separator(3). Whatever remains is the worker budget.
+  // Width accounting: padding(2) + context segment with its ' … │'
+  // wrapper(3) + ' counts '(counts + 2). Whatever remains is the worker budget.
   const contextWidth = contextText ? contextText.length + 3 : 0;
   const workerBudget = Math.max(0, terminalCols - 4 - countsText.length - contextWidth);
 
@@ -170,9 +170,13 @@ export function StatusBar({
   }), [pendingTasks.length, activeWorkers.length, workerRows, contextUsage, stdout?.columns]);
 
   // The row is always rendered — even with no tasks it shows "idle" plus the
-  // persistent context segment, so the layout never collapses.
+  // persistent context segment, so the layout never collapses. The context
+  // segment leads the line: " ctx … │ counts  workers".
   return (
     <Box paddingX={1} marginTop={0}>
+      {segments.contextText ? (
+        <Text dimColor color={segments.contextColor}> {segments.contextText} │</Text>
+      ) : null}
       <Text dimColor> {segments.countsText} </Text>
       {segments.workerTexts.map((text, i) => (
         <React.Fragment key={workerRows[i].workerId}>
@@ -180,9 +184,6 @@ export function StatusBar({
           <Text dimColor color="blue">{text}</Text>
         </React.Fragment>
       ))}
-      {segments.contextText ? (
-        <Text dimColor color={segments.contextColor}> │ {segments.contextText}</Text>
-      ) : null}
     </Box>
   );
 }
