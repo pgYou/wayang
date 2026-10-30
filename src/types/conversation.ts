@@ -42,6 +42,12 @@ export enum ESignalSubtype {
   PermissionRequest = 'permission_request',
   /** Unfinished tasks carried over from a previous session (sessionless resume). */
   PreviousSessionTasks = 'previous_session_tasks',
+  /** Worker asking the controller a blocking question mid-task. */
+  WorkerInquiry = 'worker_inquiry',
+  /** A pending worker inquiry timed out; the worker continued on its own. */
+  InquiryTimeout = 'inquiry_timeout',
+  /** Controller messages the worker never read before its run ended. */
+  MessageUndelivered = 'message_undelivered',
 }
 
 // --- Tool record types ---
@@ -235,6 +241,17 @@ export interface PermissionRequestMeta {
   description?: string;
 }
 
+/**
+ * Structured worker-inquiry data attached to `worker_inquiry` signal entries
+ * (mirrors PermissionRequestMeta): the TUI renders the question from it and
+ * matches a later respond_inquiry call by inquiryId.
+ */
+export interface WorkerInquiryMeta {
+  inquiryId: string;
+  question: string;
+  context?: string;
+}
+
 /** Worker signal entry — progress, completion, or failure notification. */
 export interface SignalEntry extends ConversationEntryEnvelope {
   type: EEntryType.Signal;
@@ -255,6 +272,8 @@ export interface SignalEntry extends ConversationEntryEnvelope {
   content: string;
   /** Present on permission_request entries — structured data for summary rendering. */
   permissionMeta?: PermissionRequestMeta;
+  /** Present on worker_inquiry entries — structured data for summary rendering. */
+  inquiryMeta?: WorkerInquiryMeta;
 }
 
 export interface SystemEntry extends ConversationEntryEnvelope {

@@ -14,8 +14,9 @@
  * for puppet workers.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage, SDKUserMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import { query, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage, SDKUserMessage, PermissionResult, SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 import type { WorkerResult, TaskDetail, WorkerConfig, PermissionRequestSignalPayload } from '@/types/index';
 import type { IWorkerInstance } from '@/types/worker';
 import type { Logger } from '@/infra/logger';
@@ -32,6 +33,9 @@ import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import type { SkillRegistry } from '@/services/skills/registry';
 
+/** Stream-close timeout for SDK MCP calls — must exceed the 5-min inquiry timeout. */
+const INQUIRY_STREAM_CLOSE_TIMEOUT_MS = 360_000;
+
 export class ClaudeCodeWorker implements IWorkerInstance {
   readonly id: string;
   private readonly config: WorkerConfig;
@@ -44,6 +48,17 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   // --- Controller messaging via streamInput ---
   private _messageQueue: string[] = [];
   private _messageResolve: ((value: void) => void) | null = null;
+  /** Active SDK query — interrupted to deliver controller messages promptly. */
+  private _activeQuery: { interrupt(): Promise<void> } | null = null;
+  /**
+   * Interrupt requested while a permission was pending — delivered right
+   * after the permission settles (interrupting mid-permission is unproven
+   * SDK territory; see docs/develop/v0.6-design.md §3).
+   */
+  private _interruptQueued = false;
+
+  // --- ask_controller via in-process SDK MCP server ---
+  private _askController: ((question: string, context?: string) => Promise<string>) | null = null;
 
   // --- Permission control via canUseTool ---
   private readonly _pendingPermissions = new Map<string, {
@@ -64,6 +79,11 @@ export class ClaudeCodeWorker implements IWorkerInstance {
           ? { behavior: 'allow' }
           : { behavior: 'deny', message: reason ?? 'Denied by controller' },
       );
+      // A controller message may be waiting for the permission to settle.
+      if (this._interruptQueued && this._pendingPermissions.size === 0) {
+        this._interruptQueued = false;
+        this.requestInterrupt();
+      }
       return true;
     },
     cleanup: () => {
@@ -169,9 +189,24 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         maxTurns: this.config.maxTurns ?? 1000,
         permissionMode: 'bypassPermissions' as const,
         abortController: this.abortController,
+        // SDK MCP calls (ask_controller blocks up to 5 min waiting for the
+        // controller) far exceed the default 60s stream-close timeout — raise
+        // it (see sdk.d.ts createSdkMcpServer note).
+        env: {
+          CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: String(INQUIRY_STREAM_CLOSE_TIMEOUT_MS),
+        },
       };
       if (this.config.cliPath) {
         options.pathToClaudeCodeExecutable = this.config.cliPath;
+      }
+      if (this._askController) {
+        options.mcpServers = {
+          wayang: createSdkMcpServer({
+            name: 'wayang',
+            version: '1.0.0',
+            tools: [this.buildAskControllerMcpTool()],
+          }),
+        };
       }
 
       // Wire canUseTool for permission control if signal context is set
@@ -184,10 +219,15 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         prompt: this.buildPromptIterable(task.description),
         options,
       });
+      this._activeQuery = stream;
 
-      for await (const message of stream) {
-        if (this.abortController.signal.aborted) break;
-        this.processStreamMessage(message, onProgress);
+      try {
+        for await (const message of stream) {
+          if (this.abortController.signal.aborted) break;
+          this.processStreamMessage(message, onProgress);
+        }
+      } finally {
+        this._activeQuery = null;
       }
     } catch (err: any) {
       this.logger.error({ err, taskId: task.id }, 'ClaudeCodeWorker query error');
@@ -207,9 +247,11 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       };
     }
 
-    // Cleanup
+    // Cleanup. Pending permission requests are denied; the message queue is
+    // deliberately NOT flushed — the engine reports leftovers as
+    // message_undelivered, and an idle (multi-stage) worker may still read
+    // them at its next stage.
     this.permissionHandler.cleanup();
-    this.flushMessageQueue();
 
     // Write final result entry. Point-in-time event: startedAt/endedAt share
     // the recording moment.
@@ -278,7 +320,40 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       this._messageResolve();
       this._messageResolve = null;
     }
+    // Prompt delivery: interrupt the current turn so the SDK comes back for
+    // the next streamInput item right away ('immediate', the default). While
+    // a permission is pending, hold off — see requestInterrupt.
+    if ((this.config.interruptOnMessage ?? 'immediate') === 'immediate') {
+      this.requestInterrupt();
+    }
     this.logger.info({ workerId: this.id }, 'Controller message accepted');
+  }
+
+  /** Unread controller messages (non-destructive) — engine reports these when the run ends. */
+  pendingMessages(): string[] {
+    return [...this._messageQueue];
+  }
+
+  /** Interrupt the active query unless a permission is pending (queued until it settles). */
+  private requestInterrupt(): void {
+    if (this.abortController.signal.aborted || !this._activeQuery) return;
+    if (this._pendingPermissions.size > 0) {
+      this._interruptQueued = true;
+      return;
+    }
+    // Defensive: the query object may lack interrupt() (mocks, older SDKs).
+    if (typeof this._activeQuery.interrupt !== 'function') return;
+    this._activeQuery.interrupt().catch((err) => {
+      this.logger.warn({ workerId: this.id, err: String(err) }, 'interrupt() failed');
+    });
+  }
+
+  /**
+   * Provide the engine-backed ask_controller implementation. Once set, the
+   * worker exposes it to Claude Code as an in-process SDK MCP tool.
+   */
+  setInquirySupport(ask: (question: string, context?: string) => Promise<string>): void {
+    this._askController = ask;
   }
 
   // --- Permission control via canUseTool ---
@@ -335,13 +410,20 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         let sentInitial = false;
         return {
           next: async () => {
-            // First yield: the initial task prompt
+            // First yield: the initial task prompt. Messages that arrived
+            // while the worker was idle (between stages) are folded in here —
+            // otherwise they would wait out the new task's whole first turn.
             if (!sentInitial) {
               sentInitial = true;
+              const leftovers = this._messageQueue.splice(0, this._messageQueue.length);
+              const leftoverText = leftovers.map(m => `[Controller message] ${m}`).join('\n\n');
+              const content = leftoverText
+                ? `${buildThirdPartyPrompt(this.skills)}${initialPrompt}\n\n${leftoverText}`
+                : `${buildThirdPartyPrompt(this.skills)}${initialPrompt}`;
               return {
                 value: {
                   type: 'user' as const,
-                  message: { role: 'user' as const, content: `${buildThirdPartyPrompt(this.skills)}${initialPrompt}` },
+                  message: { role: 'user' as const, content },
                   parent_tool_use_id: null,
                 } satisfies SDKUserMessage,
                 done: false,
@@ -367,6 +449,31 @@ export class ClaudeCodeWorker implements IWorkerInstance {
             };
           },
         };
+      },
+    };
+  }
+
+  /**
+   * ask_controller as an in-process SDK MCP tool: visible in Claude Code's
+   * real tool catalog (no prompt-convention virtual tools); the handler runs
+   * host-side and blocks on the engine's blocking-request registry.
+   */
+  private buildAskControllerMcpTool(): SdkMcpToolDefinition<any> {
+    return {
+      name: 'ask_controller',
+      description:
+        'Ask the controller a question and WAIT for the answer. Use ONLY when blocked: ' +
+        'execution cannot continue as instructed, or continuing would risk significant wasted work. ' +
+        'Do NOT use it for decisions you can make yourself.',
+      inputSchema: {
+        question: z.string().max(500).describe('The specific question you need answered to proceed'),
+        context: z.string().max(1000).optional().describe('What you tried and where you are stuck'),
+      },
+      handler: async (args: { [x: string]: unknown }) => {
+        const question = String(args.question ?? '');
+        const context = args.context !== undefined ? String(args.context) : undefined;
+        const answer = await this._askController!(question, context);
+        return { content: [{ type: 'text' as const, text: answer }] };
       },
     };
   }
@@ -436,8 +543,9 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   }
 
   private handleResultMessage(msg: SDKResultSuccess | SDKResultError): void {
-    // Cancel any pending progress — result supersedes it
-    this.flushMessageQueue();
+    // Cancel any pending progress — result supersedes it. The message queue
+    // is NOT flushed here: leftover controller messages are reported by the
+    // engine (message_undelivered) instead of vanishing silently.
     if (this._progressTimer) {
       clearTimeout(this._progressTimer);
       this._progressTimer = null;

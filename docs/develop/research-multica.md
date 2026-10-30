@@ -198,4 +198,4 @@ workspaces/<slug>/
 - Multica 官方文档 — Skills: https://www.multica.ai/docs/skills
 - Multica 官方文档 — Project Resources: https://www.multica.ai/docs/project-resources
 - Multica GitHub: https://github.com/multica-ai/multica
-- 本仓库相关文档：`docs/long-running-design.md`
+- 本仓库相关文档：`docs/develop/long-running-design.md`

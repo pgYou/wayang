@@ -2,7 +2,7 @@
 
 export type SignalStatus = 'unread' | 'read' | 'discarded';
 export type SignalSource = 'user' | 'worker' | 'system';
-export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'task_cancelled' | 'heartbeat' | 'permission_request' | 'previous_session_tasks';
+export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'task_cancelled' | 'heartbeat' | 'permission_request' | 'worker_inquiry' | 'inquiry_timeout' | 'message_undelivered' | 'previous_session_tasks';
 
 /** User input signal payload. */
 export interface InputSignalPayload {
@@ -119,6 +119,50 @@ export interface PermissionRequestSignalPayload {
   description: string;
 }
 
+/** Worker asking the controller a blocking question mid-task (ask_controller). */
+export interface WorkerInquirySignalPayload {
+  /** Unique ID for matching question → response. */
+  inquiryId: string;
+  workerId: string;
+  taskId: string;
+  /** Task title for display context. */
+  taskTitle: string;
+  /** Worker type label (e.g. 'puppet', 'claude-code'). */
+  workerType?: string;
+  /** Display emoji for the worker type. */
+  emoji?: string;
+  /** The question the worker needs answered to proceed. */
+  question: string;
+  /** Optional context: what was tried / where execution is stuck. */
+  context?: string;
+}
+
+/** A pending worker inquiry timed out — the worker continued on its own judgment. */
+export interface InquiryTimeoutSignalPayload {
+  inquiryId: string;
+  workerId: string;
+  taskId: string;
+  taskTitle: string;
+  workerType?: string;
+  emoji?: string;
+  /** The original question, for display. */
+  question: string;
+}
+
+/** Messages the controller sent that the worker never read before its run ended. */
+export interface MessageUndeliveredSignalPayload {
+  workerId: string;
+  /** Task the worker was running, if resolvable at emission time. */
+  taskId?: string;
+  taskTitle?: string;
+  workerType?: string;
+  emoji?: string;
+  /** Undelivered message contents. */
+  messages: string[];
+  /** Why they were not delivered. */
+  reason: 'task_finished' | 'worker_disposed';
+}
+
 /** Snapshot of an unfinished task carried over from a previous session. */
 export interface PreviousSessionTask {
   taskId: string;
@@ -152,6 +196,9 @@ export type SignalPayloadMap = {
   task_cancelled: TaskCancelledSignalPayload;
   heartbeat: HeartbeatSignalPayload;
   permission_request: PermissionRequestSignalPayload;
+  worker_inquiry: WorkerInquirySignalPayload;
+  inquiry_timeout: InquiryTimeoutSignalPayload;
+  message_undelivered: MessageUndeliveredSignalPayload;
   previous_session_tasks: PreviousSessionTasksSignalPayload;
 };
 

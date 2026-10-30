@@ -21,6 +21,7 @@ import { failTool } from './fail';
 import { updateProgressTool } from './update-progress';
 import { chatWorkerTool } from './chat-worker';
 import { respondPermissionTool } from './respond-permission';
+import { respondInquiryTool } from './respond-inquiry';
 import { useSkillTool } from './use-skill';
 import type { SkillRegistry } from '@/services/skills/registry';
 
@@ -53,9 +54,11 @@ export interface ControllerToolDeps {
   /** Ask the user a structured question and wait for the answer. */
   inquire: (question: InquireQuestion) => Promise<string>;
   /** Send a message to a running worker's inbox. */
-  sendMessageToWorker: (workerId: string, message: string) => boolean;
+  sendMessageToWorker: (workerId: string, message: string) => import('@/services/task-execute-engine').WorkerMessageDelivery;
   /** Respond to a worker's permission request. */
   resolvePermission: (requestId: string, approved: boolean, reason?: string) => boolean;
+  /** Answer a worker's pending ask_controller question. */
+  resolveInquiry: (inquiryId: string, answer: string) => import('./respond-inquiry').RespondInquiryStatus;
   /** Shared skill registry backing the use_skill tool. */
   registry: SkillRegistry;
   /** Dispose a worker by id (running or idle). Returns true if found. */
@@ -111,6 +114,9 @@ export function createControllerTools(deps: ControllerToolDeps) {
     }),
     respond_permission: respondPermissionTool({
       respondPermission: deps.resolvePermission,
+    }),
+    respond_inquiry: respondInquiryTool({
+      respondInquiry: deps.resolveInquiry,
     }),
     use_skill: useSkillTool({ registry: deps.registry }),
     dispose_worker: disposeWorkerTool({ disposeWorker: deps.disposeWorker }),

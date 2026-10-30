@@ -1,9 +1,10 @@
 import { BaseAgent } from './base-agent';
 import { ContextManager } from './context-manager';
 import { WorkerState, type InboxMessage } from '@/services/agents/worker-state';
-import { buildAssistantEntry } from './utils/build-assistant-entry';
-import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from './utils/entry-envelope';
-import { ToolCallRecorder, recordToolCalls } from './utils/tool-call-recorder';
+import { buildAssistantEntry } from '@/services/agents/utils/build-assistant-entry';
+import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from '@/services/agents/utils/entry-envelope';
+import { ToolCallRecorder, recordToolCalls } from '@/services/agents/utils/tool-call-recorder';
+import { controllerMessageContent, createInboxInjection } from '@/services/agents/utils/inbox-injection';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import type { WorkerResult, TaskDetail, ProviderConfig, ToolChoice, IWorkerInstance } from '@/types/index';
@@ -102,13 +103,29 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       message: { role: 'user', content: task.description },
     } satisfies ConversationEntry, turnEnv));
 
+    // Multi-stage opening: unread controller messages parked in the inbox
+    // during a previous stage are written into the conversation now —
+    // getMessages() below rebuilds from it, so they reach the model at once.
+    for (const m of this.drainInbox()) {
+      this.appendControllerMessageEntry(m.content, turnEnv);
+    }
+
+    // Controller-message injection (see utils/inbox-injection): before each
+    // LLM step, newly arrived inbox messages become `[Controller message]`
+    // user messages AND conversation entries (the entry makes them survive
+    // context rebuilds and future stages); the hook re-appends everything
+    // injected so far so instructions stay in context.
+    const injection = createInboxInjection({
+      drainInbox: () => this.drainInbox(),
+      onInject: (content) => this.appendControllerMessageEntry(content, turnEnv),
+    });
+
     // Add internal tools for controller communication; wrap everything with
     // the recorder so per-call status/timing lands on the step entries.
     const allTools = recordToolCalls({
       ...tools,
-      check_controller_messages: checkControllerMessagesTool({
-        drainInbox: () => this.drainInbox(),
-      }),
+      // Deprecated stub — messages arrive via prepareStep injection now.
+      check_controller_messages: checkControllerMessagesTool(),
     }, this.recorder);
 
     // streamLoop handles abort internally — collectLoop returns cleanly
@@ -119,6 +136,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       toolChoice: this.toolChoice ?? 'auto',
       maxSteps: WORKER_AGENT_MAX_STEP,
       stopTools: ['done', 'fail'],
+      prepareStep: injection.prepareStep,
       onStreamError: (err) => {
         this.logger.error({ workerId: this.id, err }, 'LLM stream error');
       },
@@ -217,6 +235,11 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     this.logger.info({ workerId: this.id }, 'Controller message accepted');
   }
 
+  /** Unread controller messages (non-destructive) — engine reports these when the run ends. */
+  pendingMessages(): string[] {
+    return (this.state.get<InboxMessage[]>('inbox') ?? []).map(m => m.content);
+  }
+
   /** Atomically drain and return all inbox messages. */
   private drainInbox(): InboxMessage[] {
     const messages = this.state.get<InboxMessage[]>('inbox') ?? [];
@@ -224,5 +247,25 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       this.state.set('inbox', []);
     }
     return messages;
+  }
+
+  /**
+   * Write a controller message into the conversation as a User entry. This is
+   * what makes injected instructions survive context rebuilds (getMessages()
+   * derives from conversation) and future multi-stage runs.
+   */
+  private appendControllerMessageEntry(content: string, turnEnv: TurnEnvelope): void {
+    const ts = nowISO();
+    this.state.append('conversation', applyTurnEnvelope({
+      type: EEntryType.User,
+      uuid: generateId('u'),
+      parentUuid: null,
+      sessionId: this.ctx.sessionId,
+      timestamp: ts,
+      actor: { kind: 'controller', id: 'controller' },
+      // Delivery of the message completes at write time.
+      endedAt: ts,
+      message: { role: 'user', content: controllerMessageContent(content) },
+    } satisfies ConversationEntry, turnEnv));
   }
 }

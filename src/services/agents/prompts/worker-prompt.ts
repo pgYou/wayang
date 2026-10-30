@@ -103,11 +103,15 @@ const HARD_CONSTRAINTS = section('Hard constraints',
 - Accessing files outside the workspace directory requires controller approval. Use relative paths for workspace files.`);
 
 const CONTROLLER_COMMUNICATION = section('Controller communication',
-  `## Checking for messages
+  `## Controller messages
 
-The controller may send you messages during execution. Call \`check_controller_messages\` to read them.
-Check at the start of each major phase and before long-running operations.
-If there are no messages, it returns "No messages." — it is cheap to call.
+The controller may send you additional instructions while you execute. They arrive automatically as user messages starting with "[Controller message]" — treat them as authoritative updates to your task instructions. There is nothing to poll; do not call check_controller_messages (deprecated).
+
+## Asking the controller
+
+If you are BLOCKED — execution cannot continue as instructed (contradiction, missing resource, unexpected state), or continuing would risk significant wasted work — call \`ask_controller\` with a concise, self-contained question and wait for the answer.
+
+Do NOT use it for decisions you can make yourself. You are trusted to choose approaches, filenames, and implementation details autonomously — asking about those just wastes time. Report such choices via update_progress or done instead.
 
 ## Permission system
 

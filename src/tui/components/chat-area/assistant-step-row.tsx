@@ -2,7 +2,7 @@ import { Box, Text } from 'ink';
 import type { DisplayItem, DisplaySection } from '@/tui/types/display-item';
 import { theme } from '@/tui/theme';
 import { summarizePermissionResolution } from '@/tui/utils/permission-summary';
-import { summarizeAddTask, summarizeWorkerMessage, type ActionOutcome } from '@/tui/utils/controller-action-summary';
+import { summarizeAddTask, summarizeInquiryResolution, summarizeWorkerMessage, type ActionOutcome } from '@/tui/utils/controller-action-summary';
 import { EMPTY_CHAT_LOOKUPS, formatWorkerTag, type ChatLookups } from '@/tui/utils/chat-lookups';
 import { TOOL_DETAIL_MAX_LENGTH, LONG_MSG_MAX_LENGTH } from './constants';
 
@@ -11,7 +11,7 @@ import { TOOL_DETAIL_MAX_LENGTH, LONG_MSG_MAX_LENGTH } from './constants';
  * folded into that row (approved / delivered / dispatched, or an error line),
  * so the generic "← tool: result" line is not shown for them.
  */
-const SUMMARIZED_TOOLS = new Set(['respond_permission', 'chat_worker', 'add_task']);
+const SUMMARIZED_TOOLS = new Set(['respond_permission', 'respond_inquiry', 'chat_worker', 'add_task']);
 
 /** Width available to secondary lines (indented under the row text). */
 const SECONDARY_WIDTH = TOOL_DETAIL_MAX_LENGTH - theme.secondary.indent;
@@ -65,6 +65,8 @@ export function AssistantStepRow({ item, lookups = EMPTY_CHAT_LOOKUPS }: { item:
             switch (sec.toolName) {
               case 'respond_permission':
                 return <PermissionResolutionRow key={key} section={sec} result={result} lookups={lookups} />;
+              case 'respond_inquiry':
+                return <InquiryResolutionRow key={key} section={sec} result={result} lookups={lookups} />;
               case 'chat_worker':
                 return <WorkerMessageRow key={key} section={sec} result={result} lookups={lookups} />;
               case 'add_task':
@@ -221,6 +223,41 @@ function PermissionResolutionRow({ section, result, lookups }: {
 }
 
 // ---------------------------------------------------------------------------
+// respond_inquiry
+// ---------------------------------------------------------------------------
+
+/**
+ * respond_inquiry tool call — "✔ 已答复 #7xvt", with the asking worker on a
+ * secondary line. The answer text stays in the conversation, not the row.
+ */
+function InquiryResolutionRow({ section, result, lookups }: {
+  section: DisplaySection;
+  result?: DisplaySection;
+  lookups: ChatLookups;
+}) {
+  const summary = summarizeInquiryResolution(
+    section.text,
+    result ? { text: result.text, isError: result.isError } : undefined,
+  );
+  const inquiry = summary.inquiryId ? lookups.inquiries.get(summary.inquiryId) : undefined;
+  const workerTag = inquiry?.worker ? formatWorkerTag(inquiry.worker) : '';
+  const ok = summary.outcome !== 'failed';
+
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Text color={ok ? theme.inquiry.answeredColor : theme.action.failColor} bold>
+          {ok ? theme.inquiry.answeredPrefix : theme.action.failMark} {ok ? '已答复' : '答复失败'}
+        </Text>
+        {summary.inquiryShortId && <Text color={theme.secondary.color}> #{summary.inquiryShortId}</Text>}
+      </Box>
+      {workerTag && <SecondaryLine>{workerTag}</SecondaryLine>}
+      {summary.failure && <SecondaryLine color={theme.action.failColor}>{summary.failure}</SecondaryLine>}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // chat_worker
 // ---------------------------------------------------------------------------
 
@@ -247,7 +284,7 @@ function WorkerMessageRow({ section, result, lookups }: {
       <Box>
         <Text color={iconColor} bold>{theme.action.messageIcon} 发送给</Text>
         <Text> {target}</Text>
-        <OutcomeMark outcome={summary.outcome} ok="已送达" failed="未送达" />
+        <OutcomeMark outcome={summary.outcome} ok={summary.delivery === 'queued' ? '已排队' : '已送达'} failed="未送达" />
       </Box>
       <PreviewLines lines={summary.lines} hidden={summary.hiddenLines} />
       {summary.failure && <SecondaryLine color={theme.action.failColor}>{summary.failure}</SecondaryLine>}

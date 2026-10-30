@@ -133,6 +133,14 @@ export async function runWayangServer(
     return { resolved };
   });
 
+  rpc.register(METHOD.RESPOND_WORKER_INQUIRY, (params) => {
+    const status = supervisor.engine.resolveInquiry(
+      requiredString(params, 'inquiryId'),
+      requiredString(params, 'answer'),
+    );
+    return { status };
+  });
+
   rpc.register(METHOD.CHAT_WORKER, (params) => {
     supervisor.engine.sendMessageToWorker(requiredString(params, 'workerId'), requiredString(params, 'message'));
     return {};

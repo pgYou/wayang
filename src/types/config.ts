@@ -54,6 +54,13 @@ export interface WorkerConfig {
   maxTurns?: number;
   /** Path to the worker CLI executable. Defaults to auto-detect. */
   cliPath?: string;
+  /**
+   * When the controller sends a message to a RUNNING claude-code worker:
+   * 'immediate' (default) interrupts the current turn so the message is read
+   * right away (an in-flight tool call is cut off); 'turn-end' waits for the
+   * natural turn boundary (old behavior — potentially long delay).
+   */
+  interruptOnMessage?: 'immediate' | 'turn-end';
 }
 
 export interface WayangConfig {

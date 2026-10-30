@@ -65,6 +65,8 @@ export interface WorkerMessageSummary {
   outcome: ActionOutcome;
   /** Failure note (tool error without the "[ERROR]" marker) — empty when ok. */
   failure: string;
+  /** Read timing, parsed from the result ("queued" = read at a turn/stage boundary). */
+  delivery?: 'delivered' | 'queued';
 }
 
 /**
@@ -90,6 +92,8 @@ export function summarizeWorkerMessage(
     hiddenLines: hidden,
     outcome: result === undefined ? 'pending' : failed ? 'failed' : 'ok',
     failure: failed ? failureText(result!.text, width) : '',
+    ...(result !== undefined && !failed && /\bqueued\b/.test(result.text) && { delivery: 'queued' as const }),
+    ...(result !== undefined && !failed && /\bdelivered\b/.test(result.text) && { delivery: 'delivered' as const }),
   };
 }
 
@@ -158,5 +162,40 @@ export function summarizeAddTask(
     hiddenLines: hidden,
     outcome,
     failure,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// respond_inquiry
+// ---------------------------------------------------------------------------
+
+export interface InquiryResolutionSummary {
+  /** inquiryId from the tool args, when parseable. */
+  inquiryId?: string;
+  /** Short handle of the inquiry id ("#xxxx"), matching the question row. */
+  inquiryShortId?: string;
+  outcome: ActionOutcome;
+  /** Failure note (tool error without the "[ERROR]" marker) — empty when ok. */
+  failure: string;
+}
+
+/**
+ * Summarize a `respond_inquiry` call. The answer itself is long-form text and
+ * stays in the conversation; the row shows the outcome and the #xxxx handle
+ * of the question it answers.
+ */
+export function summarizeInquiryResolution(
+  argsJson: string,
+  result?: ActionResult,
+): InquiryResolutionSummary {
+  const args = parseArgs(argsJson);
+  const inquiryId = args ? str(args.inquiryId) : undefined;
+
+  const failed = result !== undefined && (result.isError === true || /^\[ERROR\]/.test(result.text));
+  return {
+    ...(inquiryId && { inquiryId }),
+    ...(inquiryId && { inquiryShortId: shortId(inquiryId) }),
+    outcome: result === undefined ? 'pending' : failed ? 'failed' : 'ok',
+    failure: failed ? failureText(result!.text, 80) : '',
   };
 }

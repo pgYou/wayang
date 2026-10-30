@@ -9,7 +9,7 @@
  * Built from the full item list (read + unread). Derived view data only —
  * never persisted.
  */
-import type { PermissionRequestMeta } from '@/types/conversation';
+import type { PermissionRequestMeta, WorkerInquiryMeta } from '@/types/conversation';
 import type { DisplayItem } from '@/tui/types/display-item';
 
 /** Display context of one worker, collected from its signal rows. */
@@ -27,9 +27,17 @@ export interface PermissionRequestContext {
   worker?: WorkerContext;
 }
 
+/** A worker inquiry plus the worker that raised it. */
+export interface WorkerInquiryContext {
+  meta: WorkerInquiryMeta;
+  worker?: WorkerContext;
+}
+
 export interface ChatLookups {
   /** requestId → original permission request. */
   permissionRequests: Map<string, PermissionRequestContext>;
+  /** inquiryId → original worker inquiry. */
+  inquiries: Map<string, WorkerInquiryContext>;
   /** workerId → worker display context. */
   workers: Map<string, WorkerContext>;
   /** workerType → display emoji (first one seen). */
@@ -38,6 +46,7 @@ export interface ChatLookups {
 
 export const EMPTY_CHAT_LOOKUPS: ChatLookups = {
   permissionRequests: new Map(),
+  inquiries: new Map(),
   workers: new Map(),
   workerTypeEmoji: new Map(),
 };
@@ -45,6 +54,7 @@ export const EMPTY_CHAT_LOOKUPS: ChatLookups = {
 /** Build the lookups from the chat's display items. */
 export function buildChatLookups(items: readonly DisplayItem[]): ChatLookups {
   const permissionRequests = new Map<string, PermissionRequestContext>();
+  const inquiries = new Map<string, WorkerInquiryContext>();
   const workers = new Map<string, WorkerContext>();
   const workerTypeEmoji = new Map<string, string>();
 
@@ -73,9 +83,14 @@ export function buildChatLookups(items: readonly DisplayItem[]): ChatLookups {
     if (item.permissionMeta && requestId) {
       permissionRequests.set(requestId, { meta: item.permissionMeta, ...(worker && { worker }) });
     }
+
+    const inquiryId = item.inquiryMeta?.inquiryId;
+    if (item.inquiryMeta && inquiryId) {
+      inquiries.set(inquiryId, { meta: item.inquiryMeta, ...(worker && { worker }) });
+    }
   }
 
-  return { permissionRequests, workers, workerTypeEmoji };
+  return { permissionRequests, inquiries, workers, workerTypeEmoji };
 }
 
 /**

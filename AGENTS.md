@@ -86,6 +86,7 @@ Config file (`~/.wayang.config.json` or `--config`): defines providers, controll
 - If the user has already explained the architecture, **restate your understanding** before coding to confirm alignment.
 - **Do not assume fixed phase counts or agent-specific patterns** unless the user explicitly states them. Ask first.
 - If the user interrupts or rejects your approach, **stop immediately, ask for clarification, and restart** — do not iterate on the same wrong direction.
+- **Before designing custom machinery around a library, survey its existing capability surface.** Read the installed package's `.d.ts` and, when semantics matter, the bundled implementation under `node_modules/<pkg>/dist` — they are the source of truth, not memory. A restructure or hand-rolled loop is only justified after confirming no built-in hook or option covers the need (e.g. AI SDK `prepareStep` for per-step message injection replaces a custom step loop; claude-agent-sdk's `createSdkMcpServer` for custom worker tools replaces `canUseTool` interception of virtual tool names).
 
 ## Testing Conventions
 
