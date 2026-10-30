@@ -19,6 +19,8 @@ const baseToken = {
     warning: 'yellow',
     /** Error / danger states. */
     error: 'red',
+    /** Informational accent — controller actions on workers (dispatch, message). */
+    info: 'cyan',
     /** Borders and structural lines. */
     border: 'gray',
   },
@@ -84,6 +86,23 @@ export const theme = {
     pendingColor: baseToken.color.warning,
     approvedColor: baseToken.color.success,
     deniedColor: baseToken.color.error,
+  },
+  /** Controller actions on workers: dispatch a task, send a message. */
+  action: {
+    dispatchIcon: '▶', // ▶ new task dispatched
+    reuseIcon: '↻', // ↻ task assigned to an existing idle worker
+    messageIcon: '✉', // ✉ message sent to a worker
+    color: baseToken.color.info,
+    okMark: '✔',
+    failMark: '✘',
+    okColor: baseToken.color.success,
+    failColor: baseToken.color.error,
+  },
+  /** Secondary lines under a row (context tags, previews). */
+  secondary: {
+    color: baseToken.color.textSubtle,
+    /** Indent (columns) aligning secondary lines under the row text. */
+    indent: 4,
   },
   meta: {
     prefix: baseToken.icon.dot,

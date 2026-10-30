@@ -4,91 +4,41 @@
  * Permission requests arrive as `permission_request` signal entries carrying
  * `permissionMeta` (tool name + args); resolutions are the controller's
  * `respond_permission` tool calls. Both are rendered as one informative line
- * (plus an optional indented detail line) instead of flattened text or raw
- * JSON. The raw JSON stays in the conversation entries — these summaries are
- * a display layer only.
+ * (plus optional secondary lines) instead of flattened text or raw JSON. The
+ * raw JSON stays in the conversation entries — these summaries are a display
+ * layer only.
+ *
+ * Summaries expose structured parts (tool name, target, short request id) so
+ * rows can style each part separately; `label` remains as a plain-text
+ * fallback of the whole line.
  */
 import type { PermissionRequestMeta, ToolCallRecord } from '@/types/conversation';
+import {
+  collapseWhitespace,
+  fitWithSuffix,
+  shortId,
+  stringWidth,
+  truncateToWidth,
+} from './text-width';
 
 /** Lifecycle of a permission flow item. */
 export type PermissionSummaryState = 'pending' | 'approved' | 'denied';
 
 /** Summary of one permission request / resolution row. */
 export interface PermissionSummary {
-  /** Main one-line summary (no status icon — the theme supplies it). */
+  /** Plain-text one-line summary (no status icon — the theme supplies it). */
   label: string;
-  /** Optional indented second line with extra context (description / reason). */
+  /** Optional secondary line with extra context (description / error). */
   detail: string;
   state: PermissionSummaryState;
-}
-
-// ---------------------------------------------------------------------------
-// Width helpers — no shared display-width util exists in the TUI yet, so the
-// East-Asian-width approximation lives here.
-// ---------------------------------------------------------------------------
-
-/** Display width of one code point: CJK/fullwidth = 2, combining marks = 0, else 1. */
-function charWidth(cp: number): number {
-  if (cp >= 0x0300 && cp <= 0x036f) return 0; // combining diacritics
-  if (
-    (cp >= 0x1100 && cp <= 0x115f) // Hangul Jamo
-    || (cp >= 0x2e80 && cp <= 0xa4cf) // CJK radicals .. Yi syllables
-    || (cp >= 0xa960 && cp <= 0xa97f) // Hangul Jamo Extended-A
-    || (cp >= 0xac00 && cp <= 0xd7a3) // Hangul syllables
-    || (cp >= 0xf900 && cp <= 0xfaff) // CJK compatibility ideographs
-    || (cp >= 0xfe10 && cp <= 0xfe19) // vertical forms
-    || (cp >= 0xfe30 && cp <= 0xfe6f) // CJK compatibility forms
-    || (cp >= 0xff00 && cp <= 0xff60) // fullwidth forms
-    || (cp >= 0xffe0 && cp <= 0xffe6) // fullwidth signs
-    || (cp >= 0x1f300 && cp <= 0x1faff) // emoji (approximation)
-    || (cp >= 0x20000 && cp <= 0x3fffd) // CJK Extension B+
-  ) {
-    return 2;
-  }
-  return 1;
-}
-
-/** Total display width of a string, counting CJK/fullwidth as 2 columns. */
-function stringWidth(s: string): number {
-  let w = 0;
-  for (const ch of s) {
-    w += charWidth(ch.codePointAt(0) ?? 0);
-  }
-  return w;
-}
-
-/** Hard-truncate to `maxWidth` display columns, appending an ellipsis when cut. */
-function truncateToWidth(s: string, maxWidth: number): string {
-  if (maxWidth <= 0) return '';
-  if (stringWidth(s) <= maxWidth) return s;
-  const limit = maxWidth - 1; // reserve one column for the ellipsis
-  let w = 0;
-  let out = '';
-  for (const ch of s) {
-    const cw = charWidth(ch.codePointAt(0) ?? 0);
-    if (w + cw > limit) break;
-    out += ch;
-    w += cw;
-  }
-  return out + '…';
-}
-
-/** Collapse runs of whitespace (incl. newlines) to single spaces. */
-function collapseWhitespace(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Truncate `body` so that `body + suffix` fits within `budget` columns,
- * keeping the suffix intact (e.g. the "(N 行)" note survives truncation).
- */
-function fitWithSuffix(body: string, suffix: string, budget: number): string {
-  const bodyBudget = budget - stringWidth(suffix);
-  if (bodyBudget < 1) {
-    // No room for a body — the suffix alone (possibly truncated).
-    return truncateToWidth(suffix, Math.max(budget, 1));
-  }
-  return truncateToWidth(body, bodyBudget) + suffix;
+  /** Tool the request is about — absent when unknown (unmatched resolution). */
+  toolName?: string;
+  /** Per-tool target fragment (command head, path, …) — empty when none. */
+  target: string;
+  /** Short handle of the request id (last 4 chars), shown as "#xxxx". */
+  requestShortId?: string;
+  /** Denial reason given by the controller (resolution only). */
+  reason?: string;
 }
 
 /** Keep at most the last `maxSegments` path segments of a long path. */
@@ -136,8 +86,9 @@ const READ_ONLY_LABELS: Record<string, string> = {
 /** Max raw-JSON prefix shown for tools without a dedicated template. */
 const UNKNOWN_ARGS_PREFIX = 60;
 
-/** Build the per-tool summary fragment (without the "权限申请 <tool>" prefix). */
-function toolSummary(toolName: string, args: Record<string, unknown>, budget: number): string {
+/** Build the per-tool target fragment (command head, path, …). */
+export function toolTarget(toolName: string, args: Record<string, unknown>, budget: number): string {
+  if (budget < 1) return '';
   // Template lookup is case-insensitive so third-party tool names
   // (e.g. Claude Code's "Bash") hit the same templates.
   const key = toolName.toLowerCase();
@@ -216,25 +167,57 @@ function toolSummary(toolName: string, args: Record<string, unknown>, budget: nu
   }
 }
 
+/** Normalize request args to a plain object. */
+function requestArgs(meta: PermissionRequestMeta): Record<string, unknown> {
+  return (meta.toolArgs && typeof meta.toolArgs === 'object' && !Array.isArray(meta.toolArgs))
+    ? meta.toolArgs
+    : {};
+}
+
+/** "(resolved: /abs/path)" suffix written by the engine's file-tool describer. */
+const RESOLVED_PATH_RE = /^\S+: (.*) \(resolved: (.*)\)$/s;
+
+/**
+ * Extract the part of a request description that adds information beyond the
+ * tool args. The engine/workers generate mechanical descriptions:
+ * - bash: "Execute shell command: <command>" — pure restatement, dropped
+ * - file tools: "<tool>: <path> (resolved: <abs>)" — only the resolved path
+ *   is new, and only when it differs from the raw path (it explains why the
+ *   request was raised: the path resolves outside the workspace)
+ * Any other description is kept as-is (collapsed to one line).
+ */
+export function meaningfulDescription(description: string | undefined): string {
+  if (!description) return '';
+  const text = description.trim();
+  if (/^execute shell command:/i.test(text)) return '';
+  const m = RESOLVED_PATH_RE.exec(text);
+  if (m) {
+    const [, rawPath, resolved] = m;
+    return resolved && resolved !== rawPath ? `解析为 ${resolved}` : '';
+  }
+  return collapseWhitespace(text);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /** Summarize a pending permission request for one-line display. */
 export function summarizePermissionRequest(meta: PermissionRequestMeta, maxWidth: number): PermissionSummary {
-  const toolArgs = (meta.toolArgs && typeof meta.toolArgs === 'object' && !Array.isArray(meta.toolArgs))
-    ? meta.toolArgs
-    : {};
-
   const prefix = `权限申请 ${meta.toolName}`;
   // Budget left for the per-tool fragment after the prefix and its space.
   const budget = maxWidth - stringWidth(prefix) - 1;
-  const fragment = budget >= 1 ? toolSummary(meta.toolName, toolArgs, budget) : '';
-  const label = truncateToWidth(fragment ? `${prefix} ${fragment}` : prefix, maxWidth);
-  const detail = meta.description
-    ? truncateToWidth(collapseWhitespace(meta.description), maxWidth)
-    : '';
-  return { label, detail, state: 'pending' };
+  const target = budget >= 1 ? toolTarget(meta.toolName, requestArgs(meta), budget) : '';
+  const label = truncateToWidth(target ? `${prefix} ${target}` : prefix, maxWidth);
+  const detail = truncateToWidth(meaningfulDescription(meta.description), maxWidth);
+  return {
+    label,
+    detail,
+    state: 'pending',
+    toolName: meta.toolName,
+    target,
+    ...(meta.requestId && { requestShortId: shortId(meta.requestId) }),
+  };
 }
 
 /** Paired tool-result context for a resolution, when one exists. */
@@ -250,11 +233,16 @@ export interface PermissionResolutionResult {
  * tool result (e.g. "Permission granted…", or an "[ERROR] … not found" note)
  * is used as a fallback when the arguments cannot be parsed, and surfaces
  * resolutions that did not take effect.
+ *
+ * `request` is the original request (looked up by requestId) — when given,
+ * the summary carries its tool name and target so the row can say WHAT was
+ * approved instead of only an id.
  */
 export function summarizePermissionResolution(
   tc: ToolCallRecord,
   maxWidth: number,
   result?: PermissionResolutionResult,
+  request?: PermissionRequestMeta,
 ): PermissionSummary {
   let requestId: string | undefined;
   let approved: boolean | undefined;
@@ -274,15 +262,17 @@ export function summarizePermissionResolution(
   }
 
   const isApproved = approved === true;
-  const shortId = requestId ? `@${requestId.slice(-4)}` : '';
+  const requestShortId = requestId ? shortId(requestId) : undefined;
+  const idTag = requestShortId ? `#${requestShortId}` : '';
+  const verb = isApproved ? '已批准' : '已拒绝';
 
-  if (isApproved) {
-    return {
-      label: truncateToWidth(`已批准 ${shortId}`.trim(), maxWidth),
-      // Approved but the request was gone (not found / already resolved).
-      detail: result?.isError ? truncateToWidth(collapseWhitespace(result.text), maxWidth) : '',
-      state: 'approved',
-    };
+  // Target of the original request, fitted after "<verb> <tool> " and " #xxxx".
+  let toolName: string | undefined;
+  let target = '';
+  if (request) {
+    toolName = request.toolName;
+    const reserved = stringWidth(`${verb} ${toolName}  ${idTag}`);
+    target = toolTarget(toolName, requestArgs(request), maxWidth - reserved);
   }
 
   const detailParts: string[] = [];
@@ -291,11 +281,21 @@ export function summarizePermissionResolution(
     detailParts.push(`原始参数: ${tc.arguments.slice(0, UNKNOWN_ARGS_PREFIX)}`);
   }
   if (result?.isError) {
+    // The resolution did not take effect (not found / already resolved).
     detailParts.push(collapseWhitespace(result.text));
   }
+
+  const labelParts = [verb, toolName, target, idTag].filter(Boolean).join(' ');
   return {
-    label: truncateToWidth(`已拒绝 ${shortId}${reason ? ` 原因: ${reason}` : ''}`.replace(/\s+/g, ' '), maxWidth),
+    label: truncateToWidth(
+      `${labelParts}${!isApproved && reason ? ` 原因: ${reason}` : ''}`.replace(/\s+/g, ' '),
+      maxWidth,
+    ),
     detail: truncateToWidth(detailParts.join(' '), maxWidth),
-    state: 'denied',
+    state: isApproved ? 'approved' : 'denied',
+    target,
+    ...(toolName && { toolName }),
+    ...(requestShortId && { requestShortId }),
+    ...(!isApproved && reason && { reason: truncateToWidth(collapseWhitespace(reason), maxWidth) }),
   };
 }

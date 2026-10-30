@@ -134,12 +134,33 @@ describe('summarizePermissionRequest', () => {
     expect(summarizePermissionRequest(meta('bash', {}), W).label).toBe('权限申请 bash');
   });
 
-  it('puts the description in the detail line', () => {
+  it('drops a description that only restates the bash command', () => {
     const s = summarizePermissionRequest(
       meta('bash', { command: 'cat /etc/hosts' }, 'Execute shell command: cat /etc/hosts'),
       W,
     );
-    expect(s.detail).toBe('Execute shell command: cat /etc/hosts');
+    expect(s.detail).toBe('');
+  });
+
+  it('keeps only the resolved path of a file-tool description, when it differs', () => {
+    const outside = summarizePermissionRequest(
+      meta('write_file', { path: '../x.ts' }, 'write_file: ../x.ts (resolved: /data/other/x.ts)'),
+      W,
+    );
+    expect(outside.detail).toBe('解析为 /data/other/x.ts');
+
+    const same = summarizePermissionRequest(
+      meta('read_file', { path: '/etc/hosts' }, 'read_file: /etc/hosts (resolved: /etc/hosts)'),
+      W,
+    );
+    expect(same.detail).toBe('');
+  });
+
+  it('exposes structured parts: tool name, target and request short id', () => {
+    const s = summarizePermissionRequest(meta('bash', { command: 'git status' }), W);
+    expect(s.toolName).toBe('bash');
+    expect(s.target).toBe('git status');
+    expect(s.requestShortId).toBe('abcd');
   });
 
   it('collapses multi-line descriptions into a single detail line', () => {
@@ -183,7 +204,7 @@ describe('summarizePermissionResolution', () => {
       80,
     );
     expect(s.state).toBe('approved');
-    expect(s.label).toBe('已批准 @1234');
+    expect(s.label).toBe('已批准 #1234');
     expect(s.detail).toBe('');
   });
 
@@ -193,13 +214,13 @@ describe('summarizePermissionResolution', () => {
       80,
     );
     expect(s.state).toBe('denied');
-    expect(s.label).toBe('已拒绝 @xyz9 原因: too dangerous');
+    expect(s.label).toBe('已拒绝 #xyz9 原因: too dangerous');
   });
 
   it('parses a denied resolution without reason', () => {
     const s = summarizePermissionResolution(tc({ requestId: 'perm-1', approved: false }), 80);
     expect(s.state).toBe('denied');
-    expect(s.label).toBe('已拒绝 @rm-1');
+    expect(s.label).toBe('已拒绝 #rm-1');
   });
 
   it('infers approval from the tool result when arguments are unparseable', () => {
@@ -226,8 +247,30 @@ describe('summarizePermissionResolution', () => {
       { text: '[ERROR] Permission request perm-3-end42 not found or already resolved.', isError: true },
     );
     expect(s.state).toBe('approved');
-    expect(s.label).toBe('已批准 @nd42');
+    expect(s.label).toBe('已批准 #nd42');
     expect(s.detail).toContain('not found');
+  });
+
+  it('carries the original request tool and target when the request is known', () => {
+    const s = summarizePermissionResolution(
+      tc({ requestId: 'perm-5-7xvt', approved: true }),
+      80,
+      undefined,
+      { requestId: 'perm-5-7xvt', toolName: 'bash', toolArgs: { command: 'git commit -m x' } },
+    );
+    expect(s.state).toBe('approved');
+    expect(s.toolName).toBe('bash');
+    expect(s.target).toBe('git commit -m x');
+    expect(s.requestShortId).toBe('7xvt');
+    expect(s.label).toBe('已批准 bash git commit -m x #7xvt');
+  });
+
+  it('exposes the denial reason as a structured field', () => {
+    const s = summarizePermissionResolution(
+      tc({ requestId: 'perm-6', approved: false, reason: 'too\ndangerous' }),
+      80,
+    );
+    expect(s.reason).toBe('too dangerous');
   });
 
   it('truncates a long denial reason to maxWidth', () => {
