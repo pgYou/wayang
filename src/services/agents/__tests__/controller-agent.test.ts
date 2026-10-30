@@ -1,3 +1,4 @@
+import { EEntryType } from '@/types/index';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ControllerAgentState } from '@/services/agents/controller-state';
@@ -547,6 +548,61 @@ describe('ControllerAgent', () => {
     // System prompt alone guarantees a positive estimate
     expect(usage.usedTokens).toBeGreaterThan(0);
     expect(usage.contextWindowTokens).toBe(256_000);
+  });
+
+  /** Assistant entry carrying provider usage (self-contained per test). */
+  const usageEntry = (uuid: string, inputTokens: number) => ({
+    type: EEntryType.Assistant,
+    uuid,
+    parentUuid: null,
+    sessionId: 's',
+    timestamp: new Date().toISOString(),
+    message: { role: 'assistant', content: 'x', usage: { inputTokens, outputTokens: 1 } },
+  });
+
+  it('should seed the compaction check with the last real usage on restore', async () => {
+    state.set('conversation', [usageEntry('a-seed-1', 240_000)]);
+    await agent.restore();
+
+    // 240k > 90% of the 256k default — real usage, not the tiny estimate.
+    expect(agent.needsCompaction()).toBe(true);
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage.source).toBe('usage');
+    expect(usage.usedTokens).toBe(240_000);
+  });
+
+  it('should not seed usage that predates the last compaction marker', async () => {
+    state.set('conversation', [
+      usageEntry('a-seed-2', 240_000),
+      {
+        type: EEntryType.System,
+        uuid: 'compact-seed',
+        parentUuid: null,
+        sessionId: 's',
+        timestamp: new Date().toISOString(),
+        subtype: 'compact',
+        content: 'summary',
+        compactMeta: { summarizedTokenCount: 1 },
+      },
+    ]);
+    await agent.restore();
+
+    expect(agent.needsCompaction()).toBe(false);
+    expect(state.get('dynamicState.contextUsage').source).toBe('estimate');
+  });
+
+  it('should keep recent history and stop re-triggering after the truncation fallback', async () => {
+    // A real usage mark above the threshold, then a summarizer that always fails.
+    state.set('conversation', Array.from({ length: 10 }, (_, i) => usageEntry(`a-trunc-${i}`, 240_000)));
+    await agent.restore();
+    expect(agent.needsCompaction()).toBe(true);
+    vi.mocked(generateText).mockRejectedValue(new Error('provider down'));
+
+    await agent.performCompaction();
+
+    expect(state.get('conversation')).toHaveLength(5);
+    // Stale high-water mark cleared — the next loop must not truncate again.
+    expect(agent.needsCompaction()).toBe(false);
   });
 
   it('should seed contextUsage from the estimate after restore', async () => {

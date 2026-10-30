@@ -170,7 +170,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
 
     const agent = new TestAgent(mockProvider);
     await expect(
-      drain(agent.runLoop({ system: 'sys', messages: [], tools: {}, idleTimeoutMs: 20 })),
+      drain(agent.runLoop({ system: 'sys', messages: [], tools: {}, llmIdleTimeoutMs: 20 })),
     ).rejects.toThrow(/idle timeout/);
 
     // The watchdog aborts only THIS call — the agent's own controller stays
@@ -197,7 +197,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
       system: 'sys',
       messages: [],
       tools: {},
-      idleTimeoutMs: 100,
+      llmIdleTimeoutMs: 100,
     }));
     expect(result.text).toBe('all chunks');
   });
@@ -221,9 +221,87 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
       system: 'sys',
       messages: [],
       tools: {},
-      idleTimeoutMs: 100,
+      llmIdleTimeoutMs: 100,
     }));
     expect(result.text).toBe('after tools');
+  });
+
+  it('pauses while a tool executes — a slow tool or approval wait is not idle', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // Tool runs 3x the watchdog window (e.g. waiting for approval).
+        await opts.tools.slow.execute({}, { toolCallId: 'tc1' });
+        yield 'after tool';
+      })();
+      return { ...fakeStream('after tool'), textStream };
+    }) as any);
+
+    const slow = { execute: () => new Promise((r) => setTimeout(() => r('ok'), 150)) };
+    const agent = new TestAgent(mockProvider);
+    const result = await drain(agent.runLoop({
+      system: 'sys', messages: [], tools: { slow } as any, llmIdleTimeoutMs: 50,
+    }));
+    expect(result.text).toBe('after tool');
+  });
+
+  it('re-arms once the last tool finishes — a hang after the tool still times out', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        await opts.tools.quick.execute({}, { toolCallId: 'tc1' });
+        // Provider hangs after the tool result — must time out.
+        await new Promise((_, reject) => {
+          opts.abortSignal?.addEventListener('abort', () => reject(new Error('AbortError')));
+        });
+        yield ''; // unreachable; satisfies require-yield
+      })();
+      return { ...fakeStream(''), textStream };
+    }) as any);
+
+    const quick = { execute: async () => 'ok' };
+    const agent = new TestAgent(mockProvider);
+    await expect(
+      drain(agent.runLoop({ system: 'sys', messages: [], tools: { quick } as any, llmIdleTimeoutMs: 30 })),
+    ).rejects.toThrow(/idle timeout/);
+  });
+
+  it('stays paused until all parallel tools finish', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // Short tool ends early; the long one keeps the watchdog paused.
+        await Promise.all([
+          opts.tools.short.execute({}, { toolCallId: 'a' }),
+          opts.tools.long.execute({}, { toolCallId: 'b' }),
+        ]);
+        yield 'both done';
+      })();
+      return { ...fakeStream('both done'), textStream };
+    }) as any);
+
+    const short = { execute: async () => 'a' };
+    const long = { execute: () => new Promise((r) => setTimeout(() => r('b'), 150)) };
+    const agent = new TestAgent(mockProvider);
+    const result = await drain(agent.runLoop({
+      system: 'sys', messages: [], tools: { short, long } as any, llmIdleTimeoutMs: 50,
+    }));
+    expect(result.text).toBe('both done');
+  });
+
+  it('passes tool results and errors through unchanged', async () => {
+    const seen: unknown[] = [];
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        seen.push(await opts.tools.echo.execute({ v: 1 }, { toolCallId: 'x' }));
+        await opts.tools.boom.execute({}, { toolCallId: 'y' }).catch((e: Error) => seen.push(e.message));
+        yield 'ok';
+      })();
+      return { ...fakeStream('ok'), textStream };
+    }) as any);
+
+    const echo = { execute: async (args: any) => args };
+    const boom = { execute: async () => { throw new Error('kaboom'); } };
+    const agent = new TestAgent(mockProvider);
+    await drain(agent.runLoop({ system: 'sys', messages: [], tools: { echo, boom } as any, llmIdleTimeoutMs: 100 }));
+    expect(seen).toEqual([{ v: 1 }, 'kaboom']);
   });
 
   it('is disabled when idleTimeoutMs is 0', async () => {
@@ -242,7 +320,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
       system: 'sys',
       messages: [],
       tools: {},
-      idleTimeoutMs: 0,
+      llmIdleTimeoutMs: 0,
     }));
     expect(result.text).toBe('slow but fine');
   });
@@ -259,7 +337,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
     }) as any);
 
     const agent = new TestAgent(mockProvider);
-    const gen = agent.runLoop({ system: 'sys', messages: [], tools: {}, idleTimeoutMs: 20_000 });
+    const gen = agent.runLoop({ system: 'sys', messages: [], tools: {}, llmIdleTimeoutMs: 20_000 });
     const pending = drain(gen);
     agent.abort(); // external abort (done/fail tool or Ctrl+C)
     const result = await pending;

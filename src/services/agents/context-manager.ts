@@ -68,7 +68,13 @@ export class ContextManager {
     private staticPrompt: string,
     contextWindowTokens?: number,
   ) {
-    this.contextWindowTokens = contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+    // Only a positive finite budget is meaningful — 0/negative/NaN would make
+    // isFull() true on every loop (compact forever). Config validation rejects
+    // those up front; this is the runtime backstop.
+    this.contextWindowTokens =
+      typeof contextWindowTokens === 'number' && Number.isFinite(contextWindowTokens) && contextWindowTokens > 0
+        ? contextWindowTokens
+        : DEFAULT_CONTEXT_WINDOW_TOKENS;
   }
 
   // --- Public API ---
@@ -108,6 +114,29 @@ export class ContextManager {
     if (typeof inputTokens === 'number' && Number.isFinite(inputTokens) && inputTokens > 0) {
       this.lastReportedTokens = inputTokens;
     }
+  }
+
+  /**
+   * Compaction fallback: keep only the newest `keep` entries in memory (the
+   * JSONL file is untouched). Keeps the context manager's own bookkeeping
+   * consistent with the shortened array:
+   * - compactStartIdx shifts by the number of removed entries, so the
+   *   verbatim zone still starts right after the active summary instead of
+   *   pointing past the end (which silently sent no recent history at all);
+   * - the real-usage high-water mark is cleared, so the next loop does not
+   *   judge the context full again on a stale value and truncate repeatedly.
+   *
+   * Returns the number of entries removed (0 when nothing was cut).
+   */
+  truncateHistory(keep: number): number {
+    const conversation = this.state.get<any[]>('conversation') ?? [];
+    const keepCount = Math.max(0, Math.floor(keep));
+    const removed = conversation.length - keepCount;
+    if (removed <= 0) return 0;
+    this.state.set('conversation', keepCount > 0 ? conversation.slice(-keepCount) : []);
+    this.compactStartIdx = Math.max(0, this.compactStartIdx - removed);
+    this.lastReportedTokens = null;
+    return removed;
   }
 
   /** Check if context exceeds the compaction threshold. */

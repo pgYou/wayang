@@ -426,6 +426,72 @@ describe('ContextManager', () => {
     });
   });
 
+  describe('estimate vs breakdown consistency', () => {
+    it('getEstimatedTokens equals breakdown.total when no summary is active', () => {
+      const conversation = [
+        makeUser('u1', 'please list files'),
+        {
+          type: EEntryType.Assistant,
+          uuid: 'a1',
+          parentUuid: null,
+          sessionId: 's-cm',
+          timestamp: new Date().toISOString(),
+          message: { role: 'assistant' as const, content: 'running' },
+          toolCalls: [{ toolCallId: 'c1', toolName: 'bash', arguments: JSON.stringify({ command: 'ls -la '.repeat(30) }) }],
+          toolResults: [{ toolCallId: 'c1', toolName: 'bash', output: { type: 'text', value: 'file\n'.repeat(200) } }],
+        },
+      ];
+      const cm = new ContextManager(createMockState(conversation), 'STATIC PROMPT');
+      const bd = cm.getContextBreakdown();
+      expect(bd.toolResults).toBeGreaterThan(0);
+      expect(cm.getEstimatedTokens()).toBe(bd.total);
+    });
+  });
+
+  describe('truncateHistory (compaction fallback)', () => {
+    it('shifts the verbatim zone so recent entries after the summary are still sent', async () => {
+      const conversation = Array.from({ length: 6 }, (_, i) => makeUser(`u${i}`, `old ${i}`));
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT');
+      await cm.compact(async () => 'summary'); // startIdx = 6, marker appended at 6
+      state.append('conversation', makeUser('u-new-1', 'new one'));
+      state.append('conversation', makeUser('u-new-2', 'new two'));
+
+      // 6 old + marker + 2 new = 9 entries; keep the newest 4 (old5, marker, new1, new2).
+      const removed = cm.truncateHistory(4);
+      expect(removed).toBe(5);
+
+      const sent = cm.getMessages().map((m: any) => m.content);
+      expect(sent).toContain('new one');
+      expect(sent).toContain('new two');
+    });
+
+    it('clears the real-usage mark so isFull does not stay true', () => {
+      const conversation = Array.from({ length: 6 }, (_, i) => makeUser(`u${i}`, 'm'));
+      const cm = new ContextManager(createMockState(conversation), 'STATIC PROMPT', 42_000);
+      cm.reportRealUsage(50_000);
+      expect(cm.isFull()).toBe(true);
+      cm.truncateHistory(3);
+      expect(cm.isFull()).toBe(false);
+    });
+
+    it('is a no-op when nothing needs cutting', () => {
+      const conversation = [makeUser('u1', 'a')];
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT');
+      expect(cm.truncateHistory(5)).toBe(0);
+      expect(state.set).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('context window budget validation', () => {
+    it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('falls back to the default for %s', (bad) => {
+      const cm = new ContextManager(createMockState(), 'STATIC PROMPT', bad);
+      expect(cm.getContextWindowTokens()).toBe(256_000);
+      expect(cm.isFull()).toBe(false);
+    });
+  });
+
   describe('real usage (reportRealUsage)', () => {
     it('should trigger isFull on real usage even when the estimate is small', () => {
       // Small conversation → small estimate; huge real usage must still win.

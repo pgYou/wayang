@@ -47,10 +47,11 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     this.workspaceDir = ctx.workspaceDir;
     this.toolChoice = toolChoice;
     this.state = new WorkerState(ctx.sessionDir, this.id, ctx.logger);
+    // No context window budget: workers never call isFull()/compact today,
+    // so passing provider.contextWindowTokens would be a dead setting.
     this.contextManager = new ContextManager(
       this.state,
       buildWorkerSystemPrompt(this.ctx, skills),
-      provider.contextWindowTokens,
     );
   }
 

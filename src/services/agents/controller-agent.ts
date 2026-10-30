@@ -239,8 +239,32 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     if (summary) {
       this.contextManager.restoreCompact(summary);
     }
-    // Seed the status bar's context usage from the restored history (estimate).
-    this.updateContextUsage();
+    // Seed the compaction check with the last real prompt size, so the cold
+    // start check (supervisor) sees real usage instead of only the estimate.
+    // Skipped when a compaction happened after that step — its usage
+    // describes the pre-compaction prompt and would re-trigger compaction.
+    const seeded = this.lastUsageSinceCompaction();
+    if (seeded) this.contextManager.reportRealUsage(seeded.inputTokens);
+    // Seed the status bar's context usage from the restored history.
+    this.updateContextUsage(seeded ? { inputTokens: seeded.inputTokens } : undefined);
+  }
+
+  /**
+   * Provider usage of the newest assistant step that comes after the last
+   * compaction marker, if any.
+   */
+  private lastUsageSinceCompaction(): ContextLastUsage | undefined {
+    const conversation = this.state.get<ConversationEntry[]>('conversation') ?? [];
+    for (let i = conversation.length - 1; i >= 0; i--) {
+      const entry = conversation[i]!;
+      if (entry.type === EEntryType.System && entry.subtype === ESystemSubtype.Compact && entry.compactMeta) {
+        return undefined;
+      }
+      if (entry.type !== EEntryType.Assistant) continue;
+      const usage = this.toLastUsage(entry.message.usage);
+      if (usage) return usage;
+    }
+    return undefined;
   }
 
   /**
@@ -411,15 +435,20 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
         'Compaction done',
       );
     } catch (err) {
-      // All retries failed — fallback: truncate half of history in memory only
+      // All retries failed — fallback: truncate half of history in memory only.
+      // Truncation goes through the context manager so its verbatim-zone index
+      // and real-usage mark stay consistent with the shortened array.
       this.logger.warn({ error: String(err) }, 'Compaction failed, falling back to half-truncation');
-      const conversation = this.state.get<ConversationEntry[]>('conversation');
-      if (conversation.length > 4) {
-        const half = Math.floor(conversation.length / 2);
-        this.state.set('conversation', conversation.slice(-half));
-        this.logger.info({ kept: half, total: conversation.length }, 'History truncated (half) as compaction fallback');
+      const total = this.state.get<ConversationEntry[]>('conversation').length;
+      if (total > 4) {
+        const half = Math.floor(total / 2);
+        this.contextManager.truncateHistory(half);
+        this.logger.info({ kept: half, total }, 'History truncated (half) as compaction fallback');
       }
     }
+    // Refresh the status bar / `/context` right away instead of waiting for
+    // the next LLM step to report usage.
+    this.updateContextUsage();
   }
 }
 
