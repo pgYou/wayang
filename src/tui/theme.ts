@@ -13,8 +13,14 @@ const baseToken = {
     textSubtle: 'gray',
     /** Accent — interactive elements, assistant prefix. */
     accent: 'green',
+    /** Success states — approvals, positive outcomes. */
+    success: 'green',
+    /** Warning states — pending approvals, caution. */
+    warning: 'yellow',
     /** Error / danger states. */
     error: 'red',
+    /** Informational accent — controller actions on workers (dispatch, message). */
+    info: 'cyan',
     /** Borders and structural lines. */
     border: 'gray',
   },
@@ -71,6 +77,35 @@ export const theme = {
   signal: {
     prefix: baseToken.icon.flag,
     color: baseToken.color.textSubtle,
+  },
+  permission: {
+    /** Status icons for permission request / resolution rows. */
+    pendingPrefix: '•', // • bullet — pending request
+    approvedPrefix: '✔', // ✔ check mark — approved
+    deniedPrefix: '✘', // ✘ cross mark — denied
+    unknownPrefix: '?', // ? decision could not be determined
+    pendingColor: baseToken.color.warning,
+    approvedColor: baseToken.color.success,
+    deniedColor: baseToken.color.error,
+    unknownColor: baseToken.color.textSubtle,
+  },
+  /** Controller actions on workers: dispatch a task, send a message. */
+  action: {
+    dispatchIcon: '⊕', // ⊕ new task added and dispatched
+    reuseIcon: '↻', // ↻ task assigned to an existing idle worker
+    messageIcon: '✉', // ✉ message sent to a worker
+    color: baseToken.color.info,
+    okMark: '✔',
+    failMark: '✘',
+    okColor: baseToken.color.success,
+    failColor: baseToken.color.error,
+  },
+  /** Secondary lines under a row (context tags, previews). */
+  secondary: {
+    color: baseToken.color.textSubtle,
+    /** Indent (columns) aligning secondary lines under the row text — rows
+     *  have one 2-column lead-in ("✔ ", "· "), so text starts at column 2. */
+    indent: 2,
   },
   meta: {
     prefix: baseToken.icon.dot,

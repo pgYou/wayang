@@ -9,7 +9,13 @@
 
 import { RemoteSubscribable, type RpcClient, type RemoteStateStore } from '@/rpc/rpc-client';
 import { METHOD } from '@/rpc/protocol';
-import type { ActiveWorkerInfo, NewSignalInput, TaskDetail } from '@/types/index';
+import type { ActiveWorkerInfo, ContextUsage, NewSignalInput, TaskDetail } from '@/types/index';
+
+/**
+ * State path of the controller's context usage snapshot. Single shared literal
+ * for the facade below and the TUI status bar subscription.
+ */
+export const CONTEXT_USAGE_STATE_PATH = 'dynamicState.contextUsage';
 
 export interface RemoteSupervisorHooks {
   /** Terminate the server child process (graceful, then force-kill). */
@@ -70,6 +76,20 @@ export class RemoteSupervisor {
 
     // session bookkeeping for user input happens server-side in submit_input.
     this.sessionManager = { onUserInput: () => { /* handled server-side */ } };
+  }
+
+  /**
+   * Latest context usage snapshot, fetched on demand from the server via
+   * GET_SNAPSHOT. Callers use this facade; the state path itself lives in the
+   * shared CONTEXT_USAGE_STATE_PATH constant rather than being repeated at
+   * each call site. Returns null when the server has no value yet.
+   */
+  async getContextUsage(): Promise<ContextUsage | null> {
+    const res = await this.rpc.request<{ data: ContextUsage | null }>(
+      METHOD.GET_SNAPSHOT,
+      { target: 'controllerAgent', path: CONTEXT_USAGE_STATE_PATH },
+    );
+    return res.data ?? null;
   }
 
   resolveInquiry(answer: string): void {

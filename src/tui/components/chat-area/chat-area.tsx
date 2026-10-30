@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Box, Static, Text } from 'ink';
 import type { DisplayItem } from '@/tui/types/display-item';
 import { theme } from '@/tui/theme';
+import { buildChatLookups } from '@/tui/utils/chat-lookups';
 import { ItemRow } from './item-row';
 import { StreamingSpinner } from './streaming-spinner';
 
@@ -32,6 +33,11 @@ const ChatArea = React.memo(function ChatArea({ items, busy, streamingItems, con
     return { staticItems: read, dynamicItems: unread };
   }, [items]);
 
+  // Cross-row context (permission request by id, worker by id). Static rows
+  // render once with the lookups as of that moment — the rows they refer to
+  // always come earlier in the conversation, so they are already present.
+  const lookups = useMemo(() => buildChatLookups(items), [items]);
+
   return (
     <>
       <Static key="chat" items={staticItems}>
@@ -42,7 +48,7 @@ const ChatArea = React.memo(function ChatArea({ items, busy, streamingItems, con
             paddingX={1}
             marginTop={shouldShowGap(idx > 0 ? staticItems[idx - 1] : null, item) ? theme.spacing.blockGap : 0}
           >
-            <ItemRow item={item} contentWidth={width} />
+            <ItemRow item={item} contentWidth={width} lookups={lookups} />
           </Box>
         )}
       </Static>
@@ -61,7 +67,7 @@ const ChatArea = React.memo(function ChatArea({ items, busy, streamingItems, con
           </Box>
           {dynamicItems.map((item) => (
             <Box key={item.id} flexDirection="column" marginTop={shouldShowGap(null, item) ? theme.spacing.blockGap : 0}>
-              <ItemRow item={item} contentWidth={width} />
+              <ItemRow item={item} contentWidth={width} lookups={lookups} />
             </Box>
           ))}
         </Box>

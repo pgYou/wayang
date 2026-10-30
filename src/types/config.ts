@@ -27,6 +27,15 @@ export interface ProviderConfig {
    * AssistantEntry.model when set. (Currently metadata-only.)
    */
   maxOutputTokens?: number;
+  /**
+   * Context window budget (input side) for this provider's model — NOT the
+   * OpenAI-protocol `max_tokens` (which caps output). Drives controller
+   * compaction, which triggers at 90% of this budget (workers do not compact
+   * yet). Optional — defaults to 256k tokens; set it for smaller-window
+   * models (e.g. 128k), otherwise the provider rejects the request before
+   * compaction ever triggers. Must be a positive integer.
+   */
+  contextWindowTokens?: number;
 }
 
 /** Third-party worker configuration. */
@@ -82,6 +91,10 @@ export function validateConfig(config: WayangConfig): string | null {
     if (!provider.endpoint) return `providers.${name}.endpoint is required`;
     if (!provider.apiKey) return `providers.${name}.apiKey is required (set WAYANG_LLM_API_KEY or configure in config file)`;
     if (!provider.modelName) return `providers.${name}.modelName is required`;
+    const window = provider.contextWindowTokens;
+    if (window !== undefined && !(Number.isInteger(window) && window > 0)) {
+      return `providers.${name}.contextWindowTokens must be a positive integer (got ${JSON.stringify(window)})`;
+    }
   }
   const cp = config.controller.provider;
   if (!config.providers[cp]) return `controller.provider "${cp}" not found`;

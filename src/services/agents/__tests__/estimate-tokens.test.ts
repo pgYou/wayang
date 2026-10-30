@@ -53,3 +53,36 @@ describe('estimateConversationTokens', () => {
     expect(estimateConversationTokens(entries)).toBeGreaterThan(0);
   });
 });
+
+describe('estimateConversationTokens: SDK ModelMessage content arrays', () => {
+  it('counts text, reasoning, tool-call input and tool-result output parts', () => {
+    const args = { command: 'x'.repeat(400) };
+    const output = 'y'.repeat(800);
+    const messages = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'r'.repeat(40) },
+          { type: 'text', text: 't'.repeat(40) },
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'bash', input: args },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'bash', output: { type: 'text', value: output } }],
+      },
+    ];
+    const expected =
+      estimateTokens('r'.repeat(40)) +
+      estimateTokens('t'.repeat(40)) +
+      estimateTokens(JSON.stringify(args)) +
+      estimateTokens(output);
+    expect(estimateConversationTokens(messages)).toBe(expected);
+  });
+
+  it('never stringifies array content to "[object Object]"', () => {
+    const messages = [{ role: 'tool', content: [{ type: 'tool-result', output: { type: 'text', value: '' } }] }];
+    // Old behavior counted String([{...}]) = "[object Object]" → 4 tokens.
+    expect(estimateConversationTokens(messages)).toBe(0);
+  });
+});

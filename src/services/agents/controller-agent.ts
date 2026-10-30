@@ -6,7 +6,7 @@ import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from './util
 import { ToolCallRecorder, recordToolCalls } from './utils/tool-call-recorder';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload } from '@/types/index';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload, ContextUsage, ContextLastUsage } from '@/types/index';
 import type { ConversationEntry, ConversationIndex, SignalEntry, TurnView } from '@/types/conversation';
 import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -14,6 +14,8 @@ import type { StateEvent } from '@/infra/state/base-state';
 import type { Subscribable } from '@/infra/state/subscribable';
 import { generateText } from 'ai';
 import type { ToolSet } from 'ai';
+import { buildSummaryInput } from './utils/summarizer-input';
+
 import {
   SUMMARIZER_SYSTEM_PROMPT,
   buildSummarizerPrompt,
@@ -23,6 +25,12 @@ import { createControllerTools } from '@/services/tools/index';
 import { SystemContext } from '@/infra/system-context';
 import type { TaskExecuteEngine } from '@/services/task-execute-engine';
 import type { SignalQueue } from '@/services/signal/signal-queue';
+
+/**
+ * Share of the context window (in characters) the summarizer input may use —
+ * leaves room for the summarizer prompt and its output.
+ */
+const SUMMARIZER_INPUT_RATIO = 0.5;
 
 export class ControllerAgent extends BaseAgent implements Subscribable {
   private readonly state: ControllerAgentState;
@@ -55,6 +63,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     this.contextManager = new ContextManager(
       state,
       buildControllerSystemPrompt(this.ctx, skills),
+      provider.contextWindowTokens,
     );
     this.setHooks({
       beforeLLM: ({ messages }) => {
@@ -193,6 +202,8 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
         this.state.append('conversation', entry);
         // Clear streaming for this step; next chunk will start a fresh entry
         this.state.set('dynamicState.streamingEntries', []);
+        // Refresh the status bar's context usage from this step's real usage
+        this.updateContextUsage({ inputTokens: event.usage?.inputTokens });
       },
     });
 
@@ -236,6 +247,95 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     if (summary) {
       this.contextManager.restoreCompact(summary);
     }
+    // Seed the compaction check with the last real prompt size, so the cold
+    // start check (supervisor) sees real usage instead of only the estimate.
+    // Skipped when a compaction happened after that step — its usage
+    // describes the pre-compaction prompt and would re-trigger compaction.
+    const seeded = this.lastUsageSinceCompaction();
+    if (seeded) this.contextManager.reportRealUsage(seeded.inputTokens);
+    // Seed the status bar's context usage from the restored history.
+    this.updateContextUsage(seeded ? { inputTokens: seeded.inputTokens } : undefined);
+  }
+
+  /**
+   * Provider usage of the newest assistant step that comes after the last
+   * compaction marker, if any.
+   */
+  private lastUsageSinceCompaction(): ContextLastUsage | undefined {
+    const conversation = this.state.get<ConversationEntry[]>('conversation') ?? [];
+    for (let i = conversation.length - 1; i >= 0; i--) {
+      const entry = conversation[i]!;
+      if (entry.type === EEntryType.System && entry.subtype === ESystemSubtype.Compact && entry.compactMeta) {
+        return undefined;
+      }
+      if (entry.type !== EEntryType.Assistant) continue;
+      const usage = this.toLastUsage(entry.message.usage);
+      if (usage) return usage;
+    }
+    return undefined;
+  }
+
+  /**
+   * Refresh dynamicState.contextUsage for the status bar.
+   *
+   * Prefers the real prompt size reported by the provider (inputTokens of the
+   * step that just finished); falls back to the local estimate when usage is
+   * unavailable. Ratio stays raw (not clamped to 1) so over-budget states
+   * remain visible. dynamicState is never persisted.
+   */
+  private updateContextUsage(stepUsage?: { inputTokens?: number }): void {
+    const contextWindowTokens = this.contextManager.getContextWindowTokens();
+    const reported = stepUsage?.inputTokens;
+    const hasReported = typeof reported === 'number' && Number.isFinite(reported) && reported > 0;
+    if (hasReported) {
+      // Feed the real prompt size to the context manager so compaction
+      // triggers on real usage, not the (under)estimator.
+      this.contextManager.reportRealUsage(reported);
+    }
+    const usedTokens = hasReported ? reported : this.contextManager.getEstimatedTokens();
+    // Last provider usage: prefer the newest assistant entry in the conversation
+    // (which already covers the step that just finished AND restore), falling
+    // back to the step usage handed in when the entry has no usage yet.
+    const lastUsage = this.findLastStepUsage() ?? this.toLastUsage(stepUsage);
+    const usage: ContextUsage = {
+      usedTokens,
+      contextWindowTokens,
+      ratio: contextWindowTokens > 0 ? usedTokens / contextWindowTokens : 0,
+      source: hasReported ? 'usage' : 'estimate',
+      breakdown: this.contextManager.getContextBreakdown(),
+      ...(lastUsage && { lastUsage }),
+    };
+    this.state.set('dynamicState.contextUsage', usage);
+  }
+
+  /** Newest provider-reported usage in the conversation, if any. */
+  private findLastStepUsage(): ContextLastUsage | undefined {
+    const conversation = this.state.get<ConversationEntry[]>('conversation') ?? [];
+    for (let i = conversation.length - 1; i >= 0; i--) {
+      const entry = conversation[i]!;
+      if (entry.type !== EEntryType.Assistant) continue;
+      const usage = this.toLastUsage(entry.message.usage);
+      if (usage) return usage;
+    }
+    return undefined;
+  }
+
+  /** Normalize a step usage payload, or undefined when the provider gave none. */
+  private toLastUsage(usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  }): ContextLastUsage | undefined {
+    if (!usage) return undefined;
+    const { inputTokens, outputTokens, cachedInputTokens } = usage;
+    if (inputTokens === undefined && outputTokens === undefined && cachedInputTokens === undefined) {
+      return undefined;
+    }
+    return {
+      inputTokens: inputTokens ?? 0,
+      outputTokens: outputTokens ?? 0,
+      cachedInputTokens: cachedInputTokens ?? 0,
+    };
   }
 
   /** Initialize session metadata. Called by Supervisor at start. */
@@ -308,13 +408,16 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       // Capture the previous summary before compact() replaces it — the
       // summarizer folds it in so repeated compactions stay incremental.
       const previousSummary = this.contextManager.getCompactSummary();
+      const entryCount = this.state.get<ConversationEntry[]>('conversation').length;
 
       await this.contextManager.compact(
         async (entries) => {
-          const entryTexts = entries.map((e, i) => {
-            const content = e.message?.content ?? e.content ?? '';
-            return `[${i}] (${e.type}) ${String(content).slice(0, 300)}`;
-          });
+          // Budget the summarizer input in characters against the model
+          // window: CJK text runs close to one token per character, so a
+          // character budget never underestimates the request size.
+          const budget = Math.floor(this.contextManager.getContextWindowTokens() * SUMMARIZER_INPUT_RATIO)
+            - (previousSummary?.length ?? 0);
+          const entryTexts = buildSummaryInput(entries, Math.max(budget, 0));
           if (previousSummary) {
             entryTexts.unshift(`[Previous Summary]\n${previousSummary}`);
           }
@@ -337,16 +440,25 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
         },
         { model: this.provider.modelName },
       );
+      this.logger.info(
+        { model: this.provider.modelName, summarizedEntries: entryCount },
+        'Compaction done',
+      );
     } catch (err) {
-      // All retries failed — fallback: truncate half of history in memory only
+      // All retries failed — fallback: truncate half of history in memory only.
+      // Truncation goes through the context manager so its verbatim-zone index
+      // and real-usage mark stay consistent with the shortened array.
       this.logger.warn({ error: String(err) }, 'Compaction failed, falling back to half-truncation');
-      const conversation = this.state.get<ConversationEntry[]>('conversation');
-      if (conversation.length > 4) {
-        const half = Math.floor(conversation.length / 2);
-        this.state.set('conversation', conversation.slice(-half));
-        this.logger.info({ kept: half, total: conversation.length }, 'History truncated (half) as compaction fallback');
+      const total = this.state.get<ConversationEntry[]>('conversation').length;
+      if (total > 4) {
+        const half = Math.floor(total / 2);
+        this.contextManager.truncateHistory(half);
+        this.logger.info({ kept: half, total }, 'History truncated (half) as compaction fallback');
       }
     }
+    // Refresh the status bar / `/context` right away instead of waiting for
+    // the next LLM step to report usage.
+    this.updateContextUsage();
   }
 }
 
@@ -441,6 +553,14 @@ const signalConverters: Record<string, SignalConverter> = {
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
       content: `[PERMISSION REQUEST] Worker ${p.workerId} (task: ${p.taskTitle}) wants to run ${p.toolName}.\nDescription: ${p.description}\nRequest ID: ${p.requestId}\nUse respond_permission to approve or deny.`,
+      // Structured copy for per-tool summary rendering (content stays as the
+      // LLM-facing flattened text — do not remove).
+      permissionMeta: {
+        requestId: p.requestId,
+        toolName: p.toolName,
+        toolArgs: p.toolArgs,
+        description: p.description,
+      },
     };
   },
 

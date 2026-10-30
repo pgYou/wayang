@@ -1,12 +1,14 @@
 import { useMemoizedFn } from './use-memoized-fn';
 import type { RemoteSupervisor } from '@/client/remote-supervisor';
 import type { TaskDetail } from '@/types/index';
+import { formatContextReport } from '@/tui/utils/context-report';
 
 /** Slash command definitions for autocomplete suggestions. */
 export const SLASH_COMMANDS = [
   { name: 'tasks', args: '[status]', description: 'List tasks' },
   { name: 'workers', description: 'List active workers' },
   { name: 'cancel', args: '<id>', description: 'Cancel a task' },
+  { name: 'context', description: 'Show context token breakdown' },
   { name: 'compact', description: 'Compact context' },
   { name: 'exit', description: 'Quit' },
   { name: 'help', description: 'Show help' },
@@ -61,6 +63,16 @@ export function useSlashCommands(supervisor: RemoteSupervisor) {
         return { handled: true, output: `Task ${taskId} cancelled` };
       }
 
+      case 'context': {
+        // Fetched on demand from the server (GET_SNAPSHOT) — no LLM call, no
+        // disk writes, no session mutation.
+        const usage = await supervisor.getContextUsage();
+        if (!usage) {
+          return { handled: true, output: 'Context · no data yet (run a turn first)' };
+        }
+        return { handled: true, output: formatContextReport(usage).join('\n') };
+      }
+
       case 'compact':
         return { handled: true, action: 'compact', output: 'Compacting context...' };
 
@@ -72,6 +84,7 @@ export function useSlashCommands(supervisor: RemoteSupervisor) {
             '  /tasks [status]   — List tasks',
             '  /workers          — List active workers',
             '  /cancel <id>      — Cancel a task and abort its worker',
+            '  /context          — Show context token breakdown',
             '  /compact          — Compact conversation context',
             '  /exit             — Quit',
             '  /help             — Show this help',

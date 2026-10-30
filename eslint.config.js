@@ -34,6 +34,9 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/', 'node_modules/', '*.js'],
+    // Hand-run fixture generator scripts. tsconfig has no allowJs, so the
+    // project service cannot resolve them. Scoped to test fixtures only, so
+    // any other .mjs under src/ still goes through lint.
+    ignores: ['dist/', 'node_modules/', '*.js', 'src/**/__tests__/fixtures/*.mjs'],
   },
 );

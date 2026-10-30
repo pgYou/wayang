@@ -29,6 +29,16 @@ export interface StepMeta {
   firstTokenAt?: string;
 }
 
+// --- Configuration Constants ---
+
+/**
+ * Default idle watchdog: abort the call when no progress (no text chunk and
+ * no step finish) for this long. Guards against proxies that accept a
+ * request and then hang it silently (observed with large prompts — the
+ * connection neither errors nor delivers data).
+ */
+const DEFAULT_LLM_IDLE_TIMEOUT_MS = 300_000;
+
 export interface StreamLoopOptions {
   system: string;
   messages: ModelMessage[];
@@ -38,6 +48,11 @@ export interface StreamLoopOptions {
   maxSteps?: number;
   /** Tool names that signal the loop should stop after execution (e.g. 'done', 'fail'). */
   stopTools?: string[];
+  /** LLM idle watchdog (ms): abort when no progress — no text chunk and no
+   *  step finish — for this long. Paused while a tool is executing (incl.
+   *  waiting for approval / user input). 0 disables. Default 5 minutes.
+   *  Unrelated to the `idleTimeoutMs` config field (multi-stage worker reaping). */
+  llmIdleTimeoutMs?: number;
   onStep?: (event: OnStepFinishEvent, meta: StepMeta) => void;
   /** Called when the LLM stream errors (e.g. HTTP 400/403 from the provider).
    *  Without this, textStream silently drops error parts. */
@@ -75,6 +90,56 @@ export abstract class BaseAgent {
    *  Catches abort signal internally so callers see a clean completion. */
   protected async *streamLoop(opts: StreamLoopOptions): AsyncGenerator<string, StreamLoopResult> {
     const step = 0;
+    const idleTimeoutMs = opts.llmIdleTimeoutMs ?? DEFAULT_LLM_IDLE_TIMEOUT_MS;
+
+    // Per-call abort controller: the watchdog aborts only THIS call, leaving
+    // the agent's own controller intact so long-lived agents stay reusable.
+    const callAbort = new AbortController();
+    const forwardAbort = () => callAbort.abort();
+    if (this.abortController.signal.aborted) {
+      callAbort.abort();
+    } else {
+      this.abortController.signal.addEventListener('abort', forwardAbort);
+    }
+
+    // Idle watchdog — re-armed on every observable progress event (text
+    // chunk or step finish). When it fires, the call is aborted and surfaced
+    // as a timeout error instead of hanging forever.
+    //
+    // Paused while any tool is executing: tool execution (including waiting
+    // for a permission approval or a user's inquire answer) happens between
+    // steps and produces no stream progress, yet the provider is not hung.
+    // Tools bound their own duration (bash timeout, permission timeout).
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    let toolsInFlight = 0;
+    /** Set once the call is over — late tool completions must not re-arm. */
+    let finished = false;
+    const clearWatchdog = () => {
+      if (watchdog !== null) {
+        clearTimeout(watchdog);
+        watchdog = null;
+      }
+    };
+    const armWatchdog = () => {
+      if (idleTimeoutMs <= 0 || finished || toolsInFlight > 0) return;
+      clearWatchdog();
+      watchdog = setTimeout(() => {
+        timedOut = true;
+        callAbort.abort();
+      }, idleTimeoutMs);
+    };
+    const tools = pauseWatchdogDuringTools(
+      opts.tools,
+      () => {
+        toolsInFlight++;
+        clearWatchdog();
+      },
+      () => {
+        toolsInFlight--;
+        if (toolsInFlight === 0) armWatchdog(); // tool finished — waiting on the LLM again
+      },
+    );
 
     let stream: Awaited<ReturnType<typeof streamText>>;
 
@@ -96,6 +161,7 @@ export abstract class BaseAgent {
     // and the trackers reset for the next step.
     const onStep = opts.onStep
       ? (event: OnStepFinishEvent) => {
+          armWatchdog(); // Step finish is progress — re-arm the watchdog.
           const meta: StepMeta = { startedAt: stepStartedAt, firstTokenAt: firstChunkAt };
           firstChunkAt = undefined;
           stepStartedAt = nowISO();
@@ -106,14 +172,15 @@ export abstract class BaseAgent {
       this.hooks.beforeLLM?.({ messageCount: opts.messages.length, messages: opts.messages });
       startTime = Date.now();
       stepStartedAt = nowISO();
+      armWatchdog();
       stream = streamText({
         model: this.model,
         system: opts.system,
         messages: opts.messages,
-        tools: opts.tools,
+        tools,
         toolChoice: opts.toolChoice,
         stopWhen: stopConditions.length > 0 ? stopConditions : undefined,
-        abortSignal: this.abortController.signal,
+        abortSignal: callAbort.signal,
         onStepFinish: onStep,
         onError: ({ error }) => {
           opts.onStreamError?.(error);
@@ -124,6 +191,9 @@ export abstract class BaseAgent {
         allowSystemInMessages: true,
       });
     } catch (err: any) {
+      finished = true;
+      clearWatchdog();
+      this.abortController.signal.removeEventListener('abort', forwardAbort);
       if (this.abortController.signal.aborted) {
         return { text: '', toolResults: [], usage: undefined };
       }
@@ -132,15 +202,31 @@ export abstract class BaseAgent {
 
     try {
       for await (const chunk of stream.textStream) {
+        armWatchdog(); // A chunk is progress — re-arm the watchdog.
         if (chunk && firstChunkAt === undefined) firstChunkAt = nowISO();
         yield chunk;
       }
     } catch (err: any) {
+      // Intentional abort (done/fail tool or external cancel) wins over a
+      // watchdog that fired at the same moment — report a clean stop.
+      if (this.abortController.signal.aborted) {
+        return { text: '', toolResults: [], usage: undefined };
+      }
+      // Watchdog fired — surface a timeout error, never a silent hang.
+      if (timedOut) {
+        throw new Error(
+          `LLM call idle timeout: no stream progress (text chunk or step finish) for ${idleTimeoutMs}ms`,
+        );
+      }
       // Abort is intentional (done/fail tool or external cancel) — return clean result
       if (this.abortController.signal.aborted) {
         return { text: '', toolResults: [], usage: undefined };
       }
       throw err;
+    } finally {
+      finished = true;
+      clearWatchdog();
+      this.abortController.signal.removeEventListener('abort', forwardAbort);
     }
     const duration = Date.now() - startTime;
     const text = await stream.text;
@@ -184,4 +270,32 @@ export abstract class BaseAgent {
   abort(): void {
     this.abortController.abort();
   }
+}
+
+/**
+ * Wrap a tool set so the idle watchdog is paused while any tool executes.
+ * Behavior-preserving: the original execute runs with the same arguments and
+ * its result/throw passes through; tools without execute are kept as-is.
+ */
+function pauseWatchdogDuringTools(tools: ToolSet, onStart: () => void, onEnd: () => void): ToolSet {
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, def] of Object.entries(tools ?? {})) {
+    const original = (def as { execute?: unknown } | undefined)?.execute;
+    if (typeof original !== 'function') {
+      wrapped[name] = def;
+      continue;
+    }
+    wrapped[name] = {
+      ...def,
+      execute: async (...args: unknown[]) => {
+        onStart();
+        try {
+          return await (original as (...a: unknown[]) => unknown)(...args);
+        } finally {
+          onEnd();
+        }
+      },
+    };
+  }
+  return wrapped as ToolSet;
 }

@@ -1,3 +1,4 @@
+import { EEntryType } from '@/types/index';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ControllerAgentState } from '@/services/agents/controller-state';
@@ -304,14 +305,11 @@ describe('ControllerAgent', () => {
     await agent.run(signals);
 
     const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
-    // System prompt carries the summary under [Conversation Summary]
+    // System prompt carries the summary under [Conversation Summary] ...
     expect(call.system).toContain('[Conversation Summary]');
     expect(call.system).toContain('restored summary text');
-    // getMessages() prepends the summary as the first system message
-    expect(call.messages[0]).toEqual({
-      role: 'system',
-      content: '[Conversation Summary]\nrestored summary text',
-    });
+    // ... and the messages do not repeat it.
+    expect(JSON.stringify(call.messages)).not.toContain('restored summary text');
   });
 
   it('should fold the previous summary into the summarizer input on compaction', async () => {
@@ -358,6 +356,38 @@ describe('ControllerAgent', () => {
     expect(generateText).toHaveBeenCalledTimes(1);
     const prompt = (vi.mocked(generateText).mock.calls[0][0] as any).prompt as string;
     expect(prompt).not.toContain('[Previous Summary]');
+  });
+
+  it('should pass tool calls and their results to the summarizer', async () => {
+    for (let i = 0; i < 3; i++) {
+      state.append('conversation', {
+        type: 'user',
+        uuid: `u-tools-${i}`,
+        parentUuid: null,
+        sessionId: 'test-session',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: `entry ${i}` },
+      });
+    }
+    // A tool-only step: empty text, one call with its result.
+    state.append('conversation', {
+      type: 'assistant',
+      uuid: 'a-tools',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: '' },
+      toolCalls: [{ toolCallId: 'c1', toolName: 'add_task', arguments: JSON.stringify({ title: 'Fix login bug' }) }],
+      toolResults: [{ toolCallId: 'c1', toolName: 'add_task', output: { type: 'text', value: 'Task t-1-abcd added' } }],
+    });
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary' } as any);
+
+    await agent.performCompaction();
+
+    const prompt = (vi.mocked(generateText).mock.calls[0][0] as any).prompt as string;
+    expect(prompt).toContain('add_task');
+    expect(prompt).toContain('Fix login bug');
+    expect(prompt).toContain('Task t-1-abcd added');
   });
 
   it('should stamp compactMeta.model from the current provider config', async () => {
@@ -476,5 +506,210 @@ describe('ControllerAgent', () => {
     expect(entry.taskTitle).toBe('Cancelled task');
     expect(entry.content).toContain('[TASK CANCELLED]');
     expect(entry.endedAt).toEqual(expect.any(String));
+  });
+
+  it('should write dynamicState.contextUsage after a step, preferring real usage over the estimate', async () => {
+    // Step reports 25k input tokens — distinct from any local estimate.
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 25_000, outputTokens: 100 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 25_000, outputTokens: 100 }),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-ctx-usage',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello context' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage).toBeDefined();
+    expect(usage.source).toBe('usage');
+    expect(usage.usedTokens).toBe(25_000);
+    expect(usage.contextWindowTokens).toBe(256_000);
+    expect(usage.ratio).toBeCloseTo(25_000 / 256_000);
+  });
+
+  it('should fall back to the estimate when the step reports no input tokens', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: undefined, outputTokens: undefined },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve(undefined),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-ctx-est',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello estimate' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage).toBeDefined();
+    expect(usage.source).toBe('estimate');
+    // System prompt alone guarantees a positive estimate
+    expect(usage.usedTokens).toBeGreaterThan(0);
+    expect(usage.contextWindowTokens).toBe(256_000);
+  });
+
+  /** Assistant entry carrying provider usage (self-contained per test). */
+  const usageEntry = (uuid: string, inputTokens: number) => ({
+    type: EEntryType.Assistant,
+    uuid,
+    parentUuid: null,
+    sessionId: 's',
+    timestamp: new Date().toISOString(),
+    message: { role: 'assistant', content: 'x', usage: { inputTokens, outputTokens: 1 } },
+  });
+
+  it('should seed the compaction check with the last real usage on restore', async () => {
+    state.set('conversation', [usageEntry('a-seed-1', 240_000)]);
+    await agent.restore();
+
+    // 240k > 90% of the 256k default — real usage, not the tiny estimate.
+    expect(agent.needsCompaction()).toBe(true);
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage.source).toBe('usage');
+    expect(usage.usedTokens).toBe(240_000);
+  });
+
+  it('should not seed usage that predates the last compaction marker', async () => {
+    state.set('conversation', [
+      usageEntry('a-seed-2', 240_000),
+      {
+        type: EEntryType.System,
+        uuid: 'compact-seed',
+        parentUuid: null,
+        sessionId: 's',
+        timestamp: new Date().toISOString(),
+        subtype: 'compact',
+        content: 'summary',
+        compactMeta: { summarizedTokenCount: 1 },
+      },
+    ]);
+    await agent.restore();
+
+    expect(agent.needsCompaction()).toBe(false);
+    expect(state.get('dynamicState.contextUsage').source).toBe('estimate');
+  });
+
+  it('should keep recent history and stop re-triggering after the truncation fallback', async () => {
+    // A real usage mark above the threshold, then a summarizer that always fails.
+    state.set('conversation', Array.from({ length: 10 }, (_, i) => usageEntry(`a-trunc-${i}`, 240_000)));
+    await agent.restore();
+    expect(agent.needsCompaction()).toBe(true);
+    vi.mocked(generateText).mockRejectedValue(new Error('provider down'));
+
+    await agent.performCompaction();
+
+    expect(state.get('conversation')).toHaveLength(5);
+    // Stale high-water mark cleared — the next loop must not truncate again.
+    expect(agent.needsCompaction()).toBe(false);
+  });
+
+  it('should seed contextUsage from the estimate after restore', async () => {
+    await agent.restore();
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage).toBeDefined();
+    expect(usage.source).toBe('estimate');
+    expect(usage.usedTokens).toBeGreaterThan(0);
+  });
+
+  it('should include the token breakdown and the last step usage in contextUsage', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 25_000, outputTokens: 100, cachedInputTokens: 20_000 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 25_000, outputTokens: 100, cachedInputTokens: 20_000 }),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-ctx-breakdown',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello breakdown' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const usage = state.get('dynamicState.contextUsage');
+
+    expect(usage.breakdown).toBeDefined();
+    const groups = ['systemPrompt', 'user', 'assistant', 'toolCalls', 'toolResults', 'compactSummary'] as const;
+    for (const group of groups) {
+      expect(typeof usage.breakdown[group]).toBe('number');
+      expect(usage.breakdown[group]).toBeGreaterThanOrEqual(0);
+    }
+    const groupSum = groups.reduce((sum, group) => sum + usage.breakdown[group], 0);
+    expect(usage.breakdown.total).toBe(groupSum);
+
+    expect(usage.lastUsage).toEqual({
+      inputTokens: 25_000,
+      outputTokens: 100,
+      cachedInputTokens: 20_000,
+    });
+  });
+
+  it('should carry the newest assistant usage into contextUsage after restore', async () => {
+    state.append('conversation', {
+      type: 'assistant',
+      uuid: 'a-restored',
+      parentUuid: null,
+      sessionId: 's-controller',
+      timestamp: new Date().toISOString(),
+      message: {
+        role: 'assistant',
+        content: 'restored step',
+        usage: { inputTokens: 9_000, outputTokens: 250, cachedInputTokens: 4_000 },
+      },
+    });
+
+    await agent.restore();
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage.lastUsage).toEqual({
+      inputTokens: 9_000,
+      outputTokens: 250,
+      cachedInputTokens: 4_000,
+    });
+    expect(usage.breakdown.total).toBeGreaterThan(0);
   });
 });
