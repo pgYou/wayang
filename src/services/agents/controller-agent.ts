@@ -6,7 +6,7 @@ import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from './util
 import { ToolCallRecorder, recordToolCalls } from './utils/tool-call-recorder';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload } from '@/types/index';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload, ContextUsage } from '@/types/index';
 import type { ConversationEntry, ConversationIndex, SignalEntry, TurnView } from '@/types/conversation';
 import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -193,6 +193,8 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
         this.state.append('conversation', entry);
         // Clear streaming for this step; next chunk will start a fresh entry
         this.state.set('dynamicState.streamingEntries', []);
+        // Refresh the status bar's context usage from this step's real usage
+        this.updateContextUsage({ inputTokens: event.usage?.inputTokens });
       },
     });
 
@@ -236,6 +238,30 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     if (summary) {
       this.contextManager.restoreCompact(summary);
     }
+    // Seed the status bar's context usage from the restored history (estimate).
+    this.updateContextUsage();
+  }
+
+  /**
+   * Refresh dynamicState.contextUsage for the status bar.
+   *
+   * Prefers the real prompt size reported by the provider (inputTokens of the
+   * step that just finished); falls back to the local estimate when usage is
+   * unavailable. Ratio stays raw (not clamped to 1) so over-budget states
+   * remain visible. dynamicState is never persisted.
+   */
+  private updateContextUsage(lastUsage?: { inputTokens?: number }): void {
+    const maxTokens = this.contextManager.getMaxTokens();
+    const reported = lastUsage?.inputTokens;
+    const hasReported = typeof reported === 'number' && Number.isFinite(reported) && reported > 0;
+    const usedTokens = hasReported ? reported : this.contextManager.getEstimatedTokens();
+    const usage: ContextUsage = {
+      usedTokens,
+      maxTokens,
+      ratio: maxTokens > 0 ? usedTokens / maxTokens : 0,
+      source: hasReported ? 'usage' : 'estimate',
+    };
+    this.state.set('dynamicState.contextUsage', usage);
   }
 
   /** Initialize session metadata. Called by Supervisor at start. */

@@ -477,4 +477,84 @@ describe('ControllerAgent', () => {
     expect(entry.content).toContain('[TASK CANCELLED]');
     expect(entry.endedAt).toEqual(expect.any(String));
   });
+
+  it('should write dynamicState.contextUsage after a step, preferring real usage over the estimate', async () => {
+    // Step reports 25k input tokens — distinct from any local estimate.
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 25_000, outputTokens: 100 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 25_000, outputTokens: 100 }),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-ctx-usage',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello context' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage).toBeDefined();
+    expect(usage.source).toBe('usage');
+    expect(usage.usedTokens).toBe(25_000);
+    expect(usage.maxTokens).toBe(100_000);
+    expect(usage.ratio).toBeCloseTo(0.25);
+  });
+
+  it('should fall back to the estimate when the step reports no input tokens', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: undefined, outputTokens: undefined },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve(undefined),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-ctx-est',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello estimate' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage).toBeDefined();
+    expect(usage.source).toBe('estimate');
+    // System prompt alone guarantees a positive estimate
+    expect(usage.usedTokens).toBeGreaterThan(0);
+    expect(usage.maxTokens).toBe(100_000);
+  });
+
+  it('should seed contextUsage from the estimate after restore', async () => {
+    await agent.restore();
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage).toBeDefined();
+    expect(usage.source).toBe('estimate');
+    expect(usage.usedTokens).toBeGreaterThan(0);
+  });
 });

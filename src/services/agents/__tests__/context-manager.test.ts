@@ -160,4 +160,43 @@ describe('ContextManager', () => {
       expect(messagesAfter[1]).toMatchObject({ role: 'user', content: 'after compaction' });
     });
   });
+
+  describe('context usage accessors', () => {
+    it('should return the injected maxTokens', () => {
+      const cm = new ContextManager(createMockState(), 'STATIC PROMPT', 42_000);
+      expect(cm.getMaxTokens()).toBe(42_000);
+    });
+
+    it('should default maxTokens to 100k when not injected', () => {
+      const cm = new ContextManager(createMockState(), 'STATIC PROMPT');
+      expect(cm.getMaxTokens()).toBe(100_000);
+    });
+
+    it('should count the system prompt even with an empty conversation', () => {
+      const cm = new ContextManager(createMockState(), 'STATIC PROMPT');
+      expect(cm.getEstimatedTokens()).toBeGreaterThan(0);
+    });
+
+    it('should grow the estimate as the conversation grows', () => {
+      const conversation: any[] = [];
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT');
+      const before = cm.getEstimatedTokens();
+      for (let i = 0; i < 5; i++) {
+        state.append('conversation', makeUser(`u-grow-${i}`, 'x'.repeat(400)));
+      }
+      const after = cm.getEstimatedTokens();
+      expect(after).toBeGreaterThan(before);
+    });
+
+    it('should not mutate the conversation or append entries when estimating', () => {
+      const conversation = [makeUser('u-est-1', 'hello')];
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT');
+      cm.getEstimatedTokens();
+      cm.getEstimatedTokens();
+      expect(state.append).not.toHaveBeenCalled();
+      expect(conversation).toHaveLength(1);
+    });
+  });
 });

@@ -56,3 +56,5 @@ export type { WayangLanguageModel as WayangModel } from './agent';
 
 export type { InquireQuestion } from './inquiry';
 
+export type { ContextUsage } from './context-usage';
+

@@ -131,6 +131,7 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
         activeWorkers={activeWorkers ?? []}
         pendingTasks={pendingTasks ?? []}
         runningTasks={runningTasks ?? []}
+        controllerAgent={supervisor.controllerAgent}
       />
     </Box>
   );

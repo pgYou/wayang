@@ -98,6 +98,19 @@ export class ContextManager {
     return promptTokens + convTokens > this.maxTokens * COMPACT_THRESHOLD_RATIO;
   }
 
+  /** Get the configured context window budget (tokens). */
+  getMaxTokens(): number {
+    return this.maxTokens;
+  }
+
+  /**
+   * Estimate the current context size: system prompt + the messages
+   * getMessages() would send. Read-only — never trims or mutates history.
+   */
+  getEstimatedTokens(): number {
+    return estimateTokens(this.getSystemPrompt()) + estimateConversationTokens(this.getMessages());
+  }
+
   /**
    * Restore compact state from a summary computed by the state layer.
    *
