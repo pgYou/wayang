@@ -17,11 +17,11 @@ const SUMMARIZED_TOOLS = new Set(['respond_permission', 'chat_worker', 'add_task
 const SECONDARY_WIDTH = TOOL_DETAIL_MAX_LENGTH - theme.secondary.indent;
 
 /**
- * Width available to a summary header after its fixed lead-in ("· ✔ " —
- * meta dot, space, status icon, space). Keeps the whole header within
- * TOOL_DETAIL_MAX_LENGTH instead of overflowing by the prefix width.
+ * Width available to a summary header after its single lead-in icon ("✔ " —
+ * icon plus space). Summary rows carry exactly one prefix icon: the status /
+ * action icon replaces the generic meta dot instead of following it.
  */
-const HEADER_WIDTH = TOOL_DETAIL_MAX_LENGTH - 4;
+const HEADER_WIDTH = TOOL_DETAIL_MAX_LENGTH - 2;
 
 /** Render an assistant step with all its sections (content, reasoning, tool calls/results). */
 export function AssistantStepRow({ item, lookups = EMPTY_CHAT_LOOKUPS }: { item: DisplayItem; lookups?: ChatLookups }) {
@@ -208,7 +208,6 @@ function PermissionResolutionRow({ section, result, lookups }: {
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color={theme.meta.color}>{theme.meta.prefix} </Text>
         <Text color={color} bold>{icon} {look.verb}</Text>
         {summary.toolName && <Text bold> {summary.toolName}</Text>}
         {summary.target && <Text> {summary.target}</Text>}
@@ -246,7 +245,6 @@ function WorkerMessageRow({ section, result, lookups }: {
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color={theme.meta.color}>{theme.meta.prefix} </Text>
         <Text color={iconColor} bold>{theme.action.messageIcon} 发送给</Text>
         <Text> {target}</Text>
         <OutcomeMark outcome={summary.outcome} ok="已送达" failed="未送达" />
@@ -262,7 +260,7 @@ function WorkerMessageRow({ section, result, lookups }: {
 // ---------------------------------------------------------------------------
 
 /**
- * add_task tool call — "▶ 派发任务 <title> #32ra", then worker type / flags
+ * add_task tool call — "⊕ 派发任务 <title> #32ra", then worker type / flags
  * and a short description preview. Reuse of an idle worker shows "↻ 续派任务".
  */
 function AddTaskRow({ section, result, lookups }: {
@@ -292,7 +290,6 @@ function AddTaskRow({ section, result, lookups }: {
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color={theme.meta.color}>{theme.meta.prefix} </Text>
         <Text color={iconColor} bold>
           {reuse ? theme.action.reuseIcon : theme.action.dispatchIcon} {reuse ? '续派任务' : '派发任务'}
         </Text>

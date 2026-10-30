@@ -84,12 +84,12 @@ function PermissionRequestRow({ item }: { item: DisplayItem }) {
         {summary.target && <Text dimColor={dim}> {summary.target}</Text>}
       </Box>
       {contextLine && (
-        <Box marginLeft={2}>
+        <Box marginLeft={theme.secondary.indent}>
           <Text color={theme.secondary.color}>{contextLine}</Text>
         </Box>
       )}
       {summary.detail && (
-        <Box marginLeft={2}>
+        <Box marginLeft={theme.secondary.indent}>
           <Text color={theme.secondary.color} dimColor>{summary.detail}</Text>
         </Box>
       )}

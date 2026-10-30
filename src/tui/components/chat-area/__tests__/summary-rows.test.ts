@@ -90,7 +90,8 @@ describe('AssistantStepRow summary rows', () => {
       lookups: EMPTY_CHAT_LOOKUPS,
     }));
 
-    expect(out).toContain('▶ 派发任务 Build it #rr4f');
+    expect(out).toContain('⊕ 派发任务 Build it #rr4f');
+    expect(out).not.toContain('▶');
     expect(out).toContain('✔ 已派发');
     expect(out).toContain('claude-code · 多阶段');
     expect(out).not.toContain('You will be notified');
@@ -102,6 +103,25 @@ describe('AssistantStepRow summary rows', () => {
       lookups: EMPTY_CHAT_LOOKUPS,
     }));
     expect(out).toContain('list_tasks: no tasks');
+  });
+
+  it('gives each summary header exactly one lead-in icon', () => {
+    const lookups = buildChatLookups([permissionSignal()]);
+    const out = renderToString(h(AssistantStepRow, {
+      item: step([
+        call('d1', 'respond_permission', { requestId: 'perm-1-7xvt', approved: true }),
+        call('d2', 'chat_worker', { workerId: 'w-1-t0sr', message: 'hi' }),
+        call('d3', 'add_task', { title: 'Reuse', description: 'd', assignToWorker: 'w-1-t0sr' }),
+        call('d4', 'add_task', { title: 'Fresh', description: 'd' }),
+      ]),
+      lookups,
+    }));
+    const lines = out.split('\n').map(l => l.trimStart());
+    expect(lines.some(l => l.startsWith('✔ 已批准'))).toBe(true);
+    expect(lines.some(l => l.startsWith('✉ 发送给'))).toBe(true);
+    expect(lines.some(l => l.startsWith('↻ 续派任务'))).toBe(true);
+    expect(lines.some(l => l.startsWith('⊕ 派发任务'))).toBe(true);
+    expect(out).not.toMatch(/· [✔✘?✉↻⊕]/);
   });
 
   it('renders nothing for a whitespace-only step without sections', () => {

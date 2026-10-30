@@ -7,6 +7,7 @@ export const SUMMARIZER_SYSTEM_PROMPT = `You are a conversation summarizer for a
 Requirements:
 - Preserve all key decisions, task assignments, and outcomes
 - Preserve task IDs, worker IDs, and file paths mentioned
+- Preserve what was actually done: tool calls are shown as "→ tool(args) ← result"; keep the commands run, files changed and their outcomes
 - Note any errors or failures and their resolution status
 - Keep the summary under 500 words
 - Use bullet points for clarity`;

@@ -305,14 +305,11 @@ describe('ControllerAgent', () => {
     await agent.run(signals);
 
     const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
-    // System prompt carries the summary under [Conversation Summary]
+    // System prompt carries the summary under [Conversation Summary] ...
     expect(call.system).toContain('[Conversation Summary]');
     expect(call.system).toContain('restored summary text');
-    // getMessages() prepends the summary as the first system message
-    expect(call.messages[0]).toEqual({
-      role: 'system',
-      content: '[Conversation Summary]\nrestored summary text',
-    });
+    // ... and the messages do not repeat it.
+    expect(JSON.stringify(call.messages)).not.toContain('restored summary text');
   });
 
   it('should fold the previous summary into the summarizer input on compaction', async () => {
@@ -359,6 +356,38 @@ describe('ControllerAgent', () => {
     expect(generateText).toHaveBeenCalledTimes(1);
     const prompt = (vi.mocked(generateText).mock.calls[0][0] as any).prompt as string;
     expect(prompt).not.toContain('[Previous Summary]');
+  });
+
+  it('should pass tool calls and their results to the summarizer', async () => {
+    for (let i = 0; i < 3; i++) {
+      state.append('conversation', {
+        type: 'user',
+        uuid: `u-tools-${i}`,
+        parentUuid: null,
+        sessionId: 'test-session',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: `entry ${i}` },
+      });
+    }
+    // A tool-only step: empty text, one call with its result.
+    state.append('conversation', {
+      type: 'assistant',
+      uuid: 'a-tools',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: '' },
+      toolCalls: [{ toolCallId: 'c1', toolName: 'add_task', arguments: JSON.stringify({ title: 'Fix login bug' }) }],
+      toolResults: [{ toolCallId: 'c1', toolName: 'add_task', output: { type: 'text', value: 'Task t-1-abcd added' } }],
+    });
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary' } as any);
+
+    await agent.performCompaction();
+
+    const prompt = (vi.mocked(generateText).mock.calls[0][0] as any).prompt as string;
+    expect(prompt).toContain('add_task');
+    expect(prompt).toContain('Fix login bug');
+    expect(prompt).toContain('Task t-1-abcd added');
   });
 
   it('should stamp compactMeta.model from the current provider config', async () => {

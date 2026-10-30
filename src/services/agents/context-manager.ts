@@ -79,20 +79,27 @@ export class ContextManager {
 
   // --- Public API ---
 
+  /**
+   * System prompt: the static prompt, plus the compaction summary section when
+   * a compaction is active. The summary is sent ONLY here — getMessages()
+   * does not repeat it, so the model receives it exactly once.
+   */
   getSystemPrompt(): string {
-    const parts = [this.staticPrompt];
-    if (this.compactSummary) {
-      parts.push(`\n[Conversation Summary]\n${this.compactSummary}`);
-    }
-    return parts.join('\n\n');
+    return this.staticPrompt + this.summarySection();
+  }
+
+  /** The text getSystemPrompt() appends for the active summary ('' when none). */
+  private summarySection(): string {
+    return this.compactSummary ? `\n\n[Conversation Summary]\n${this.compactSummary}` : '';
   }
 
   /**
    * Build messages for the LLM.
    *
    * If no compaction has occurred, converts the full conversation.
-   * If compacted, returns: [summary system msg] + [recent entries (compactStartIdx..)].
-   * No backward scanning — uses cached compactSummary and compactStartIdx.
+   * If compacted, converts only the verbatim zone (entries from
+   * compactStartIdx on); everything before it is covered by the summary in
+   * the system prompt. No backward scanning — uses the cached compactStartIdx.
    */
   getMessages() {
     const conversation = this.state.get<any[]>('conversation');
@@ -101,12 +108,7 @@ export class ContextManager {
       return conversationToSdkMessages(conversation);
     }
 
-    // Skip entries before compactStartIdx; include everything after
-    const recentEntries = conversation.slice(this.compactStartIdx);
-    return [
-      { role: 'system' as const, content: `[Conversation Summary]\n${this.compactSummary}` },
-      ...conversationToSdkMessages(recentEntries),
-    ];
+    return conversationToSdkMessages(conversation.slice(this.compactStartIdx));
   }
 
   /** Record the provider-reported prompt size (inputTokens) of the latest step. */
@@ -141,11 +143,9 @@ export class ContextManager {
 
   /** Check if context exceeds the compaction threshold. */
   isFull(): boolean {
-    const promptTokens = estimateTokens(this.getSystemPrompt());
-    const convTokens = estimateConversationTokens(this.getMessages());
     // Real reported usage beats the estimate — max() covers the gap before
     // the first real usage arrives and right after a compaction.
-    const effective = Math.max(promptTokens + convTokens, this.lastReportedTokens ?? 0);
+    const effective = Math.max(this.getEstimatedTokens(), this.lastReportedTokens ?? 0);
     return effective > this.contextWindowTokens * COMPACT_THRESHOLD_RATIO;
   }
 
@@ -155,11 +155,17 @@ export class ContextManager {
   }
 
   /**
-   * Estimate the current context size: system prompt + the messages
-   * getMessages() would send. Read-only — never trims or mutates history.
+   * Estimate the current context size: system prompt (static part + summary
+   * section) + the messages getMessages() would send. Counted the same way as
+   * getContextBreakdown(), so the two always agree. Read-only — never trims
+   * or mutates history.
    */
   getEstimatedTokens(): number {
-    return estimateTokens(this.getSystemPrompt()) + estimateConversationTokens(this.getMessages());
+    return (
+      estimateTokens(this.staticPrompt) +
+      estimateTokens(this.summarySection()) +
+      estimateConversationTokens(this.getMessages())
+    );
   }
 
   /**
@@ -174,16 +180,13 @@ export class ContextManager {
    * - user messages (including replayed worker signals) share the user group
    * - assistant text/reasoning never absorbs tool payloads
    * - tool call arguments and tool results are counted on their own
-   * - the compaction summary is counted once, from the cached summary text;
-   *   the copy getMessages() prepends as a system message is skipped
+   * - the compaction summary is counted from the section the system prompt
+   *   carries (it is not repeated in the messages)
    *
    * Read-only — never trims, mutates or appends anything.
    */
   getContextBreakdown(): ContextBreakdown {
     const messages = this.getMessages();
-    const summaryMessage = this.compactSummary
-      ? `[Conversation Summary]\n${this.compactSummary}`
-      : null;
 
     const breakdown: ContextBreakdown = {
       systemPrompt: estimateTokens(this.staticPrompt),
@@ -191,22 +194,16 @@ export class ContextManager {
       assistant: 0,
       toolCalls: 0,
       toolResults: 0,
-      compactSummary: estimateTokens(this.compactSummary ?? ''),
+      compactSummary: estimateTokens(this.summarySection()),
       total: 0,
     };
 
     for (const message of messages) {
-      // The summary is counted once from the cached text above; getMessages()
-      // also sends it as a system message, which would double count.
-      if (summaryMessage && message.role === 'system' && message.content === summaryMessage) {
-        continue;
-      }
-
       switch (message.role) {
         case 'user':
         case 'system':
           // Replayed worker signals are inbound context — same group as user
-          // input. (The compaction summary was handled above.)
+          // input.
           for (const text of extractContentText(message.content).texts) {
             breakdown.user += estimateTokens(text);
           }
@@ -268,7 +265,7 @@ export class ContextManager {
    * Does NOT modify or remove any existing entries — storage is append-only.
    *
    * The summarizer receives ALL entries and returns a summary.
-   * After compaction, getMessages() returns [summary] + entries appended after the marker.
+   * After compaction, getSystemPrompt() carries the summary and getMessages() returns only the entries appended after the marker.
    *
    * @param meta Optional provenance recorded on the marker (model name).
    */

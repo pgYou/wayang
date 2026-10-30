@@ -41,16 +41,17 @@ describe('ContextManager', () => {
       expect(prompt).toContain('the restored summary');
     });
 
-    it('should return the summary system message as the first message', () => {
+    it('should send the summary only in the system prompt, never in the messages', () => {
       const conversation = [makeUser('u1', 'recent message')];
       const cm = new ContextManager(createMockState(conversation), 'STATIC PROMPT');
       cm.restoreCompact('the restored summary');
 
       const messages = cm.getMessages();
-      expect(messages[0]).toEqual({
-        role: 'system',
-        content: '[Conversation Summary]\nthe restored summary',
-      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ role: 'user', content: 'recent message' });
+      expect(JSON.stringify(messages)).not.toContain('the restored summary');
+      // Exactly one copy overall.
+      expect(cm.getSystemPrompt().split('the restored summary')).toHaveLength(2);
     });
 
     it('should treat the whole in-memory conversation as the verbatim zone', () => {
@@ -61,11 +62,11 @@ describe('ContextManager', () => {
       cm.restoreCompact('summary');
 
       const messages = cm.getMessages();
-      // [summary system msg] + all three user entries
-      expect(messages).toHaveLength(4);
-      expect(messages[1]).toMatchObject({ role: 'user', content: 'one' });
-      expect(messages[2]).toMatchObject({ role: 'user', content: 'two' });
-      expect(messages[3]).toMatchObject({ role: 'user', content: 'three' });
+      // All three user entries; the summary lives in the system prompt.
+      expect(messages).toHaveLength(3);
+      expect(messages[0]).toMatchObject({ role: 'user', content: 'one' });
+      expect(messages[1]).toMatchObject({ role: 'user', content: 'two' });
+      expect(messages[2]).toMatchObject({ role: 'user', content: 'three' });
     });
 
     it('should expose the summary via getCompactSummary', () => {
@@ -145,20 +146,16 @@ describe('ContextManager', () => {
 
       await cm.compact(async () => 'fresh summary');
 
-      // Marker appended at index 4 — entries before it must NOT be re-sent.
-      const messages = cm.getMessages();
-      expect(messages[0]).toEqual({
-        role: 'system',
-        content: '[Conversation Summary]\nfresh summary',
-      });
-      // Only the marker follows, and system entries are skipped in conversion
-      expect(messages).toHaveLength(1);
+      // Marker appended at index 4 — entries before it must NOT be re-sent,
+      // and the marker itself is skipped in conversion.
+      expect(cm.getMessages()).toHaveLength(0);
+      expect(cm.getSystemPrompt()).toContain('[Conversation Summary]\nfresh summary');
 
       // A new entry appended after compaction IS sent verbatim
       state.append('conversation', makeUser('u5', 'after compaction'));
       const messagesAfter = cm.getMessages();
-      expect(messagesAfter).toHaveLength(2);
-      expect(messagesAfter[1]).toMatchObject({ role: 'user', content: 'after compaction' });
+      expect(messagesAfter).toHaveLength(1);
+      expect(messagesAfter[0]).toMatchObject({ role: 'user', content: 'after compaction' });
     });
   });
 
@@ -257,7 +254,7 @@ describe('ContextManager', () => {
     });
 
     it('should count the compact summary once, ignoring the compact marker entry', () => {
-      const summary = 's'.repeat(40); // 10
+      const summary = 's'.repeat(40);
       const conversation = [
         {
           type: EEntryType.System,
@@ -276,7 +273,9 @@ describe('ContextManager', () => {
 
       const bd = cm.getContextBreakdown();
 
-      expect(bd.compactSummary).toBe(10); // from the cached summary, not the marker
+      // Counted from the section the system prompt actually carries (label
+      // included), not from the marker entry.
+      expect(bd.compactSummary).toBe(estimateTokens(`\n\n[Conversation Summary]\n${summary}`));
       expect(bd.user).toBe(5);
       expect(bd.total).toBe(bd.systemPrompt + bd.user + bd.assistant + bd.toolCalls + bd.toolResults + bd.compactSummary);
     });
@@ -427,6 +426,14 @@ describe('ContextManager', () => {
   });
 
   describe('estimate vs breakdown consistency', () => {
+    it('getEstimatedTokens equals breakdown.total with an active summary', () => {
+      const cm = new ContextManager(createMockState([makeUser('u1', 'after')]), 'STATIC PROMPT');
+      cm.restoreCompact('s'.repeat(400));
+      const bd = cm.getContextBreakdown();
+      expect(bd.compactSummary).toBeGreaterThanOrEqual(100);
+      expect(cm.getEstimatedTokens()).toBe(bd.total);
+    });
+
     it('getEstimatedTokens equals breakdown.total when no summary is active', () => {
       const conversation = [
         makeUser('u1', 'please list files'),

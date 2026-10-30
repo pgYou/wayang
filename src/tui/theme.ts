@@ -91,7 +91,7 @@ export const theme = {
   },
   /** Controller actions on workers: dispatch a task, send a message. */
   action: {
-    dispatchIcon: '▶', // ▶ new task dispatched
+    dispatchIcon: '⊕', // ⊕ new task added and dispatched
     reuseIcon: '↻', // ↻ task assigned to an existing idle worker
     messageIcon: '✉', // ✉ message sent to a worker
     color: baseToken.color.info,
@@ -103,8 +103,9 @@ export const theme = {
   /** Secondary lines under a row (context tags, previews). */
   secondary: {
     color: baseToken.color.textSubtle,
-    /** Indent (columns) aligning secondary lines under the row text. */
-    indent: 4,
+    /** Indent (columns) aligning secondary lines under the row text — rows
+     *  have one 2-column lead-in ("✔ ", "· "), so text starts at column 2. */
+    indent: 2,
   },
   meta: {
     prefix: baseToken.icon.dot,

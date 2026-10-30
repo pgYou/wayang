@@ -14,6 +14,8 @@ import type { StateEvent } from '@/infra/state/base-state';
 import type { Subscribable } from '@/infra/state/subscribable';
 import { generateText } from 'ai';
 import type { ToolSet } from 'ai';
+import { buildSummaryInput } from './utils/summarizer-input';
+
 import {
   SUMMARIZER_SYSTEM_PROMPT,
   buildSummarizerPrompt,
@@ -23,6 +25,12 @@ import { createControllerTools } from '@/services/tools/index';
 import { SystemContext } from '@/infra/system-context';
 import type { TaskExecuteEngine } from '@/services/task-execute-engine';
 import type { SignalQueue } from '@/services/signal/signal-queue';
+
+/**
+ * Share of the context window (in characters) the summarizer input may use —
+ * leaves room for the summarizer prompt and its output.
+ */
+const SUMMARIZER_INPUT_RATIO = 0.5;
 
 export class ControllerAgent extends BaseAgent implements Subscribable {
   private readonly state: ControllerAgentState;
@@ -404,10 +412,12 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 
       await this.contextManager.compact(
         async (entries) => {
-          const entryTexts = entries.map((e, i) => {
-            const content = e.message?.content ?? e.content ?? '';
-            return `[${i}] (${e.type}) ${String(content).slice(0, 300)}`;
-          });
+          // Budget the summarizer input in characters against the model
+          // window: CJK text runs close to one token per character, so a
+          // character budget never underestimates the request size.
+          const budget = Math.floor(this.contextManager.getContextWindowTokens() * SUMMARIZER_INPUT_RATIO)
+            - (previousSummary?.length ?? 0);
+          const entryTexts = buildSummaryInput(entries, Math.max(budget, 0));
           if (previousSummary) {
             entryTexts.unshift(`[Previous Summary]\n${previousSummary}`);
           }
