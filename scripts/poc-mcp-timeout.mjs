@@ -42,7 +42,12 @@ const stream = query({
   options: {
     cwd: process.cwd(),
     permissionMode: 'bypassPermissions',
-    ...(withOverride && { env: { CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: String(SLEEP_MS + 30_000) } }),
+    ...(withOverride && {
+      // Spread process.env: the SDK replaces the child env with this object
+      // wholesale — a bare override would strip PATH/HOME (same pitfall the
+      // worker hit; see claude-code-worker.ts).
+      env: { ...process.env, CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: String(SLEEP_MS + 30_000) },
+    }),
     mcpServers: {
       poc: createSdkMcpServer({ name: 'poc', version: '1.0.0', tools: [sleepTool] }),
     },
