@@ -6,7 +6,7 @@ import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from './util
 import { ToolCallRecorder, recordToolCalls } from './utils/tool-call-recorder';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload, ContextUsage } from '@/types/index';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload, ContextUsage, ContextLastUsage } from '@/types/index';
 import type { ConversationEntry, ConversationIndex, SignalEntry, TurnView } from '@/types/conversation';
 import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -250,18 +250,54 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
    * unavailable. Ratio stays raw (not clamped to 1) so over-budget states
    * remain visible. dynamicState is never persisted.
    */
-  private updateContextUsage(lastUsage?: { inputTokens?: number }): void {
+  private updateContextUsage(stepUsage?: { inputTokens?: number }): void {
     const maxTokens = this.contextManager.getMaxTokens();
-    const reported = lastUsage?.inputTokens;
+    const reported = stepUsage?.inputTokens;
     const hasReported = typeof reported === 'number' && Number.isFinite(reported) && reported > 0;
     const usedTokens = hasReported ? reported : this.contextManager.getEstimatedTokens();
+    // Last provider usage: prefer the newest assistant entry in the conversation
+    // (which already covers the step that just finished AND restore), falling
+    // back to the step usage handed in when the entry has no usage yet.
+    const lastUsage = this.findLastStepUsage() ?? this.toLastUsage(stepUsage);
     const usage: ContextUsage = {
       usedTokens,
       maxTokens,
       ratio: maxTokens > 0 ? usedTokens / maxTokens : 0,
       source: hasReported ? 'usage' : 'estimate',
+      breakdown: this.contextManager.getContextBreakdown(),
+      ...(lastUsage && { lastUsage }),
     };
     this.state.set('dynamicState.contextUsage', usage);
+  }
+
+  /** Newest provider-reported usage in the conversation, if any. */
+  private findLastStepUsage(): ContextLastUsage | undefined {
+    const conversation = this.state.get<ConversationEntry[]>('conversation') ?? [];
+    for (let i = conversation.length - 1; i >= 0; i--) {
+      const entry = conversation[i]!;
+      if (entry.type !== EEntryType.Assistant) continue;
+      const usage = this.toLastUsage(entry.message.usage);
+      if (usage) return usage;
+    }
+    return undefined;
+  }
+
+  /** Normalize a step usage payload, or undefined when the provider gave none. */
+  private toLastUsage(usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  }): ContextLastUsage | undefined {
+    if (!usage) return undefined;
+    const { inputTokens, outputTokens, cachedInputTokens } = usage;
+    if (inputTokens === undefined && outputTokens === undefined && cachedInputTokens === undefined) {
+      return undefined;
+    }
+    return {
+      inputTokens: inputTokens ?? 0,
+      outputTokens: outputTokens ?? 0,
+      cachedInputTokens: cachedInputTokens ?? 0,
+    };
   }
 
   /** Initialize session metadata. Called by Supervisor at start. */

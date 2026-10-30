@@ -557,4 +557,74 @@ describe('ControllerAgent', () => {
     expect(usage.source).toBe('estimate');
     expect(usage.usedTokens).toBeGreaterThan(0);
   });
+
+  it('should include the token breakdown and the last step usage in contextUsage', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 25_000, outputTokens: 100, cachedInputTokens: 20_000 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 25_000, outputTokens: 100, cachedInputTokens: 20_000 }),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-ctx-breakdown',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello breakdown' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const usage = state.get('dynamicState.contextUsage');
+
+    expect(usage.breakdown).toBeDefined();
+    const groups = ['systemPrompt', 'user', 'assistant', 'toolCalls', 'toolResults', 'compactSummary'] as const;
+    for (const group of groups) {
+      expect(typeof usage.breakdown[group]).toBe('number');
+      expect(usage.breakdown[group]).toBeGreaterThanOrEqual(0);
+    }
+    const groupSum = groups.reduce((sum, group) => sum + usage.breakdown[group], 0);
+    expect(usage.breakdown.total).toBe(groupSum);
+
+    expect(usage.lastUsage).toEqual({
+      inputTokens: 25_000,
+      outputTokens: 100,
+      cachedInputTokens: 20_000,
+    });
+  });
+
+  it('should carry the newest assistant usage into contextUsage after restore', async () => {
+    state.append('conversation', {
+      type: 'assistant',
+      uuid: 'a-restored',
+      parentUuid: null,
+      sessionId: 's-controller',
+      timestamp: new Date().toISOString(),
+      message: {
+        role: 'assistant',
+        content: 'restored step',
+        usage: { inputTokens: 9_000, outputTokens: 250, cachedInputTokens: 4_000 },
+      },
+    });
+
+    await agent.restore();
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage.lastUsage).toEqual({
+      inputTokens: 9_000,
+      outputTokens: 250,
+      cachedInputTokens: 4_000,
+    });
+    expect(usage.breakdown.total).toBeGreaterThan(0);
+  });
 });

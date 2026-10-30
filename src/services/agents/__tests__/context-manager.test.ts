@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ContextManager, RECENT_TOKEN_BUDGET } from '@/services/agents/context-manager';
 import { EEntryType, ESystemSubtype } from '@/types/index';
+import { estimateTokens, extractContentText } from '@/services/agents/utils/estimate-tokens';
 
 /** Minimal state stub — ContextManager only needs get/append. */
 function createMockState(conversation: any[] = []) {
@@ -196,6 +197,231 @@ describe('ContextManager', () => {
       cm.getEstimatedTokens();
       cm.getEstimatedTokens();
       expect(state.append).not.toHaveBeenCalled();
+      expect(conversation).toHaveLength(1);
+    });
+  });
+
+  describe('getContextBreakdown', () => {
+    const makeAssistant = (uuid: string, opts: {
+      content?: string;
+      reasoning?: string;
+      toolArgs?: string;
+      toolOutput?: string;
+    } = {}) => ({
+      type: EEntryType.Assistant,
+      uuid,
+      parentUuid: null,
+      sessionId: 's-cm',
+      timestamp: new Date().toISOString(),
+      message: {
+        role: 'assistant' as const,
+        content: opts.content ?? '',
+        ...(opts.reasoning !== undefined && { reasoning: opts.reasoning }),
+      },
+      ...(opts.toolArgs !== undefined && {
+        toolCalls: [{ toolCallId: `tc-${uuid}`, toolName: 'read_file', arguments: opts.toolArgs }],
+      }),
+      ...(opts.toolOutput !== undefined && {
+        toolResults: [{
+          toolCallId: `tc-${uuid}`,
+          toolName: 'read_file',
+          output: { type: 'text' as const, value: opts.toolOutput },
+        }],
+      }),
+    });
+
+    it('should group tokens by entry kind without double counting tool payloads', () => {
+      // 4 chars ≈ 1 token. Lengths are multiples of 4 so values are exact.
+      const conversation = [
+        makeUser('u-1', 'u'.repeat(40)), // 10
+        makeAssistant('a-1', {
+          content: 'a'.repeat(80), // 20
+          reasoning: 'r'.repeat(8), // 2
+          toolArgs: 'x'.repeat(12), // 3
+          toolOutput: 'y'.repeat(24), // 6
+        }),
+      ];
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT'); // 13 chars → 4
+
+      const bd = cm.getContextBreakdown();
+
+      expect(bd.systemPrompt).toBe(estimateTokens('STATIC PROMPT'));
+      expect(bd.user).toBe(10);
+      expect(bd.assistant).toBe(22); // content + reasoning, tool payloads excluded
+      expect(bd.toolCalls).toBe(3);
+      expect(bd.toolResults).toBe(6);
+      expect(bd.compactSummary).toBe(0);
+      expect(bd.total).toBe(bd.systemPrompt + bd.user + bd.assistant + bd.toolCalls + bd.toolResults + bd.compactSummary);
+      expect(bd.total).toBe(4 + 10 + 22 + 3 + 6);
+    });
+
+    it('should count the compact summary once, ignoring the compact marker entry', () => {
+      const summary = 's'.repeat(40); // 10
+      const conversation = [
+        {
+          type: EEntryType.System,
+          uuid: 'compact-1',
+          parentUuid: null,
+          sessionId: 's-cm',
+          timestamp: new Date().toISOString(),
+          subtype: ESystemSubtype.Compact,
+          content: summary,
+        },
+        makeUser('u-after', 'q'.repeat(20)), // 5
+      ];
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT');
+      cm.restoreCompact(summary);
+
+      const bd = cm.getContextBreakdown();
+
+      expect(bd.compactSummary).toBe(10); // from the cached summary, not the marker
+      expect(bd.user).toBe(5);
+      expect(bd.total).toBe(bd.systemPrompt + bd.user + bd.assistant + bd.toolCalls + bd.toolResults + bd.compactSummary);
+    });
+
+    it('should count worker signals using the label actually sent', () => {
+      const signalContent = 'progress payload';
+      const conversation = [{
+        type: EEntryType.Signal,
+        uuid: 'sig-1',
+        parentUuid: null,
+        sessionId: 's-cm',
+        timestamp: new Date().toISOString(),
+        subtype: 'worker_progress',
+        taskId: 'task-42',
+        content: signalContent,
+      }];
+      const cm = new ContextManager(createMockState(conversation), 'STATIC PROMPT');
+
+      const bd = cm.getContextBreakdown();
+      const sent = cm.getMessages();
+      const sentContent = (sent[0] as { content: string }).content;
+
+      // Real wire label: worker_ prefix stripped, uppercased, task tag appended.
+      expect(sentContent).toBe(`[WORKER PROGRESS SIGNAL: PROGRESS task=task-42] ${signalContent}`);
+      // Signals are replayed as system messages — inbound context, user group.
+      expect(bd.user).toBe(estimateTokens(sentContent));
+      expect(bd.total).toBe(bd.systemPrompt + bd.user + bd.assistant + bd.toolCalls + bd.toolResults + bd.compactSummary);
+    });
+
+    it('should strip skip_reply content exactly like the sent assistant message', () => {
+      const conversation = [{
+        type: EEntryType.Assistant,
+        uuid: 'a-skip',
+        parentUuid: null,
+        sessionId: 's-cm',
+        timestamp: new Date().toISOString(),
+        message: { role: 'assistant' as const, content: 'fabricated reply body' },
+        toolCalls: [{
+          toolCallId: 'tc-skip',
+          toolName: 'skip_reply',
+          arguments: '{"reason":"duplicate"}',
+        }],
+        toolResults: [{
+          toolCallId: 'tc-skip',
+          toolName: 'skip_reply',
+          output: { type: 'text' as const, value: 'skipped' },
+        }],
+      }];
+      const cm = new ContextManager(createMockState(conversation), 'STATIC PROMPT');
+
+      const sent = cm.getMessages();
+      const assistantMessage = sent.find((m) => m.role === 'assistant') as { content: unknown };
+
+      // Fabricated content is stripped — only the tool-call part survives.
+      expect(assistantMessage.content).toEqual([
+        expect.objectContaining({ type: 'tool-call', toolName: 'skip_reply' }),
+      ]);
+
+      const bd = cm.getContextBreakdown();
+      expect(bd.assistant).toBe(0);
+      expect(bd.toolCalls).toBe(estimateTokens('{"reason":"duplicate"}'));
+      expect(bd.toolResults).toBe(estimateTokens('skipped'));
+    });
+
+    it('should count synthesized orphan tool results as tool result payloads', () => {
+      const placeholder = '[No result — step was interrupted]';
+      const conversation = [{
+        type: EEntryType.Assistant,
+        uuid: 'a-orphan',
+        parentUuid: null,
+        sessionId: 's-cm',
+        timestamp: new Date().toISOString(),
+        message: { role: 'assistant' as const, content: '' },
+        toolCalls: [
+          { toolCallId: 'tc-done', toolName: 'read_file', arguments: '{"path":"a"}' },
+          { toolCallId: 'tc-orphan', toolName: 'read_file', arguments: '{"path":"b"}' },
+        ],
+        toolResults: [{
+          toolCallId: 'tc-done',
+          toolName: 'read_file',
+          output: { type: 'text' as const, value: 'file body' },
+        }],
+      }];
+      const cm = new ContextManager(createMockState(conversation), 'STATIC PROMPT');
+
+      const sent = cm.getMessages();
+      const toolMessages = sent.filter((m) => m.role === 'tool') as Array<{ content: unknown }>;
+      expect(toolMessages).toHaveLength(2);
+      expect(toolMessages[1]!.content).toEqual([
+        expect.objectContaining({
+          type: 'tool-result',
+          toolCallId: 'tc-orphan',
+          output: { type: 'text', value: placeholder },
+        }),
+      ]);
+
+      const bd = cm.getContextBreakdown();
+      expect(bd.toolResults).toBe(estimateTokens('file body') + estimateTokens(placeholder));
+    });
+
+    it('should match the token footprint of the messages actually sent', () => {
+      const signalContent = 'worker says hi';
+      const conversation = [
+        makeUser('u-consistency', 'u'.repeat(40)),
+        makeAssistant('a-consistency', {
+          content: 'a'.repeat(80),
+          reasoning: 'r'.repeat(8),
+          toolArgs: '{"path":"x"}',
+          toolOutput: 'y'.repeat(24),
+        }),
+        {
+          type: EEntryType.Signal,
+          uuid: 'sig-consistency',
+          parentUuid: null,
+          sessionId: 's-cm',
+          timestamp: new Date().toISOString(),
+          subtype: 'worker_completed',
+          content: signalContent,
+        },
+      ];
+      const cm = new ContextManager(createMockState(conversation), 'STATIC PROMPT');
+
+      const sent = cm.getMessages();
+      let sentTokens = 0;
+      for (const message of sent) {
+        const { texts, toolCalls, toolResults } = extractContentText(message.content);
+        for (const text of texts) sentTokens += estimateTokens(text);
+        for (const call of toolCalls) sentTokens += estimateTokens(call);
+        for (const result of toolResults) sentTokens += estimateTokens(result);
+      }
+
+      const bd = cm.getContextBreakdown();
+      expect(bd.total).toBe(estimateTokens('STATIC PROMPT') + sentTokens);
+    });
+
+    it('should be read-only — no trims, no appends, no state writes', () => {
+      const conversation = [makeUser('u-ro', 'u'.repeat(40))];
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT');
+
+      cm.getContextBreakdown();
+      cm.getContextBreakdown();
+
+      expect(state.append).not.toHaveBeenCalled();
+      expect(state.set).not.toHaveBeenCalled();
       expect(conversation).toHaveLength(1);
     });
   });

@@ -3,6 +3,7 @@ import { Box, Text, useStdout } from 'ink';
 import type { TaskDetail, ActiveWorkerInfo, ContextUsage } from '@/types/index';
 import type { Subscribable } from '@/infra/state/subscribable';
 import { useWayangState } from '@/tui/hooks/use-wayang-state';
+import { CONTEXT_USAGE_STATE_PATH } from '@/client/remote-supervisor';
 import { theme } from '@/tui/theme';
 
 /** Hard cap for the context segment — the rest of the line yields to it. */
@@ -128,14 +129,15 @@ export function StatusBar({
   activeWorkers: ActiveWorkerInfo[];
   pendingTasks: TaskDetail[];
   runningTasks: TaskDetail[];
-  /** State source for dynamicState.contextUsage (the controller agent). */
+  /** State source for the controller's context usage snapshot. */
   controllerAgent: Subscribable;
 }) {
   const [now, setNow] = useState(() => Date.now());
 
-  // Context usage written by ControllerAgent.updateContextUsage (not persisted)
+  // Context usage written by ControllerAgent.updateContextUsage (not persisted).
+  // The path comes from the shared constant so the literal is not duplicated.
   const contextUsage = useWayangState<ContextUsage | null>(
-    controllerAgent, 'dynamicState.contextUsage',
+    controllerAgent, CONTEXT_USAGE_STATE_PATH,
   );
 
   // Refresh every 5s to update elapsed time
