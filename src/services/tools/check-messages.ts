@@ -1,22 +1,22 @@
 import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
-import type { InboxMessage } from '@/services/agents/worker-state';
 
-export interface CheckMessagesToolDeps {
-  drainInbox: () => InboxMessage[];
-}
-
-export function checkControllerMessagesTool(deps: CheckMessagesToolDeps) {
+/**
+ * DEPRECATED stub (0.6): controller messages are now injected automatically
+ * as `[Controller message]` user messages at each LLM step — workers no
+ * longer poll. The stub exists because historical task descriptions may
+ * embed "call check_controller_messages periodically" instructions; it
+ * returns a redirect instead of the inbox contents. Remove in the next
+ * minor version.
+ */
+export function checkControllerMessagesTool() {
   return defineTool({
     description:
-      'Check for messages from the controller. Call this periodically during execution — ' +
-      'at the start of each major phase, before long-running operations, or when you encounter ' +
-      'an unexpected situation. Returns pending messages and clears the inbox. Returns "No messages." if empty.',
+      'Deprecated — controller messages now arrive automatically as injected user messages. ' +
+      'You do not need to call this tool.',
     parameters: z.object({}),
     execute: safeExecute('check_controller_messages', async () => {
-      const messages = deps.drainInbox();
-      if (messages.length === 0) return 'No messages.';
-      return messages.map(m => `[Controller] ${m.content}`).join('\n');
+      return '[DEPRECATED] Controller messages are injected automatically as "[Controller message]" user messages — no need to check. Do not call this tool again.';
     }),
   });
 }

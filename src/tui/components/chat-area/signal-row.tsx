@@ -23,6 +23,12 @@ export function SignalRow({ item }: { item: DisplayItem }) {
   if (item.subtype === ESignalSubtype.PermissionRequest && item.permissionMeta) {
     return <PermissionRequestRow item={item} />;
   }
+  if (item.subtype === ESignalSubtype.WorkerInquiry && item.inquiryMeta) {
+    return <WorkerInquiryRow item={item} />;
+  }
+  if (item.subtype === ESignalSubtype.InquiryTimeout) {
+    return <InquiryTimeoutRow item={item} />;
+  }
   return <DefaultSignalRow item={item} />;
 }
 
@@ -54,6 +60,58 @@ function DefaultSignalRow({ item }: { item: DisplayItem }) {
       {content && (
         <Box marginLeft={3}>
           <Text dimColor={dim} color={color}>{content}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * Worker inquiry: "? 🧸 <task> 提问", question preview and the #xxxx handle
+ * (matched by the later "✔ 已答复 … #xxxx" resolution row).
+ */
+function WorkerInquiryRow({ item }: { item: DisplayItem }) {
+  const dim = !item.read;
+  const accent = dim ? theme.baseToken.color.textSubtle : theme.inquiry.questionColor;
+  const question = trimContent(item.inquiryMeta!.question, MAX_CONTENT_LINES);
+  const shortId = item.inquiryMeta!.inquiryId.slice(-4);
+
+  const workerTag = formatWorkerTag({ emoji: item.emoji, taskTitle: item.taskTitle, workerId: item.workerId });
+  const contextLine = [workerTag, `#${shortId}`].filter(Boolean).join('  ');
+
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Text color={accent} bold>{theme.inquiry.questionPrefix} 提问</Text>
+        {item.emoji && <Text dimColor={dim}> {item.emoji}</Text>}
+      </Box>
+      {question && (
+        <Box marginLeft={theme.secondary.indent}>
+          <Text dimColor={dim} color={accent}>{question}</Text>
+        </Box>
+      )}
+      {contextLine && (
+        <Box marginLeft={theme.secondary.indent}>
+          <Text color={theme.secondary.color}>{contextLine}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+/** Inquiry timeout: "⏱ 提问超时" — the worker continued on its own judgment. */
+function InquiryTimeoutRow({ item }: { item: DisplayItem }) {
+  const dim = !item.read;
+  const question = trimContent(item.content, MAX_CONTENT_LINES);
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Text color={theme.inquiry.timeoutColor}>{theme.inquiry.timeoutPrefix} 提问超时</Text>
+        <Text dimColor={dim}> worker 已自行继续</Text>
+      </Box>
+      {question && (
+        <Box marginLeft={theme.secondary.indent}>
+          <Text dimColor color={theme.inquiry.timeoutColor}>{question}</Text>
         </Box>
       )}
     </Box>

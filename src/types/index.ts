@@ -19,6 +19,8 @@ export type {
   TurnToolCallView,
   TurnUsage,
   ConversationIndex,
+  PermissionRequestMeta,
+  WorkerInquiryMeta,
   /** @deprecated Alias of TurnToolCallView. */
   TurnViewToolCall,
   /** @deprecated Alias of TurnUsage. */
@@ -44,6 +46,9 @@ export type {
   TaskCancelledSignalPayload,
   HeartbeatSignalPayload,
   PermissionRequestSignalPayload,
+  WorkerInquirySignalPayload,
+  InquiryTimeoutSignalPayload,
+  MessageUndeliveredSignalPayload,
   PreviousSessionTasksSignalPayload,
 } from './signal';
 export { getSignalField } from './signal';

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — Controller ↔ Worker 通信增强 (v0.6)
+
+**Worker → Controller 阻塞式提问(全新能力)** — Workers stuck mid-task can now call `ask_controller` and block for the controller's answer (5-minute timeout, then they continue on their own judgment — with an `inquiry_timeout` signal telling the controller). The controller answers via the new `respond_inquiry` tool or the `respond_worker_inquiry` RPC command; questions render as structured TUI rows (`? 提问 #xxxx` → `✔ 已答复 #xxxx`). Puppet workers get the tool directly; Claude Code workers get it as a real in-process SDK MCP tool (`createSdkMcpServer`), with `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT` raised so a 5-minute block survives the SDK's 60s MCP default
+
+**Controller → Worker 补话时效(2a)** — `chat_worker` messages now reach a running puppet worker at its **next LLM step** via the AI SDK `prepareStep` hook (injected as `[Controller message]` user messages that stay in context until the run ends, and are persisted into the worker's conversation so they survive compaction rebuilds and multi-stage handovers). `check_controller_messages` is deprecated (stub kept one minor version). Claude Code workers get queued messages delivered by interrupting the current turn (`interruptOnMessage: immediate | turn-end`, default immediate; deferred while a permission is pending), and idle-period messages are folded into the next stage's opening prompt
+
+**修投递"说谎"** — `sendMessageToWorker` now judges delivery by the activeWorkers runtime state instead of the workers Map, closing the `setTimeout(0)` disposal window where a message was accepted for a dying worker while `chat_worker` reported success; unread messages at run end (or idle-worker disposal) are reported back via a `message_undelivered` signal instead of vanishing — including the Claude Code "task finished before reading" case that used to flush the queue silently
+
+**工程** — Shared `BlockingRequestMap` abstraction (pending map + timeout + cleanup, duplicate-id rejection) backs the permission, Claude Code permission, and inquiry flows alike; the claude-code child env is a spread of `process.env` plus the timeout override (the SDK replaces the env wholesale); new signals `worker_inquiry` / `inquiry_timeout` / `message_undelivered` with controller-side converters and TUI rows; ask_controller Q&A lands as audit entries in claude-code worker conversations; late answers to aborted inquiries report `worker_gone` via id tombstones instead of a misleading "timed out"; PoC scripts `scripts/poc-interrupt-permission.mjs` / `scripts/poc-mcp-timeout.mjs` for the two unproven SDK behaviors (run locally with a real claude CLI); design doc `docs/develop/v0.6-design.md` (reviewed, WAY-N moved out of this version)
+
 ## v0.5.2 (2026-10-30)
 
 ### Features

@@ -1,4 +1,4 @@
-import { streamText, stepCountIs, hasToolCall, type OnStepFinishEvent, type ModelMessage, type ToolSet } from 'ai';
+import { streamText, stepCountIs, hasToolCall, type OnStepFinishEvent, type ModelMessage, type ToolSet, type PrepareStepFunction } from 'ai';
 import { createModel } from './model-factory';
 import type { ProviderConfig, ToolChoice } from '@/types/index';
 import { generateId } from '@/utils/id';
@@ -53,6 +53,15 @@ export interface StreamLoopOptions {
    *  waiting for approval / user input). 0 disables. Default 5 minutes.
    *  Unrelated to the `idleTimeoutMs` config field (multi-stage worker reaping). */
   llmIdleTimeoutMs?: number;
+  /**
+   * Per-step hook forwarded to streamText's prepareStep option. Called before
+   * each step's LLM request with the messages that step will send; returning
+   * `{ messages }` overrides them for THAT step only (the SDK's step loop
+   * re-derives the base each step, so overrides do not persist — re-append
+   * anything that must stay in context). Used by workers to inject controller
+   * messages mid-task.
+   */
+  prepareStep?: PrepareStepFunction<ToolSet>;
   onStep?: (event: OnStepFinishEvent, meta: StepMeta) => void;
   /** Called when the LLM stream errors (e.g. HTTP 400/403 from the provider).
    *  Without this, textStream silently drops error parts. */
@@ -181,6 +190,7 @@ export abstract class BaseAgent {
         toolChoice: opts.toolChoice,
         stopWhen: stopConditions.length > 0 ? stopConditions : undefined,
         abortSignal: callAbort.signal,
+        ...(opts.prepareStep && { prepareStep: opts.prepareStep }),
         onStepFinish: onStep,
         onError: ({ error }) => {
           opts.onStreamError?.(error);

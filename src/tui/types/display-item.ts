@@ -1,5 +1,5 @@
-import type { ConversationEntry, PermissionRequestMeta } from '@/types/conversation';
-import type { ControllerSignal, PermissionRequestSignalPayload } from '@/types/signal';
+import type { ConversationEntry, PermissionRequestMeta, WorkerInquiryMeta } from '@/types/conversation';
+import type { ControllerSignal, PermissionRequestSignalPayload, WorkerInquirySignalPayload } from '@/types/signal';
 import { getSignalField } from '@/types/signal';
 import { EEntryType, ESignalSubtype } from '@/types/conversation';
 
@@ -45,6 +45,8 @@ export interface DisplayItem {
   emoji?: string;
   /** signal-only: structured permission-request data (permission_request subtype). */
   permissionMeta?: PermissionRequestMeta;
+  /** signal-only: structured worker-inquiry data (worker_inquiry subtype). */
+  inquiryMeta?: WorkerInquiryMeta;
 }
 
 /** Convert a persisted conversation entry to a single DisplayItem, or null for hidden entries (e.g. skip_reply). */
@@ -108,7 +110,7 @@ export function entryToDisplayItem(entry: ConversationEntry): DisplayItem | null
     }
 
     case EEntryType.Signal:
-      return { ...base, role: 'signal', subtype: entry.subtype, content: entry.content, taskId: entry.taskId, taskTitle: entry.taskTitle, workerId: entry.workerId, workerType: entry.workerType, emoji: entry.emoji, permissionMeta: entry.permissionMeta };
+      return { ...base, role: 'signal', subtype: entry.subtype, content: entry.content, taskId: entry.taskId, taskTitle: entry.taskTitle, workerId: entry.workerId, workerType: entry.workerType, emoji: entry.emoji, permissionMeta: entry.permissionMeta, inquiryMeta: entry.inquiryMeta };
 
     case EEntryType.System:
       return { ...base, role: 'system', subtype: entry.subtype, content: entry.content, compactMeta: entry.compactMeta };
@@ -124,6 +126,9 @@ const signalSubtypeMap: Record<string, ESignalSubtype> = {
   cancelled: ESignalSubtype.WorkerFailed,
   task_cancelled: ESignalSubtype.TaskCancelled,
   permission_request: ESignalSubtype.PermissionRequest,
+  worker_inquiry: ESignalSubtype.WorkerInquiry,
+  inquiry_timeout: ESignalSubtype.InquiryTimeout,
+  message_undelivered: ESignalSubtype.MessageUndelivered,
 };
 
 /** Convert an unread signal to a DisplayItem (always unread). */
@@ -161,6 +166,28 @@ export function signalToDisplayItem(signal: ControllerSignal): DisplayItem {
         toolName: p.toolName,
         toolArgs: p.toolArgs,
         description: p.description,
+      },
+    };
+  }
+
+  // Worker inquiries carry the question as content plus structured meta for
+  // matching a later respond_inquiry call.
+  if (signal.type === 'worker_inquiry') {
+    const p = signal.payload as WorkerInquirySignalPayload;
+    return {
+      ...base,
+      role: 'signal',
+      subtype: ESignalSubtype.WorkerInquiry,
+      content: p.question,
+      taskId: p.taskId,
+      taskTitle: p.taskTitle,
+      workerId: p.workerId,
+      workerType: p.workerType,
+      emoji: p.emoji,
+      inquiryMeta: {
+        inquiryId: p.inquiryId,
+        question: p.question,
+        ...(p.context !== undefined && { context: p.context }),
       },
     };
   }

@@ -36,8 +36,10 @@ class RuntimeState extends BaseWayangState {
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
 import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { createWorkerTools } from '@/services/tools/index';
+import { askControllerTool } from '@/services/tools/ask-controller';
 import { wrapWithPermissionMiddleware, type PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import { FILE_TOOL_NAMES, needsBashPermission, needsFilePermission } from '@/services/tools/permission-rules';
+import { BlockingRequestMap } from '@/infra/blocking-requests';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
 import { resolve } from 'node:path';
@@ -46,6 +48,18 @@ const PUPPET_WORKER_TYPE = 'puppet';
 
 /** Default idle timeout: idle workers are reaped after 30 minutes if not reused. */
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** How long a worker waits for a controller answer before continuing on its own. */
+const INQUIRY_TIMEOUT_MS = 300_000;
+
+/** Resolution of a pending ask_controller call, settled via the registry. */
+export type WorkerInquiryResolution =
+  | { kind: 'answer'; answer: string }
+  | { kind: 'timeout' }
+  | { kind: 'aborted' };
+
+/** Outcome of delivering a controller message to a worker. */
+export type WorkerMessageDelivery = 'delivered' | 'queued' | 'not_running';
 
 // ---------------------------------------------------------------------------
 // TaskExecuteEngine
@@ -67,6 +81,14 @@ export class TaskExecuteEngine implements Subscribable {
   private workerTaskMap = new Map<string, string>();
   /** Permission middleware resolvers keyed by workerId. */
   private permissionResolvers = new Map<string, PermissionMiddlewareResult>();
+  /** ask_controller blocking-request registries keyed by workerId. */
+  private inquiryRegistries = new Map<string, BlockingRequestMap<WorkerInquiryResolution>>();
+  /**
+   * Inquiry ids aborted by worker shutdown/cancel. Lets a late respond_inquiry
+   * distinguish "worker gone" from "timed out" even while other workers'
+   * registries are still alive.
+   */
+  private abortedInquiryIds = new Set<string>();
   /**
    * Turn lineage of each active worker's current run: the execution turn id
    * (also handed to the worker for stamping its entries), the chain's root
@@ -271,12 +293,24 @@ export class TaskExecuteEngine implements Subscribable {
     return worker ?? null;
   }
 
-  /** Send a message to a running worker. Returns false if worker not found. */
-  sendMessageToWorker(workerId: string, message: string): boolean {
+  /**
+   * Send a message to a worker. Delivery is judged by the activeWorkers
+   * runtime state — NOT by the workers Map, which lingers one tick past
+   * disposal (removeWorkerTracking defers) and would accept messages for a
+   * worker that is already gone.
+   */
+  sendMessageToWorker(workerId: string, message: string): WorkerMessageDelivery {
+    const info = this.getActiveWorkers().find(w => w.workerId === workerId);
+    if (!info) return 'not_running';
     const worker = this.workers.get(workerId);
-    if (!worker) return false;
+    if (!worker) return 'not_running';
+
     worker.acceptMessage(message);
-    return true;
+    // Idle (multi-stage) workers read messages when their next stage starts;
+    // a running puppet reads at its next LLM step; a running third-party
+    // worker reads at its next turn boundary (or when interrupted).
+    if (info.status === 'idle') return 'queued';
+    return worker instanceof WorkerAgent ? 'delivered' : 'queued';
   }
 
   /** Resolve a pending permission request. Returns false if not found. */
@@ -287,6 +321,56 @@ export class TaskExecuteEngine implements Subscribable {
       }
     }
     return false;
+  }
+
+  /**
+   * Answer a worker's pending ask_controller call.
+   * - 'answered': the blocked worker received the answer and resumes.
+   * - 'not_found': the inquiry already settled (timed out) on a live worker.
+   * - 'worker_gone': no registry has it — aborted/cancelled (tombstoned) or
+   *   no worker runs at all.
+   */
+  resolveInquiry(inquiryId: string, answer: string): 'answered' | 'not_found' | 'worker_gone' {
+    for (const registry of this.inquiryRegistries.values()) {
+      if (registry.resolve(inquiryId, { kind: 'answer', answer })) return 'answered';
+    }
+    if (this.abortedInquiryIds.delete(inquiryId)) return 'worker_gone';
+    return this.inquiryRegistries.size > 0 ? 'not_found' : 'worker_gone';
+  }
+
+  /** Abort a worker's pending inquiries (worker shutting down), tombstoning their ids. */
+  private cleanupInquiryRegistry(workerId: string): void {
+    const registry = this.inquiryRegistries.get(workerId);
+    if (!registry) return;
+    registry.cleanupAll((id) => {
+      this.abortedInquiryIds.add(id);
+      return { kind: 'aborted' };
+    });
+    this.inquiryRegistries.delete(workerId);
+  }
+
+  /**
+   * Report controller messages a worker never read before its run ended (or
+   * before an idle worker was disposed). No-op when nothing is pending.
+   */
+  private emitUndeliveredIfAny(
+    workerId: string,
+    ctx: { taskId?: string; taskTitle?: string; workerType?: string; emoji?: string },
+    reason: 'task_finished' | 'worker_disposed',
+  ): void {
+    const worker = this.workers.get(workerId);
+    const messages = worker?.pendingMessages?.() ?? [];
+    if (messages.length === 0) return;
+    this.enqueueWorkerSignal(workerId, {
+      source: 'system',
+      type: 'message_undelivered',
+      payload: {
+        workerId,
+        ...ctx,
+        messages,
+        reason,
+      },
+    });
   }
 
   getWorkerConversation(taskId: string): any[] {
@@ -385,6 +469,7 @@ export class TaskExecuteEngine implements Subscribable {
         const worker = this.workers.get(workerId);
         worker?.abort();
         this.permissionResolvers.get(workerId)?.cleanup();
+        this.cleanupInquiryRegistry(workerId);
         this.logger.info({ workerId, taskId }, 'Worker aborted');
         return;
       }
@@ -408,17 +493,22 @@ export class TaskExecuteEngine implements Subscribable {
     const worker = this.workers.get(workerId);
     worker?.abort();
     this.permissionResolvers.get(workerId)?.cleanup();
+    this.cleanupInquiryRegistry(workerId);
     this.logger.info({ workerId }, 'Worker aborted by id');
     return true;
   }
 
   /** Abort all workers. Used during shutdown. */
   abortAll(): void {
-    // Cancel any pending permission resolvers
+    // Cancel any pending permission resolvers + blocking inquiries
     for (const resolver of this.permissionResolvers.values()) {
       resolver.cleanup();
     }
     this.permissionResolvers.clear();
+    for (const workerId of this.inquiryRegistries.keys()) {
+      this.cleanupInquiryRegistry(workerId);
+    }
+    this.inquiryRegistries.clear();
     // Clear all idle reapers
     for (const workerId of this.idleTimers.keys()) {
       this.clearIdleTimer(workerId);
@@ -585,6 +675,13 @@ export class TaskExecuteEngine implements Subscribable {
     worker?.abort();
     this.clearIdleTimer(workerId);
 
+    // Messages parked in the idle worker's inbox die with it — report them.
+    this.emitUndeliveredIfAny(
+      workerId,
+      { taskId: info.taskId, workerType: info.workerType, emoji: info.emoji },
+      'worker_disposed',
+    );
+
     this.enqueueWorkerSignal(workerId, {
       source: 'system',
       type: 'cancelled',
@@ -742,9 +839,42 @@ export class TaskExecuteEngine implements Subscribable {
   ): Record<string, any> {
     const workerMeta = getWorkerMeta(workerType, this.workerConfigs);
 
+    // Blocking-request registry for this worker run's ask_controller calls.
+    const inquiryRegistry = new BlockingRequestMap<WorkerInquiryResolution>();
+    this.inquiryRegistries.set(workerId, inquiryRegistry);
+    const askAndWait = async (question: string, context?: string): Promise<string> => {
+      const inquiryId = generateId('inq');
+      this.enqueueWorkerSignal(workerId, {
+        source: 'worker',
+        type: 'worker_inquiry',
+        payload: {
+          inquiryId, workerId,
+          taskId: task.id, taskTitle: task.title,
+          workerType, emoji: workerMeta.emoji,
+          question,
+          ...(context !== undefined && { context }),
+        },
+      });
+      const resolution = await inquiryRegistry.wait(inquiryId, INQUIRY_TIMEOUT_MS, () => {
+        // Timed out — the worker continues on its own; tell the controller.
+        this.enqueueWorkerSignal(workerId, {
+          source: 'system',
+          type: 'inquiry_timeout',
+          payload: { inquiryId, workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: workerMeta.emoji, question },
+        });
+        return { kind: 'timeout' as const };
+      });
+      if (resolution.kind === 'answer') return `[Controller] ${resolution.answer}`;
+      if (resolution.kind === 'timeout') {
+        return '[TIMEOUT] No answer from the controller within 5 minutes. Use your best judgment to continue and report the decision via update_progress or done.';
+      }
+      return '[ABORTED] Worker is shutting down.';
+    };
+
     // Puppet workers need Wayang tools; third-party workers don't use them
     let tools = workerType === PUPPET_WORKER_TYPE
-      ? createWorkerTools({
+      ? {
+          ...createWorkerTools({
           listTasks: (status?: TaskDetail['status']) => this.list(status),
           cwd: this.ctx.workspaceDir,
           tavilyApiKey: this.ctx.config.tavilyApiKey,
@@ -762,8 +892,16 @@ export class TaskExecuteEngine implements Subscribable {
           onFail: (error: string) => {
             (worker as any).fail(error);
           },
-        })
+        }),
+          ask_controller: askControllerTool({ ask: askAndWait }),
+        }
       : {};
+
+    // Third-party workers get ask_controller through their own channel
+    // (ClaudeCodeWorker exposes it as an in-process SDK MCP tool).
+    if (worker instanceof ClaudeCodeWorker) {
+      worker.setInquirySupport(askAndWait);
+    }
 
     // Apply permission middleware for puppet workers
     if (workerType === PUPPET_WORKER_TYPE) {
@@ -835,6 +973,7 @@ export class TaskExecuteEngine implements Subscribable {
     // Failure is never a "stage": always dispose, regardless of multiStage.
     if (result.status !== 'completed') {
       this.failTask(task.id, result.error ?? 'Unknown error');
+      this.emitUndeliveredIfAny(workerId, { taskId: task.id, taskTitle: task.title, workerType, emoji: meta.emoji }, 'task_finished');
       this.enqueueWorkerSignal(workerId, {
         source: 'worker',
         type: 'failed',
@@ -867,6 +1006,7 @@ export class TaskExecuteEngine implements Subscribable {
 
     // Default path: completed → dispose
     this.completeTask(task.id, result.summary ?? '');
+    this.emitUndeliveredIfAny(workerId, { taskId: task.id, taskTitle: task.title, workerType, emoji: meta.emoji }, 'task_finished');
     this.enqueueWorkerSignal(workerId, {
       source: 'worker',
       type: 'completed',
@@ -894,6 +1034,7 @@ export class TaskExecuteEngine implements Subscribable {
     const meta = getWorkerMeta(workerType, this.workerConfigs);
 
     this.failTask(task.id, error);
+    this.emitUndeliveredIfAny(workerId, { taskId: task.id, taskTitle: task.title, workerType, emoji: meta.emoji }, 'task_finished');
     this.enqueueWorkerSignal(workerId, {
       source: 'worker',
       type: 'failed',
@@ -924,6 +1065,7 @@ export class TaskExecuteEngine implements Subscribable {
     setTimeout(() => {
       this.permissionResolvers.get(workerId)?.cleanup();
       this.permissionResolvers.delete(workerId);
+      this.cleanupInquiryRegistry(workerId);
       this.workers.delete(workerId);
       this.workerTaskMap.delete(workerId);
     }, 0);

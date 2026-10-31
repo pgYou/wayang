@@ -3,7 +3,7 @@
  *
  * 0.5 uses newline-delimited JSON over stdio; the same message set is
  * intended for WebSocket when the WebUI lands (0.6). See
- * docs/v0.5-server-rpc-design.md §3.
+ * docs/develop/v0.5-server-rpc-design.md §3.
  */
 
 // --- Messages ---
@@ -63,6 +63,7 @@ export const METHOD = {
   CANCEL_TASK: 'cancel_task',
   UPDATE_TASK: 'update_task',
   RESPOND_PERMISSION: 'respond_permission',
+  RESPOND_WORKER_INQUIRY: 'respond_worker_inquiry',
   CHAT_WORKER: 'chat_worker',
   DISPOSE_WORKER: 'dispose_worker',
   PERFORM_COMPACTION: 'perform_compaction',

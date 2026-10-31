@@ -23,8 +23,12 @@ export interface ChatRequestBody {
 
 export interface ScriptedToolCall {
   name: string;
-  /** Static args, or a resolver evaluated at request time (for ids only known at runtime). */
-  args: Record<string, unknown> | (() => Record<string, unknown>);
+  /**
+   * Static args, or a resolver evaluated at request time (for ids only known
+   * at runtime). The resolver may be async — e.g. poll subscribed state until
+   * the id appears — which conveniently also holds the HTTP response open.
+   */
+  args: Record<string, unknown> | (() => Record<string, unknown> | Promise<Record<string, unknown>>);
 }
 
 export interface ScriptEntry {
@@ -71,42 +75,55 @@ export async function startFakeProvider(script: ScriptEntry[] = []): Promise<Fak
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
-      let body: ChatRequestBody = {};
-      try {
-        body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString('utf-8')) : {};
-      } catch { /* fall through to 500 */ }
-      requests.push(body);
-
-      const index = queue.findIndex((entry) => {
+      void (async () => {
+        let body: ChatRequestBody = {};
         try {
-          return entry.match(body);
-        } catch {
-          return false;
+          body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString('utf-8')) : {};
+        } catch { /* fall through to 500 */ }
+        requests.push(body);
+
+        const index = queue.findIndex((entry) => {
+          try {
+            return entry.match(body);
+          } catch {
+            return false;
+          }
+        });
+        if (index < 0) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: `fake-provider: no script entry matches (request #${requests.length}, messages[0]=${String(body.messages?.[0]?.content ?? '').slice(0, 80)}...)` } }));
+          return;
+        }
+        const entry = queue.splice(index, 1)[0];
+
+        // Resolve tool-call args first (may be async resolvers polling state).
+        const toolCalls = await Promise.all((entry.toolCalls ?? []).map(async (call) => ({
+          name: call.name,
+          args: await (typeof call.args === 'function' ? call.args() : call.args),
+        })));
+
+        // Non-streaming request (generateText): plain JSON chat.completion.
+        if (body.stream !== true) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(encodeChatCompletionJson(entry, toolCalls)));
+          return;
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        for (const frame of encodeChatCompletionSSE(entry, toolCalls)) {
+          res.write(frame);
+        }
+        res.end();
+      })().catch((err) => {
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: `fake-provider: script resolver failed: ${String(err)}` } }));
         }
       });
-      if (index < 0) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: `fake-provider: no script entry matches (request #${requests.length}, messages[0]=${String(body.messages?.[0]?.content ?? '').slice(0, 80)}...)` } }));
-        return;
-      }
-      const entry = queue.splice(index, 1)[0];
-
-      // Non-streaming request (generateText): plain JSON chat.completion.
-      if (body.stream !== true) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(encodeChatCompletionJson(entry)));
-        return;
-      }
-
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      });
-      for (const frame of encodeChatCompletionSSE(entry)) {
-        res.write(frame);
-      }
-      res.end();
     });
   });
 
@@ -134,9 +151,14 @@ function sseFrame(payload: unknown): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
 }
 
+/** Tool call with its args already resolved (resolver already awaited). */
+export interface ResolvedToolCall {
+  name: string;
+  args: Record<string, unknown>;
+}
+
 /** Non-streaming response body for generateText-style requests. */
-function encodeChatCompletionJson(entry: ScriptEntry) {
-  const toolCalls = entry.toolCalls ?? [];
+function encodeChatCompletionJson(entry: ScriptEntry, toolCalls: ResolvedToolCall[]) {
   return {
     id: 'chatcmpl-fake',
     object: 'chat.completion',
@@ -148,14 +170,11 @@ function encodeChatCompletionJson(entry: ScriptEntry) {
         role: 'assistant',
         content: entry.text ?? '',
         ...(toolCalls.length > 0 && {
-          tool_calls: toolCalls.map((call, i) => {
-            const args = typeof call.args === 'function' ? call.args() : call.args;
-            return {
-              id: `call-fake-${i + 1}`,
-              type: 'function',
-              function: { name: call.name, arguments: JSON.stringify(args) },
-            };
-          }),
+          tool_calls: toolCalls.map((call, i) => ({
+            id: `call-fake-${i + 1}`,
+            type: 'function',
+            function: { name: call.name, arguments: JSON.stringify(call.args) },
+          })),
         }),
       },
       finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
@@ -164,7 +183,7 @@ function encodeChatCompletionJson(entry: ScriptEntry) {
   };
 }
 
-export function* encodeChatCompletionSSE(entry: ScriptEntry): Generator<string> {
+export function* encodeChatCompletionSSE(entry: ScriptEntry, toolCalls: ResolvedToolCall[]): Generator<string> {
   const base = { id: 'chatcmpl-fake', object: 'chat.completion.chunk', created: 1700000000, model: 'fake' };
 
   yield sseFrame({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
@@ -176,10 +195,8 @@ export function* encodeChatCompletionSSE(entry: ScriptEntry): Generator<string> 
     }
   }
 
-  const toolCalls = entry.toolCalls ?? [];
   for (let i = 0; i < toolCalls.length; i++) {
     const call = toolCalls[i];
-    const args = typeof call.args === 'function' ? call.args() : call.args;
     yield sseFrame({
       ...base,
       choices: [{
@@ -189,7 +206,7 @@ export function* encodeChatCompletionSSE(entry: ScriptEntry): Generator<string> 
             index: i,
             id: `call-fake-${i + 1}`,
             type: 'function',
-            function: { name: call.name, arguments: JSON.stringify(args) },
+            function: { name: call.name, arguments: JSON.stringify(call.args) },
           }],
         },
         finish_reason: null,

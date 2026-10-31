@@ -100,6 +100,15 @@ export const theme = {
     okColor: baseToken.color.success,
     failColor: baseToken.color.error,
   },
+  /** Worker inquiries: ask_controller question / response rows. */
+  inquiry: {
+    questionPrefix: '?', // ? worker asks the controller
+    answeredPrefix: '✔', // ✔ controller answered
+    timeoutPrefix: '⏱', // ⏱ no answer in time — worker continued on its own
+    questionColor: baseToken.color.warning,
+    answeredColor: baseToken.color.success,
+    timeoutColor: baseToken.color.textSubtle,
+  },
   /** Secondary lines under a row (context tags, previews). */
   secondary: {
     color: baseToken.color.textSubtle,

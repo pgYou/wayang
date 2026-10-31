@@ -6,7 +6,7 @@ import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from './util
 import { ToolCallRecorder, recordToolCalls } from './utils/tool-call-recorder';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload, ContextUsage, ContextLastUsage } from '@/types/index';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload, WorkerInquirySignalPayload, InquiryTimeoutSignalPayload, MessageUndeliveredSignalPayload, ContextUsage, ContextLastUsage } from '@/types/index';
 import type { ConversationEntry, ConversationIndex, SignalEntry, TurnView } from '@/types/conversation';
 import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -116,6 +116,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       inquire: (question) => state.askInquiry(question),
       sendMessageToWorker: (workerId, message) => engine.sendMessageToWorker(workerId, message),
       resolvePermission: (requestId, approved, reason) => engine.resolvePermission(requestId, approved, reason),
+      resolveInquiry: (inquiryId, answer) => engine.resolveInquiry(inquiryId, answer),
       registry: skills,
       disposeWorker: (workerId) => engine.abortByWorkerId(workerId),
       // Turn lineage for tasks created by add_task (read from dynamicState,
@@ -561,6 +562,46 @@ const signalConverters: Record<string, SignalConverter> = {
         toolArgs: p.toolArgs,
         description: p.description,
       },
+    };
+  },
+
+  worker_inquiry: (sig, ts, sessionId) => {
+    const p = sig.payload as WorkerInquirySignalPayload;
+    return {
+      ...signalBase(ts, sessionId),
+      subtype: ESignalSubtype.WorkerInquiry,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle,
+      content: `[WORKER INQUIRY] Worker ${p.workerId} (task: ${p.taskTitle}) is blocked and asks:${'\n'}${p.question}` +
+        `${p.context ? `\nContext: ${p.context}` : ''}\nInquiry ID: ${p.inquiryId}\nUse respond_inquiry to answer; the worker is waiting and will continue on its own after a 5-minute timeout.`,
+      inquiryMeta: {
+        inquiryId: p.inquiryId,
+        question: p.question,
+        ...(p.context !== undefined && { context: p.context }),
+      },
+    };
+  },
+
+  inquiry_timeout: (sig, ts, sessionId) => {
+    const p = sig.payload as InquiryTimeoutSignalPayload;
+    return {
+      ...signalBase(ts, sessionId),
+      subtype: ESignalSubtype.InquiryTimeout,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle,
+      content: `[INQUIRY TIMEOUT] Worker ${p.workerId} (task: ${p.taskTitle}) got no answer within 5 minutes and continued on its own judgment. Question was: ${p.question}`,
+    };
+  },
+
+  message_undelivered: (sig, ts, sessionId) => {
+    const p = sig.payload as MessageUndeliveredSignalPayload;
+    const lines = p.messages.map(m => `- ${m}`);
+    return {
+      ...signalBase(ts, sessionId),
+      subtype: ESignalSubtype.MessageUndelivered,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle ?? 'message_undelivered',
+      content: `[MESSAGES NOT DELIVERED] Worker ${p.workerId} ${p.reason === 'worker_disposed' ? 'was disposed (idle)' : 'finished its task'} before reading your message(s):${'\n'}${lines.join('\n')}\nThey were never seen by the worker. If still relevant, re-dispatch as a follow-up task.`,
     };
   },
 

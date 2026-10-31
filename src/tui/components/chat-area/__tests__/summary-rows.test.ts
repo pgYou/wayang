@@ -145,3 +145,44 @@ describe('SignalRow permission request', () => {
     expect(out).not.toContain('权限申请');
   });
 });
+
+function inquirySignal() {
+  return {
+    ...permissionSignal(),
+    id: 'sig-inq',
+    content: 'Which database should I use?',
+    subtype: 'worker_inquiry',
+    inquiryMeta: { inquiryId: 'inq-1-9k2m', question: 'Which database should I use?' },
+  };
+}
+
+describe('SignalRow / AssistantStepRow inquiry rows', () => {
+  it('renders the inquiry question with the #xxxx handle', () => {
+    const out = renderToString(h(SignalRow, { item: inquirySignal() }));
+    expect(out).toContain('? 提问');
+    expect(out).toContain('Which database should I use?');
+    expect(out).toContain('#9k2m');
+  });
+
+  it('renders a respond_inquiry resolution matched by inquiry id', () => {
+    const lookups = buildChatLookups([inquirySignal()]);
+    const out = renderToString(h(AssistantStepRow, {
+      item: step([
+        call('c9', 'respond_inquiry', { inquiryId: 'inq-1-9k2m', answer: 'use postgres' }),
+        result('c9', 'respond_inquiry', 'Answer delivered to the asking worker (inquiry inq-1-9k2m).'),
+      ]),
+      lookups,
+    }));
+    expect(out).toContain('✔ 已答复 #9k2m');
+    expect(out).toContain('🧸 context command · w:t0sr');
+    // The answer body stays in the conversation, not the row.
+    expect(out).not.toContain('use postgres');
+  });
+
+  it('renders an inquiry timeout as its own signal row', () => {
+    const timeout = { ...inquirySignal(), subtype: 'inquiry_timeout', inquiryMeta: undefined, content: 'Which database should I use?' };
+    const out = renderToString(h(SignalRow, { item: timeout }));
+    expect(out).toContain('⏱ 提问超时');
+    expect(out).toContain('worker 已自行继续');
+  });
+});

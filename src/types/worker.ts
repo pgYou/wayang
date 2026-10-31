@@ -44,4 +44,10 @@ export interface IWorkerInstance extends Subscribable {
   getState(): import('@/infra/state/base-state').BaseWayangState | null;
   /** Accept a message from the controller during execution. Implementation varies by worker type. */
   acceptMessage(message: string): void;
+  /**
+   * Controller messages received but not yet read (non-destructive). The
+   * engine reports them via a message_undelivered signal when the worker's
+   * run ends (or an idle worker is disposed) with unread messages.
+   */
+  pendingMessages?(): string[];
 }
