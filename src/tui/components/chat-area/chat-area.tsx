@@ -16,6 +16,14 @@ interface ChatAreaProps {
   contentWidth?: number;
 }
 
+/**
+ * Extra left indent (columns) for the pending/unread block inside its
+ * paddingX={1} container. The block therefore gets 2 columns less than the
+ * other regions, and its rows are measured against that reduced width so they
+ * never exceed the terminal and wrap onto a stray extra line.
+ */
+const PENDING_INDENT = theme.secondary.indent;
+
 /** Whether to show a gap before this item (block boundary). */
 function shouldShowGap(prev: DisplayItem | null, _current: DisplayItem): boolean {
   if (!prev) return false;
@@ -53,25 +61,40 @@ const ChatArea = React.memo(function ChatArea({ items, busy, streamingItems, con
         )}
       </Static>
 
-
-      <Box paddingX={1} marginTop={items.length > 0 ? theme.spacing.blockGap : 0}>
-        <StreamingSpinner spinning={busy} />
-        {streamingItems?.[0]?.content && <Text>{streamingItems[0].content}</Text>}
-      </Box>
-
-
-      {dynamicItems.length > 0 && (
-        <Box flexDirection="column" paddingX={3} marginTop={1} marginBottom={1}>
-          <Box justifyContent="flex-start">
-            <Text color={theme.baseToken.color.textSubtle} dimColor>··· waiting for process ···</Text>
+      {/*
+        The live region (streaming row + pending block) is one column container:
+        Ink's <Box> defaults to flexDirection="row", so without this the two
+        blocks become horizontal siblings and the pending hint is laid out to
+        the right of the streaming text / spinner instead of on its own line.
+      */}
+      <Box flexDirection="column">
+        <Box paddingX={1} marginTop={items.length > 0 ? theme.spacing.blockGap : 0}>
+          <StreamingSpinner spinning={busy} />
+          {/* Own column so wrapped / multi-line streaming text keeps a stable
+              left edge (right of the spinner) instead of sharing its row. */}
+          <Box flexDirection="column" flexGrow={1}>
+            {streamingItems?.[0]?.content && <Text>{streamingItems[0].content}</Text>}
           </Box>
-          {dynamicItems.map((item) => (
-            <Box key={item.id} flexDirection="column" marginTop={shouldShowGap(null, item) ? theme.spacing.blockGap : 0}>
-              <ItemRow item={item} contentWidth={width} lookups={lookups} />
-            </Box>
-          ))}
         </Box>
-      )}
+
+        {dynamicItems.length > 0 && (
+          <Box flexDirection="column" paddingX={1} marginTop={theme.spacing.blockGap} marginBottom={1}>
+            <Box marginLeft={PENDING_INDENT} justifyContent="flex-start">
+              <Text color={theme.baseToken.color.textSubtle} dimColor>··· waiting for process ···</Text>
+            </Box>
+            {dynamicItems.map((item, idx) => (
+              <Box
+                key={item.id}
+                flexDirection="column"
+                marginLeft={PENDING_INDENT}
+                marginTop={shouldShowGap(idx > 0 ? dynamicItems[idx - 1] : null, item) ? theme.spacing.blockGap : 0}
+              >
+                <ItemRow item={item} contentWidth={width - PENDING_INDENT} lookups={lookups} />
+              </Box>
+            ))}
+          </Box>
+        )}
+      </Box>
     </>
   );
 });
