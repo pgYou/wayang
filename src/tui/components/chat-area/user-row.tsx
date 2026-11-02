@@ -6,7 +6,10 @@ import { theme } from '@/tui/theme';
 export function UserRow({ item, width }: { item: DisplayItem; width: number }) {
   const dim = !item.read;
   const text = item.content;
-  const padded = text.length < width ? text + ' '.repeat(4) : text;
+  // Fill the row with the gray background without ever exceeding `width`:
+  // padding past it pushes the row wider than the declared content width and
+  // makes Ink wrap the trailing padding onto an extra line.
+  const padded = text.length < width ? text.padEnd(width) : text;
 
   return (
     <Box>

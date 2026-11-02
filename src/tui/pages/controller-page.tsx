@@ -123,7 +123,7 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
 
   return (
     <Box flexDirection="column">
-      <Box marginBottom={1}>
+      <Box flexDirection="column" marginBottom={1}>
         <ChatArea
           items={displayItems}
           busy={busy}

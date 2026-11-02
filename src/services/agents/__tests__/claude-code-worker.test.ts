@@ -290,4 +290,138 @@ describe('ClaudeCodeWorker', () => {
     expect(failRecord.subtype).toBe('error');
     expect(failRecord.content).toBe('Boom');
   });
+
+  // --- issue #15: hang after result with an AsyncIterable prompt ---
+
+  /** Reject if `promise` does not settle within `ms` (real timers). */
+  async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    });
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  it('resolves after result even when the SDK stream stays open until prompt done (issue #15)', async () => {
+    // The interlock only shows up on real time — the hang is an unresolved promise.
+    vi.useRealTimers();
+
+    let pendingPromptNext: Promise<IteratorResult<unknown>> | null = null;
+
+    mockQuery.mockImplementation(((args: any) => {
+      const prompt = args.prompt as AsyncIterable<unknown>;
+      const iterator = prompt[Symbol.asyncIterator]();
+
+      // Models the real CLI/SDK: the stream yields the turn's messages, then
+      // (isSingleUserTurn=false) keeps waiting on stdin for another user
+      // message. stdin closes only once the prompt iterable reports done.
+      async function* sdkStream() {
+        const initial = await iterator.next();
+        expect(initial.done).toBe(false);
+        // Pull the next user message concurrently, as streamInput does — this
+        // parks inside the worker's prompt iterator while the queue is empty.
+        pendingPromptNext = iterator.next();
+        yield makeAssistantMessage('Working...');
+        yield makeSuccessResult('Done! Created hello.ts');
+        // Only reachable if the loop consumes past the result message.
+        const next = await (pendingPromptNext as Promise<IteratorResult<unknown>>);
+        if (!next.done) {
+          throw new Error('unexpected extra prompt message');
+        }
+      }
+
+      return sdkStream();
+    }) as any);
+
+    const worker = createWorker();
+    const result = await withTimeout(worker.run(makeTask(), {}), 2000, 'run()');
+
+    expect(result.status).toBe('completed');
+    expect(result.summary).toBe('Done! Created hello.ts');
+
+    const conversation = worker.getState().get<any[]>('conversation');
+    const resultEntry = conversation.find(
+      (e: any) => e.type === 'system' && e.subtype === 'task_result',
+    );
+    expect(resultEntry).toBeDefined();
+    expect(resultEntry.content).toBe('Done! Created hello.ts');
+
+    // The parked pull must also have been woken and report done — this is what
+    // lets the SDK end input and close the child's stdin.
+    const settled = await withTimeout(
+      pendingPromptNext as unknown as Promise<IteratorResult<unknown>>,
+      1000,
+      'parked prompt next()',
+    );
+    expect(settled.done).toBe(true);
+  });
+
+  it('buildPromptIterable reports done once terminal, even with residual queued messages', async () => {
+    const worker = createWorker();
+    const iterator = (worker as any)
+      .buildPromptIterable('do the thing')[Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    expect(first.value.message.content).toContain('do the thing');
+
+    // A controller message is still pending and a result has already landed.
+    (worker as any)._messageQueue.push('leftover controller message');
+    (worker as any)._terminalResult = { status: 'completed', summary: 'done' };
+
+    const second = await withTimeout<IteratorResult<unknown>>(
+      iterator.next() as Promise<IteratorResult<unknown>>,
+      1000,
+      'prompt iterator next()',
+    );
+    expect(second.done).toBe(true);
+  });
+
+  it('handleResultMessage wakes a prompt iterator parked on the message queue', async () => {
+    const worker = createWorker();
+    const iterator = (worker as any)
+      .buildPromptIterable('go')[Symbol.asyncIterator]();
+
+    await iterator.next(); // initial prompt
+    const parked = iterator.next(); // queue empty → parks in _messageResolve
+
+    (worker as any).handleResultMessage(makeSuccessResult('finished'));
+
+    const settled = await withTimeout<IteratorResult<unknown>>(
+      parked as Promise<IteratorResult<unknown>>,
+      1000,
+      'parked prompt next()',
+    );
+    expect(settled.done).toBe(true);
+  });
+
+  it('wires SDK stderr into the logger for diagnostics', async () => {
+    let capturedOptions: Record<string, any> | undefined;
+    mockQuery.mockImplementation(((args: any) => {
+      capturedOptions = args.options;
+      return asyncYield([makeSuccessResult('ok')]);
+    }) as any);
+
+    const ctx = createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any);
+    const worker = new ClaudeCodeWorker(config, tempDir, tempDir, ctx, skills);
+    await worker.run(makeTask(), {});
+
+    expect(typeof capturedOptions?.stderr).toBe('function');
+
+    const debug = vi.mocked((ctx.logger as any).debug);
+    debug.mockClear();
+
+    capturedOptions!.stderr('  cli exploded \n');
+    expect(debug).toHaveBeenCalledTimes(1);
+    expect(String(debug.mock.calls[0][1])).toContain('[claude stderr]');
+    expect(String(debug.mock.calls[0][1])).toContain('cli exploded');
+
+    // Blank chunks are dropped so the log cannot be flooded.
+    capturedOptions!.stderr('   \n');
+    expect(debug).toHaveBeenCalledTimes(1);
+  });
 });
