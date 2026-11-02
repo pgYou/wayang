@@ -188,6 +188,13 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       // context there is no handler — keep bypass.
       const wirePermissions = Boolean(this._signalQueue && this._runContext);
 
+      // NOTE: project rules (AGENTS.md / CLAUDE.md) are deliberately NOT
+      // injected into this worker's prompt, unlike the puppet worker. The SDK
+      // session below runs without `settingSources`, which keeps it in
+      // isolated mode — it never auto-loads CLAUDE.md (or other settings)
+      // from the workspace, so injecting rules here would be duplication,
+      // not coverage. Do not add settingSources without removing the puppet
+      // worker's injection (or deduplicating both paths).
       const options: Record<string, any> = {
         cwd: this.workspaceDir,
         maxTurns: this.config.maxTurns ?? 1000,
