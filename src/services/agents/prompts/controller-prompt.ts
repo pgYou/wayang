@@ -210,7 +210,8 @@ Types:
 Guidelines:
 - Prefer confirm and select over text. Less typing = better experience.
 - Keep messages short and specific.
-- For select, provide 2-5 clear options. Not too many.`);
+- For select, provide 2-5 clear preset options — an "Other" choice is appended automatically so the user can always type a custom answer, so never add your own catch-all option. Custom answers come back prefixed with "[Other] ".
+- Set allowOther=false only when the answer must be one of the preset options.`);
 
 
 const SIGNAL_HANDLING = section('Handling signals',

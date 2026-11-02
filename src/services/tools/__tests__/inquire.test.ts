@@ -34,6 +34,37 @@ describe('inquireTool', () => {
     expect(result).toBe('B');
   });
 
+  it('should pass allowOther=false through for select type', async () => {
+    const tool = inquireTool({
+      inquire: async (q) => {
+        expect(q.allowOther).toBe(false);
+        return 'A';
+      },
+    });
+    const result = await exec(tool, {
+      message: 'Choose one',
+      type: 'select',
+      options: ['A', 'B'],
+      allowOther: false,
+    });
+    expect(result).toBe('A');
+  });
+
+  it('should leave allowOther undefined when not provided', async () => {
+    const tool = inquireTool({
+      inquire: async (q) => {
+        expect(q.allowOther).toBeUndefined();
+        return 'A';
+      },
+    });
+    const result = await exec(tool, {
+      message: 'Choose one',
+      type: 'select',
+      options: ['A', 'B'],
+    });
+    expect(result).toBe('A');
+  });
+
   it('should pass default value', async () => {
     const tool = inquireTool({
       inquire: async (q) => {
