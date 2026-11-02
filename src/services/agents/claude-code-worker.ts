@@ -229,6 +229,15 @@ export class ClaudeCodeWorker implements IWorkerInstance {
           this.handleCanUseTool(toolName, input);
       }
 
+      // Diagnostics: the SDK's stderr callback is otherwise discarded, leaving
+      // CLI-side failures (bad args, auth, MCP startup) invisible in our logs.
+      // Only non-empty chunks are logged to avoid flooding the log with blanks.
+      options.stderr = (data: string) => {
+        const text = String(data).trimEnd();
+        if (!text.trim()) return;
+        this.logger.debug({ workerId: this.id }, `[claude stderr] ${text}`);
+      };
+
       const stream = query({
         prompt: this.buildPromptIterable(task.description),
         options,
@@ -239,6 +248,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         for await (const message of stream) {
           if (this.abortController.signal.aborted) break;
           this.processStreamMessage(message, onProgress);
+          if (this._terminalResult) break; // result reached — stop consuming, issue #15
         }
       } finally {
         this._activeQuery = null;
@@ -443,11 +453,16 @@ export class ClaudeCodeWorker implements IWorkerInstance {
                 done: false,
               };
             }
-            // Subsequent yields: controller messages from the queue
-            while (this._messageQueue.length === 0) {
+            // Subsequent yields: controller messages from the queue.
+            // The terminal/abort check comes BEFORE draining the queue and is
+            // re-evaluated on every wake-up: once a result has arrived (or the
+            // run was aborted) no further input is offered, so a residual
+            // queued message can never keep the stream open (issue #15).
+            while (true) {
               if (this.abortController.signal.aborted || this._terminalResult) {
                 return { value: undefined, done: true };
               }
+              if (this._messageQueue.length > 0) break;
               await new Promise<void>((resolve) => {
                 this._messageResolve = resolve;
               });
@@ -596,6 +611,19 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         status: 'failed',
         error: msg.errors.join('\n') || `Claude Code error: ${msg.subtype}`,
       };
+    }
+
+    // Wake a prompt iterator that may be parked in `_messageResolve`. With an
+    // AsyncIterable prompt the SDK treats the session as multi-turn
+    // (isSingleUserTurn=false) and does NOT end input on result: stdin stays
+    // open, the CLI waits for EOF, and the stream never finishes (issue #15).
+    // Resolving here lets buildPromptIterable observe `_terminalResult` and
+    // return done, which makes SDK streamInput end and endInput() close the
+    // child's stdin.
+    if (this._messageResolve) {
+      const resolve = this._messageResolve;
+      this._messageResolve = null;
+      resolve();
     }
 
     // Record usage in runtime state
