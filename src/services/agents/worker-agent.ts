@@ -113,8 +113,10 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     // Controller-message injection (see utils/inbox-injection): before each
     // LLM step, newly arrived inbox messages become `[Controller message]`
     // user messages AND conversation entries (the entry makes them survive
-    // context rebuilds and future stages); the hook re-appends everything
-    // injected so far so instructions stay in context.
+    // context rebuilds and future stages). The hook re-merges everything
+    // injected so far into each later step's request AT ITS ARRIVAL POSITION
+    // — right before the assistant reply of the step the message arrived in —
+    // so instructions stay in context exactly once, never as a tail duplicate.
     const injection = createInboxInjection({
       drainInbox: () => this.drainInbox(),
       onInject: (content) => this.appendControllerMessageEntry(content, turnEnv),
