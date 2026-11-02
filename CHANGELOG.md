@@ -18,6 +18,8 @@
 
 **Controller 工作准则** — The controller prompt now spells out how to split tasks, separate design from implementation, run work in parallel safely, tell a busy worker from a stuck one, and verify changes before calling them done
 
+**输入框完整编辑能力** — The input box now supports selection (Shift+arrows with reverse-video highlight), readline-style keys (Ctrl-A select all, Ctrl-E line end, Ctrl-K/U/W kill, Ctrl+←/→ and Alt+B/F word motion) and snapshot-based undo/redo (Ctrl-Z / Ctrl-Y, quick typing folds into one step). Multi-line paste, CJK width and surrogate pairs keep the existing rendering guarantees
+
 ### Fixes
 
 **运行中读不到 worker 对话（engine id 与落盘 id 命名空间不一致）** — The transcript tools built disk paths from the engine's `w-…` id while `WorkerState` writes `conversation.jsonl` under the worker instance's own id (`agent-…` / `cw-…`), so the files were never found — not a persistence problem (entries are appended in real time) but an id mismatch. Reads are now layered (memory while tracked, disk after end, `meta.source` says which), tasks persist `workerTranscriptId` so finished workers stay locatable, the three failure modes (unknown worker / known but not locatable / empty transcript) are reported separately, a torn last JSON line is kept with complete entries plus an explicit `incompleteTail` note, and disk reads are tail-bounded (2 MB hard cap) instead of loading a whole 5000-entry transcript
