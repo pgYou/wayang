@@ -73,6 +73,13 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
     [input, anchor, cursor],
   );
   const hasSelection = sel.start < sel.end;
+  // A selection made of newlines only (Shift+Left onto a '\n') has nothing to
+  // highlight: splitLineBySelection leaves both rows unselected, so drawing
+  // "no cursor + no highlight" would make the caret vanish. Such a selection
+  // still exists for editing (replacing it deletes the newline); it just is
+  // not visible, so the renderer falls back to the cursor block.
+  const visibleSelection = hasSelection
+    && input.slice(sel.start, sel.end).replace(/\n/g, '').length > 0;
 
   // Clamp selectedIndex when suggestions change
   const clampedIndex = showSuggestions
@@ -423,8 +430,11 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
                 )}
                 {/* The selection highlight and the cursor block are mutually
                     exclusive: with a selection the active end is the visual
-                    focus, so the block is not drawn (no double inverse). */}
-                {hasSelection ? (
+                    focus, so the block is not drawn (no double inverse). A
+                    selection that only covers newlines has nothing to
+                    highlight, so it is treated as invisible here and keeps
+                    the cursor block on screen. */}
+                {visibleSelection ? (
                   <>
                     {i === 0 && <Text> </Text>}
                     {splitLineBySelection(line, sel).map((seg, j) => (

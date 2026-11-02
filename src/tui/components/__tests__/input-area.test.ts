@@ -7,15 +7,20 @@ import { stringWidth } from '@/tui/utils/text-width';
 // Selection highlighting is reverse video, which Ink only emits when chalk
 // has colors enabled — force a color level so the frames carry `inverse`.
 // Runs before `ink` (and its chalk) is imported; other suites strip ANSI.
-vi.hoisted(() => {
+// The outer environment's value (if any) is saved so afterAll can put it
+// back instead of clobbering it.
+const previousForceColor = vi.hoisted(() => {
+  const previous = process.env.FORCE_COLOR;
   process.env.FORCE_COLOR = '1';
+  return previous;
 });
 
 // Ink's chalk reads the environment when it loads, so the level is already
-// fixed for this file; clear the variable so a later file in the same worker
-// renders without styles as before.
+// fixed for this file; restore the variable so a later file in the same
+// worker sees the environment it would have had.
 afterAll(() => {
-  delete process.env.FORCE_COLOR;
+  if (previousForceColor === undefined) delete process.env.FORCE_COLOR;
+  else process.env.FORCE_COLOR = previousForceColor;
 });
 
 interface HarnessOptions {
@@ -496,6 +501,30 @@ describe('InputArea selection', () => {
       expect(selectionRuns(r.rawFrame())).toEqual(['a', 'b']);
     } finally {
       r.unmount();
+    }
+  });
+
+  it('keeps the cursor visible when the selection is only a newline', async () => {
+    // 'a\nb' with the cursor before 'b'; one Shift+Left selects just the
+    // '\n' (sel [1,2)). That selection has nothing to highlight, so hiding
+    // the cursor block for it would leave no visual feedback at all.
+    const onlyNewline = await drive(['a\nb', '\x1b[D', SHIFT_LEFT]);
+    try {
+      expect(rowTexts(onlyNewline.frame())).toEqual(['a', 'b']);
+      expect(selectionRuns(onlyNewline.rawFrame())).toEqual([]);
+      expect(cursorRuns(onlyNewline.rawFrame()).length).toBeGreaterThan(0);
+    } finally {
+      onlyNewline.unmount();
+    }
+
+    // A second Shift+Left extends the selection to 'a\n' — now there is a
+    // character to highlight, so the highlight replaces the cursor block.
+    const withChar = await drive(['a\nb', '\x1b[D', SHIFT_LEFT, SHIFT_LEFT]);
+    try {
+      expect(selectionRuns(withChar.rawFrame())).toEqual(['a']);
+      expect(cursorRuns(withChar.rawFrame())).toEqual([]);
+    } finally {
+      withChar.unmount();
     }
   });
 

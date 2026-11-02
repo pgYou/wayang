@@ -307,4 +307,27 @@ describe('splitLineBySelection', () => {
       }
     }
   });
+
+  it('rejoins every wrapped row of a multi-line value within the row budget', () => {
+    // Budget 10 wraps each logical line into several display rows; each row
+    // must still be rebuilt exactly by its segments, stay newline-free and
+    // fit the budget — for every possible selection range over the value.
+    const value = 'hello world 世界\nsecond line here\n\nlast';
+    const budget = 10;
+    const { lines } = layoutInput(value, 0, budget);
+    expect(lines.length).toBeGreaterThan(value.split('\n').length);
+
+    for (const l of lines) {
+      for (let start = 0; start <= value.length; start++) {
+        for (let end = start; end <= value.length; end++) {
+          const segments = splitLineBySelection(l, { start, end });
+          expect(segments.map(seg => seg.text).join('')).toBe(l.text);
+          for (const seg of segments) {
+            expect(seg.text).not.toContain('\n');
+            expect(stringWidth(seg.text)).toBeLessThanOrEqual(budget);
+          }
+        }
+      }
+    }
+  });
 });
