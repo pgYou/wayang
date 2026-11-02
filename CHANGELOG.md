@@ -26,6 +26,8 @@
 
 **输入框多行粘贴渲染错乱（Closes #22）** — Terminals send pasted newlines as CR and Ink positions sibling text nodes per node, so a paste inserted literal `\r`, a mid-paste cursor scrambled the rows and long lines lost characters. Pasted newlines are now normalized to LF, the input renders one row per visual line pre-wrapped by display width (`stringWidth`, so CJK counts as two columns), the cursor block keeps its own row and the cursor/backspace step by code point so emoji are not split
 
+**TUI 不再把无投递信息的消息标成「已送达」** — The chat_worker result row used to fall back to 已送达 whenever the delivery timing was unknown; it now shows 已排队 / 已送达 / 已发送 according to what the result actually says
+
 ## v0.6.3 (2026-11-02)
 
 ### Features
