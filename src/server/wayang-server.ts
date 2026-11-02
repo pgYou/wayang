@@ -142,8 +142,11 @@ export async function runWayangServer(
   });
 
   rpc.register(METHOD.CHAT_WORKER, (params) => {
-    supervisor.engine.sendMessageToWorker(requiredString(params, 'workerId'), requiredString(params, 'message'));
-    return {};
+    const status = supervisor.engine.sendMessageToWorker(
+      requiredString(params, 'workerId'),
+      requiredString(params, 'message'),
+    );
+    return { status };
   });
 
   rpc.register(METHOD.DISPOSE_WORKER, (params) => {

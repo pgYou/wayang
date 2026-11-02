@@ -225,14 +225,19 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     return this.state.get(path);
   }
 
-  /** Accept a message from the controller — writes to internal inbox. */
-  acceptMessage(message: string): void {
+  /**
+   * Accept a message from the controller — writes to internal inbox. The
+   * puppet reads it at its next LLM step, so a running (or idle) worker
+   * always accepts.
+   */
+  acceptMessage(message: string): boolean {
     this.state.append('inbox', {
       id: generateId('msg'),
       content: message,
       timestamp: Date.now(),
     } satisfies InboxMessage);
     this.logger.info({ workerId: this.id }, 'Controller message accepted');
+    return true;
   }
 
   /** Unread controller messages (non-destructive) — engine reports these when the run ends. */

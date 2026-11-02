@@ -20,7 +20,7 @@ vi.mock('@/services/agents/worker-agent', () => ({
     abort = vi.fn();
     getConversation = () => [];
     getState = () => null;
-    acceptMessage = vi.fn((m: string) => { this.pending.push(m); });
+    acceptMessage = vi.fn((m: string) => { this.pending.push(m); return true; });
     pendingMessages = () => [...this.pending];
     subscribe = () => () => {};
     getSnapshot = () => undefined;
@@ -180,6 +180,23 @@ describe('TaskExecuteEngine: chat_worker delivery semantics', () => {
     const info = engine.getActiveWorkers().find(w => w.workerId === workerId);
     expect(info?.status).toBe('idle');
     expect(engine.sendMessageToWorker(workerId, 'for next stage')).toBe('queued');
+  });
+
+  it('reports finished when a running worker rejects the message (session input closed)', async () => {
+    const { engine } = makeEngine();
+    engine.add(makeTask('t-comm-c'));
+    const workerId = engine.getActiveWorkers()[0].workerId;
+
+    // Model a third-party worker whose session input has closed (final
+    // result in, stream still draining): acceptMessage fails explicitly and
+    // the engine must surface 'finished', never a fake 'queued'.
+    lastWorker().acceptMessage.mockReturnValueOnce(false);
+    expect(engine.sendMessageToWorker(workerId, 'too late')).toBe('finished');
+    // The message was NOT accepted — nothing pending, nothing to report.
+    expect(lastWorker().pendingMessages()).toEqual([]);
+
+    lastWorker().resolveRun({ status: 'completed', summary: 'done' });
+    await flushMicrotasks();
   });
 });
 

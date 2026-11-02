@@ -42,8 +42,13 @@ export interface IWorkerInstance extends Subscribable {
   getConversation(): import('@/types/conversation').ConversationEntry[];
   /** Get state for UI rendering. @deprecated Will be removed after TUI subscription refactor. */
   getState(): import('@/infra/state/base-state').BaseWayangState | null;
-  /** Accept a message from the controller during execution. Implementation varies by worker type. */
-  acceptMessage(message: string): void;
+  /**
+   * Accept a message from the controller during execution. Implementation varies by worker type.
+   * Returns false when the worker can no longer receive messages (e.g. a
+   * third-party worker whose session input has closed) — the caller must
+   * report failure instead of pretending the message was queued.
+   */
+  acceptMessage(message: string): boolean;
   /**
    * Controller messages received but not yet read (non-destructive). The
    * engine reports them via a message_undelivered signal when the worker's

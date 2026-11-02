@@ -43,7 +43,7 @@ export class BlockingRequestMap<T> {
       };
       const timer = setTimeout(() => {
         // Delete BEFORE the side-effect factory runs, so factory code
-        // (e.g. deferred-interrupt delivery) sees this request as gone.
+        // (e.g. a settle side effect) sees this request as gone.
         this.pending.delete(id);
         resolve(makeTimeoutValue());
       }, timeoutMs);
