@@ -22,11 +22,32 @@ interface HarnessOptions {
   width?: number;
   busy?: boolean;
   onEscape?: () => void;
+  /** Ink's own Ctrl-C exit; off to observe what InputArea does with the key. */
+  exitOnCtrlC?: boolean;
 }
 
 /** Shift+Left / Shift+Right, as terminals send them (xterm modified cursors). */
 const SHIFT_LEFT = '\x1b[1;2D';
 const SHIFT_RIGHT = '\x1b[1;2C';
+
+/** Ctrl+letter arrives as the control code (Ctrl-A = 0x01 … Ctrl-Z = 0x1a). */
+const CTRL_A = '\x01';
+const CTRL_C = '\x03';
+const CTRL_E = '\x05';
+const CTRL_K = '\x0b';
+const CTRL_U = '\x15';
+const CTRL_W = '\x17';
+const CTRL_Y = '\x19';
+const CTRL_Z = '\x1a';
+
+/** Ctrl+Left / Ctrl+Right / Ctrl+Shift+Left (xterm modifier 5 / 6 = ctrl / ctrl+shift). */
+const CTRL_LEFT = '\x1b[1;5D';
+const CTRL_RIGHT = '\x1b[1;5C';
+const CTRL_SHIFT_LEFT = '\x1b[1;6D';
+
+/** Alt+B / Alt+F — an ESC prefix plus the letter. */
+const ALT_B = '\x1bb';
+const ALT_F = '\x1bf';
 
 /**
  * Render InputArea with a fake TTY stdin (modeled on the inquiry-prompt
@@ -35,7 +56,7 @@ const SHIFT_RIGHT = '\x1b[1;2C';
  * '\x1b[D' = left arrow, '\x1b[1;2D' = Shift+Left.
  */
 function renderInteractive(options: HarnessOptions = {}) {
-  const { width = 40, busy = false, onEscape } = options;
+  const { width = 40, busy = false, onEscape, exitOnCtrlC = true } = options;
   const submitted: string[] = [];
   let rawFrame = '';
   const stdout = {
@@ -81,6 +102,7 @@ function renderInteractive(options: HarnessOptions = {}) {
       stdin: stdin as unknown as NodeJS.ReadStream,
       debug: true,
       patchConsole: false,
+      exitOnCtrlC,
     },
   );
   return {
@@ -510,6 +532,285 @@ describe('InputArea selection', () => {
       expect(selectionRuns(selecting.rawFrame())).toEqual(['/']);
     } finally {
       selecting.unmount();
+    }
+  });
+});
+
+describe('InputArea Ctrl key bindings', () => {
+  it('selects the whole value with Ctrl-A and leaves Ctrl-C alone', async () => {
+    const r = await drive(['你好😀ab', CTRL_A], { exitOnCtrlC: false });
+    try {
+      expect(selectionRuns(r.rawFrame())).toEqual(['你好😀ab']);
+      expect(cursorRuns(r.rawFrame())).toEqual([]); // no double inverse
+      expect(rowTexts(r.frame())).toEqual(['你好😀ab']);
+
+      // Ctrl-C belongs to app.tsx — the box must not eat it (nor change state).
+      r.send(CTRL_C);
+      await flush();
+      expect(selectionRuns(r.rawFrame())).toEqual(['你好😀ab']);
+      expect(r.submitted).toEqual([]);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('moves to the end of the logical line with Ctrl-E', async () => {
+    // cursor 8 → 4 (inside "cd"), Ctrl-E stops just before the '\n'
+    const r = await drive(['ab\ncd\nef', '\x1b[D', '\x1b[D', '\x1b[D', '\x1b[D', CTRL_E, 'X']);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['ab', 'cdX', 'ef']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('drops a selection on Ctrl-E so typing appends at the line end', async () => {
+    const r = await drive(['ab\ncd', CTRL_A, CTRL_E, 'X']);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['ab', 'cdX']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('kills to the end of the line with Ctrl-K', async () => {
+    // "ab|cd" → "ab"
+    const r = await drive(['abcd', '\x1b[D', '\x1b[D', CTRL_K]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['ab']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('kills only the selection with Ctrl-K when there is one', async () => {
+    // "a[bc]d" → "ad" (not "a")
+    const r = await drive(['abcd', '\x1b[D', SHIFT_LEFT, SHIFT_LEFT, CTRL_K]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['ad']);
+      expect(selectionRuns(r.rawFrame())).toEqual([]);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('kills to the line start with Ctrl-U without splitting a surrogate pair', async () => {
+    // "a😀|c" → "c"
+    const r = await drive(['a😀c', '\x1b[D', CTRL_U]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['c']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('kills backwards by word with Ctrl-W, emoji and CJK included', async () => {
+    const r = await drive(['hi 世界😀 x', CTRL_W]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['hi 世界😀']);
+
+      r.send(CTRL_W);
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['hi 世界']); // the whole emoji
+
+      r.send(CTRL_W);
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['hi 世']); // CJK steps one char
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('moves by word with Ctrl+Left / Ctrl+Right, emoji intact', async () => {
+    // "foo 世界😀 |bar": one step left lands on "|bar"
+    const r = await drive(['foo 世界😀 bar', CTRL_LEFT, 'X']);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['foo 世界😀 Xbar']);
+    } finally {
+      r.unmount();
+    }
+
+    // two steps left → before the emoji, one step right → after it: the pair is
+    // stepped over whole, never split
+    const r2 = await drive(['foo 世界😀 bar', CTRL_LEFT, CTRL_LEFT, CTRL_RIGHT, 'X']);
+    try {
+      expect(rowTexts(r2.frame())).toEqual(['foo 世界😀X bar']);
+    } finally {
+      r2.unmount();
+    }
+
+    // a third step left moves one CJK character, not the whole run
+    const r3 = await drive(['foo 世界😀 bar', CTRL_LEFT, CTRL_LEFT, CTRL_LEFT, 'X']);
+    try {
+      expect(rowTexts(r3.frame())).toEqual(['foo 世X界😀 bar']);
+    } finally {
+      r3.unmount();
+    }
+  });
+
+  it('steps over a word before an emoji without splitting it', async () => {
+    // "ab |😀" → Ctrl+Left → "ab |😀" (the emoji starts a new word)
+    const r = await drive(['ab 😀', CTRL_LEFT, 'X']);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['ab X😀']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('moves by word with Alt+B / Alt+F', async () => {
+    const r = await drive(['foo 世界😀 bar', ALT_B]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['foo 世界😀 bar']);
+      r.send('X');
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['foo 世界😀 Xbar']);
+    } finally {
+      r.unmount();
+    }
+
+    const r2 = await drive(['foo 世界😀 bar', ALT_B, ALT_B, ALT_F, 'X']);
+    try {
+      expect(rowTexts(r2.frame())).toEqual(['foo 世界😀X bar']);
+    } finally {
+      r2.unmount();
+    }
+  });
+
+  it('extends the selection by word with Shift+Ctrl+Left, anchor pinned', async () => {
+    const r = await drive(['foo bar baz', CTRL_SHIFT_LEFT]);
+    try {
+      expect(selectionRuns(r.rawFrame())).toEqual(['baz']);
+
+      r.send(CTRL_SHIFT_LEFT);
+      await flush();
+      expect(selectionRuns(r.rawFrame())).toEqual(['bar baz']);
+
+      // typing replaces the whole word selection — the anchor stayed at 11
+      r.send('X');
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['foo X']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('does nothing on Ctrl-K/U/W/Z/Y with an empty input', async () => {
+    const r = await drive([CTRL_K, CTRL_U, CTRL_W, CTRL_Z, CTRL_Y]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['']);
+      r.send('a');
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['a']);
+    } finally {
+      r.unmount();
+    }
+  });
+});
+
+describe('InputArea undo/redo', () => {
+  it('undoes a fast typing run in one step and redoes it with Ctrl-Y', async () => {
+    const r = await drive(['a', 'b', 'c', CTRL_Z]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['']);
+
+      r.send(CTRL_Y);
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['abc']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('has no redo branch once new text replaces the undone one', async () => {
+    const r = await drive(['abc', CTRL_Z, CTRL_Y, 'd', CTRL_Y]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['abcd']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('treats an IME commit as one step but keeps emoji inserts mergeable', async () => {
+    const ime = await drive(['a', '你好', CTRL_Z]);
+    try {
+      expect(rowTexts(ime.frame())).toEqual(['a']);
+    } finally {
+      ime.unmount();
+    }
+
+    const emoji = await drive(['😀', '😀', CTRL_Z]);
+    try {
+      expect(rowTexts(emoji.frame())).toEqual(['']);
+    } finally {
+      emoji.unmount();
+    }
+  });
+
+  it('undoes a selection replacement as one step', async () => {
+    const r = await drive(['你好😀ab', CTRL_A, 'X']);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['X']);
+
+      r.send(CTRL_Z);
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['你好😀ab']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('undoes a select-all kill', async () => {
+    const r = await drive(['abc', CTRL_A, CTRL_K]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['']);
+
+      r.send(CTRL_Z);
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['abc']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('undoes an autocompleted command', async () => {
+    const r = await drive(['/ta', '\t']);
+    try {
+      // the plain frame trims the trailing space the completion appends
+      expect(rowTexts(r.frame())).toEqual(['/tasks']);
+
+      r.send(CTRL_Z);
+      await flush();
+      // The restored '/' prefix brings the suggestion panel back (derived
+      // state, not snapshot state).
+      const rows = rowTexts(r.frame());
+      expect(rows[rows.length - 1]).toBe('/ta');
+      expect(highlightedSuggestion(r.rawFrame())).toContain('/tasks');
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('does not resurrect submitted text with Ctrl-Z', async () => {
+    const r = await drive(['abc', '\r', CTRL_Z]);
+    try {
+      expect(r.submitted).toEqual(['abc']);
+      expect(rowTexts(r.frame())).toEqual(['']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('undoes backspaces as one run and redoes them', async () => {
+    const r = await drive(['abcd', '\x7f', '\x7f', CTRL_Z]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['abcd']);
+
+      r.send(CTRL_Y);
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['ab']);
+    } finally {
+      r.unmount();
     }
   });
 });

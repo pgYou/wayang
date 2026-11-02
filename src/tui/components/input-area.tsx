@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useMemoizedFn } from '@/tui/hooks/use-memoized-fn';
 import { SLASH_COMMANDS } from '@/tui/hooks/use-slash-commands';
 import { Box, Text, useInput } from 'ink';
@@ -11,7 +11,24 @@ import {
   prevCodePointLength,
   splitLineBySelection,
 } from '@/tui/utils/input-display';
-import { normalizeSelection, replaceRange } from '@/tui/utils/input-editing';
+import {
+  killToLineEnd,
+  killToLineStart,
+  killWordBefore,
+  lineEnd,
+  normalizeSelection,
+  replaceRange,
+  wordLeft,
+  wordRight,
+} from '@/tui/utils/input-editing';
+import type { EditResult } from '@/tui/utils/input-editing';
+import {
+  commitEdit,
+  initInputHistory,
+  redoEdit,
+  undoEdit,
+} from '@/tui/utils/input-history';
+import type { EditKind, InputHistory } from '@/tui/utils/input-history';
 
 interface InputAreaProps {
   onSubmit: (input: string) => void;
@@ -34,6 +51,10 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
   // Only ever copied from `cursor`, so it is always a code-point boundary.
   const [anchor, setAnchor] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Undo stack. Must be a ref: state would re-render on every keystroke and a
+  // value rebuilt per render would lose the history. Applying a snapshot goes
+  // through setInput/setCursor, which already triggers the render.
+  const historyRef = useRef<InputHistory>(initInputHistory(''));
 
   // Filter matching commands when input starts with "/" and has no space yet
   const suggestions = useMemo(() => {
@@ -63,6 +84,41 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
     setCursor(0);
     setAnchor(null);
     setSelectedIndex(0);
+    // Submitted (or discarded) text must not come back with Ctrl-Z.
+    historyRef.current = initInputHistory('');
+  });
+
+  // Single funnel for every text-mutating edit: push the post-edit state to
+  // React and record it in the undo stack. The commit always uses the values
+  // the editing helper returned — reading the state variables here would see
+  // the pre-edit closure (setState is async).
+  const applyEdit = useMemoizedFn((r: EditResult, kind: EditKind) => {
+    setInput(r.value);
+    setCursor(r.cursor);
+    setAnchor(null);
+    setSelectedIndex(0);
+    // A no-op edit (Ctrl-K at the end of a line, for instance) must not put a
+    // duplicate entry on the stack, or Ctrl-Z would need two presses.
+    if (r.value === input && r.cursor === cursor) return;
+    historyRef.current = commitEdit(historyRef.current, {
+      value: r.value,
+      cursor: r.cursor,
+      anchor: null,
+      ts: Date.now(),
+      kind,
+    });
+  });
+
+  // Undo/redo hand back a history whose pointer moved; the entry it points at
+  // is the state to restore (anchor included, so a restored selection works).
+  const applySnapshot = useMemoizedFn((history: InputHistory) => {
+    const entry = history.entries[history.pointer];
+    if (!entry) return;
+    historyRef.current = history;
+    setInput(entry.value);
+    setCursor(entry.cursor);
+    setAnchor(entry.anchor);
+    setSelectedIndex(0);
   });
 
   const applySuggestion = useMemoizedFn((index: number) => {
@@ -71,10 +127,8 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
     const text = `/${cmd.name}`;
     // Append trailing space if the command accepts args
     const filled = 'args' in cmd ? `${text} ` : text;
-    setInput(filled);
-    setCursor(filled.length);
-    setAnchor(null);
-    setSelectedIndex(0);
+    // Autocompletion is an edit like any other: Ctrl-Z undoes it.
+    applyEdit(replaceRange(input, 0, input.length, filled), 'replace');
   });
 
   useInput((ch, key) => {
@@ -143,15 +197,103 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
         return;
       }
       if (showSuggestions) {
-        // Close suggestions by clearing slash prefix
-        setInput('');
-        setCursor(0);
-        setAnchor(null);
-        setSelectedIndex(0);
+        // Close suggestions by discarding the slash prefix; the draft dies
+        // with the panel, so the history goes too.
+        reset();
       } else {
         onEscape?.();
         reset();
       }
+      return;
+    }
+
+    // --- Ctrl/Alt editing keys (readline-style) ---
+    // Ink reports Ctrl+letter as `key.ctrl` with `input` set to the lowercase
+    // letter name, Alt+letter as `key.meta` with the same `input`. Every
+    // branch below returns: an unmatched Ctrl/Alt combination then falls
+    // through to the `!key.ctrl && !key.meta` guard on the character branch
+    // and is ignored. Ctrl-C is deliberately absent — app.tsx owns it.
+    // These branches must precede the bare arrow ones (Ctrl+arrows would
+    // otherwise be swallowed by them).
+    if (key.ctrl && ch === 'a') {
+      // Select the whole value. Not readline's beginning-of-line: Ink has no
+      // Home and "select all" is worth more here; Ctrl-U covers line start.
+      setAnchor(0);
+      setCursor(input.length);
+      return;
+    }
+    if (key.ctrl && ch === 'e') {
+      setAnchor(null);
+      setCursor(lineEnd(input, cursor));
+      return;
+    }
+    // Ctrl-K/U/W destroy text. With a selection they act on the selection —
+    // the selection is the target of the next edit — otherwise on the
+    // readline range (line end / line start / word before).
+    if (key.ctrl && ch === 'k') {
+      if (hasSelection) {
+        applyEdit(replaceRange(input, sel.start, sel.end, ''), 'replace');
+      } else {
+        applyEdit(killToLineEnd(input, cursor), 'kill');
+      }
+      return;
+    }
+    if (key.ctrl && ch === 'u') {
+      if (hasSelection) {
+        applyEdit(replaceRange(input, sel.start, sel.end, ''), 'replace');
+      } else {
+        applyEdit(killToLineStart(input, cursor), 'kill');
+      }
+      return;
+    }
+    if (key.ctrl && ch === 'w') {
+      if (hasSelection) {
+        applyEdit(replaceRange(input, sel.start, sel.end, ''), 'replace');
+      } else {
+        applyEdit(killWordBefore(input, cursor), 'kill');
+      }
+      return;
+    }
+    // Word motion, shared by Ctrl+arrows and Alt+B/F. Shift extends the
+    // selection (anchor pinned at the first step); without it the selection
+    // collapses to the active end.
+    const moveWordLeft = () => {
+      if (key.shift) setAnchor(a => a ?? cursor);
+      else setAnchor(null);
+      setCursor(wordLeft(input, cursor));
+    };
+    const moveWordRight = () => {
+      if (key.shift) setAnchor(a => a ?? cursor);
+      else setAnchor(null);
+      setCursor(wordRight(input, cursor));
+    };
+    if (key.ctrl && key.leftArrow) {
+      moveWordLeft();
+      return;
+    }
+    if (key.ctrl && key.rightArrow) {
+      moveWordRight();
+      return;
+    }
+    // Alt+B/F. The Escape key itself also carries meta, hence the key.escape
+    // guard; macOS Terminal may not send Alt at all, so these are a bonus
+    // path next to Ctrl+arrows.
+    if (key.meta && !key.escape && ch === 'b') {
+      moveWordLeft();
+      return;
+    }
+    if (key.meta && !key.escape && ch === 'f') {
+      moveWordRight();
+      return;
+    }
+    if (key.ctrl && ch === 'z') {
+      const next = undoEdit(historyRef.current);
+      if (next) applySnapshot(next);
+      return;
+    }
+    if (key.ctrl && ch === 'y') {
+      const next = redoEdit(historyRef.current);
+      if (next) applySnapshot(next);
       return;
     }
 
@@ -177,19 +319,15 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
     // code point before the cursor — or the whole selection, when there is one.
     if (key.backspace || key.delete) {
       if (hasSelection) {
-        const r = replaceRange(input, sel.start, sel.end, '');
-        setInput(r.value);
-        setCursor(r.cursor);
-        setAnchor(null);
-        setSelectedIndex(0);
+        applyEdit(replaceRange(input, sel.start, sel.end, ''), 'delete');
         return;
       }
       if (cursor === 0) return;
       const len = prevCodePointLength(input, cursor);
-      setInput(prev => prev.slice(0, cursor - len) + prev.slice(cursor));
-      setCursor(c => c - len);
-      setAnchor(null);
-      setSelectedIndex(0);
+      applyEdit(
+        { value: input.slice(0, cursor - len) + input.slice(cursor), cursor: cursor - len },
+        'delete',
+      );
       return;
     }
 
@@ -215,10 +353,10 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
       if (text.length === 0) return;
       // Typing replaces the selection instead of inserting into it.
       const r = replaceRange(input, sel.start, sel.end, text);
-      setInput(r.value);
-      setCursor(r.cursor);
-      setAnchor(null);
-      setSelectedIndex(0);
+      // A multi-code-point chunk is a paste (or an IME commit): one undo step,
+      // never merged with the neighbouring typing runs. A single code point is
+      // an insert and may join a run.
+      applyEdit(r, [...text].length === 1 ? 'insert' : 'paste');
     }
   });
 
