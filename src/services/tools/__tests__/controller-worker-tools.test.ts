@@ -48,6 +48,17 @@ describe('chatWorkerTool', () => {
     expect(result).toContain('[ERROR]');
     expect(result).toContain('not running');
   });
+
+  it('returns an explicit failure when the worker has already finished', async () => {
+    const tool = chatWorkerTool({
+      sendMessageToWorker: vi.fn(() => 'finished' as const),
+    });
+    const result = await exec(tool, { workerId: 'cw-done', message: 'Hello' });
+    expect(result).toContain('[ERROR]');
+    expect(result).toContain('has already finished');
+    expect(result).toContain('not delivered');
+    expect(result).toContain('get_task_detail');
+  });
 });
 
 // --- respond_permission ---

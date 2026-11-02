@@ -49,14 +49,20 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   // --- Controller messaging via streamInput ---
   private _messageQueue: string[] = [];
   private _messageResolve: ((value: void) => void) | null = null;
-  /** Active SDK query — interrupted to deliver controller messages promptly. */
-  private _activeQuery: { interrupt(): Promise<void> } | null = null;
   /**
-   * Interrupt requested while a permission was pending — delivered right
-   * after the permission settles (interrupting mid-permission is unproven
-   * SDK territory; see docs/develop/v0.6-design.md §3).
+   * True while run() is executing. Controller messages are rejected once the
+   * run's input has closed (see `_inputClosed`), but idle multi-stage workers
+   * (no run in flight) keep accepting — the next stage folds them into its
+   * opening prompt.
    */
-  private _interruptQueued = false;
+  private _runInFlight = false;
+  /**
+   * True once the prompt iterator reported done for the current run: the
+   * session can no longer take input (a turn result arrived with nothing
+   * queued, or the run was aborted). Further acceptMessage calls fail
+   * explicitly instead of pretending to queue.
+   */
+  private _inputClosed = false;
 
   // --- ask_controller via in-process SDK MCP server ---
   private _askController: ((question: string, context?: string) => Promise<string>) | null = null;
@@ -68,35 +74,18 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   /** Exposed for engine to resolve pending permission requests. */
   readonly permissionHandler: PermissionMiddlewareResult = {
     resolvePermission: (requestId: string, approved: boolean, reason?: string) => {
-      const ok = this._pendingPermissions.resolve(
+      return this._pendingPermissions.resolve(
         requestId,
         approved
           ? { behavior: 'allow' }
           : { behavior: 'deny', message: reason ?? 'Denied by controller' },
       );
-      if (ok) this.afterPermissionSettled();
-      return ok;
     },
     cleanup: () => {
-      // Worker dying: drop any queued interrupt so a stale flag cannot fire
-      // a spurious interrupt in the next stage.
-      this._interruptQueued = false;
       this._pendingPermissions.cleanupAll(() => ({ behavior: 'deny', message: 'Worker aborted' }));
     },
     wrappedTools: {}, // not used for ClaudeCodeWorker
   };
-
-  /**
-   * A permission settled (approved / denied / timed out). If a controller
-   * message was waiting for the permission window to close, deliver its
-   * interrupt now — this runs on BOTH the resolve and the timeout path.
-   */
-  private afterPermissionSettled(): void {
-    if (this._interruptQueued && this._pendingPermissions.size === 0) {
-      this._interruptQueued = false;
-      this.requestInterrupt();
-    }
-  }
 
   // Signal context set during run()
   private _signalQueue: SignalQueue | null = null;
@@ -160,6 +149,8 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     // once; without this reset a stale terminal result from the previous stage
     // would short-circuit the new stage.
     this._terminalResult = null;
+    this._inputClosed = false;
+    this._runInFlight = true;
 
     // Set task info in state
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
@@ -242,19 +233,31 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         prompt: this.buildPromptIterable(task.description),
         options,
       });
-      this._activeQuery = stream;
 
       try {
         for await (const message of stream) {
           if (this.abortController.signal.aborted) break;
           this.processStreamMessage(message, onProgress);
-          if (this._terminalResult) break; // result reached — stop consuming, issue #15
+          // NOTE: a result message does NOT end the run. With an AsyncIterable
+          // prompt the CLI answers EVERY prompt (the initial task plus each
+          // controller message delivered via the prompt iterator) with its own
+          // result and keeps the session open until the iterable reports
+          // done. Keep consuming so follow-up turns are actually processed
+          // and the LAST result becomes the result of record; the stream ends
+          // once buildPromptIterable returns done (a result arrived with
+          // nothing queued — issue #15).
         }
       } finally {
-        this._activeQuery = null;
+        // The stream loop has exited (natural end, error, or abort). Input is
+        // closed — nothing can be delivered to a dead session, so
+        // acceptMessage must fail from here on.
+        this._inputClosed = true;
       }
     } catch (err: any) {
       this.logger.error({ err, taskId: task.id }, 'ClaudeCodeWorker query error');
+      // The run is dead (query setup or stream failure) — no input can be
+      // delivered anymore.
+      this._inputClosed = true;
       if (!this._terminalResult) {
         this._terminalResult = {
           status: 'failed',
@@ -291,6 +294,11 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       startedAt: resultTs,
       endedAt: resultTs,
     } as import('@/types/conversation').ConversationEntry, turnEnv));
+
+    // Run over. Past this point the worker is idle (a multi-stage worker
+    // accepts messages again — they fold into the next stage's prompt) or
+    // about to be disposed by the engine.
+    this._runInFlight = false;
 
     return this._terminalResult;
   }
@@ -337,39 +345,36 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     return this.state.get(path);
   }
 
-  /** Accept a message from the controller — injects into running session via streamInput. */
-  acceptMessage(message: string): void {
+  /**
+   * Accept a message from the controller. The message is queued and handed
+   * to the SDK only when it pulls the next prompt: the CLI parks pulled
+   * prompts in an internal queue that it drains strictly BETWEEN turns, so
+   * delivery always lands on a turn boundary — a tool call in progress is
+   * never cut off (the v0.6 interrupt delivery did exactly that and killed
+   * the session with an orphaned tool_use; see docs/develop/v0.6-design.md
+   * §6.1 — the hazard is any unclosed tool_use, not just a pending
+   * permission).
+   *
+   * Returns false when delivery is impossible: the run's input has closed
+   * (final result received) or the worker was aborted. Idle multi-stage
+   * workers (no run in flight) always accept — the next stage folds the
+   * message into its opening prompt.
+   */
+  acceptMessage(message: string): boolean {
+    if (this.abortController.signal.aborted) return false;
+    if (this._runInFlight && this._inputClosed) return false;
     this._messageQueue.push(message);
     if (this._messageResolve) {
       this._messageResolve();
       this._messageResolve = null;
     }
-    // Prompt delivery: interrupt the current turn so the SDK comes back for
-    // the next streamInput item right away ('immediate', the default). While
-    // a permission is pending, hold off — see requestInterrupt.
-    if ((this.config.interruptOnMessage ?? 'immediate') === 'immediate') {
-      this.requestInterrupt();
-    }
     this.logger.info({ workerId: this.id }, 'Controller message accepted');
+    return true;
   }
 
   /** Unread controller messages (non-destructive) — engine reports these when the run ends. */
   pendingMessages(): string[] {
     return [...this._messageQueue];
-  }
-
-  /** Interrupt the active query unless a permission is pending (queued until it settles). */
-  private requestInterrupt(): void {
-    if (this.abortController.signal.aborted || !this._activeQuery) return;
-    if (this._pendingPermissions.size > 0) {
-      this._interruptQueued = true;
-      return;
-    }
-    // Defensive: the query object may lack interrupt() (mocks, older SDKs).
-    if (typeof this._activeQuery.interrupt !== 'function') return;
-    this._activeQuery.interrupt().catch((err) => {
-      this.logger.warn({ workerId: this.id, err: String(err) }, 'interrupt() failed');
-    });
   }
 
   /**
@@ -416,13 +421,8 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       ...this._turnLineage,
     });
 
-    // The timeout factory runs after the entry was removed from the map, so
-    // the deferred-interrupt delivery in afterPermissionSettled sees a clean
-    // window — the timeout path behaves exactly like an explicit resolution.
     return this._pendingPermissions.wait(requestId, ClaudeCodeWorker.PERMISSION_TIMEOUT_MS, () => {
-      const value: PermissionResult = { behavior: 'deny', message: 'Permission request timed out' };
-      this.afterPermissionSettled();
-      return value;
+      return { behavior: 'deny', message: 'Permission request timed out' } as PermissionResult;
     });
   }
 
@@ -454,18 +454,43 @@ export class ClaudeCodeWorker implements IWorkerInstance {
               };
             }
             // Subsequent yields: controller messages from the queue.
-            // The terminal/abort check comes BEFORE draining the queue and is
-            // re-evaluated on every wake-up: once a result has arrived (or the
-            // run was aborted) no further input is offered, so a residual
-            // queued message can never keep the stream open (issue #15).
+            //
+            // Boundary-delivery semantics: a message is handed over ONLY
+            // when the SDK pulls the next prompt. The CLI pulls eagerly and
+            // parks pulled prompts in an internal queue that it drains
+            // strictly between turns — one full query (every tool_use →
+            // tool_result cycle) per prompt — so handing a message over at
+            // ANY time lands it at the next turn boundary and can never cut
+            // a tool call in progress. There is deliberately no interrupt():
+            // interrupting mid-tool_use aborts the turn with an orphaned
+            // tool_use and the CLI kills the session with
+            // error_during_execution (verified against the real CLI — see
+            // docs/develop/v0.6-design.md §6.1).
             while (true) {
-              if (this.abortController.signal.aborted || this._terminalResult) {
+              if (this.abortController.signal.aborted) {
+                this._inputClosed = true;
                 return { value: undefined, done: true };
               }
-              if (this._messageQueue.length > 0) break;
-              await new Promise<void>((resolve) => {
-                this._messageResolve = resolve;
-              });
+              if (this._terminalResult) {
+                // A result has arrived for the latest turn. A message that
+                // raced in before the result was processed still gets its
+                // own turn; with nothing pending the session is over —
+                // return done so the SDK ends input and closes the child's
+                // stdin (issue #15: parking here left the stream open and
+                // the worker hung forever after its result).
+                if (this._messageQueue.length === 0) {
+                  this._inputClosed = true;
+                  return { value: undefined, done: true };
+                }
+              } else if (this._messageQueue.length === 0) {
+                // No result yet and nothing to deliver — park until a
+                // controller message arrives or a result wakes us.
+                await new Promise<void>((resolve) => {
+                  this._messageResolve = resolve;
+                });
+                continue;
+              }
+              break; // queue non-empty → deliver at the next turn boundary
             }
             const msg = this._messageQueue.shift()!;
             return {
@@ -613,13 +638,12 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       };
     }
 
-    // Wake a prompt iterator that may be parked in `_messageResolve`. With an
-    // AsyncIterable prompt the SDK treats the session as multi-turn
-    // (isSingleUserTurn=false) and does NOT end input on result: stdin stays
-    // open, the CLI waits for EOF, and the stream never finishes (issue #15).
-    // Resolving here lets buildPromptIterable observe `_terminalResult` and
-    // return done, which makes SDK streamInput end and endInput() close the
-    // child's stdin.
+    // Wake a prompt iterator that may be parked in `_messageResolve`. It
+    // re-evaluates: a message that raced in before this result was processed
+    // is still delivered as its own turn; otherwise the iterator returns
+    // done, which makes SDK streamInput end and endInput() close the child's
+    // stdin (issue #15 — without this wake the CLI waits for stdin EOF and
+    // the stream never finishes).
     if (this._messageResolve) {
       const resolve = this._messageResolve;
       this._messageResolve = null;

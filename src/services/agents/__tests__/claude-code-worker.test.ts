@@ -360,7 +360,7 @@ describe('ClaudeCodeWorker', () => {
     expect(settled.done).toBe(true);
   });
 
-  it('buildPromptIterable reports done once terminal, even with residual queued messages', async () => {
+  it('delivers a message that raced in before the result was processed, then ends input once nothing is queued', async () => {
     const worker = createWorker();
     const iterator = (worker as any)
       .buildPromptIterable('do the thing')[Symbol.asyncIterator]();
@@ -369,8 +369,10 @@ describe('ClaudeCodeWorker', () => {
     expect(first.done).toBe(false);
     expect(first.value.message.content).toContain('do the thing');
 
-    // A controller message is still pending and a result has already landed.
-    (worker as any)._messageQueue.push('leftover controller message');
+    // A controller message is still pending when a result lands — the race
+    // window just before input closes. It must still get its own turn
+    // (issue #15 only forbids parking AFTER the result with nothing queued).
+    (worker as any)._messageQueue.push('raced controller message');
     (worker as any)._terminalResult = { status: 'completed', summary: 'done' };
 
     const second = await withTimeout<IteratorResult<unknown>>(
@@ -378,7 +380,17 @@ describe('ClaudeCodeWorker', () => {
       1000,
       'prompt iterator next()',
     );
-    expect(second.done).toBe(true);
+    expect(second.done).toBe(false);
+    expect(second.value.message.content).toBe('[Controller message] raced controller message');
+
+    // Next pull: result still stands, queue empty → done (closes the stream,
+    // issue #15).
+    const third = await withTimeout<IteratorResult<unknown>>(
+      iterator.next() as Promise<IteratorResult<unknown>>,
+      1000,
+      'prompt iterator next() after delivery',
+    );
+    expect(third.done).toBe(true);
   });
 
   it('handleResultMessage wakes a prompt iterator parked on the message queue', async () => {

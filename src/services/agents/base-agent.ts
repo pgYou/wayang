@@ -57,9 +57,11 @@ export interface StreamLoopOptions {
    * Per-step hook forwarded to streamText's prepareStep option. Called before
    * each step's LLM request with the messages that step will send; returning
    * `{ messages }` overrides them for THAT step only (the SDK's step loop
-   * re-derives the base each step, so overrides do not persist — re-append
-   * anything that must stay in context). Used by workers to inject controller
-   * messages mid-task.
+   * re-derives the base each step — [initial messages + model responses] —
+   * so overrides do not persist). A hook that injects messages must re-merge
+   * them into every later step itself, at the position they belong (not the
+   * tail), or they silently drop out of the next request. Used by workers to
+   * inject controller messages mid-task.
    */
   prepareStep?: PrepareStepFunction<ToolSet>;
   onStep?: (event: OnStepFinishEvent, meta: StepMeta) => void;

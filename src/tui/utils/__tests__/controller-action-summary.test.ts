@@ -41,6 +41,24 @@ describe('summarizeWorkerMessage', () => {
     const ok = summarizeWorkerMessage(args, 80, { text: 'Message delivered to worker w-1793326810019-soqy.' });
     expect(ok.outcome).toBe('ok');
     expect(ok.failure).toBe('');
+    expect(ok.delivery).toBe('delivered');
+  });
+
+  it('marks a queued message as queued even though its text also says "not delivered yet"', () => {
+    // The real chat_worker queued result mentions both words — with the old
+    // parallel checks the "delivered" one won and the row showed 已送达.
+    const queued = summarizeWorkerMessage(args, 80, {
+      text: 'Message queued for worker w-1793326810019-soqy — QUEUED only, not delivered yet: the worker reads it at its next step (puppet), turn boundary (third-party — the current turn, including any running tool call, finishes first) or next stage start (idle).',
+    });
+    expect(queued.outcome).toBe('ok');
+    expect(queued.failure).toBe('');
+    expect(queued.delivery).toBe('queued');
+  });
+
+  it('leaves delivery unset when an ok result says neither queued nor delivered', () => {
+    const s = summarizeWorkerMessage(args, 80, { text: 'Message accepted.' });
+    expect(s.outcome).toBe('ok');
+    expect(s.delivery).toBeUndefined();
   });
 
   it('marks undeliverable messages as failed and strips the [ERROR] marker', () => {

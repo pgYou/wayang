@@ -58,8 +58,16 @@ export type WorkerInquiryResolution =
   | { kind: 'timeout' }
   | { kind: 'aborted' };
 
-/** Outcome of delivering a controller message to a worker. */
-export type WorkerMessageDelivery = 'delivered' | 'queued' | 'not_running';
+/**
+ * Outcome of delivering a controller message to a worker.
+ * - 'delivered' / 'queued': the worker accepted the message (it reads it at
+ *   its next step / turn boundary / stage start).
+ * - 'finished': the worker is still listed as running but can no longer take
+ *   input (a third-party worker's session ended) — the message was NOT
+ *   delivered and the caller must report failure.
+ * - 'not_running': no such active worker.
+ */
+export type WorkerMessageDelivery = 'delivered' | 'queued' | 'finished' | 'not_running';
 
 // ---------------------------------------------------------------------------
 // TaskExecuteEngine
@@ -297,7 +305,9 @@ export class TaskExecuteEngine implements Subscribable {
    * Send a message to a worker. Delivery is judged by the activeWorkers
    * runtime state — NOT by the workers Map, which lingers one tick past
    * disposal (removeWorkerTracking defers) and would accept messages for a
-   * worker that is already gone.
+   * worker that is already gone. A worker that rejects the message (its run
+   * can no longer take input) is reported as 'finished' — never a fake
+   * 'queued'.
    */
   sendMessageToWorker(workerId: string, message: string): WorkerMessageDelivery {
     const info = this.getActiveWorkers().find(w => w.workerId === workerId);
@@ -305,10 +315,11 @@ export class TaskExecuteEngine implements Subscribable {
     const worker = this.workers.get(workerId);
     if (!worker) return 'not_running';
 
-    worker.acceptMessage(message);
+    if (!worker.acceptMessage(message)) return 'finished';
     // Idle (multi-stage) workers read messages when their next stage starts;
     // a running puppet reads at its next LLM step; a running third-party
-    // worker reads at its next turn boundary (or when interrupted).
+    // worker reads at its next turn boundary (the CLI queues the prompt and
+    // processes it between turns — a tool call in progress is never cut).
     if (info.status === 'idle') return 'queued';
     return worker instanceof WorkerAgent ? 'delivered' : 'queued';
   }

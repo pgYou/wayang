@@ -20,7 +20,7 @@ vi.mock('@/services/agents/worker-agent', () => ({
     abort = vi.fn();
     getConversation = () => this.conversation;
     getState = () => null;
-    acceptMessage = vi.fn();
+    acceptMessage = vi.fn(() => true);
     subscribe = () => () => {};
     getSnapshot = () => undefined;
     /** Resolve the most recently started run() promise. */

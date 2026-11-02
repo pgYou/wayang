@@ -150,7 +150,10 @@ The tool shows task metadata (status, result, error) and recent worker conversat
 
 ## Sending messages to workers (chat_worker)
 
-Use chat_worker(workerId, message) to send guidance to a running worker. The worker will see the message next time it calls check_controller_messages.
+Use chat_worker(workerId, message) to send guidance to a running worker.
+The worker reads it at its next step (puppet) or turn boundary (third-party) — a tool call in progress is NEVER interrupted; an idle multi-stage worker reads it when its next stage starts.
+Delivery is blind: "queued" only means the message sits in the worker's inbox until that boundary. A stuck worker never reads it.
+A third-party worker that already finished its session rejects the message with an explicit [ERROR] — inspect its output instead of retrying.
 Use sparingly — only when you need to:
 - Correct a worker that is going in the wrong direction
 - Provide additional context the worker did not have

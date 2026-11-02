@@ -101,22 +101,58 @@ describe('ClaudeCodeWorker controller messaging', () => {
     await run2;
   });
 
-  it('interrupts the active query immediately on acceptMessage (default policy)', async () => {
+  it('never interrupts the SDK when a message arrives mid-turn (boundary delivery)', async () => {
+    // Regression for the interrupt-delivery bug: a chat_worker message sent
+    // while claude was mid-tool_use called stream.interrupt(), which aborted
+    // the turn with an orphaned tool_use and failed the task with
+    // "[ede_diagnostic] result_type=user ... stop_reason=tool_use".
+    // Messages must now be delivered ONLY through the prompt iterator — the
+    // CLI queues pulled prompts and processes them between turns.
     const worker = makeWorker();
-    const { stream, interrupt, release } = gatedStream([assistant('working')], 'never');
-    mockQuery.mockReturnValueOnce(stream as never);
+    const interrupt = vi.fn(async () => {});
+    let pendingPull: Promise<IteratorResult<any>> | null = null;
+    let secondPull: Promise<IteratorResult<any>> | null = null;
+
+    mockQuery.mockImplementationOnce(((args: any) => {
+      const promptIter = (args.prompt as AsyncIterable<any>)[Symbol.asyncIterator]();
+      async function* sdkStream() {
+        await promptIter.next();                     // initial task prompt
+        pendingPull = promptIter.next();             // CLI parks on the next input (eager pull)
+        yield assistant('running a long tool call'); // mid-turn: tool_use in flight
+        // Message handed over mid-turn — safe: the CLI queues it internally
+        // and gives it its own turn AFTER the current one finishes.
+        const handed = await (pendingPull as Promise<IteratorResult<any>>);
+        expect(handed.done).toBe(false);
+        expect(handed.value.message.content).toBe('[Controller message] change of plans');
+        secondPull = promptIter.next();              // CLI re-parks after the hand-over
+        yield assistant('turn continues after the tool call');
+        yield successResult('stage one done');       // result for the initial prompt
+        yield successResult('handled controller message'); // result for the message's turn
+      }
+      return Object.assign(sdkStream(), { interrupt });
+    }) as never);
+
     const runP = worker.run(makeTask(), {});
     await settle();
 
-    worker.acceptMessage('change of plans');
-    expect(interrupt).toHaveBeenCalledTimes(1);
+    // Mid-tool_use: the message is accepted, the run keeps going, and the SDK
+    // is never interrupted.
+    expect(worker.acceptMessage('change of plans')).toBe(true);
+    expect(interrupt).not.toHaveBeenCalled();
 
-    worker.abort();
-    release();
-    await runP;
+    const result = await runP;
+    // The follow-up turn was actually processed: the LAST result is the
+    // result of record, not the first one.
+    expect(result.status).toBe('completed');
+    expect(result.summary).toBe('handled controller message');
+    // The message was handed over exactly once — the re-pull must have been
+    // closed by the result wake (done), not re-delivered.
+    const second = await (secondPull as unknown as Promise<IteratorResult<any>>);
+    expect(second.done).toBe(true);
+    expect(interrupt).not.toHaveBeenCalled();
   });
 
-  it('defers the interrupt while a permission is pending, then delivers it on resolve', async () => {
+  it('accepts a message while a permission is pending; the permission settles independently', async () => {
     const worker = makeWorker();
     const ctx = createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir });
     const signalQueue = new SignalQueue(ctx);
@@ -131,31 +167,16 @@ describe('ClaudeCodeWorker controller messaging', () => {
     const runP = worker.run(makeTask(), {});
     await settle();
 
-    // A dangerous Bash call is now parked in permissionHandler — a message
-    // arriving now must NOT interrupt until the permission settles.
-    worker.acceptMessage('hold on');
-    expect(interrupt).not.toHaveBeenCalled();
+    // A dangerous Bash call is parked in permissionHandler — a message
+    // arriving now is accepted (queued for the prompt iterator) and does
+    // not disturb the permission flow.
+    expect(worker.acceptMessage('hold on')).toBe(true);
 
     const signals = signalQueue.query({ type: 'permission_request' });
     expect(signals).toHaveLength(1);
     const requestId = (signals[0].payload as any).requestId;
 
-    worker.permissionHandler.resolvePermission(requestId, true);
-    expect(interrupt).toHaveBeenCalledTimes(1);
-
-    worker.abort();
-    release();
-    await runP;
-  });
-
-  it('never interrupts with interruptOnMessage: turn-end', async () => {
-    const worker = makeWorker({ ...config, interruptOnMessage: 'turn-end' });
-    const { stream, interrupt, release } = gatedStream([assistant('working')], 'never');
-    mockQuery.mockReturnValueOnce(stream as never);
-    const runP = worker.run(makeTask(), {});
-    await settle();
-
-    worker.acceptMessage('patient message');
+    expect(worker.permissionHandler.resolvePermission(requestId, true)).toBe(true);
     expect(interrupt).not.toHaveBeenCalled();
 
     worker.abort();
@@ -163,19 +184,110 @@ describe('ClaudeCodeWorker controller messaging', () => {
     await runP;
   });
 
-  it('keeps unread messages on completion instead of flushing (engine reports them)', async () => {
+  it('keeps a message accepted during a pending permission when the permission TIMES OUT', async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = makeWorker();
+      const ctx = createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir });
+      const signalQueue = new SignalQueue(ctx);
+      worker.setSignalContext({ signalQueue, workerId: 'cw-test', taskId: 't-1', taskTitle: 'Test' });
+
+      const { stream, release } = gatedStream([assistant('working')], 'never');
+      mockQuery.mockImplementationOnce((({ options }: never) => {
+        Promise.resolve().then(() => (options as any).canUseTool('Bash', { command: 'sudo rm -rf /tmp/x' }));
+        return stream;
+      }) as never);
+      const runP = worker.run(makeTask(), {});
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+
+      expect(worker.acceptMessage('held back by permission')).toBe(true);
+
+      // 5-minute permission timeout → deny. The accepted message survives
+      // (still queued for the prompt iterator).
+      vi.advanceTimersByTime(300_000 + 10);
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(worker.pendingMessages()).toEqual(['held back by permission']);
+
+      worker.abort();
+      release();
+      await vi.waitUntil(() => runP.then(() => true), { timeout: 1000 }).catch(() => true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects messages once the run\'s input has closed (result received)', async () => {
+    const worker = makeWorker();
+    let releaseGate: (() => void) | null = null;
+    const gate = new Promise<void>((r) => { releaseGate = r; });
+    mockQuery.mockImplementationOnce(((args: any) => {
+      const promptIter = (args.prompt as AsyncIterable<any>)[Symbol.asyncIterator]();
+      // Models the real CLI: input is pulled eagerly; the stream stays open
+      // after a result (e.g. a follow-up turn is still running).
+      async function* sdkStream() {
+        await promptIter.next();
+        const parked = promptIter.next();
+        yield assistant('working');
+        yield successResult('done');
+        await gate;
+        await parked;
+      }
+      return sdkStream();
+    }) as never);
+
+    const runP = worker.run(makeTask(), {});
+    await settle();
+
+    // Result processed → prompt iterator returned done → input closed. The
+    // stream is still open (worker "running"), but no input can be delivered
+    // anymore: explicit failure, no fake queue.
+    expect(worker.acceptMessage('arrived too late')).toBe(false);
+    expect(worker.pendingMessages()).toEqual([]);
+
+    releaseGate!();
+    const result = await runP;
+    expect(result.status).toBe('completed');
+  });
+
+  it('rejects messages after abort', async () => {
+    const worker = makeWorker();
+    const { stream, release } = gatedStream([assistant('working')], 'never');
+    mockQuery.mockReturnValueOnce(stream as never);
+    const runP = worker.run(makeTask(), {});
+    await settle();
+
+    worker.abort();
+    expect(worker.acceptMessage('too late')).toBe(false);
+
+    release();
+    await runP;
+  });
+
+  it('accepts messages again between stages (folded into the next prompt)', async () => {
     const worker = makeWorker();
     const { stream, release } = gatedStream([assistant('working')], 'before-result');
     mockQuery.mockReturnValueOnce(stream as never);
     const runP = worker.run(makeTask(), {});
-
-    await settle();
-    worker.acceptMessage('arrived too late');
-    release();
     const result = await runP;
-
     expect(result.status).toBe('completed');
-    expect(worker.pendingMessages()).toEqual(['arrived too late']);
+
+    // Idle (multi-stage) worker: accept and fold into the next stage's prompt.
+    expect(worker.acceptMessage('for the next stage')).toBe(true);
+
+    let capturedPrompt: AsyncIterable<any> | null = null;
+    const { stream: s2, release: r2 } = gatedStream([assistant('working')], 'before-result');
+    mockQuery.mockImplementationOnce((({ prompt }: never) => {
+      capturedPrompt = prompt;
+      return s2;
+    }) as never);
+    const run2 = worker.run(makeTask(), {});
+    const iterator = capturedPrompt![Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    expect(first.value.message.content).toContain('[Controller message] for the next stage');
+
+    r2();
+    await run2;
   });
 
   it('folds idle-period messages into the next stage\'s initial prompt', async () => {
@@ -245,58 +357,5 @@ describe('ClaudeCodeWorker controller messaging', () => {
     expect(audit).toBeDefined();
     expect((audit as any).content).toContain('ask_controller: which db?');
     expect((audit as any).content).toContain('controller: [Controller] answer-to:which db?');
-  });
-
-  it('delivers the queued interrupt when a pending permission TIMES OUT', async () => {
-    vi.useFakeTimers();
-    try {
-      const worker = makeWorker();
-      const ctx = createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir });
-      const signalQueue = new SignalQueue(ctx);
-      worker.setSignalContext({ signalQueue, workerId: 'cw-test', taskId: 't-1', taskTitle: 'Test' });
-
-      const { stream, interrupt, release } = gatedStream([assistant('working')], 'never');
-      mockQuery.mockImplementationOnce((({ options }: never) => {
-        Promise.resolve().then(() => (options as any).canUseTool('Bash', { command: 'sudo rm -rf /tmp/x' }));
-        return stream;
-      }) as never);
-      const runP = worker.run(makeTask(), {});
-
-      for (let i = 0; i < 8; i++) await Promise.resolve();
-      worker.acceptMessage('held back by permission');
-      expect(interrupt).not.toHaveBeenCalled();
-
-      // 5-minute permission timeout → deny → the queued interrupt must fire
-      // (previously the timeout path dropped it silently).
-      vi.advanceTimersByTime(300_000 + 10);
-      for (let i = 0; i < 8; i++) await Promise.resolve();
-      expect(interrupt).toHaveBeenCalledTimes(1);
-
-      worker.abort();
-      release();
-      await vi.waitUntil(() => runP.then(() => true), { timeout: 1000 }).catch(() => true);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('cleanup resets the queued-interrupt flag (no stale fire in the next stage)', async () => {
-    const worker = makeWorker();
-    // Stage 1: leave a queued interrupt behind via cleanup.
-    worker.permissionHandler.cleanup();
-
-    // Stage 2: a fresh run — a message must interrupt immediately, not be
-    // swallowed by a stale _interruptQueued left over from stage 1.
-    const { stream, interrupt, release } = gatedStream([assistant('working')], 'never');
-    mockQuery.mockReturnValueOnce(stream as never);
-    const runP = worker.run(makeTask(), {});
-    await settle();
-
-    worker.acceptMessage('stage 2 message');
-    expect(interrupt).toHaveBeenCalledTimes(1);
-
-    worker.abort();
-    release();
-    await runP;
   });
 });

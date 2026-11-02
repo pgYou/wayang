@@ -1,14 +1,46 @@
 # Changelog
 
-## Unreleased — Controller ↔ Worker 通信增强 (v0.6)
+## v0.6.3 (2026-11-02)
+
+### Features
+
+**心跳默认间隔 30s → 60s** — The controller's idle heartbeat now defaults to 60s instead of 30s (`heartbeatIntervalMs`), so quiet runs while workers are running get fewer routine check-ins
+
+### Fixes
+
+**修复：claude-code 消息打断投递致死（回归）** — The v0.6 interrupt delivery above was wrong: `interrupt()` during an in-flight tool call aborts the turn with an orphaned tool_use and the CLI kills the session with `error_during_execution` (`[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use`) — the same failure the permission PoC observed, mis-scoped to the permission window. Controller messages are now delivered ONLY at safe turn boundaries: they are handed to the SDK when it pulls the next prompt and the CLI queues them for the next turn (never mid-tool_use; `interruptOnMessage` removed). `run()` no longer stops at the first result, so a delivered message's follow-up turn is actually processed and the last result wins. Once a run's input has closed (final result in / aborted), `acceptMessage` fails, the engine reports a new `finished` delivery status, and `chat_worker` returns an explicit `[ERROR] … has already finished; message not delivered` instead of a fake "queued"; the `CHAT_WORKER` RPC now returns the delivery status instead of discarding it
+
+**控制器补话消息在后续请求里重复出现（同一条始终是"最新" user 消息）** — Every step re-appended the injected list to the tail of the request, so the same `[Controller message]` was the newest user message in every later request and the model kept re-acknowledging it. Each message now records its arrival position and appears exactly once, pinned right before that step's assistant reply
+
+**TUI 把仅排队的 chat_worker 消息标成"已送达"** — The delivery parse ran two independent checks and the `delivered` one won, while the queued result text says "QUEUED only, not delivered yet" — so a merely queued message rendered as 已送达. `queued` is now checked first (a queued result can never be misread), and tests cover the queued wording, the delivered wording, and a result that says neither
+
+## v0.6.2 (2026-11-02)
+
+### Fixes
+
+**用户消息背景不超出内容宽度** — A user message's background band spanned the whole terminal instead of following the content width, which looked wrong while streaming. The band is now sized to the content, so it grows with the text and stops at the content width
+
+## v0.6.1 (2026-11-02)
+
+### Fixes
+
+**claude-code 在 result 到达时关闭 stream** — The claude-code stream was closed only when the child process exited, so a finished turn stayed open and the engine kept waiting for the exit. The stream is now closed as soon as the result arrives, and the process exit no longer gates delivery
+
+**streaming 期间 pending 消息独占一行** — A pending (not yet sent) user message was rendered on the same line as the in-flight assistant text while streaming, garbling both. Pending messages now take their own line until they are sent
+
+## v0.6.0 (2026-11-02)
+
+### Features
 
 **Worker → Controller 阻塞式提问(全新能力)** — Workers stuck mid-task can now call `ask_controller` and block for the controller's answer (5-minute timeout, then they continue on their own judgment — with an `inquiry_timeout` signal telling the controller). The controller answers via the new `respond_inquiry` tool or the `respond_worker_inquiry` RPC command; questions render as structured TUI rows (`? 提问 #xxxx` → `✔ 已答复 #xxxx`). Puppet workers get the tool directly; Claude Code workers get it as a real in-process SDK MCP tool (`createSdkMcpServer`), with `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT` raised so a 5-minute block survives the SDK's 60s MCP default
 
-**Controller → Worker 补话时效(2a)** — `chat_worker` messages now reach a running puppet worker at its **next LLM step** via the AI SDK `prepareStep` hook (injected as `[Controller message]` user messages that stay in context until the run ends, and are persisted into the worker's conversation so they survive compaction rebuilds and multi-stage handovers). `check_controller_messages` is deprecated (stub kept one minor version). Claude Code workers get queued messages delivered by interrupting the current turn (`interruptOnMessage: immediate | turn-end`, default immediate; deferred while a permission is pending), and idle-period messages are folded into the next stage's opening prompt
-
-**修投递"说谎"** — `sendMessageToWorker` now judges delivery by the activeWorkers runtime state instead of the workers Map, closing the `setTimeout(0)` disposal window where a message was accepted for a dying worker while `chat_worker` reported success; unread messages at run end (or idle-worker disposal) are reported back via a `message_undelivered` signal instead of vanishing — including the Claude Code "task finished before reading" case that used to flush the queue silently
+**Controller → Worker 补话时效(2a)** — `chat_worker` messages now reach a running puppet worker at its **next LLM step** via the AI SDK `prepareStep` hook (injected as `[Controller message]` user messages, each recorded at its arrival position and appearing exactly once in the conversation — pinned right before that step's assistant reply — and persisted into the worker's conversation so they survive compaction rebuilds and multi-stage handovers). `check_controller_messages` is deprecated (stub kept one minor version). Claude Code workers get queued messages handed over at the next safe turn boundary instead of interrupting the current turn, and idle-period messages are folded into the next stage's opening prompt
 
 **工程** — Shared `BlockingRequestMap` abstraction (pending map + timeout + cleanup, duplicate-id rejection) backs the permission, Claude Code permission, and inquiry flows alike; the claude-code child env is a spread of `process.env` plus the timeout override (the SDK replaces the env wholesale); new signals `worker_inquiry` / `inquiry_timeout` / `message_undelivered` with controller-side converters and TUI rows; ask_controller Q&A lands as audit entries in claude-code worker conversations; late answers to aborted inquiries report `worker_gone` via id tombstones instead of a misleading "timed out"; PoC scripts `scripts/poc-interrupt-permission.mjs` / `scripts/poc-mcp-timeout.mjs` for the two unproven SDK behaviors (run locally with a real claude CLI); design doc `docs/develop/v0.6-design.md` (reviewed, WAY-N moved out of this version)
+
+### Fixes
+
+**修投递"说谎"** — `sendMessageToWorker` now judges delivery by the activeWorkers runtime state instead of the workers Map, closing the `setTimeout(0)` disposal window where a message was accepted for a dying worker while `chat_worker` reported success; unread messages at run end (or idle-worker disposal) are reported back via a `message_undelivered` signal instead of vanishing — including the Claude Code "task finished before reading" case that used to flush the queue silently
 
 ## v0.5.2 (2026-10-30)
 
