@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
 import type { WorkerConfig, TaskDetail } from '@/types/index';
 import { SkillRegistry } from '@/services/skills/registry';
+import { readWorkerTranscript, summarizeTranscript } from '@/services/worker-transcript';
 import { createMockCtx } from '@/__tests__/helpers';
 
 // Empty registry — worker needs it for prompt building.
@@ -51,6 +52,45 @@ function makeAssistantMessage(text: string) {
       content: [{ type: 'text' as const, text }],
       usage: { input_tokens: 100, output_tokens: 50 },
     },
+  };
+}
+
+/** Assistant message with text and/or tool_use blocks (content-block array). */
+function makeToolUseMessage(opts: {
+  text?: string;
+  calls: Array<{ id: string; name: string; input?: unknown }>;
+}) {
+  const content: Array<Record<string, unknown>> = [];
+  if (opts.text !== undefined) content.push({ type: 'text', text: opts.text });
+  for (const call of opts.calls) {
+    content.push({ type: 'tool_use', id: call.id, name: call.name, input: call.input ?? {} });
+  }
+  return {
+    type: 'assistant' as const,
+    message: {
+      role: 'assistant' as const,
+      content,
+      usage: { input_tokens: 100, output_tokens: 50 },
+    },
+  };
+}
+
+/** SDK user message carrying tool_result blocks for earlier tool_use ids. */
+function makeToolResultUserMessage(
+  results: Array<{ toolUseId: string; content?: string | Array<unknown>; isError?: boolean }>,
+) {
+  return {
+    type: 'user' as const,
+    message: {
+      role: 'user' as const,
+      content: results.map((r) => ({
+        type: 'tool_result' as const,
+        tool_use_id: r.toolUseId,
+        ...(r.content !== undefined && { content: r.content }),
+        ...(r.isError !== undefined && { is_error: r.isError }),
+      })),
+    },
+    parent_tool_use_id: null,
   };
 }
 
@@ -435,5 +475,204 @@ describe('ClaudeCodeWorker', () => {
     // Blank chunks are dropped so the log cannot be flooded.
     capturedOptions!.stderr('   \n');
     expect(debug).toHaveBeenCalledTimes(1);
+  });
+
+  // --- tool call / result recording into the worker conversation ---
+
+  describe('tool call and result recording', () => {
+    /** Read the worker conversation from state. */
+    function conversationOf(worker: ClaudeCodeWorker): any[] {
+      return worker.getState().get<any[]>('conversation');
+    }
+
+    it('records text and the tool call (with its result) on a single entry', async () => {
+      mockQuery.mockReturnValue(asyncYield([
+        makeToolUseMessage({
+          text: 'Running the build',
+          calls: [{ id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }],
+        }),
+        makeToolResultUserMessage([{ toolUseId: 'toolu_1', content: 'all tests passed' }]),
+        makeAssistantMessage('Done'),
+        makeSuccessResult('Done'),
+      ]) as any);
+
+      const worker = createWorker();
+      await worker.run(makeTask(), {});
+
+      const conversation = conversationOf(worker);
+      const step = conversation.find((e: any) => e.type === 'assistant' && e.toolCalls?.length);
+      expect(step).toBeDefined();
+      // Text block → message.content (unchanged behavior)
+      expect(step.message.content).toBe('Running the build');
+      // tool_use block → toolCalls, puppet-shaped
+      expect(step.toolCalls).toHaveLength(1);
+      expect(step.toolCalls[0].toolCallId).toBe('toolu_1');
+      expect(step.toolCalls[0].toolName).toBe('Bash');
+      expect(step.toolCalls[0].arguments).toBe('{"command":"npm test"}');
+      expect(step.toolCalls[0].status).toBe('succeeded');
+      // tool_result block → toolResults on the SAME entry, matched by id
+      expect(step.toolResults).toHaveLength(1);
+      expect(step.toolResults[0].toolCallId).toBe('toolu_1');
+      expect(step.toolResults[0].toolName).toBe('Bash');
+      expect(step.toolResults[0].output).toEqual({ type: 'text', value: 'all tests passed' });
+      expect(step.toolResults[0].isError).toBeUndefined();
+      expect(step.toolResults[0].status).toBe('succeeded');
+      // Exactly one entry carries this call — no duplicate step entries.
+      expect(conversation.filter(
+        (e: any) => e.toolCalls?.some((tc: any) => tc.toolCallId === 'toolu_1'),
+      )).toHaveLength(1);
+      expect(conversation.filter(
+        (e: any) => e.toolResults?.some((tr: any) => tr.toolCallId === 'toolu_1'),
+      )).toHaveLength(1);
+    });
+
+    it('records every tool call of a multi-tool message, in order, results matched by id', async () => {
+      mockQuery.mockReturnValue(asyncYield([
+        makeToolUseMessage({
+          calls: [
+            { id: 't1', name: 'Read', input: { file_path: '/a.txt' } },
+            { id: 't2', name: 'Bash', input: { command: 'ls' } },
+            { id: 't3', name: 'Grep', input: { pattern: 'foo' } },
+          ],
+        }),
+        // Results arrive in a different order — matching must be by id, not position.
+        makeToolResultUserMessage([
+          { toolUseId: 't3', content: 'a.txt:1:foo' },
+          { toolUseId: 't1', content: 'file body' },
+          { toolUseId: 't2', content: 'a.txt' },
+        ]),
+        makeSuccessResult('Done'),
+      ]) as any);
+
+      const worker = createWorker();
+      await worker.run(makeTask(), {});
+
+      const step = conversationOf(worker).find((e: any) => e.type === 'assistant' && e.toolCalls?.length);
+      expect(step.toolCalls.map((tc: any) => tc.toolCallId)).toEqual(['t1', 't2', 't3']);
+      expect(step.toolCalls.map((tc: any) => tc.toolName)).toEqual(['Read', 'Bash', 'Grep']);
+      // Results keep their arrival order but attach to the right call ids.
+      expect(step.toolResults.map((tr: any) => tr.toolCallId)).toEqual(['t3', 't1', 't2']);
+      expect(step.toolResults.find((tr: any) => tr.toolCallId === 't1').output.value).toBe('file body');
+      expect(step.toolResults.find((tr: any) => tr.toolCallId === 't2').toolName).toBe('Bash');
+      expect(step.toolCalls.every((tc: any) => tc.status === 'succeeded')).toBe(true);
+    });
+
+    it('preserves the error flag on failed tool results', async () => {
+      mockQuery.mockReturnValue(asyncYield([
+        makeToolUseMessage({ calls: [{ id: 't1', name: 'Bash', input: { command: 'npm test' } }] }),
+        makeToolResultUserMessage([{ toolUseId: 't1', content: 'npm ERR! missing script', isError: true }]),
+        makeSuccessResult('Recovered'),
+      ]) as any);
+
+      const worker = createWorker();
+      await worker.run(makeTask(), {});
+
+      const step = conversationOf(worker).find((e: any) => e.type === 'assistant' && e.toolCalls?.length);
+      expect(step.toolResults).toHaveLength(1);
+      expect(step.toolResults[0].isError).toBe(true);
+      expect(step.toolResults[0].status).toBe('failed');
+      expect(step.toolResults[0].errorType).toBe('ToolError');
+      expect(step.toolResults[0].output.value).toBe('npm ERR! missing script');
+      // The call record is closed as failed too.
+      expect(step.toolCalls[0].status).toBe('failed');
+    });
+
+    it('truncates oversized tool results and inputs with an explicit size marker', async () => {
+      const longOutput = 'A'.repeat(5000);
+      const longInputJson = JSON.stringify({ command: 'x'.repeat(9000) });
+      mockQuery.mockReturnValue(asyncYield([
+        makeToolUseMessage({ calls: [{ id: 't1', name: 'Bash', input: { command: 'x'.repeat(9000) } }] }),
+        makeToolResultUserMessage([{ toolUseId: 't1', content: longOutput }]),
+        makeSuccessResult('Done'),
+      ]) as any);
+
+      const worker = createWorker();
+      await worker.run(makeTask(), {});
+
+      const step = conversationOf(worker).find((e: any) => e.type === 'assistant' && e.toolCalls?.length);
+      // Result: 2000-char head + marker with the original total.
+      expect(step.toolResults[0].output.value).toBe(
+        'A'.repeat(2000) + '... [truncated, 5000 chars]',
+      );
+      // Input: kept complete when short, truncated at the larger input cap.
+      expect(step.toolCalls[0].arguments).toBe(
+        longInputJson.slice(0, 8000) + `... [truncated, ${longInputJson.length} chars]`,
+      );
+    });
+
+    it('records a pure tool_use message (no text) instead of dropping it', async () => {
+      mockQuery.mockReturnValue(asyncYield([
+        makeToolUseMessage({ calls: [{ id: 't1', name: 'Read', input: { file_path: '/a' } }] }),
+        makeToolResultUserMessage([{ toolUseId: 't1', content: 'body' }]),
+        makeSuccessResult('Done'),
+      ]) as any);
+
+      const worker = createWorker();
+      await worker.run(makeTask(), {});
+
+      // Regression: a text-less assistant message used to be dropped entirely.
+      const step = conversationOf(worker).find((e: any) => e.type === 'assistant' && e.toolCalls?.length);
+      expect(step).toBeDefined();
+      expect(step.message.content).toBe('');
+      expect(step.toolCalls).toHaveLength(1);
+      expect(step.toolResults).toHaveLength(1);
+    });
+
+    it('still flushes a buffered tool step when the stream ends without results, marking calls cancelled', async () => {
+      // No user tool_result message — the stream just ends after the result.
+      mockQuery.mockReturnValue(asyncYield([
+        makeToolUseMessage({ text: 'starting', calls: [{ id: 't1', name: 'Bash', input: { command: 'sleep 100' } }] }),
+        makeSuccessResult('interrupted'),
+      ]) as any);
+
+      const worker = createWorker();
+      await worker.run(makeTask(), {});
+
+      const step = conversationOf(worker).find((e: any) => e.type === 'assistant' && e.toolCalls?.length);
+      expect(step).toBeDefined();
+      expect(step.message.content).toBe('starting');
+      expect(step.toolCalls[0].status).toBe('cancelled');
+      expect(step.toolResults).toBeUndefined();
+    });
+
+    it('flattens tool_result content delivered as a block array', async () => {
+      mockQuery.mockReturnValue(asyncYield([
+        makeToolUseMessage({ calls: [{ id: 't1', name: 'Read', input: { file_path: '/a' } }] }),
+        makeToolResultUserMessage([{
+          toolUseId: 't1',
+          content: [
+            { type: 'text', text: 'first 10 lines' },
+            { type: 'image', source: { type: 'base64' } },
+            { type: 'text', text: 'trailing note' },
+          ],
+        }]),
+        makeSuccessResult('Done'),
+      ]) as any);
+
+      const worker = createWorker();
+      await worker.run(makeTask(), {});
+
+      const step = conversationOf(worker).find((e: any) => e.type === 'assistant' && e.toolCalls?.length);
+      expect(step.toolResults[0].output.value).toBe('first 10 lines\n[image block]\ntrailing note');
+    });
+
+    it('makes the current tool visible to transcript readers (issue #16)', async () => {
+      mockQuery.mockReturnValue(asyncYield([
+        makeToolUseMessage({ text: 'checking', calls: [{ id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] }),
+        makeToolResultUserMessage([{ toolUseId: 'toolu_1', content: 'ok' }]),
+        makeAssistantMessage('All checks passed'),
+        makeSuccessResult('Done'),
+      ]) as any);
+
+      const worker = createWorker();
+      await worker.run(makeTask(), {});
+
+      // Read the real on-disk transcript (what the controller's tools see).
+      const transcript = readWorkerTranscript(tempDir, worker.id);
+      expect(transcript).not.toBeNull();
+      const summary = summarizeTranscript(transcript!);
+      expect(summary.currentTool).toBe('Bash');
+      expect(summary.hasTerminalEntry).toBe(true);
+    });
   });
 });

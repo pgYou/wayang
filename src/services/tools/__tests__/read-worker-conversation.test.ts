@@ -148,6 +148,34 @@ describe('readWorkerConversationTool', () => {
     expect(out).not.toContain('[system/task_result]');
   });
 
+  it('full=true renders tool result text (not [object Object]) and flags errors', async () => {
+    // A claude-code-shaped step: text + toolCalls + toolResults on one entry.
+    const toolEntries = [
+      makeEntry('user', 'Fix the failing test.'),
+      makeEntry('assistant', 'Running the suite', {
+        toolCalls: [
+          { toolCallId: 't1', toolName: 'Bash', arguments: '{"command":"npm test"}' },
+          { toolCallId: 't2', toolName: 'Bash', arguments: '{"command":"npm run build"}' },
+        ],
+        toolResults: [
+          { toolCallId: 't1', toolName: 'Bash', output: { type: 'text', value: '1 test failed' }, isError: true },
+          { toolCallId: 't2', toolName: 'Bash', output: { type: 'text', value: 'build ok' } },
+        ],
+      }),
+      makeEntry('system', 'Fixed.', { subtype: 'task_result' }),
+    ];
+    fx.writeTranscript('cw-tool', toolEntries);
+
+    const out = await exec(makeTool(), { workerId: 'cw-tool', full: true });
+
+    // Tool result values render as text — output is {type:'text', value} on
+    // the schema, which must not degrade to "[object Object]".
+    expect(out).toContain('↳ result [error]: 1 test failed');
+    expect(out).toContain('↳ result: build ok');
+    expect(out).not.toContain('[object Object]');
+    expect(out).toContain('↳ Bash {"command":"npm test"}');
+  });
+
   it('reports unknown worker when nothing references the id', async () => {
     const out = await exec(makeTool(), { workerId: 'ghost' });
     expect(out).toContain('Unknown worker ghost: no active worker and no task references it.');

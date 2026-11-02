@@ -41,6 +41,13 @@ let seq = 0;
 export interface EntryOptions {
   timestampOffsetMs?: number;
   toolCalls?: Array<{ toolCallId?: string; toolName: string; arguments?: string }>;
+  /** Tool results recorded on the entry (schema shape: output {type,value}). */
+  toolResults?: Array<{
+    toolCallId?: string;
+    toolName?: string;
+    output?: { type: 'text'; value: string };
+    isError?: boolean;
+  }>;
   subtype?: string;
 }
 
@@ -62,6 +69,7 @@ export function makeEntry(type: string, content: string, opts: EntryOptions = {}
   }
   if (opts.subtype) base.subtype = opts.subtype;
   if (opts.toolCalls) base.toolCalls = opts.toolCalls;
+  if (opts.toolResults) base.toolResults = opts.toolResults;
   return base;
 }
 

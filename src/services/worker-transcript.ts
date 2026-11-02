@@ -18,6 +18,7 @@ import type { ConversationEntry } from '@/types/index';
 import { EEntryType, ESystemSubtype } from '@/types/index';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
 import { workerDir } from '@/services/agents/worker-state';
+import { toolOutputText } from '@/services/agents/utils/estimate-tokens';
 
 /** File name of a worker's append-only conversation log (mirrors WorkerState). */
 export const WORKER_TRANSCRIPT_FILE = 'conversation.jsonl';
@@ -230,9 +231,19 @@ function entryToolCalls(entry: ConversationEntry): Array<{ toolName: string; arg
     .map((c) => ({ toolName: c.toolName as string, arguments: c.arguments }));
 }
 
-function entryToolResults(entry: ConversationEntry): Array<{ output?: string; isError?: boolean }> {
-  const results = (entry as { toolResults?: Array<{ output?: string; isError?: boolean }> }).toolResults;
-  return Array.isArray(results) ? results : [];
+/**
+ * Tool results recorded on an entry, with the output flattened to text.
+ * `ToolResultRecord.output` is `{ type: 'text', value }` — reading it as a
+ * string renders "[object Object]", so the text is extracted via
+ * toolOutputText (same reader the token estimator uses).
+ */
+function entryToolResults(entry: ConversationEntry): Array<{ output: string; isError?: boolean }> {
+  const results = (entry as { toolResults?: Array<{ output?: unknown; isError?: boolean }> }).toolResults;
+  if (!Array.isArray(results)) return [];
+  return results.map((r) => ({
+    output: toolOutputText(r.output),
+    isError: r.isError,
+  }));
 }
 
 /** Human-facing label, e.g. `assistant` or `system/task_result`. */
