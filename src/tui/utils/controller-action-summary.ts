@@ -86,14 +86,23 @@ export function summarizeWorkerMessage(
   const { lines, hidden } = previewLines(message, maxLines, width);
 
   const failed = result !== undefined && (result.isError === true || /^\[ERROR\]/.test(result.text));
+  // Delivery timing, parsed from the result. Queued is checked FIRST: the
+  // queued text ("QUEUED only, not delivered yet") contains both words, so
+  // checking delivered first (or in parallel) mislabels a queued message as
+  // delivered.
+  let delivery: 'delivered' | 'queued' | undefined;
+  if (result !== undefined && !failed) {
+    delivery = /\bqueued\b/i.test(result.text)
+      ? 'queued'
+      : /\bdelivered\b/i.test(result.text) ? 'delivered' : undefined;
+  }
   return {
     ...(workerId && { workerId }),
     lines,
     hiddenLines: hidden,
     outcome: result === undefined ? 'pending' : failed ? 'failed' : 'ok',
     failure: failed ? failureText(result!.text, width) : '',
-    ...(result !== undefined && !failed && /\bqueued\b/.test(result.text) && { delivery: 'queued' as const }),
-    ...(result !== undefined && !failed && /\bdelivered\b/.test(result.text) && { delivery: 'delivered' as const }),
+    ...(delivery && { delivery }),
   };
 }
 
