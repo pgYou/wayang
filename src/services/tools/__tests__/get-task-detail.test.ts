@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getTaskDetailTool } from '@/services/tools/get-task-detail';
-import { readWorkerTranscript } from '@/services/worker-transcript';
+import { readWorkerTranscriptWindow } from '@/services/worker-transcript';
 import { makeTask } from '@/__tests__/helpers';
 import {
   createTranscriptFixture,
@@ -140,23 +140,77 @@ describe('getTaskDetailTool — pagination and truncation', () => {
     const tool = getTaskDetailTool({
       getTask: () => makeTask('t1', { status: 'completed', workerSessionId: 'cw-1' }),
       getWorkerConversation: () => [], // worker already removed from the engine map
-      readTranscript: (workerId) => readWorkerTranscript(fx.sessionDir, workerId),
+      readTranscriptWindow: (workerId, opts) => readWorkerTranscriptWindow(fx.sessionDir, workerId, opts),
     });
     const out = await exec(tool, { taskId: 't1', full: true });
 
     expect(out).toContain('[from transcript]');
     expect(out).toContain('REPORT_TAIL_MARKER');
     expect(readMeta(out).totalEntries).toBe(21);
+    expect(readMeta(out).source).toBe('transcript');
+  });
+
+  it('resolves the disk transcript through workerTranscriptId (the engine id never names the dir)', async () => {
+    const fx = createTranscriptFixture();
+    fixture.current = fx;
+    // The file lives under the worker instance's own id only.
+    fx.writeTranscript('cw-9', entries);
+
+    const tool = getTaskDetailTool({
+      getTask: () => makeTask('t1', {
+        status: 'failed',
+        workerSessionId: 'w-1',
+        workerTranscriptId: 'cw-9',
+      }),
+      getWorkerConversation: () => [],
+      readTranscriptWindow: (workerId, opts) => readWorkerTranscriptWindow(fx.sessionDir, workerId, opts),
+    });
+    const out = await exec(tool, { taskId: 't1' });
+
+    expect(out).toContain('[from transcript]');
+    expect(readMeta(out).source).toBe('transcript');
+    expect(readMeta(out).totalEntries).toBe(21);
+    expect(readMeta(out).returnedEntries).toBe(10); // default limit
+  });
+
+  it('flags a torn last line on the disk fallback', async () => {
+    const fx = createTranscriptFixture();
+    fixture.current = fx;
+    fx.writeTranscript('cw-1', [makeEntry('user', 'hello'), makeEntry('assistant', 'world')]);
+    const fs = await import('node:fs');
+    fs.appendFileSync(fx.transcriptPath('cw-1'), '{"type":"assistant","mess');
+
+    const tool = getTaskDetailTool({
+      getTask: () => makeTask('t1', { status: 'completed', workerSessionId: 'cw-1' }),
+      getWorkerConversation: () => [],
+      readTranscriptWindow: (workerId, opts) => readWorkerTranscriptWindow(fx.sessionDir, workerId, opts),
+    });
+    const out = await exec(tool, { taskId: 't1' });
+
+    expect(out).toContain('[note: last entry is incomplete — the transcript is still being written]');
+    expect(readMeta(out).incompleteTail).toBe(true);
+    expect(readMeta(out).totalEntries).toBe(2);
   });
 
   it('does not invent a conversation when nothing is available', async () => {
     const tool = getTaskDetailTool({
       getTask: () => task,
       getWorkerConversation: () => [],
-      readTranscript: vi.fn(() => null),
+      readTranscriptWindow: vi.fn(() => null),
     });
     const out = await exec(tool, { taskId: 't1' });
     expect(out).not.toContain('Conversation');
     expect(out).not.toContain('[truncated:');
+  });
+
+  it('documents the pagination semantics it actually implements', () => {
+    const tool = getTaskDetailTool({ getTask: () => task });
+    for (const sentence of [
+      'offset skips N entries counted back from the newest',
+      'output is ordered oldest→newest',
+      'type filtering is applied BEFORE pagination',
+    ]) {
+      expect(tool.description).toContain(sentence);
+    }
   });
 });

@@ -13,6 +13,14 @@ export interface TaskDetail {
   result?: string;
   error?: string;
   workerSessionId?: string;
+  /**
+   * The worker instance's OWN id (agent-…/cw-…) — the directory name under
+   * `<sessionDir>/workers/` that holds this task's conversation.jsonl.
+   * `workerSessionId` above is the engine's worker id (w-…), which never
+   * matches the on-disk layout; this field keeps the transcript locatable
+   * after the worker finished and the engine dropped its instance.
+   */
+  workerTranscriptId?: string;
   /** Worker type: 'puppet' (default) or a configured worker ID (e.g. 'claude-code'). */
   workerType?: string;
   /**

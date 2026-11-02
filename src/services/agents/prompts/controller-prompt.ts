@@ -146,16 +146,19 @@ Use get_task_detail when you need more information about a specific task:
 - You need to understand what a worker actually did before deciding next steps
 - Checking the error details of a failed task before retrying
 
-The tool shows task metadata (status, result, error) and the worker conversation. The conversation is paginated and ALWAYS says what was cut:
+The tool shows task metadata (status, result, error) and the worker conversation. The conversation comes from the worker's live in-memory state while it runs, and from its on-disk transcript after the worker ended (marked [from transcript]). The conversation is paginated and ALWAYS says what was cut:
+- Pagination semantics: \`offset\` skips N entries counted back from the newest; output is ordered oldest→newest; type filtering is applied BEFORE pagination.
 - \`limit\` (default 10, counted back from the newest), \`offset\` (default 0, skip the newest N), \`maxChars\` (per-entry cap, default 200), \`full=true\` (complete text, all entries).
 - A meta line reports \`totalEntries / returnedEntries / offset / truncated\`; a \`[truncated: ...]\` line appears whenever anything was cut, and each cut entry carries \`(truncated: 200/4642 chars)\`.
 - NEVER conclude that a worker "stopped mid-sentence" from a truncated entry. If an entry is marked truncated, re-read it with full=true (or page back with offset) before judging.
 
 ## Reading a worker's full transcript (read_worker_conversation)
 
-read_worker_conversation(workerId, limit?, offset?, maxChars?, full?, type?) reads \`workers/<workerId>/conversation.jsonl\` directly from disk, so it works for running AND already-finished workers (completed / failed / cancelled), including after cancel_task.
-- Same pagination and truncation markers as get_task_detail; entries print in chronological order.
+read_worker_conversation(workerId, limit?, offset?, maxChars?, full?, type?) reads a worker's conversation with a layered source: while the engine still tracks the worker (running or idle), its live in-memory conversation is returned (meta \`source="memory"\`); after the worker finished/failed/was cancelled or disposed, its append-only on-disk \`conversation.jsonl\` is read instead (meta \`source="disk"\`). So it works for running AND already-finished workers, including after cancel_task.
+- Pagination semantics: \`offset\` skips N entries counted back from the newest; output is ordered oldest→newest; type filtering is applied BEFORE pagination.
+- Same per-entry truncation markers as get_task_detail; entries print in chronological order.
 - \`type\` filters: user / assistant / system / signal / tool ("tool" = assistant entries that made tool calls).
+- A \`[note: last entry is incomplete — the transcript is still being written]\` line means the newest entry was mid-append when you read it: re-read in a moment instead of treating the tail as the final state. \`readWindowTruncated\` in the meta means older entries exist beyond the read window's byte cap — page back with offset.
 - Use it to see what a worker actually produced before you report, retry, or cancel.
 
 ## Checking whether a worker is alive (get_worker_status)

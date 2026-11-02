@@ -22,7 +22,7 @@ import {
   buildControllerSystemPrompt,
 } from './prompts/index';
 import { createControllerTools } from '@/services/tools/index';
-import { readWorkerTranscript } from '@/services/worker-transcript';
+import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
 import { SystemContext } from '@/infra/system-context';
 import type { TaskExecuteEngine } from '@/services/task-execute-engine';
 import type { SignalQueue } from '@/services/signal/signal-queue';
@@ -107,6 +107,13 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       // On-disk transcript access (issue #16): survives worker disposal, so a
       // finished/cancelled worker's scene stays readable by the controller.
       readTranscript: (workerId: string) => readWorkerTranscript(ctx.sessionDir, workerId),
+      // Layered transcript access (issue #16 review): while the engine tracks
+      // the worker, its live in-memory conversation is the source; the on-disk
+      // jsonl lives under the worker instance's OWN id (agent-/cw-…), which
+      // the engine exposes and tasks persist as workerTranscriptId.
+      getWorkerConversationByWorkerId: (workerId: string) => engine.getWorkerConversationByWorkerId(workerId),
+      getWorkerTranscriptId: (workerId: string) => engine.getWorkerTranscriptId(workerId),
+      readTranscriptWindow: (workerId: string, opts) => readWorkerTranscriptWindow(ctx.sessionDir, workerId, opts),
       sessionDir: ctx.sessionDir,
       getActiveWorkers: () => engine.getActiveWorkers(),
       getWorkerLiveStatus: (workerId: string) => engine.getWorkerLiveStatus(workerId),

@@ -10,6 +10,8 @@ import {
   renderEntriesFitting,
   selectWindow,
   shrinkWindow,
+  type TranscriptReadOptions,
+  type WorkerTranscriptWindow,
 } from '@/services/worker-transcript';
 
 /** Output chars reserved for headers, notices and the meta line. */
@@ -26,20 +28,25 @@ export interface GetTaskDetailDeps {
   /** Get worker conversation entries for a running/completed task (in-memory). */
   getWorkerConversation?: (taskId: string) => any[];
   /**
-   * Read a worker's on-disk transcript by worker id. Used as a fallback when
-   * the in-memory conversation is gone (worker finished / cancelled), so the
-   * controller can still see the scene it was blind to before issue #16.
+   * Windowed read of a worker's on-disk transcript (by the worker's own
+   * directory id). Used as a fallback when the in-memory conversation is gone
+   * (worker finished / cancelled), so the controller can still see the scene
+   * it was blind to before issue #16. Null when the file does not exist.
    */
-  readTranscript?: (workerId: string) => ConversationEntry[] | null;
+  readTranscriptWindow?: (workerId: string, opts: TranscriptReadOptions) => WorkerTranscriptWindow | null;
 }
 
 export function getTaskDetailTool(deps: GetTaskDetailDeps) {
   return defineTool({
     description:
       'Get detailed information about a specific task, including its worker conversation. ' +
+      'The conversation comes from the worker\'s live in-memory state while it runs, and from ' +
+      'its on-disk transcript after the worker ended (marked [from transcript]). ' +
       'The conversation is paginated and truncation is always marked explicitly: ' +
-      'limit (default 10 entries, counted back from the newest), offset (default 0, skip the newest N), ' +
-      'maxChars (per-entry character cap, default 200) and full=true (complete text, all entries). ' +
+      'offset skips N entries counted back from the newest; output is ordered oldest→newest; ' +
+      'type filtering is applied BEFORE pagination. ' +
+      'limit (default 10 entries, counted back from the newest), maxChars (per-entry character ' +
+      'cap, default 200) and full=true (complete text, all entries). ' +
       'A machine-readable meta line reports totalEntries / returnedEntries / offset / truncated.',
     parameters: z.object({
       taskId: z.string().describe('Task ID'),
@@ -66,28 +73,42 @@ export function getTaskDetailTool(deps: GetTaskDetailDeps) {
       if (task.error) lines.push(`Error: ${task.error}`);
       if (task.workerSessionId) lines.push(`Worker: ${task.workerSessionId}`);
 
+      const isFull = full === true;
+      const requestedLimit = limit ?? DEFAULT_LIMIT;
+
       // In-memory conversation first (a live worker), then the on-disk
       // transcript (a worker that already ended and left the engine's map).
+      // The disk transcript lives under the worker instance's OWN id —
+      // task.workerTranscriptId — never the engine id in workerSessionId.
       let entries: ConversationEntry[] = [];
       let source: 'memory' | 'transcript' | 'none' = 'none';
+      let incompleteTail = false;
+      let readWindowTruncated = false;
       if (deps.getWorkerConversation) {
         entries = deps.getWorkerConversation(taskId) as ConversationEntry[];
         if (entries.length > 0) source = 'memory';
       }
-      if (entries.length === 0 && task.workerSessionId && deps.readTranscript) {
-        const fromDisk = deps.readTranscript(task.workerSessionId);
-        if (fromDisk && fromDisk.length > 0) {
-          entries = fromDisk;
-          source = 'transcript';
+      if (entries.length === 0 && deps.readTranscriptWindow) {
+        const diskIds = [task.workerTranscriptId, task.workerSessionId]
+          .filter((id): id is string => typeof id === 'string');
+        for (const id of [...new Set(diskIds)]) {
+          const win = deps.readTranscriptWindow(id, {
+            need: isFull ? undefined : (offset ?? 0) + requestedLimit,
+          });
+          if (win && win.entries.length > 0) {
+            entries = win.entries;
+            source = 'transcript';
+            incompleteTail = win.incompleteTail;
+            readWindowTruncated = win.windowTruncated;
+            break;
+          }
         }
       }
 
       if (entries.length === 0) return lines.join('\n');
 
-      const isFull = full === true;
-      const requestedLimit = isFull ? entries.length : (limit ?? DEFAULT_LIMIT);
       const perEntryCap = isFull ? null : (maxChars ?? DEFAULT_MAX_CHARS);
-      const requested = selectWindow(entries, offset ?? 0, requestedLimit);
+      const requested = selectWindow(entries, offset ?? 0, isFull ? entries.length : requestedLimit);
       // Render newest-first under the tool-output budget: if the requested
       // window cannot fit, the oldest entries are dropped and reported, so the
       // meta can never claim more than the caller actually sees.
@@ -100,10 +121,29 @@ export function getTaskDetailTool(deps: GetTaskDetailDeps) {
       const win = shrinkWindow(requested, rendered.dropped);
       const body = rendered.lines;
 
-      const meta = buildWindowMeta(win, { maxChars: perEntryCap, full: isFull, shortenedEntries: rendered.shortened });
+      const base = buildWindowMeta(win, { maxChars: perEntryCap, full: isFull, shortenedEntries: rendered.shortened });
+      const meta = {
+        ...base,
+        source,
+        incompleteTail,
+        readWindowTruncated,
+        windowTruncated: base.windowTruncated || readWindowTruncated,
+        truncated: base.truncated || readWindowTruncated,
+      };
       lines.push('');
-      lines.push(`${buildTranscriptHeader(meta)}${source === 'transcript' ? ' [from transcript]' : ''}`);
+      let header = buildTranscriptHeader(meta);
+      if (readWindowTruncated) {
+        header = `Conversation (${meta.totalEntries} entries in read window, showing ` +
+          `${meta.startIndex}-${meta.endIndex}; older entries exist beyond the read-window cap)`;
+      }
+      lines.push(`${header}${source === 'transcript' ? ' [from transcript]' : ''}`);
       lines.push(...body);
+      if (incompleteTail) {
+        lines.push('[note: last entry is incomplete — the transcript is still being written]');
+      }
+      if (readWindowTruncated) {
+        lines.push('[note: transcript read window hit its byte cap — older entries were not read; page back with offset/limit]');
+      }
       const notice = buildTruncationNotice(meta);
       if (notice) lines.push(notice);
       lines.push(`[conversation-meta] ${JSON.stringify(meta)}`);

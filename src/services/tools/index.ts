@@ -52,6 +52,12 @@ export interface ControllerToolDeps {
   getWorkerConversation?: (taskId: string) => any[];
   /** Read a worker's on-disk transcript (works after the worker is gone). */
   readTranscript: (workerId: string) => ConversationEntry[] | null;
+  /** Live in-memory conversation of an engine-tracked worker, by worker id. */
+  getWorkerConversationByWorkerId?: (workerId: string) => ConversationEntry[] | undefined;
+  /** The worker instance's own id (on-disk transcript dir name), while tracked. */
+  getWorkerTranscriptId?: (workerId: string) => string | undefined;
+  /** Windowed (tail-bounded) read of an on-disk transcript. */
+  readTranscriptWindow?: (workerId: string, opts: import('@/services/worker-transcript').TranscriptReadOptions) => import('@/services/worker-transcript').WorkerTranscriptWindow | null;
   /** Session directory holding `workers/<workerId>/conversation.jsonl`. */
   sessionDir: string;
   /** Currently tracked workers (for status listings / loud not-found messages). */
@@ -112,11 +118,17 @@ export function createControllerTools(deps: ControllerToolDeps) {
     get_task_detail: getTaskDetailTool({
       getTask: deps.getTask,
       getWorkerConversation: deps.getWorkerConversation,
-      readTranscript: deps.readTranscript,
+      readTranscriptWindow: deps.readTranscriptWindow,
     }),
     read_worker_conversation: readWorkerConversationTool({
       sessionDir: deps.sessionDir,
-      readTranscript: deps.readTranscript,
+      getWorkerConversationByWorkerId: deps.getWorkerConversationByWorkerId,
+      getWorkerTranscriptId: deps.getWorkerTranscriptId,
+      readTranscriptWindow: (workerId, opts) => {
+        const reader = deps.readTranscriptWindow;
+        if (!reader) throw new Error('readTranscriptWindow dep not wired');
+        return reader(workerId, opts);
+      },
       listWorkers: () => deps.getActiveWorkers?.() ?? [],
       listTasks: () => deps.listTasks(),
     }),

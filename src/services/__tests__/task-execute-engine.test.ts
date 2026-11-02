@@ -363,3 +363,65 @@ describe('TaskExecuteEngine — cancel semantics', () => {
     expect(signalQueue.getUnreadSignals().some(s => s.type === 'task_cancelled')).toBe(false);
   });
 });
+
+describe('TaskExecuteEngine — worker transcript id', () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'wayang-engine-test-'));
+    constructedWorkers.length = 0;
+    vi.useRealTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('stamps workerTranscriptId on the running task and keeps it in history after completion', async () => {
+    const { engine } = makeEngine();
+    await engine.restore();
+
+    engine.add(makeTask('t1'));
+    const worker = lastWorker();
+    const engineId = engine.getActiveWorkers()[0].workerId;
+    expect(engineId).toMatch(/^w-/);
+
+    // The engine worker id and the worker instance's own id are different
+    // namespaces — the engine exposes the mapping while it tracks the worker.
+    expect(worker.id).toMatch(/^fake-/);
+    expect(worker.id).not.toBe(engineId);
+    expect(engine.getWorkerTranscriptId(engineId)).toBe(worker.id);
+    expect(engine.get('t1')?.workerSessionId).toBe(engineId);
+    expect(engine.get('t1')?.workerTranscriptId).toBe(worker.id);
+
+    // The in-memory conversation is reachable by worker id too.
+    worker.conversation = [{ type: 'user' } as any];
+    expect(engine.getWorkerConversationByWorkerId(engineId)).toEqual([{ type: 'user' }]);
+
+    await resolveAndSettle(worker, { status: 'completed', summary: 'done' });
+
+    // After disposal the live lookup is gone, but the persisted task field
+    // still locates the on-disk transcript directory.
+    expect(engine.getWorkerTranscriptId(engineId)).toBeUndefined();
+    const done = engine.list('completed').find(t => t.id === 't1');
+    expect(done?.workerSessionId).toBe(engineId);
+    expect(done?.workerTranscriptId).toBe(worker.id);
+  });
+
+  it('assignToExistingWorker stamps the reused worker\'s transcript id on the new task', async () => {
+    const { engine } = makeEngine();
+    await engine.restore();
+
+    engine.add(makeTask('t1', { multiStage: true }));
+    const worker = lastWorker();
+    await resolveAndSettle(worker, { status: 'completed', summary: 'stage 1' });
+
+    const engineId = engine.getActiveWorkers()[0].workerId;
+    expect(engine.assignToExistingWorker(engineId, makeTask('t2'))).toBe(true);
+
+    const t2 = engine.get('t2');
+    expect(t2?.status).toBe('running');
+    expect(t2?.workerSessionId).toBe(engineId);
+    expect(t2?.workerTranscriptId).toBe(worker.id);
+    // Same instance keeps the same transcript directory across stages.
+    expect(engine.getWorkerTranscriptId(engineId)).toBe(worker.id);
+  });
+});
