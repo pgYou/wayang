@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.7.0 (2026-11-02)
+
+### Features
+
+**Controller 能读 worker 对话、能判断 worker 是不是卡住了** — Two new tools (issue #16): `read_worker_conversation` returns a worker's transcript — the live in-memory conversation while the engine still tracks it, the on-disk `conversation.jsonl` once it has ended or been cancelled, so finished and cancelled workers stay inspectable; `get_worker_status` reports `runningForMs`, `lastActivityAt` (+ how long ago), `currentTool`, `streamEnded`, `resultReceived` and `idleSince`, which makes a "finished but never released" worker visible instead of just silent. `chat_worker` now also says outright that `queued` is not delivery
+
+**心跳与进度信号带上活动时间和当前工具** — `progress` and `heartbeat` signals now carry `lastActivityAt` and `currentTool`, so routine controller check-ins can tell a worker that is working from one that has gone quiet
+
+**get_task_detail 分页与截断标注** — Task detail reads take `limit` (default 10 entries, counted back from the newest), `offset`, `maxChars` (per-entry cap, default 200) and `full=true`; truncation is always marked explicitly, the output is ordered oldest→newest, type filtering happens before pagination, and the meta line reports what was actually returned
+
+**Puppet worker 注入 AGENTS.md 项目规则** — Rules from the project's rules file now reach the worker's system prompt: `findProjectRules()` walks up from the task workspace for at most 5 levels (never crossing a git root), checks `AGENTS.md` before `CLAUDE.md` in each directory, and injects the first non-empty hit as a `Project rules (<name>)` section with its source path, truncated at 8000 characters; no rules file means no section. Only puppet workers inject — Claude Code runs in isolated mode and never auto-loads `CLAUDE.md`, so nothing is duplicated
+
+**inquire 增加「其他（自行输入）」** — Select-type questions auto-append a trailing `其他（自行输入）` choice (`allowOther`, default true) so a preset list is never a dead end; picking it swaps the list for free-form text input and the answer comes back prefixed with `[Other] ` so custom input stays distinguishable. `allowOther=false` keeps the list strict
+
+**claude-code worker 记录工具调用与结果** — Tool activity is no longer dropped from worker conversations: `tool_use` blocks become `toolCalls` (id, name, arguments, status, timestamps) and `tool_result` blocks land as `toolResults` on the same entry (matched by id, error flags kept), buffered until the results arrive so text, calls and results land atomically; results are truncated at 2000 chars and arguments at 8000 with an explicit `... [truncated, N chars]` marker, and calls still unanswered at stream end are marked `cancelled`
+
+### Fixes
+
+**运行中读不到 worker 对话（engine id 与落盘 id 命名空间不一致）** — The transcript tools built disk paths from the engine's `w-…` id while `WorkerState` writes `conversation.jsonl` under the worker instance's own id (`agent-…` / `cw-…`), so the files were never found — not a persistence problem (entries are appended in real time) but an id mismatch. Reads are now layered (memory while tracked, disk after end, `meta.source` says which), tasks persist `workerTranscriptId` so finished workers stay locatable, the three failure modes (unknown worker / known but not locatable / empty transcript) are reported separately, a torn last JSON line is kept with complete entries plus an explicit `incompleteTail` note, and disk reads are tail-bounded (2 MB hard cap) instead of loading a whole 5000-entry transcript
+
+**输入框多行粘贴渲染错乱（Closes #22）** — Terminals send pasted newlines as CR and Ink positions sibling text nodes per node, so a paste inserted literal `\r`, a mid-paste cursor scrambled the rows and long lines lost characters. Pasted newlines are now normalized to LF, the input renders one row per visual line pre-wrapped by display width (`stringWidth`, so CJK counts as two columns), the cursor block keeps its own row and the cursor/backspace step by code point so emoji are not split
+
 ## v0.6.3 (2026-11-02)
 
 ### Features
