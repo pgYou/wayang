@@ -23,17 +23,18 @@ export function chatWorkerTool(deps: ChatWorkerToolDeps) {
     execute: safeExecute('chat_worker', async ({ workerId, message }) => {
       const status = deps.sendMessageToWorker(workerId, message);
       if (status === 'not_running') {
-        return `[ERROR] Worker ${workerId} is not running (it may have just finished).`;
+        return `[ERROR] Worker ${workerId} is not running (it may have just finished). ` +
+          `Use get_worker_status("${workerId}") or read_worker_conversation("${workerId}") to inspect what it produced.`;
       }
       if (status === 'finished') {
         return `[ERROR] Worker ${workerId} has already finished; message not delivered. ` +
-          `Use get_task_detail to inspect its output.`;
+          `Use read_worker_conversation("${workerId}") / get_task_detail to inspect its output.`;
       }
       if (status === 'queued') {
         return `Message queued for worker ${workerId} — QUEUED only, not delivered yet: the worker reads it at its ` +
           `next step (puppet), turn boundary (third-party — the current turn, including any running tool call, ` +
           `finishes first) or next stage start (idle). A stuck worker will never reach that point. ` +
-          `Verify with get_task_detail before relying on it; ` +
+          `Verify with get_worker_status("${workerId}") (lastActivityAt / currentTool); ` +
           `if it looks stuck, use cancel_task instead of waiting for this message.`;
       }
       return `Message delivered to worker ${workerId} — it will be read at the worker's next step.`;

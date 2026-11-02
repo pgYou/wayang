@@ -51,6 +51,13 @@ export interface ProgressSignalPayload {
   /** Human-readable progress message. */
   message: string;
   percent?: number;
+  /**
+   * Epoch ms of the worker's newest conversation entry when this progress was
+   * emitted (issue #16) — lets the controller judge liveness from the signal.
+   */
+  lastActivityAt?: number | null;
+  /** Name of the worker's most recent tool call, when known. */
+  currentTool?: string | null;
 }
 
 /** Worker task cancelled signal payload. */
@@ -94,6 +101,12 @@ export interface HeartbeatSignalPayload {
     workerType: string;
     /** How long this worker has been running (ms). */
     runningForMs: number;
+    /** Epoch ms of the worker's newest conversation entry (null = none yet). */
+    lastActivityAt?: number | null;
+    /** Milliseconds since that entry — the stall indicator (issue #16). */
+    lastActivityAgoMs?: number | null;
+    /** Name of the worker's most recent tool call, when known. */
+    currentTool?: string | null;
   }>;
   /** Number of pending (queued) tasks. */
   pendingTaskCount: number;

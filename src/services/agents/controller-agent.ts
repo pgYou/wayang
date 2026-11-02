@@ -22,6 +22,7 @@ import {
   buildControllerSystemPrompt,
 } from './prompts/index';
 import { createControllerTools } from '@/services/tools/index';
+import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
 import { SystemContext } from '@/infra/system-context';
 import type { TaskExecuteEngine } from '@/services/task-execute-engine';
 import type { SignalQueue } from '@/services/signal/signal-queue';
@@ -103,6 +104,19 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       listTasks: (status?: TaskDetail['status']) => engine.list(status),
       getTask: (taskId: string) => engine.get(taskId),
       getWorkerConversation: (taskId: string) => engine.getWorkerConversation(taskId),
+      // On-disk transcript access (issue #16): survives worker disposal, so a
+      // finished/cancelled worker's scene stays readable by the controller.
+      readTranscript: (workerId: string) => readWorkerTranscript(ctx.sessionDir, workerId),
+      // Layered transcript access (issue #16 review): while the engine tracks
+      // the worker, its live in-memory conversation is the source; the on-disk
+      // jsonl lives under the worker instance's OWN id (agent-/cw-…), which
+      // the engine exposes and tasks persist as workerTranscriptId.
+      getWorkerConversationByWorkerId: (workerId: string) => engine.getWorkerConversationByWorkerId(workerId),
+      getWorkerTranscriptId: (workerId: string) => engine.getWorkerTranscriptId(workerId),
+      readTranscriptWindow: (workerId: string, opts) => readWorkerTranscriptWindow(ctx.sessionDir, workerId, opts),
+      sessionDir: ctx.sessionDir,
+      getActiveWorkers: () => engine.getActiveWorkers(),
+      getWorkerLiveStatus: (workerId: string) => engine.getWorkerLiveStatus(workerId),
       cancelTask: (taskId: string) => engine.cancel(taskId),
       abortWorker: (taskId: string) => engine.abortByTaskId(taskId),
       updateTask: (taskId, updates) => engine.updatePending(taskId, updates),
@@ -484,6 +498,20 @@ function isoMs(ms: number | undefined): string | undefined {
   return new Date(ms).toISOString();
 }
 
+/**
+ * One-line activity tail for worker-produced signals (issue #16).
+ * `lastActivityAt` is an epoch-ms stamp; null/undefined means "no entries yet".
+ */
+function signalActivityTail(currentTool?: string | null, lastActivityAt?: number | null): string | null {
+  const parts: string[] = [];
+  if (currentTool) parts.push(`tool=${currentTool}`);
+  if (typeof lastActivityAt === 'number' && Number.isFinite(lastActivityAt)) {
+    // Second precision keeps the tail short in the transcript/UI.
+    parts.push(`lastEntry=${new Date(lastActivityAt).toISOString().replace(/\.\d{3}Z$/, 'Z')}`);
+  }
+  return parts.length > 0 ? `[activity: ${parts.join(', ')}]` : null;
+}
+
 type SignalConverter = (sig: ControllerSignal, ts: string, sessionId: string) => ConversationEntry;
 
 const signalConverters: Record<string, SignalConverter> = {
@@ -524,19 +552,28 @@ const signalConverters: Record<string, SignalConverter> = {
 
   progress: (sig, ts, sessionId) => {
     const p = sig.payload as ProgressSignalPayload;
+    // Activity tail (issue #16): the controller can judge "still moving" from
+    // the signal itself, without an extra get_worker_status call.
+    const activity = signalActivityTail(p.currentTool, p.lastActivityAt);
     return {
       ...signalBase(ts, sessionId),
       subtype: ESignalSubtype.WorkerProgress,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
-      content: p.message,
+      content: activity ? `${p.message}\n${activity}` : p.message,
     };
   },
 
   heartbeat: (sig, ts, sessionId) => {
     const p = sig.payload as HeartbeatSignalPayload;
     const workerSummary = p.workers
-      .map((w) => `${w.taskTitle} (${w.workerType}, running ${Math.round(w.runningForMs / 1000)}s)`)
+      .map((w) => {
+        const tool = w.currentTool ? `, tool ${w.currentTool}` : '';
+        const idle = w.lastActivityAgoMs !== null && w.lastActivityAgoMs !== undefined
+          ? `, last activity ${Math.round(w.lastActivityAgoMs / 1000)}s ago`
+          : '';
+        return `${w.taskTitle} [${w.workerId}] (${w.workerType}, running ${Math.round(w.runningForMs / 1000)}s${tool}${idle})`;
+      })
       .join(', ');
     return {
       ...signalBase(ts, sessionId),

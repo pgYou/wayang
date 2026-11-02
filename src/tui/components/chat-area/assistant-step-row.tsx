@@ -278,13 +278,19 @@ function WorkerMessageRow({ section, result, lookups }: {
   const worker = summary.workerId ? lookups.workers.get(summary.workerId) : undefined;
   const target = formatWorkerTag(worker ?? { workerId: summary.workerId }) || '(未知 worker)';
   const iconColor = summary.outcome === 'failed' ? theme.action.failColor : theme.action.color;
+  // Read timing is only known when the result states it. An ok result that
+  // says neither ("Message accepted.") must not fall through to 已送达 — the
+  // neutral 已发送 only claims the tool took the message.
+  const delivered = summary.delivery === 'queued'
+    ? '已排队'
+    : summary.delivery === 'delivered' ? '已送达' : '已发送';
 
   return (
     <Box flexDirection="column">
       <Box>
         <Text color={iconColor} bold>{theme.action.messageIcon} 发送给</Text>
         <Text> {target}</Text>
-        <OutcomeMark outcome={summary.outcome} ok={summary.delivery === 'queued' ? '已排队' : '已送达'} failed="未送达" />
+        <OutcomeMark outcome={summary.outcome} ok={delivered} failed="未送达" />
       </Box>
       <PreviewLines lines={summary.lines} hidden={summary.hiddenLines} />
       {summary.failure && <SecondaryLine color={theme.action.failColor}>{summary.failure}</SecondaryLine>}

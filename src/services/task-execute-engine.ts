@@ -18,7 +18,8 @@
 import type { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { Logger } from '@/infra/logger';
-import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo, NewSignalInput, SignalTurnLineage, TaskCancelledSignalPayload } from '@/types/index';
+import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo, WorkerLiveStatus, NewSignalInput, SignalTurnLineage, TaskCancelledSignalPayload, ConversationEntry } from '@/types/index';
+import { summarizeTranscript } from '@/services/worker-transcript';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import { BaseWayangState } from '@/infra/state/base-state';
 import type { Subscribable } from '@/infra/state/subscribable';
@@ -384,6 +385,26 @@ export class TaskExecuteEngine implements Subscribable {
     });
   }
 
+  /**
+   * Live run flags of a worker instance — "has the result arrived?" and "has
+   * the stream closed?" (issue #16). Returns undefined for workers that do not
+   * report them or are no longer tracked.
+   */
+  getWorkerLiveStatus(workerId: string): WorkerLiveStatus | undefined {
+    return this.workers.get(workerId)?.getLiveStatus?.();
+  }
+
+  /**
+   * Per-worker activity derived from the in-memory conversation: when it last
+   * produced an entry, and which tool it called last. Fed into heartbeat
+   * signals so the controller can spot a stall without calling a tool.
+   */
+  getWorkerActivity(workerId: string): { lastActivityAt: number | null; currentTool: string | null } {
+    const entries = this.workers.get(workerId)?.getConversation() ?? [];
+    const summary = summarizeTranscript(entries);
+    return { lastActivityAt: summary.lastActivityAt, currentTool: summary.currentTool };
+  }
+
   getWorkerConversation(taskId: string): any[] {
     for (const [workerId, tId] of this.workerTaskMap) {
       if (tId === taskId) {
@@ -392,6 +413,27 @@ export class TaskExecuteEngine implements Subscribable {
       }
     }
     return [];
+  }
+
+  /**
+   * Live in-memory conversation of a worker looked up by worker id (not task
+   * id). Undefined once the worker is no longer tracked — the on-disk
+   * transcript (via the task's workerTranscriptId) takes over then.
+   */
+  getWorkerConversationByWorkerId(workerId: string): ConversationEntry[] | undefined {
+    const worker = this.workers.get(workerId);
+    return worker === undefined ? undefined : worker.getConversation();
+  }
+
+  /**
+   * The worker instance's OWN id (agent-…/cw-…) — the directory name under
+   * `<sessionDir>/workers/` where its conversation.jsonl lives. Distinct from
+   * the engine worker id (w-…) used in tasks/signals. Only resolvable while
+   * the engine tracks the worker; afterwards the task's persisted
+   * `workerTranscriptId` is the source of truth.
+   */
+  getWorkerTranscriptId(workerId: string): string | undefined {
+    return this.workers.get(workerId)?.id;
   }
 
   getRunningCount(): number {
@@ -582,6 +624,21 @@ export class TaskExecuteEngine implements Subscribable {
     this.logger.info({ taskId: id, workerId: workerSessionId }, 'Task moved to running');
   }
 
+  /**
+   * Record the worker instance's own id (the on-disk transcript directory
+   * name) on the running task. Called right after the worker instance is
+   * created, before its run starts, so the link is on disk even if the
+   * process crashes mid-run.
+   */
+  private stampWorkerTranscriptId(taskId: string, transcriptId: string): void {
+    const running = [...this.taskState.get<TaskDetail[]>('tasks.running')];
+    const idx = running.findIndex(t => t.id === taskId);
+    if (idx === -1) return;
+    if (running[idx].workerTranscriptId === transcriptId) return;
+    running[idx] = { ...running[idx], workerTranscriptId: transcriptId };
+    this.taskState.set('tasks.running', running);
+  }
+
   private completeTask(id: string, result: string): void {
     this.moveToHistory(id, 'completed', { result });
     this.logger.info({ taskId: id }, 'Task completed');
@@ -744,6 +801,11 @@ export class TaskExecuteEngine implements Subscribable {
     this.workers.set(workerId, worker);
     this.workerTaskMap.set(workerId, task.id);
 
+    // The worker's transcript lives under its OWN id (agent-…/cw-…), not the
+    // engine worker id — stamp it on the running task so the on-disk file
+    // stays locatable after the worker finished and left this map.
+    this.stampWorkerTranscriptId(task.id, worker.id);
+
     // Execution turn for this worker run — stamped on the worker's entries
     // and on every signal the engine emits for it.
     const executionTurnId = this.registerWorkerTurn(workerId, task);
@@ -789,6 +851,8 @@ export class TaskExecuteEngine implements Subscribable {
       status: 'running' as const,
       startedAt: Date.now(),
       workerSessionId: workerId,
+      // Same instance keeps writing the same conversation.jsonl.
+      workerTranscriptId: worker.id,
     };
     this.taskState.append('tasks.running', taskWithOrigin);
     this.workerTaskMap.set(workerId, task.id);
@@ -829,10 +893,17 @@ export class TaskExecuteEngine implements Subscribable {
   ): (msg: string) => void {
     const meta = getWorkerMeta(workerType, this.workerConfigs);
     return (msg: string) => {
+      const activity = this.getWorkerActivity(workerId);
       this.enqueueWorkerSignal(workerId, {
         source: 'worker',
         type: 'progress',
-        payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: meta.emoji, message: msg },
+        payload: {
+          workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: meta.emoji, message: msg,
+          // Activity rides along (issue #16) so the controller sees liveness
+          // from the signal itself instead of polling.
+          lastActivityAt: activity.lastActivityAt,
+          currentTool: activity.currentTool,
+        },
       });
     };
   }
@@ -891,10 +962,15 @@ export class TaskExecuteEngine implements Subscribable {
           tavilyApiKey: this.ctx.config.tavilyApiKey,
           registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {
+            const activity = this.getWorkerActivity(workerId);
             this.enqueueWorkerSignal(workerId, {
               source: 'worker',
               type: 'progress',
-              payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: workerMeta.emoji, message: msg },
+              payload: {
+                workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: workerMeta.emoji, message: msg,
+                lastActivityAt: activity.lastActivityAt,
+                currentTool: activity.currentTool,
+              },
             });
           },
           onComplete: (summary: string) => {

@@ -8,6 +8,7 @@
 import { SystemContext } from '@/infra/system-context';
 import type { SkillRegistry } from '@/services/skills/registry';
 import { assemble, buildEnvironment, buildSkillCatalog, section } from './prompt-utils';
+import { buildProjectRulesSection, findProjectRules } from './project-rules';
 
 // ---------------------------------------------------------------------------
 // Static sections
@@ -159,6 +160,10 @@ export function buildWorkerSystemPrompt(ctx: SystemContext, skills: SkillRegistr
     TOOL_USAGE,
     EXECUTION_STRATEGY,
     PROJECT_CONVENTIONS,
+    // Project rules discovered near the task workspace (AGENTS.md, falling
+    // back to CLAUDE.md). Empty when no rules file exists — assemble() drops
+    // the section, so no empty paragraph leaks into the prompt.
+    buildProjectRulesSection(findProjectRules(ctx.workspaceDir ?? process.cwd())),
     QUALITY_RULES,
     HARD_CONSTRAINTS,
     CONTROLLER_COMMUNICATION,

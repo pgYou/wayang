@@ -58,8 +58,12 @@ Built with React + Ink (terminal UI). Key structure:
 ### Tools (`src/services/tools/`)
 
 Two tool sets created via dependency injection:
-- **Controller tools**: add_task, list_tasks, cancel_task, get_task_detail, update_task, query_signals, skip_reply
-- **Worker tools**: bash, read_file, write_file, list_tasks, update_progress, done, fail
+- **Controller tools**: add_task, list_tasks, cancel_task, get_task_detail, read_worker_conversation, get_worker_status, update_task, query_signals, skip_reply, chat_worker, respond_permission, respond_inquiry, dispose_worker, read_notebook, update_notebook, search_files, inquire, use_skill
+- **Worker tools**: bash, read_file, write_file, edit_file, search_files, search_content, web_search, list_tasks, update_progress, done, fail, use_skill
+
+The controller reads worker transcripts through `<sessionDir>/workers/<workerId>/conversation.jsonl`
+(`src/services/worker-transcript.ts`), so a worker stays inspectable after it finished or was cancelled.
+Conversation output is always paginated with explicit truncation markers (limit / offset / maxChars / full).
 
 ### Path Alias
 

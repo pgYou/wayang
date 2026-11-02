@@ -18,7 +18,7 @@ import { query, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage, SDKUserMessage, PermissionResult, SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { WorkerResult, TaskDetail, WorkerConfig, PermissionRequestSignalPayload } from '@/types/index';
-import type { IWorkerInstance } from '@/types/worker';
+import type { IWorkerInstance, WorkerLiveStatus } from '@/types/worker';
 import type { Logger } from '@/infra/logger';
 import type { StateEvent } from '@/infra/state/base-state';
 import { WorkerState } from './worker-state';
@@ -26,7 +26,14 @@ import { applyTurnEnvelope, type TurnEnvelope } from './utils/entry-envelope';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import { EEntryType, ESystemSubtype } from '@/types/index';
+import type { AssistantEntry, ConversationEntry, ToolCallRecord } from '@/types/conversation';
 import type { SignalTurnLineage } from '@/types/index';
+import {
+  toolUseBlockToRecord,
+  toolResultBlockToRecord,
+  type SdkToolUseBlock,
+  type SdkToolResultBlock,
+} from './utils/claude-tool-records';
 import { buildThirdPartyPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
@@ -45,6 +52,8 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private readonly logger: Logger;
   private readonly abortController = new AbortController();
   private _terminalResult: WorkerResult | null = null;
+  /** True once the SDK message stream of the current run has closed (issue #16). */
+  private _streamEnded = false;
 
   // --- Controller messaging via streamInput ---
   private _messageQueue: string[] = [];
@@ -63,6 +72,17 @@ export class ClaudeCodeWorker implements IWorkerInstance {
    * explicitly instead of pretending to queue.
    */
   private _inputClosed = false;
+
+  // --- Tool-call recording (see utils/claude-tool-records.ts) ---
+  /**
+   * Assistant steps buffered while their tool results are still in flight.
+   * The SDK stream splits one LLM step across two messages (assistant
+   * tool_use → user tool_result), but the schema stores a step atomically on
+   * one AssistantEntry and storage is append-only — so the entry waits in
+   * memory until its results arrive (or the stream ends). FIFO order is kept:
+   * only the head is flushed, so the file order always matches arrival order.
+   */
+  private _pendingToolSteps: AssistantEntry[] = [];
 
   // --- ask_controller via in-process SDK MCP server ---
   private _askController: ((question: string, context?: string) => Promise<string>) | null = null;
@@ -149,8 +169,10 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     // once; without this reset a stale terminal result from the previous stage
     // would short-circuit the new stage.
     this._terminalResult = null;
+    this._streamEnded = false;
     this._inputClosed = false;
     this._runInFlight = true;
+    this._pendingToolSteps = [];
 
     // Set task info in state
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
@@ -185,6 +207,13 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       // context there is no handler — keep bypass.
       const wirePermissions = Boolean(this._signalQueue && this._runContext);
 
+      // NOTE: project rules (AGENTS.md / CLAUDE.md) are deliberately NOT
+      // injected into this worker's prompt, unlike the puppet worker. The SDK
+      // session below runs without `settingSources`, which keeps it in
+      // isolated mode — it never auto-loads CLAUDE.md (or other settings)
+      // from the workspace, so injecting rules here would be duplication,
+      // not coverage. Do not add settingSources without removing the puppet
+      // worker's injection (or deduplicating both paths).
       const options: Record<string, any> = {
         cwd: this.workspaceDir,
         maxTurns: this.config.maxTurns ?? 1000,
@@ -248,10 +277,19 @@ export class ClaudeCodeWorker implements IWorkerInstance {
           // nothing queued — issue #15).
         }
       } finally {
-        // The stream loop has exited (natural end, error, or abort). Input is
-        // closed — nothing can be delivered to a dead session, so
-        // acceptMessage must fail from here on.
+        // The stream loop has exited (natural end, error, or abort). Reported
+        // to the controller via get_worker_status so a hung-but-finished
+        // worker is visible. Input is closed too — nothing can be delivered
+        // to a dead session, so acceptMessage must fail from here on.
+        this._streamEnded = true;
         this._inputClosed = true;
+        // A progress debounce armed just before the exit would otherwise fire
+        // ~500ms later, after the worker is gone — drop it. This covers every
+        // exit path (natural end, abort, stream error).
+        this.clearPendingProgress();
+        // Steps still buffered (abort, CLI death mid-tool) must not vanish —
+        // write them, marking tool calls that never got a result 'cancelled'.
+        this.flushAllToolSteps();
       }
     } catch (err: any) {
       this.logger.error({ err, taskId: task.id }, 'ClaudeCodeWorker query error');
@@ -321,6 +359,10 @@ export class ClaudeCodeWorker implements IWorkerInstance {
 
   abort(): void {
     this.abortController.abort();
+    // Cancel the debounced progress now: the stream loop only notices the
+    // abort on its next iteration, which may be long after the caller asked
+    // for it (a parked SDK call).
+    this.clearPendingProgress();
     this.permissionHandler.cleanup();
     this.flushMessageQueue();
   }
@@ -328,6 +370,15 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   /** Get state for UI rendering. */
   getState(): WorkerState {
     return this.state;
+  }
+
+  /**
+   * Live run flags (issue #16): `resultReceived` flips as soon as the SDK result
+   * message lands, `streamEnded` when the message loop exits. The gap between
+   * them is exactly the #15 window where the controller saw nothing.
+   */
+  getLiveStatus(): WorkerLiveStatus {
+    return { resultReceived: this._terminalResult !== null, streamEnded: this._streamEnded };
   }
 
   /** Get conversation entries. */
@@ -565,30 +616,58 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private processStreamMessage(message: SDKMessage, onProgress?: (msg: string) => void): void {
     if (message.type === 'assistant') {
       this.handleAssistantMessage(message, onProgress);
+    } else if (message.type === 'user') {
+      this.handleUserMessage(message);
     } else if (message.type === 'result') {
       this.handleResultMessage(message);
     }
-    // Ignore other message types (system, user, status, etc.)
+    // Ignore other message types (system, status, stream events, etc.)
+  }
+
+  /** Append one entry to the conversation under the current turn envelope. */
+  private appendConversationEntry(entry: ConversationEntry): void {
+    this.state.append('conversation', applyTurnEnvelope(entry, this._currentTurnEnv ?? undefined));
+  }
+
+  /**
+   * Drop a debounced progress delivery: cancel the timer and the buffered
+   * text. Called when a result supersedes the progress, when the run is
+   * aborted, and when the stream loop exits (all paths — the run is over, so
+   * nothing may be delivered afterwards).
+   */
+  private clearPendingProgress(): void {
+    if (this._progressTimer) {
+      clearTimeout(this._progressTimer);
+      this._progressTimer = null;
+    }
+    this._pendingProgress = null;
   }
 
   private handleAssistantMessage(msg: SDKAssistantMessage, onProgress?: (msg: string) => void): void {
-    // Extract text content from the BetaMessage content blocks
+    // Split the message's content blocks: text becomes the entry's text,
+    // tool_use blocks become its toolCalls (puppet-shaped records).
     const textParts: string[] = [];
+    const toolCalls: ToolCallRecord[] = [];
+    const ts = nowISO();
     for (const block of msg.message.content) {
       if (block.type === 'text') {
         textParts.push(block.text);
+      } else if (block.type === 'tool_use') {
+        toolCalls.push(toolUseBlockToRecord(block as SdkToolUseBlock, ts));
       }
     }
     const text = textParts.join('\n');
-    if (!text) return;
 
-    // Append to conversation for UI/audit
-    this.state.append('conversation', applyTurnEnvelope({
+    // Nothing sayable and nothing ran — not worth an entry (existing behavior).
+    if (!text && toolCalls.length === 0) return;
+
+    const entry: AssistantEntry = {
       type: EEntryType.Assistant,
       uuid: generateId('a'),
       parentUuid: null,
       sessionId: this.ctx.sessionId,
-      timestamp: nowISO(),
+      timestamp: ts,
+      startedAt: ts,
       message: {
         role: 'assistant',
         content: text,
@@ -600,31 +679,145 @@ export class ClaudeCodeWorker implements IWorkerInstance {
           }),
         },
       },
-    } as import('@/types/conversation').ConversationEntry, this._currentTurnEnv ?? undefined));
+      ...(toolCalls.length > 0 && { toolCalls }),
+    };
 
-    // Debounced progress: delay 500ms, cancel if result arrives first
-    if (onProgress) {
+    if (this._pendingToolSteps.length > 0 || toolCalls.length > 0) {
+      // A tool-carrying step must wait for its results (they arrive in a
+      // later user message) so text + toolCalls + toolResults land on ONE
+      // entry. Steps without tools queue only while older steps are still
+      // waiting — that keeps file order == arrival order in every case.
+      // endedAt is stamped at flush time (when the step's results landed).
+      this._pendingToolSteps.push(entry);
+    } else {
+      // Pure text step — nothing to wait for, write it now.
+      entry.endedAt = ts;
+      this.appendConversationEntry(entry);
+    }
+
+    // Debounced progress: delay 500ms, cancel if result arrives first.
+    // Fires off the assistant text at message time — independent of when the
+    // conversation entry itself is written.
+    if (text && onProgress) {
       this._pendingProgress = text.slice(0, 200);
       if (this._progressTimer) clearTimeout(this._progressTimer);
       this._progressTimer = setTimeout(() => {
-        if (this._pendingProgress) {
-          onProgress(this._pendingProgress);
-          this._pendingProgress = null;
-        }
         this._progressTimer = null;
+        // The run may have ended between the message and this callback
+        // (abort, error, stream close). Never deliver a progress after that:
+        // the controller already saw the worker finish, and a late signal
+        // would claim work that no longer exists.
+        if (
+          this._pendingProgress === null
+          || this.abortController.signal.aborted
+          || this._streamEnded
+          || this._terminalResult !== null
+        ) {
+          this._pendingProgress = null;
+          return;
+        }
+        const pending = this._pendingProgress;
+        this._pendingProgress = null;
+        onProgress(pending);
       }, ClaudeCodeWorker.PROGRESS_DEBOUNCE_MS);
     }
+  }
+
+  /**
+   * SDK user messages carry the tool_result blocks for the preceding
+   * assistant step's tool_use calls. Each result is merged into the buffered
+   * entry that issued the matching id; completed steps are then written,
+   * oldest first.
+   *
+   * User messages WITHOUT tool_result blocks (echoes of the task prompt or of
+   * controller messages this worker itself injected) are ignored — the task
+   * entry is written by run() and controller messages are audited elsewhere,
+   * so writing them here would duplicate entries.
+   */
+  private handleUserMessage(msg: SDKUserMessage): void {
+    const content = msg.message.content;
+    if (!Array.isArray(content)) return;
+    const ts = nowISO();
+
+    for (const block of content) {
+      if (!block || (block as SdkToolResultBlock).type !== 'tool_result') continue;
+      const resultBlock = block as SdkToolResultBlock;
+      // Find the buffered step that issued this tool_use id.
+      const owner = this._pendingToolSteps.find(
+        (step) => step.toolCalls?.some((tc) => tc.toolCallId === resultBlock.tool_use_id),
+      );
+      if (!owner) {
+        // No buffered step owns this id (duplicate or late result) — drop it
+        // with a debug log rather than inventing an entry for it.
+        this.logger.debug(
+          { toolUseId: resultBlock.tool_use_id },
+          'tool_result with no matching pending tool_use — dropped',
+        );
+        continue;
+      }
+      const call = owner.toolCalls!.find((tc) => tc.toolCallId === resultBlock.tool_use_id)!;
+      const result = toolResultBlockToRecord(resultBlock, call.toolName, ts);
+      (owner.toolResults ??= []).push(result);
+      // Close the matching call record (the entry is still unwritten, so this
+      // is not a post-hoc mutation of persisted data).
+      call.status = result.status;
+      call.endedAt = ts;
+    }
+
+    this.flushCompletedToolSteps();
+  }
+
+  /**
+   * Write buffered steps whose tool calls have ALL received results, from the
+   * head of the queue (order-preserving). Steps still missing results stay
+   * buffered — a later user message or the end-of-stream flush resolves them.
+   */
+  private flushCompletedToolSteps(): void {
+    while (this._pendingToolSteps.length > 0) {
+      const head = this._pendingToolSteps[0];
+      const callIds = new Set(head.toolCalls?.map((tc) => tc.toolCallId) ?? []);
+      const resultIds = new Set(head.toolResults?.map((tr) => tr.toolCallId) ?? []);
+      let complete = true;
+      for (const id of callIds) {
+        if (!resultIds.has(id)) {
+          complete = false;
+          break;
+        }
+      }
+      if (!complete) break;
+      this._pendingToolSteps.shift();
+      head.endedAt = nowISO();
+      this.appendConversationEntry(head);
+    }
+  }
+
+  /**
+   * End-of-stream fallback: write every still-buffered step so nothing is
+   * lost. Tool calls that never received a result (abort, CLI death mid-tool)
+   * are marked 'cancelled' instead of claiming to run forever.
+   */
+  private flushAllToolSteps(): void {
+    if (this._pendingToolSteps.length === 0) return;
+    const ts = nowISO();
+    for (const entry of this._pendingToolSteps) {
+      const resultIds = new Set(entry.toolResults?.map((tr) => tr.toolCallId) ?? []);
+      for (const tc of entry.toolCalls ?? []) {
+        if (!resultIds.has(tc.toolCallId)) {
+          tc.status = 'cancelled';
+          if (tc.endedAt === undefined) tc.endedAt = ts;
+        }
+      }
+      entry.endedAt = ts;
+      this.appendConversationEntry(entry);
+    }
+    this._pendingToolSteps = [];
   }
 
   private handleResultMessage(msg: SDKResultSuccess | SDKResultError): void {
     // Cancel any pending progress — result supersedes it. The message queue
     // is NOT flushed here: leftover controller messages are reported by the
     // engine (message_undelivered) instead of vanishing silently.
-    if (this._progressTimer) {
-      clearTimeout(this._progressTimer);
-      this._progressTimer = null;
-      this._pendingProgress = null;
-    }
+    this.clearPendingProgress();
 
     if (msg.subtype === 'success') {
       this._terminalResult = {

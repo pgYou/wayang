@@ -27,6 +27,22 @@ export interface ActiveWorkerInfo {
   idleSinceMs?: number;
 }
 
+/**
+ * Live execution flags a worker can report about its current run (issue #16).
+ * These answer "is it still working, or has it already finished and is just
+ * not released?" — the question the controller could not answer when a
+ * claude-code worker held a completed result for 571s.
+ *
+ * `null` means the worker type does not track that fact (e.g. a puppet worker
+ * has no SDK result/stream concept) — it is not an assertion of "false".
+ */
+export interface WorkerLiveStatus {
+  /** The underlying SDK/agent produced a final result for this run. */
+  resultReceived: boolean | null;
+  /** The message stream of this run has closed (run loop exited). */
+  streamEnded: boolean | null;
+}
+
 /** Unified interface for all worker types (puppet, third-party). */
 export interface IWorkerInstance extends Subscribable {
   readonly id: string;
@@ -49,6 +65,8 @@ export interface IWorkerInstance extends Subscribable {
    * report failure instead of pretending the message was queued.
    */
   acceptMessage(message: string): boolean;
+  /** Live run flags (result arrived / stream closed). Optional — see WorkerLiveStatus. */
+  getLiveStatus?(): WorkerLiveStatus;
   /**
    * Controller messages received but not yet read (non-destructive). The
    * engine reports them via a message_undelivered signal when the worker's

@@ -135,7 +135,7 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
       {pendingInquiry ? (
         <InquiryPrompt inquiry={pendingInquiry} onAnswer={(answer) => supervisor.resolveInquiry(answer)} />
       ) : (
-        <InputArea onSubmit={handleSubmit} onExit={onExit} onEscape={dismissOverlay} busy={busy} />
+        <InputArea onSubmit={handleSubmit} onExit={onExit} onEscape={dismissOverlay} busy={busy} width={terminalCols} />
       )}
       <StatusBar
         activeWorkers={activeWorkers ?? []}

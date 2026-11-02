@@ -247,4 +247,38 @@ describe('ControllerLoop heartbeat', () => {
     expect(call.payload.pendingTaskCount).toBe(2);
     expect(call.payload.idleSinceMs).toBeGreaterThanOrEqual(10_000);
   });
+
+  it('should carry lastActivityAt and currentTool so a stall is visible without a tool call', async () => {
+    const startedAt = Date.now() - 15_000;
+    const lastActivityAt = Date.now() - 60_000;
+    vi.mocked(mocks.heartbeat.getRunningCount).mockReturnValue(1);
+    vi.mocked(mocks.heartbeat.getActiveWorkers).mockReturnValue([
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Write code', workerType: 'claude-code', startedAt, emoji: '🤖', status: 'running' },
+    ]);
+    mocks.heartbeat.getWorkerActivity = vi.fn().mockReturnValue({ lastActivityAt, currentTool: 'bash' });
+
+    await startLoop({ heartbeatIntervalMs: 10_000 });
+    idleHandler!({ lastWakeAt: Date.now() });
+    vi.advanceTimersByTime(10_000);
+
+    const worker = mocks.signalQueue.enqueue.mock.calls[0][0].payload.workers[0];
+    expect(worker.currentTool).toBe('bash');
+    expect(worker.lastActivityAt).toBe(lastActivityAt);
+    expect(worker.lastActivityAgoMs).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it('should omit activity fields when no activity provider is wired', async () => {
+    vi.mocked(mocks.heartbeat.getRunningCount).mockReturnValue(1);
+    vi.mocked(mocks.heartbeat.getActiveWorkers).mockReturnValue([
+      { workerId: 'w1', taskId: 't1', taskTitle: 'Write code', workerType: 'puppet', startedAt: Date.now(), emoji: '🧸', status: 'running' },
+    ]);
+
+    await startLoop({ heartbeatIntervalMs: 10_000 });
+    idleHandler!({ lastWakeAt: Date.now() });
+    vi.advanceTimersByTime(10_000);
+
+    const worker = mocks.signalQueue.enqueue.mock.calls[0][0].payload.workers[0];
+    expect(worker.lastActivityAt).toBeUndefined();
+    expect(worker.currentTool).toBeUndefined();
+  });
 });

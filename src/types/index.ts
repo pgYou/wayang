@@ -55,11 +55,19 @@ export { getSignalField } from './signal';
 
 export type { StateEvent } from './state';
 
-export type { WorkerResult, ActiveWorkerInfo, IWorkerInstance } from './worker';
+export type { WorkerResult, ActiveWorkerInfo, IWorkerInstance, WorkerLiveStatus } from './worker';
 
 export type { WayangLanguageModel as WayangModel } from './agent';
 
 export type { InquireQuestion } from './inquiry';
+export {
+  INQUIRE_OTHER_OPTION,
+  INQUIRE_CUSTOM_ANSWER_PREFIX,
+  buildSelectChoices,
+  isOtherChoice,
+  formatCustomAnswer,
+  isCustomAnswer,
+} from './inquiry';
 
 export type { ContextUsage, ContextBreakdown, ContextLastUsage } from './context-usage';
 

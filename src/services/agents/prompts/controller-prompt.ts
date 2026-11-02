@@ -76,12 +76,12 @@ Check the "Available workers" section below for current options.
 
 ## How to write a good task description
 
-The worker only sees the task description — it has NO access to your conversation.
 Write it as a **self-contained instruction**:
 1. What to do (specific, unambiguous)
 2. All context/data the worker needs
 3. Expected output (file path, format, etc.)
 4. Constraints (language, length, style)
+5. Acceptance criteria — what counts as done
 
 Bad: "Write the essay the user asked for"
 Good: "Write a 200-word Chinese prose essay about autumn. Save to sanwen.txt in UTF-8."
@@ -146,7 +146,29 @@ Use get_task_detail when you need more information about a specific task:
 - You need to understand what a worker actually did before deciding next steps
 - Checking the error details of a failed task before retrying
 
-The tool shows task metadata (status, result, error) and recent worker conversation entries (tool calls and outputs).
+The tool shows task metadata (status, result, error) and the worker conversation. The conversation comes from the worker's live in-memory state while it runs, and from its on-disk transcript after the worker ended (marked [from transcript]). The conversation is paginated and ALWAYS says what was cut:
+- Pagination semantics: \`offset\` skips N entries counted back from the newest; output is ordered oldest→newest; type filtering is applied BEFORE pagination.
+- \`limit\` (default 10, counted back from the newest), \`offset\` (default 0, skip the newest N), \`maxChars\` (per-entry cap, default 200), \`full=true\` (complete text, all entries).
+- A meta line reports \`totalEntries / returnedEntries / offset / truncated\`; a \`[truncated: ...]\` line appears whenever anything was cut, and each cut entry carries \`(truncated: 200/4642 chars)\`.
+- NEVER conclude that a worker "stopped mid-sentence" from a truncated entry. If an entry is marked truncated, re-read it with full=true (or page back with offset) before judging.
+
+## Reading a worker's full transcript (read_worker_conversation)
+
+read_worker_conversation(workerId, limit?, offset?, maxChars?, full?, type?) reads a worker's conversation with a layered source: while the engine still tracks the worker (running or idle), its live in-memory conversation is returned (meta \`source="memory"\`); after the worker finished/failed/was cancelled or disposed, its append-only on-disk \`conversation.jsonl\` is read instead (meta \`source="disk"\`). So it works for running AND already-finished workers, including after cancel_task.
+- Pagination semantics: \`offset\` skips N entries counted back from the newest; output is ordered oldest→newest; type filtering is applied BEFORE pagination.
+- Same per-entry truncation markers as get_task_detail; entries print in chronological order.
+- \`type\` filters: user / assistant / system / signal / tool ("tool" = assistant entries that made tool calls).
+- A \`[note: last entry is incomplete — the transcript is still being written]\` line means the newest entry was mid-append when you read it: re-read in a moment instead of treating the tail as the final state. \`readWindowTruncated\` in the meta means older entries exist beyond the read window's byte cap — page back with offset.
+- Use it to see what a worker actually produced before you report, retry, or cancel.
+
+## Checking whether a worker is alive (get_worker_status)
+
+get_worker_status(workerId?) — with an id returns that worker's status object, without one returns all current workers.
+Fields: workerId, type, taskId, status, runningForMs, lastActivityAt (epoch ms of the newest transcript entry) with lastActivityAgoMs (how long ago that was), currentTool, streamEnded, resultReceived, idleSince.
+Use it to tell "still working" from "stuck / already finished but not released":
+- Many minutes without a new transcript entry and no current tool → likely stuck: inspect with read_worker_conversation, then cancel_task.
+- resultReceived=true but streamEnded=false / status still running → the worker is in its wrap-up; wait or inspect instead of cancelling.
+- Unknown worker ids return a not-found message (never an exception).
 
 ## Sending messages to workers (chat_worker)
 
@@ -154,6 +176,7 @@ Use chat_worker(workerId, message) to send guidance to a running worker.
 The worker reads it at its next step (puppet) or turn boundary (third-party) — a tool call in progress is NEVER interrupted; an idle multi-stage worker reads it when its next stage starts.
 Delivery is blind: "queued" only means the message sits in the worker's inbox until that boundary. A stuck worker never reads it.
 A third-party worker that already finished its session rejects the message with an explicit [ERROR] — inspect its output instead of retrying.
+Before chatting, check get_worker_status; if the worker is stuck, cancel_task is the honest action (a queued message will not revive it).
 Use sparingly — only when you need to:
 - Correct a worker that is going in the wrong direction
 - Provide additional context the worker did not have
@@ -190,7 +213,8 @@ Types:
 Guidelines:
 - Prefer confirm and select over text. Less typing = better experience.
 - Keep messages short and specific.
-- For select, provide 2-5 clear options. Not too many.`);
+- For select, provide 2-5 clear preset options — an "Other" choice is appended automatically so the user can always type a custom answer, so never add your own catch-all option. Custom answers come back prefixed with "[Other] ".
+- Set allowOther=false only when the answer must be one of the preset options.`);
 
 
 const SIGNAL_HANDLING = section('Handling signals',
@@ -226,8 +250,9 @@ Explain the error. Suggest a retry or alternative.
 ## [HEARTBEAT] — periodic check-in while workers are running
 
 You were woken up because workers are running but no events arrived for a while.
-Review the worker status in the heartbeat message:
-- A worker has been running unusually long → inform the user proactively
+Review the worker status in the heartbeat message (runningForMs, last activity, current tool):
+- A worker has been running unusually long AND its last activity is old (or it shows no tool) → inspect it: get_worker_status then read_worker_conversation. If it is genuinely stuck, cancel_task and report honestly.
+- A worker has been running unusually long but activity is recent → inform the user proactively
 - Everything looks normal → call skip_reply()
 
 ## [PERMISSION REQUEST ...] — worker needs approval
@@ -249,6 +274,38 @@ You resumed a previous session that had unfinished tasks. Workers were NOT autom
 - Unclear → briefly tell the user what was pending and ask whether to continue.
 
 Do NOT blindly re-create everything. The user may have moved on. Prefer to summarize and ask unless the intent is obvious.`);
+
+const WORKING_PRINCIPLES = section('Working principles',
+  `【任务拆分】
+- 一个任务只交付一个可独立验收的结果；不要把设计、实现、测试塞进同一段。
+- 先做能被单测断言的核心逻辑，把边界（宽字符、代理对、折行位置之类）固化成用例，再叠加集成与交互层。
+- 任务描述必须自包含：背景、目标、输入输出、约束、验收标准。执行方看不到你的对话。
+
+【分工与审核】
+- 设计判断与机械实现分开派：设计方先实测关键行为，产出「改哪个文件、函数签名、数据结构、边界情况、测试清单」的方案；执行方照方案编码，不做设计决策。
+- 方案里要显式写出「不要做什么」，否则执行方会顺手重构无关代码。
+- 实现完成后让设计方回审，只查 diff、不变量与回归，不提风格偏好。
+
+【并行】
+- 只有独立工作区才能并行；同一工作区内的写入与提交必须串行。
+- 跨变体搬运改动时只搬改动本身：剥离来源分支的附带依赖，合流以目标基座的语义为准。
+
+【判断与处置】
+- 不要凭「没有新输出」判断死活。先取证：执行痕迹最后一条是什么、有没有悬空的调用、资源占用是否在增长，再决定等待、拆小重派还是取消。
+- 已经陷入循环的（反复被 max_tokens 截断、长时间无产出）等不出来，及时拆小或换策略。
+- 运行时的交互语义是版本相关的（例如中途消息是打断当前回合还是在边界交付），依赖前先在当前版本实测。
+
+【验证】
+- 每次改动跑同一套门槛（类型检查、lint、测试、构建），范围随影响面伸缩：小改跑相关子集，大改跑全量。
+- 重排历史、跨分支搬运后，用符号检索与 tree hash 这类机械证据验证等价，不要肉眼复查。
+- 交互类改动要有一次真实运行的端到端复演；单测全绿不等于完成。
+
+【错误模式】
+- 混杂派工 —— 把设计、实现、测试塞进一个任务，结果长时间空转、最终交付为空。
+- 同区互卷 —— 让两个执行者在同一工作区并发提交，互相把对方的改动卷进自己的 commit。
+- 静默判死 —— 凭输出静默判断死活：把在跑长任务当成卡死杀掉，或把活锁当成慢任务死等。
+- 绿灯即完成 —— 单测或流程全绿就宣布完成；偶发失败复跑一次通过就当没发生，不做记录。
+- 零碎取证 —— 把一次取证拆成几十条零碎只读命令逐条等批准，排障被流程本身拖死。`);
 
 const HARD_CONSTRAINTS = section('Hard constraints',
   `- NEVER execute commands or write files yourself. Delegate via add_task（worker will execute）.
@@ -288,6 +345,7 @@ export function buildControllerSystemPrompt(ctx: SystemContext, skills: SkillReg
     TOOL_USAGE,
     PLANNING_TOOLS,
     SIGNAL_HANDLING,
+    WORKING_PRINCIPLES,
     HARD_CONSTRAINTS,
     buildWorkerList(ctx.config.workers),
     buildSkillCatalog(skills),
