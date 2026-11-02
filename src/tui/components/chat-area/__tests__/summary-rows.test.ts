@@ -81,6 +81,26 @@ describe('AssistantStepRow summary rows', () => {
     expect(out).not.toContain('Message delivered');
   });
 
+  it('labels a worker message by its delivery timing, never claiming delivery when unknown', () => {
+    const lookups = buildChatLookups([permissionSignal()]);
+    const render = (id: string, resultText: string) => renderToString(h(AssistantStepRow, {
+      item: step([
+        call(id, 'chat_worker', { workerId: 'w-1-t0sr', message: 'hi' }),
+        result(id, 'chat_worker', resultText),
+      ]),
+      lookups,
+    }));
+
+    expect(render('c6a', 'Message delivered to worker w-1-t0sr.')).toContain('✔ 已送达');
+    expect(render('c6b', 'Message queued for worker w-1-t0sr — QUEUED only, not delivered yet.')).toContain('✔ 已排队');
+
+    // An ok result that names neither timing used to fall through to 已送达.
+    const unknown = render('c6c', 'Message accepted.');
+    expect(unknown).not.toContain('已送达');
+    expect(unknown).not.toContain('已排队');
+    expect(unknown).toContain('✔ 已发送');
+  });
+
   it('renders a successful add_task with the task handle and a success mark', () => {
     const out = renderToString(h(AssistantStepRow, {
       item: step([
