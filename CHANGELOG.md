@@ -16,6 +16,8 @@
 
 **claude-code worker 记录工具调用与结果** — Tool activity is no longer dropped from worker conversations: `tool_use` blocks become `toolCalls` (id, name, arguments, status, timestamps) and `tool_result` blocks land as `toolResults` on the same entry (matched by id, error flags kept), buffered until the results arrive so text, calls and results land atomically; results are truncated at 2000 chars and arguments at 8000 with an explicit `... [truncated, N chars]` marker, and calls still unanswered at stream end are marked `cancelled`
 
+**Controller 工作准则** — The controller prompt now spells out how to split tasks, separate design from implementation, run work in parallel safely, tell a busy worker from a stuck one, and verify changes before calling them done
+
 ### Fixes
 
 **运行中读不到 worker 对话（engine id 与落盘 id 命名空间不一致）** — The transcript tools built disk paths from the engine's `w-…` id while `WorkerState` writes `conversation.jsonl` under the worker instance's own id (`agent-…` / `cw-…`), so the files were never found — not a persistence problem (entries are appended in real time) but an id mismatch. Reads are now layered (memory while tracked, disk after end, `meta.source` says which), tasks persist `workerTranscriptId` so finished workers stay locatable, the three failure modes (unknown worker / known but not locatable / empty transcript) are reported separately, a torn last JSON line is kept with complete entries plus an explicit `incompleteTail` note, and disk reads are tail-bounded (2 MB hard cap) instead of loading a whole 5000-entry transcript

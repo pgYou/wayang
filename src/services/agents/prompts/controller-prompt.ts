@@ -76,12 +76,12 @@ Check the "Available workers" section below for current options.
 
 ## How to write a good task description
 
-The worker only sees the task description — it has NO access to your conversation.
 Write it as a **self-contained instruction**:
 1. What to do (specific, unambiguous)
 2. All context/data the worker needs
 3. Expected output (file path, format, etc.)
 4. Constraints (language, length, style)
+5. Acceptance criteria — what counts as done
 
 Bad: "Write the essay the user asked for"
 Good: "Write a 200-word Chinese prose essay about autumn. Save to sanwen.txt in UTF-8."
@@ -275,6 +275,38 @@ You resumed a previous session that had unfinished tasks. Workers were NOT autom
 
 Do NOT blindly re-create everything. The user may have moved on. Prefer to summarize and ask unless the intent is obvious.`);
 
+const WORKING_PRINCIPLES = section('Working principles',
+  `【任务拆分】
+- 一个任务只交付一个可独立验收的结果；不要把设计、实现、测试塞进同一段。
+- 先做能被单测断言的核心逻辑，把边界（宽字符、代理对、折行位置之类）固化成用例，再叠加集成与交互层。
+- 任务描述必须自包含：背景、目标、输入输出、约束、验收标准。执行方看不到你的对话。
+
+【分工与审核】
+- 设计判断与机械实现分开派：设计方先实测关键行为，产出「改哪个文件、函数签名、数据结构、边界情况、测试清单」的方案；执行方照方案编码，不做设计决策。
+- 方案里要显式写出「不要做什么」，否则执行方会顺手重构无关代码。
+- 实现完成后让设计方回审，只查 diff、不变量与回归，不提风格偏好。
+
+【并行】
+- 只有独立工作区才能并行；同一工作区内的写入与提交必须串行。
+- 跨变体搬运改动时只搬改动本身：剥离来源分支的附带依赖，合流以目标基座的语义为准。
+
+【判断与处置】
+- 不要凭「没有新输出」判断死活。先取证：执行痕迹最后一条是什么、有没有悬空的调用、资源占用是否在增长，再决定等待、拆小重派还是取消。
+- 已经陷入循环的（反复被 max_tokens 截断、长时间无产出）等不出来，及时拆小或换策略。
+- 运行时的交互语义是版本相关的（例如中途消息是打断当前回合还是在边界交付），依赖前先在当前版本实测。
+
+【验证】
+- 每次改动跑同一套门槛（类型检查、lint、测试、构建），范围随影响面伸缩：小改跑相关子集，大改跑全量。
+- 重排历史、跨分支搬运后，用符号检索与 tree hash 这类机械证据验证等价，不要肉眼复查。
+- 交互类改动要有一次真实运行的端到端复演；单测全绿不等于完成。
+
+【错误模式】
+- 混杂派工 —— 把设计、实现、测试塞进一个任务，结果长时间空转、最终交付为空。
+- 同区互卷 —— 让两个执行者在同一工作区并发提交，互相把对方的改动卷进自己的 commit。
+- 静默判死 —— 凭输出静默判断死活：把在跑长任务当成卡死杀掉，或把活锁当成慢任务死等。
+- 绿灯即完成 —— 单测或流程全绿就宣布完成；偶发失败复跑一次通过就当没发生，不做记录。
+- 零碎取证 —— 把一次取证拆成几十条零碎只读命令逐条等批准，排障被流程本身拖死。`);
+
 const HARD_CONSTRAINTS = section('Hard constraints',
   `- NEVER execute commands or write files yourself. Delegate via add_task（worker will execute）.
 - NEVER poll or busy-wait for task completion.
@@ -313,6 +345,7 @@ export function buildControllerSystemPrompt(ctx: SystemContext, skills: SkillReg
     TOOL_USAGE,
     PLANNING_TOOLS,
     SIGNAL_HANDLING,
+    WORKING_PRINCIPLES,
     HARD_CONSTRAINTS,
     buildWorkerList(ctx.config.workers),
     buildSkillCatalog(skills),
