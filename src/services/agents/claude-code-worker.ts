@@ -283,6 +283,10 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         // to a dead session, so acceptMessage must fail from here on.
         this._streamEnded = true;
         this._inputClosed = true;
+        // A progress debounce armed just before the exit would otherwise fire
+        // ~500ms later, after the worker is gone — drop it. This covers every
+        // exit path (natural end, abort, stream error).
+        this.clearPendingProgress();
         // Steps still buffered (abort, CLI death mid-tool) must not vanish —
         // write them, marking tool calls that never got a result 'cancelled'.
         this.flushAllToolSteps();
@@ -355,6 +359,10 @@ export class ClaudeCodeWorker implements IWorkerInstance {
 
   abort(): void {
     this.abortController.abort();
+    // Cancel the debounced progress now: the stream loop only notices the
+    // abort on its next iteration, which may be long after the caller asked
+    // for it (a parked SDK call).
+    this.clearPendingProgress();
     this.permissionHandler.cleanup();
     this.flushMessageQueue();
   }
@@ -621,6 +629,20 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     this.state.append('conversation', applyTurnEnvelope(entry, this._currentTurnEnv ?? undefined));
   }
 
+  /**
+   * Drop a debounced progress delivery: cancel the timer and the buffered
+   * text. Called when a result supersedes the progress, when the run is
+   * aborted, and when the stream loop exits (all paths — the run is over, so
+   * nothing may be delivered afterwards).
+   */
+  private clearPendingProgress(): void {
+    if (this._progressTimer) {
+      clearTimeout(this._progressTimer);
+      this._progressTimer = null;
+    }
+    this._pendingProgress = null;
+  }
+
   private handleAssistantMessage(msg: SDKAssistantMessage, onProgress?: (msg: string) => void): void {
     // Split the message's content blocks: text becomes the entry's text,
     // tool_use blocks become its toolCalls (puppet-shaped records).
@@ -680,11 +702,23 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       this._pendingProgress = text.slice(0, 200);
       if (this._progressTimer) clearTimeout(this._progressTimer);
       this._progressTimer = setTimeout(() => {
-        if (this._pendingProgress) {
-          onProgress(this._pendingProgress);
-          this._pendingProgress = null;
-        }
         this._progressTimer = null;
+        // The run may have ended between the message and this callback
+        // (abort, error, stream close). Never deliver a progress after that:
+        // the controller already saw the worker finish, and a late signal
+        // would claim work that no longer exists.
+        if (
+          this._pendingProgress === null
+          || this.abortController.signal.aborted
+          || this._streamEnded
+          || this._terminalResult !== null
+        ) {
+          this._pendingProgress = null;
+          return;
+        }
+        const pending = this._pendingProgress;
+        this._pendingProgress = null;
+        onProgress(pending);
       }, ClaudeCodeWorker.PROGRESS_DEBOUNCE_MS);
     }
   }
@@ -783,11 +817,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     // Cancel any pending progress — result supersedes it. The message queue
     // is NOT flushed here: leftover controller messages are reported by the
     // engine (message_undelivered) instead of vanishing silently.
-    if (this._progressTimer) {
-      clearTimeout(this._progressTimer);
-      this._progressTimer = null;
-      this._pendingProgress = null;
-    }
+    this.clearPendingProgress();
 
     if (msg.subtype === 'success') {
       this._terminalResult = {

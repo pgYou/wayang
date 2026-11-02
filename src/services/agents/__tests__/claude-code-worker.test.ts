@@ -253,6 +253,36 @@ describe('ClaudeCodeWorker', () => {
     expect(result.error).toContain('Aborted');
   });
 
+  it('should not emit a deferred progress after abort', async () => {
+    const onProgress = vi.fn();
+    let releaseStream!: () => void;
+    const streamClosed = new Promise<void>((resolve) => { releaseStream = resolve; });
+    async function* parkedStream() {
+      yield makeAssistantMessage('Working...');
+      // Park until the test aborts — the SDK stream does not end on its own.
+      await streamClosed;
+    }
+    mockQuery.mockReturnValue(parkedStream() as any);
+
+    const worker = createWorker();
+    const runPromise = worker.run(makeTask(), {}, onProgress);
+
+    // Let the first message land: it arms the 500ms progress debounce.
+    await vi.advanceTimersByTimeAsync(0);
+    expect((worker as any)._progressTimer).not.toBeNull();
+
+    worker.abort();
+    releaseStream();
+    const result = await runPromise;
+
+    // The debounce would have fired by now — the abort must have dropped it.
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(onProgress).not.toHaveBeenCalled();
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('Aborted');
+  });
+
   it('should record usage in state on result', async () => {
     const messages = [makeSuccessResult('Done')];
     mockQuery.mockReturnValue(asyncYield(messages) as any);
