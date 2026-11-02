@@ -12,6 +12,9 @@
 
 
 **修复：claude-code 消息打断投递致死（回归）** — The v0.6 interrupt delivery above was wrong: `interrupt()` during an in-flight tool call aborts the turn with an orphaned tool_use and the CLI kills the session with `error_during_execution` (`[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use`) — the same failure the permission PoC observed, mis-scoped to the permission window. Controller messages are now delivered ONLY at safe turn boundaries: they are handed to the SDK when it pulls the next prompt and the CLI queues them for the next turn (never mid-tool_use; `interruptOnMessage` removed). `run()` no longer stops at the first result, so a delivered message's follow-up turn is actually processed and the last result wins. Once a run's input has closed (final result in / aborted), `acceptMessage` fails, the engine reports a new `finished` delivery status, and `chat_worker` returns an explicit `[ERROR] … has already finished; message not delivered` instead of a fake "queued"; the `CHAT_WORKER` RPC now returns the delivery status instead of discarding it
+
+**心跳默认间隔 30s → 60s** — The controller's idle heartbeat now defaults to 60s instead of 30s (`heartbeatIntervalMs`), so quiet runs while workers are running get fewer routine check-ins
+
 ## v0.5.2 (2026-10-30)
 
 ### Features

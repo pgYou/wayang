@@ -23,7 +23,7 @@ import { formatLlmError } from '@/utils/llm-error';
 // ---------------------------------------------------------------------------
 
 export interface ControllerLoopOptions {
-  /** Idle interval (ms) before injecting a heartbeat signal. Default 30s. */
+  /** Idle interval (ms) before injecting a heartbeat signal. Default 60s. */
   heartbeatIntervalMs?: number;
 }
 
@@ -53,7 +53,7 @@ export class ControllerLoop {
     private readonly heartbeatProvider: HeartbeatProvider,
     options?: ControllerLoopOptions,
   ) {
-    this.heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 30_000;
+    this.heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 60_000;
   }
 
   // --- Lifecycle ---
