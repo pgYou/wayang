@@ -109,6 +109,71 @@ describe('ControllerAgent', () => {
     expect(sigCall[1].subtype).toBe('worker_completed');
   });
 
+  it('carries worker activity in progress signal entries (issue #16)', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-p',
+        source: 'worker',
+        type: 'progress',
+        payload: {
+          workerId: 'w-1',
+          taskId: 't-1',
+          taskTitle: 'Test task',
+          message: 'working on it',
+          currentTool: 'bash',
+          lastActivityAt: Date.parse('2026-11-02T10:46:46.672Z'),
+        },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find((call: any[]) => call[1]?.type === 'signal');
+    expect(sigCall[1].content).toContain('working on it');
+    expect(sigCall[1].content).toContain('[activity: tool=bash, lastEntry=2026-11-02T10:46:46Z]');
+  });
+
+  it('carries per-worker activity in heartbeat entries (issue #16)', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-h',
+        source: 'system',
+        type: 'heartbeat',
+        payload: {
+          reason: 'workers are running',
+          idleSinceMs: 30_000,
+          pendingTaskCount: 0,
+          workers: [{
+            workerId: 'cw-1',
+            taskId: 't-1',
+            taskTitle: 'Review',
+            workerType: 'claude-code',
+            runningForMs: 571_000,
+            lastActivityAt: Date.now() - 600_000,
+            lastActivityAgoMs: 600_000,
+            currentTool: 'bash',
+          }],
+        },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find((call: any[]) => call[1]?.type === 'signal');
+    expect(sigCall[1].content).toContain('[HEARTBEAT]');
+    expect(sigCall[1].content).toContain('cw-1');
+    expect(sigCall[1].content).toContain('tool bash');
+    expect(sigCall[1].content).toContain('last activity 600s ago');
+  });
+
   it('should pass workerType, emoji, and taskTitle in completed signal entry', async () => {
     mockStreamResponse('ok');
 

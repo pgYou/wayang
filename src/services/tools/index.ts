@@ -1,9 +1,12 @@
-import type { TaskDetail, ControllerSignal, InquireQuestion } from '@/types/index';
+import type { TaskDetail, ControllerSignal, InquireQuestion, ActiveWorkerInfo, WorkerLiveStatus } from '@/types/index';
+import type { ConversationEntry } from '@/types/conversation';
 import { addTaskTool } from './add-task';
 import { listTasksTool } from './list-tasks';
 import { cancelTaskTool } from './cancel-task';
 import { disposeWorkerTool } from './dispose-worker';
 import { getTaskDetailTool } from './get-task-detail';
+import { readWorkerConversationTool } from './read-worker-conversation';
+import { getWorkerStatusTool } from './get-worker-status';
 import { updateTaskTool } from './update-task';
 import { querySignalsTool } from './query-signals';
 import { skipReplyTool } from './skip-reply';
@@ -47,6 +50,14 @@ export interface ControllerToolDeps {
   cwd?: string;
   /** Get worker conversation entries for a task. */
   getWorkerConversation?: (taskId: string) => any[];
+  /** Read a worker's on-disk transcript (works after the worker is gone). */
+  readTranscript: (workerId: string) => ConversationEntry[] | null;
+  /** Session directory holding `workers/<workerId>/conversation.jsonl`. */
+  sessionDir: string;
+  /** Currently tracked workers (for status listings / loud not-found messages). */
+  getActiveWorkers?: () => ActiveWorkerInfo[];
+  /** Live run flags of an in-memory worker instance, when the type reports them. */
+  getWorkerLiveStatus?: (workerId: string) => WorkerLiveStatus | undefined;
   /** Read the controller's private notebook. */
   getNotebook: () => string;
   /** Write to the controller's private notebook. */
@@ -101,6 +112,19 @@ export function createControllerTools(deps: ControllerToolDeps) {
     get_task_detail: getTaskDetailTool({
       getTask: deps.getTask,
       getWorkerConversation: deps.getWorkerConversation,
+      readTranscript: deps.readTranscript,
+    }),
+    read_worker_conversation: readWorkerConversationTool({
+      sessionDir: deps.sessionDir,
+      readTranscript: deps.readTranscript,
+      listWorkers: () => deps.getActiveWorkers?.() ?? [],
+      listTasks: () => deps.listTasks(),
+    }),
+    get_worker_status: getWorkerStatusTool({
+      listWorkers: () => deps.getActiveWorkers?.() ?? [],
+      listTasks: () => deps.listTasks(),
+      readTranscript: deps.readTranscript,
+      getLiveStatus: deps.getWorkerLiveStatus,
     }),
     update_task: updateTaskTool({ updateTask: deps.updateTask }),
     query_signals: querySignalsTool({ querySignals: deps.queryMessages }),

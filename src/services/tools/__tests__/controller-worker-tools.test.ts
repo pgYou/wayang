@@ -57,7 +57,7 @@ describe('chatWorkerTool', () => {
     expect(result).toContain('[ERROR]');
     expect(result).toContain('has already finished');
     expect(result).toContain('not delivered');
-    expect(result).toContain('get_task_detail');
+    expect(result).toContain('read_worker_conversation');
   });
 });
 

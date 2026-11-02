@@ -94,6 +94,7 @@ export class Supervisor {
         getRunningCount: () => this.engine.getRunningCount(),
         getActiveWorkers: () => this.engine.getActiveWorkers(),
         getPendingCount: () => this.engine.list('pending').length,
+        getWorkerActivity: (workerId: string) => this.engine.getWorkerActivity(workerId),
       },
     );
   }

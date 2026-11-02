@@ -32,6 +32,13 @@ export interface HeartbeatProvider {
   getRunningCount(): number;
   getActiveWorkers(): ActiveWorkerInfo[];
   getPendingCount(): number;
+  /**
+   * Optional per-worker activity (issue #16): last entry timestamp + last tool
+   * name. Lets the heartbeat carry "nothing happened for 12 minutes" without
+   * the controller having to call get_worker_status.
+   */
+  getWorkerActivity?: (workerId: string) =>
+    { lastActivityAt: number | null; currentTool: string | null } | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,13 +153,23 @@ export class ControllerLoop {
       payload: {
         reason: 'Workers are running but no signals for a while. Review status and decide if action is needed.',
         idleSinceMs: now - lastWakeAt,
-        workers: activeWorkers.map((w) => ({
-          workerId: w.workerId,
-          taskId: w.taskId,
-          taskTitle: w.taskTitle,
-          workerType: w.workerType,
-          runningForMs: now - w.startedAt,
-        })),
+        workers: activeWorkers.map((w) => {
+          const activity = this.heartbeatProvider.getWorkerActivity?.(w.workerId);
+          return {
+            workerId: w.workerId,
+            taskId: w.taskId,
+            taskTitle: w.taskTitle,
+            workerType: w.workerType,
+            runningForMs: now - w.startedAt,
+            ...(activity
+              ? {
+                  lastActivityAt: activity.lastActivityAt,
+                  lastActivityAgoMs: activity.lastActivityAt === null ? null : Math.max(0, now - activity.lastActivityAt),
+                  currentTool: activity.currentTool,
+                }
+              : {}),
+          };
+        }),
         pendingTaskCount: this.heartbeatProvider.getPendingCount(),
       },
     });

@@ -18,7 +18,8 @@
 import type { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { Logger } from '@/infra/logger';
-import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo, NewSignalInput, SignalTurnLineage, TaskCancelledSignalPayload } from '@/types/index';
+import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo, WorkerLiveStatus, NewSignalInput, SignalTurnLineage, TaskCancelledSignalPayload } from '@/types/index';
+import { summarizeTranscript } from '@/services/worker-transcript';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import { BaseWayangState } from '@/infra/state/base-state';
 import type { Subscribable } from '@/infra/state/subscribable';
@@ -382,6 +383,26 @@ export class TaskExecuteEngine implements Subscribable {
         reason,
       },
     });
+  }
+
+  /**
+   * Live run flags of a worker instance — "has the result arrived?" and "has
+   * the stream closed?" (issue #16). Returns undefined for workers that do not
+   * report them or are no longer tracked.
+   */
+  getWorkerLiveStatus(workerId: string): WorkerLiveStatus | undefined {
+    return this.workers.get(workerId)?.getLiveStatus?.();
+  }
+
+  /**
+   * Per-worker activity derived from the in-memory conversation: when it last
+   * produced an entry, and which tool it called last. Fed into heartbeat
+   * signals so the controller can spot a stall without calling a tool.
+   */
+  getWorkerActivity(workerId: string): { lastActivityAt: number | null; currentTool: string | null } {
+    const entries = this.workers.get(workerId)?.getConversation() ?? [];
+    const summary = summarizeTranscript(entries);
+    return { lastActivityAt: summary.lastActivityAt, currentTool: summary.currentTool };
   }
 
   getWorkerConversation(taskId: string): any[] {
@@ -829,10 +850,17 @@ export class TaskExecuteEngine implements Subscribable {
   ): (msg: string) => void {
     const meta = getWorkerMeta(workerType, this.workerConfigs);
     return (msg: string) => {
+      const activity = this.getWorkerActivity(workerId);
       this.enqueueWorkerSignal(workerId, {
         source: 'worker',
         type: 'progress',
-        payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: meta.emoji, message: msg },
+        payload: {
+          workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: meta.emoji, message: msg,
+          // Activity rides along (issue #16) so the controller sees liveness
+          // from the signal itself instead of polling.
+          lastActivityAt: activity.lastActivityAt,
+          currentTool: activity.currentTool,
+        },
       });
     };
   }
@@ -891,10 +919,15 @@ export class TaskExecuteEngine implements Subscribable {
           tavilyApiKey: this.ctx.config.tavilyApiKey,
           registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {
+            const activity = this.getWorkerActivity(workerId);
             this.enqueueWorkerSignal(workerId, {
               source: 'worker',
               type: 'progress',
-              payload: { workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: workerMeta.emoji, message: msg },
+              payload: {
+                workerId, taskId: task.id, taskTitle: task.title, workerType, emoji: workerMeta.emoji, message: msg,
+                lastActivityAt: activity.lastActivityAt,
+                currentTool: activity.currentTool,
+              },
             });
           },
           onComplete: (summary: string) => {

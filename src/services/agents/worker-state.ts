@@ -19,6 +19,15 @@ export interface InboxMessage {
   timestamp: number;
 }
 
+/**
+ * Directory holding one worker's persisted state.
+ * `conversation.jsonl` / `runtime-state.json` live here; read-only consumers
+ * (e.g. the controller's transcript tools) use this to avoid hardcoding the layout.
+ */
+export function workerDir(sessionDir: string, workerId: string): string {
+  return join(sessionDir, 'workers', workerId);
+}
+
 interface WorkerStateData {
   runtimeState: WorkerRuntimeState;
   conversation: ConversationEntry[];
@@ -34,9 +43,9 @@ export class WorkerState extends BaseWayangState {
     workerId: string,
     private logger: Logger,
   ) {
-    const workerDir = join(sessionDir, 'workers', workerId);
-    const jsonFile = new JSONFileHelper(join(workerDir, 'runtime-state.json'));
-    const jsonlFile = new JSONLFileHelper(join(workerDir, 'conversation.jsonl'));
+    const dir = workerDir(sessionDir, workerId);
+    const jsonFile = new JSONFileHelper(join(dir, 'runtime-state.json'));
+    const jsonlFile = new JSONLFileHelper(join(dir, 'conversation.jsonl'));
 
     const initialData: WorkerStateData = {
       runtimeState: {

@@ -18,7 +18,7 @@ import { query, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage, SDKUserMessage, PermissionResult, SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { WorkerResult, TaskDetail, WorkerConfig, PermissionRequestSignalPayload } from '@/types/index';
-import type { IWorkerInstance } from '@/types/worker';
+import type { IWorkerInstance, WorkerLiveStatus } from '@/types/worker';
 import type { Logger } from '@/infra/logger';
 import type { StateEvent } from '@/infra/state/base-state';
 import { WorkerState } from './worker-state';
@@ -45,6 +45,8 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private readonly logger: Logger;
   private readonly abortController = new AbortController();
   private _terminalResult: WorkerResult | null = null;
+  /** True once the SDK message stream of the current run has closed (issue #16). */
+  private _streamEnded = false;
 
   // --- Controller messaging via streamInput ---
   private _messageQueue: string[] = [];
@@ -149,6 +151,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     // once; without this reset a stale terminal result from the previous stage
     // would short-circuit the new stage.
     this._terminalResult = null;
+    this._streamEnded = false;
     this._inputClosed = false;
     this._runInFlight = true;
 
@@ -248,9 +251,11 @@ export class ClaudeCodeWorker implements IWorkerInstance {
           // nothing queued — issue #15).
         }
       } finally {
-        // The stream loop has exited (natural end, error, or abort). Input is
-        // closed — nothing can be delivered to a dead session, so
-        // acceptMessage must fail from here on.
+        // The stream loop has exited (natural end, error, or abort). Reported
+        // to the controller via get_worker_status so a hung-but-finished
+        // worker is visible. Input is closed too — nothing can be delivered
+        // to a dead session, so acceptMessage must fail from here on.
+        this._streamEnded = true;
         this._inputClosed = true;
       }
     } catch (err: any) {
@@ -328,6 +333,15 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   /** Get state for UI rendering. */
   getState(): WorkerState {
     return this.state;
+  }
+
+  /**
+   * Live run flags (issue #16): `resultReceived` flips as soon as the SDK result
+   * message lands, `streamEnded` when the message loop exits. The gap between
+   * them is exactly the #15 window where the controller saw nothing.
+   */
+  getLiveStatus(): WorkerLiveStatus {
+    return { resultReceived: this._terminalResult !== null, streamEnded: this._streamEnded };
   }
 
   /** Get conversation entries. */

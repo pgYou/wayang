@@ -146,7 +146,26 @@ Use get_task_detail when you need more information about a specific task:
 - You need to understand what a worker actually did before deciding next steps
 - Checking the error details of a failed task before retrying
 
-The tool shows task metadata (status, result, error) and recent worker conversation entries (tool calls and outputs).
+The tool shows task metadata (status, result, error) and the worker conversation. The conversation is paginated and ALWAYS says what was cut:
+- \`limit\` (default 10, counted back from the newest), \`offset\` (default 0, skip the newest N), \`maxChars\` (per-entry cap, default 200), \`full=true\` (complete text, all entries).
+- A meta line reports \`totalEntries / returnedEntries / offset / truncated\`; a \`[truncated: ...]\` line appears whenever anything was cut, and each cut entry carries \`(truncated: 200/4642 chars)\`.
+- NEVER conclude that a worker "stopped mid-sentence" from a truncated entry. If an entry is marked truncated, re-read it with full=true (or page back with offset) before judging.
+
+## Reading a worker's full transcript (read_worker_conversation)
+
+read_worker_conversation(workerId, limit?, offset?, maxChars?, full?, type?) reads \`workers/<workerId>/conversation.jsonl\` directly from disk, so it works for running AND already-finished workers (completed / failed / cancelled), including after cancel_task.
+- Same pagination and truncation markers as get_task_detail; entries print in chronological order.
+- \`type\` filters: user / assistant / system / signal / tool ("tool" = assistant entries that made tool calls).
+- Use it to see what a worker actually produced before you report, retry, or cancel.
+
+## Checking whether a worker is alive (get_worker_status)
+
+get_worker_status(workerId?) — with an id returns that worker's status object, without one returns all current workers.
+Fields: workerId, type, taskId, status, runningForMs, lastActivityAt (epoch ms of the newest transcript entry) with lastActivityAgoMs (how long ago that was), currentTool, streamEnded, resultReceived, idleSince.
+Use it to tell "still working" from "stuck / already finished but not released":
+- Many minutes without a new transcript entry and no current tool → likely stuck: inspect with read_worker_conversation, then cancel_task.
+- resultReceived=true but streamEnded=false / status still running → the worker is in its wrap-up; wait or inspect instead of cancelling.
+- Unknown worker ids return a not-found message (never an exception).
 
 ## Sending messages to workers (chat_worker)
 
@@ -154,6 +173,7 @@ Use chat_worker(workerId, message) to send guidance to a running worker.
 The worker reads it at its next step (puppet) or turn boundary (third-party) — a tool call in progress is NEVER interrupted; an idle multi-stage worker reads it when its next stage starts.
 Delivery is blind: "queued" only means the message sits in the worker's inbox until that boundary. A stuck worker never reads it.
 A third-party worker that already finished its session rejects the message with an explicit [ERROR] — inspect its output instead of retrying.
+Before chatting, check get_worker_status; if the worker is stuck, cancel_task is the honest action (a queued message will not revive it).
 Use sparingly — only when you need to:
 - Correct a worker that is going in the wrong direction
 - Provide additional context the worker did not have
@@ -226,8 +246,9 @@ Explain the error. Suggest a retry or alternative.
 ## [HEARTBEAT] — periodic check-in while workers are running
 
 You were woken up because workers are running but no events arrived for a while.
-Review the worker status in the heartbeat message:
-- A worker has been running unusually long → inform the user proactively
+Review the worker status in the heartbeat message (runningForMs, last activity, current tool):
+- A worker has been running unusually long AND its last activity is old (or it shows no tool) → inspect it: get_worker_status then read_worker_conversation. If it is genuinely stuck, cancel_task and report honestly.
+- A worker has been running unusually long but activity is recent → inform the user proactively
 - Everything looks normal → call skip_reply()
 
 ## [PERMISSION REQUEST ...] — worker needs approval

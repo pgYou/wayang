@@ -7,7 +7,7 @@ import { ToolCallRecorder, recordToolCalls } from '@/services/agents/utils/tool-
 import { controllerMessageContent, createInboxInjection } from '@/services/agents/utils/inbox-injection';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { WorkerResult, TaskDetail, ProviderConfig, ToolChoice, IWorkerInstance } from '@/types/index';
+import type { WorkerResult, TaskDetail, ProviderConfig, ToolChoice, IWorkerInstance, WorkerLiveStatus } from '@/types/index';
 import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -210,6 +210,16 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   /** Get state for UI rendering. */
   getState() {
     return this.state;
+  }
+
+  /**
+   * Live run flags (issue #16). A puppet worker has no SDK result/stream
+   * concept: `resultReceived` means the model already called done/fail, and
+   * `streamEnded` is not tracked (null), so status readers fall back to the
+   * transcript / task state instead of guessing.
+   */
+  getLiveStatus(): WorkerLiveStatus {
+    return { resultReceived: this._terminalResult !== null, streamEnded: null };
   }
 
   /** Get conversation entries. */
