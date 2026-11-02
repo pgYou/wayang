@@ -9,7 +9,9 @@ import {
   nextCodePointLength,
   normalizeInputText,
   prevCodePointLength,
+  splitLineBySelection,
 } from '@/tui/utils/input-display';
+import { normalizeSelection, replaceRange } from '@/tui/utils/input-editing';
 
 interface InputAreaProps {
   onSubmit: (input: string) => void;
@@ -27,6 +29,10 @@ const PREFIX_WIDTH = stringWidth(PREFIX);
 export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputAreaProps) {
   const [input, setInput] = useState('');
   const [cursor, setCursor] = useState(0);
+  // Fixed end of the selection; `null` means no selection. The cursor stays
+  // the active end, so the selection is [min(anchor, cursor), max(...)].
+  // Only ever copied from `cursor`, so it is always a code-point boundary.
+  const [anchor, setAnchor] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   // Filter matching commands when input starts with "/" and has no space yet
@@ -38,6 +44,15 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
 
   const showSuggestions = suggestions.length > 0;
 
+  // A collapsed selection (anchor === null or anchor === cursor) needs no
+  // special casing anywhere: replaceRange over an empty range is a plain
+  // insert, and the renderer falls back to the cursor block.
+  const sel = useMemo(
+    () => normalizeSelection(input, anchor, cursor),
+    [input, anchor, cursor],
+  );
+  const hasSelection = sel.start < sel.end;
+
   // Clamp selectedIndex when suggestions change
   const clampedIndex = showSuggestions
     ? Math.min(selectedIndex, suggestions.length - 1)
@@ -46,6 +61,7 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
   const reset = useMemoizedFn(() => {
     setInput('');
     setCursor(0);
+    setAnchor(null);
     setSelectedIndex(0);
   });
 
@@ -57,6 +73,7 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
     const filled = 'args' in cmd ? `${text} ` : text;
     setInput(filled);
     setCursor(filled.length);
+    setAnchor(null);
     setSelectedIndex(0);
   });
 
@@ -120,10 +137,16 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
 
     // --- Escape ---
     if (key.escape) {
+      // A selection is dismissed first; the value and cursor stay put.
+      if (hasSelection) {
+        setAnchor(null);
+        return;
+      }
       if (showSuggestions) {
         // Close suggestions by clearing slash prefix
         setInput('');
         setCursor(0);
+        setAnchor(null);
         setSelectedIndex(0);
       } else {
         onEscape?.();
@@ -132,37 +155,69 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
       return;
     }
 
+    // --- Shift+Left/Right: extend the selection (anchor fixed at first step) ---
+    // Terminals send these as modified cursor sequences ('\x1b[1;2D' / '[1;2C'),
+    // which Ink reports as shift + leftArrow/rightArrow. These branches must
+    // precede the bare arrow ones, and must not be caught by them: shift is
+    // ignored for up/down (vertical selection is out of scope) and for Tab.
+    if (key.shift && key.leftArrow) {
+      setAnchor(a => a ?? cursor);
+      setCursor(c => Math.max(0, c - prevCodePointLength(input, c)));
+      return;
+    }
+    if (key.shift && key.rightArrow) {
+      setAnchor(a => a ?? cursor);
+      setCursor(c => Math.min(input.length, c + nextCodePointLength(input, c)));
+      return;
+    }
+
     // --- Backspace / Delete ---
     // Ink 4 maps both the backspace key (0x7f) and the forward-delete escape
     // sequence to `key.delete`, so they cannot be told apart: both delete the
-    // code point before the cursor.
+    // code point before the cursor — or the whole selection, when there is one.
     if (key.backspace || key.delete) {
+      if (hasSelection) {
+        const r = replaceRange(input, sel.start, sel.end, '');
+        setInput(r.value);
+        setCursor(r.cursor);
+        setAnchor(null);
+        setSelectedIndex(0);
+        return;
+      }
       if (cursor === 0) return;
       const len = prevCodePointLength(input, cursor);
       setInput(prev => prev.slice(0, cursor - len) + prev.slice(cursor));
       setCursor(c => c - len);
+      setAnchor(null);
       setSelectedIndex(0);
       return;
     }
 
     // --- Left/Right arrow: move by code point, never splitting an emoji ---
+    // Moving without Shift drops the selection (it collapses to the active end).
     if (key.leftArrow) {
+      setAnchor(null);
       setCursor(c => Math.max(0, c - prevCodePointLength(input, c)));
       return;
     }
     if (key.rightArrow) {
+      setAnchor(null);
       setCursor(c => Math.min(input.length, c + nextCodePointLength(input, c)));
       return;
     }
 
     // --- Regular character input (includes pasted multi-line text) ---
+    // Never exclude key.shift here: uppercase letters and symbols carry it.
     if (ch && !key.ctrl && !key.meta) {
       // Terminals send pasted newlines as CR or CRLF; normalize to LF so the
       // value — and what gets submitted — uses real newlines.
       const text = normalizeInputText(ch);
       if (text.length === 0) return;
-      setInput(prev => prev.slice(0, cursor) + text + prev.slice(cursor));
-      setCursor(c => c + text.length);
+      // Typing replaces the selection instead of inserting into it.
+      const r = replaceRange(input, sel.start, sel.end, text);
+      setInput(r.value);
+      setCursor(r.cursor);
+      setAnchor(null);
       setSelectedIndex(0);
     }
   });
@@ -228,11 +283,25 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
                 ) : (
                   <Text>{' '.repeat(PREFIX_WIDTH)}</Text>
                 )}
-                <Text>{i === 0 ? ` ${before}` : before}</Text>
-                {isCursorLine && (
-                  <Text color="white" inverse>{cursorCell}</Text>
+                {/* The selection highlight and the cursor block are mutually
+                    exclusive: with a selection the active end is the visual
+                    focus, so the block is not drawn (no double inverse). */}
+                {hasSelection ? (
+                  <>
+                    {i === 0 && <Text> </Text>}
+                    {splitLineBySelection(line, sel).map((seg, j) => (
+                      <Text key={j} inverse={seg.selected}>{seg.text}</Text>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    <Text>{i === 0 ? ` ${before}` : before}</Text>
+                    {isCursorLine && (
+                      <Text color="white" inverse>{cursorCell}</Text>
+                    )}
+                    <Text>{after}</Text>
+                  </>
                 )}
-                <Text>{after}</Text>
                 {isCursorLine && busy && <Text dimColor> (thinking...)</Text>}
               </Box>
             );

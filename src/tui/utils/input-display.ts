@@ -114,6 +114,51 @@ export function wrapByDisplayWidth(line: string, maxWidth: number): string[] {
 }
 
 /**
+ * Structured stand-in for `input-editing.ts`'s `SelectionRange`, declared
+ * here rather than imported: `input-editing.ts` already imports this module,
+ * so importing it back would create a cycle.
+ */
+export interface SelectionSpan {
+  start: number;
+  end: number;
+}
+
+/** A run of a display line with its selection highlight state. */
+export interface SelectionSegment {
+  text: string;
+  selected: boolean;
+}
+
+/**
+ * Cut one display line into the runs covered and not covered by
+ * `selection` (a half-open code-unit range over the raw value, the same
+ * coordinate space as `InputDisplayLine.offset`).
+ *
+ * Each returned segment is a contiguous slice of `line.text`, so it is
+ * newline-free and never wider than the line's own budget. Ownership of
+ * indices follows `layoutInput`: index `i` belongs to the line with
+ * `offset <= i < offset + text.length`, and a `'\n'` belongs to no line.
+ * Segments are intersected per line, so an index is never highlighted on two
+ * rows, and a selection that spans a newline ends each line at its last
+ * character.
+ */
+export function splitLineBySelection(
+  line: InputDisplayLine,
+  selection: SelectionSpan,
+): SelectionSegment[] {
+  const lo = line.offset;
+  const hi = line.offset + line.text.length;
+  const s = Math.max(lo, Math.min(hi, selection.start));
+  const e = Math.max(lo, Math.min(hi, selection.end));
+  if (s >= e) return [{ text: line.text, selected: false }];
+  const out: SelectionSegment[] = [];
+  if (s > lo) out.push({ text: line.text.slice(0, s - lo), selected: false });
+  out.push({ text: line.text.slice(s - lo, e - lo), selected: true });
+  if (e < hi) out.push({ text: line.text.slice(e - lo), selected: false });
+  return out.filter(seg => seg.text.length > 0);
+}
+
+/**
  * Map `value` + `cursor` onto visual lines that each fit `maxWidth`
  * display columns, and locate the cursor block.
  *
