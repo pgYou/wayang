@@ -3,15 +3,28 @@ import { useMemoizedFn } from '@/tui/hooks/use-memoized-fn';
 import { SLASH_COMMANDS } from '@/tui/hooks/use-slash-commands';
 import { Box, Text, useInput } from 'ink';
 import { theme } from '@/tui/theme';
+import { stringWidth } from '@/tui/utils/text-width';
+import {
+  layoutInput,
+  nextCodePointLength,
+  normalizeInputText,
+  prevCodePointLength,
+} from '@/tui/utils/input-display';
 
 interface InputAreaProps {
   onSubmit: (input: string) => void;
   onExit: () => void;
   onEscape?: () => void;
   busy?: boolean;
+  /** Terminal width in columns; the input box wraps its text to fit. */
+  width: number;
 }
 
-export function InputArea({ onSubmit, onExit, onEscape, busy }: InputAreaProps) {
+/** Prompt prefix and the gutter that keeps wrapped rows aligned under it. */
+const PREFIX = `${theme.user.prefix} `;
+const PREFIX_WIDTH = stringWidth(PREFIX);
+
+export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputAreaProps) {
   const [input, setInput] = useState('');
   const [cursor, setCursor] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -120,35 +133,48 @@ export function InputArea({ onSubmit, onExit, onEscape, busy }: InputAreaProps) 
     }
 
     // --- Backspace / Delete ---
+    // Ink 4 maps both the backspace key (0x7f) and the forward-delete escape
+    // sequence to `key.delete`, so they cannot be told apart: both delete the
+    // code point before the cursor.
     if (key.backspace || key.delete) {
       if (cursor === 0) return;
-      setInput(prev => prev.slice(0, cursor - 1) + prev.slice(cursor));
-      setCursor(c => Math.max(0, c - 1));
+      const len = prevCodePointLength(input, cursor);
+      setInput(prev => prev.slice(0, cursor - len) + prev.slice(cursor));
+      setCursor(c => c - len);
       setSelectedIndex(0);
       return;
     }
 
-    // --- Left/Right arrow ---
+    // --- Left/Right arrow: move by code point, never splitting an emoji ---
     if (key.leftArrow) {
-      setCursor(c => Math.max(0, c - 1));
+      setCursor(c => Math.max(0, c - prevCodePointLength(input, c)));
       return;
     }
     if (key.rightArrow) {
-      setCursor(c => Math.min(input.length, c + 1));
+      setCursor(c => Math.min(input.length, c + nextCodePointLength(input, c)));
       return;
     }
 
-    // --- Regular character input ---
+    // --- Regular character input (includes pasted multi-line text) ---
     if (ch && !key.ctrl && !key.meta) {
-      setInput(prev => prev.slice(0, cursor) + ch + prev.slice(cursor));
-      setCursor(c => c + ch.length);
+      // Terminals send pasted newlines as CR or CRLF; normalize to LF so the
+      // value — and what gets submitted — uses real newlines.
+      const text = normalizeInputText(ch);
+      if (text.length === 0) return;
+      setInput(prev => prev.slice(0, cursor) + text + prev.slice(cursor));
+      setCursor(c => c + text.length);
       setSelectedIndex(0);
     }
   });
 
-  // Render: text before cursor | cursor char | text after cursor
-  const before = input.slice(0, cursor);
-  const after = input.slice(cursor);
+  // Text budget: terminal width minus the box's horizontal padding and the
+  // prompt prefix. Every visual line is pre-wrapped to this budget so Ink
+  // never has to wrap (or reposition siblings around) a multi-row text node.
+  const textBudget = Math.max(1, width - 2 - PREFIX_WIDTH);
+  const layout = useMemo(
+    () => layoutInput(input, cursor, textBudget),
+    [input, cursor, textBudget],
+  );
 
   return (
     <Box flexDirection="column">
@@ -173,7 +199,8 @@ export function InputArea({ onSubmit, onExit, onEscape, busy }: InputAreaProps) 
         </Box>
       )}
 
-      {/* Input box */}
+      {/* Input box — one row per visual line so newlines pasted into the
+          value render as real lines and the cursor block stays on its line */}
       <Box
         borderStyle="single"
         borderColor="gray"
@@ -181,11 +208,36 @@ export function InputArea({ onSubmit, onExit, onEscape, busy }: InputAreaProps) 
         borderRight={false}
         paddingX={1}
       >
-        <Text color={theme.user.prefixColor} bold>{theme.user.prefix}</Text>
-        <Text> {before}</Text>
-        <Text color="white" inverse>{after.length > 0 ? after[0] : ' '}</Text>
-        <Text>{after.slice(1)}</Text>
-        <Text dimColor>{busy ? ' (thinking...)' : ''}</Text>
+        <Box flexDirection="column">
+          {layout.lines.map((line, i) => {
+            const isCursorLine = i === layout.cursorLine;
+            // Render the cursor block on the char at the cursor; a cursor
+            // past the line's end (end of value, or on the line's newline)
+            // renders as a trailing inverse space.
+            const col = layout.cursorCol;
+            const charLen = isCursorLine ? nextCodePointLength(line.text, col) : 0;
+            const before = isCursorLine ? line.text.slice(0, col) : line.text;
+            const cursorCell = isCursorLine && charLen > 0
+              ? line.text.slice(col, col + charLen)
+              : ' ';
+            const after = isCursorLine ? line.text.slice(col + charLen) : '';
+            return (
+              <Box key={i}>
+                {i === 0 ? (
+                  <Text color={theme.user.prefixColor} bold>{theme.user.prefix}</Text>
+                ) : (
+                  <Text>{' '.repeat(PREFIX_WIDTH)}</Text>
+                )}
+                <Text>{i === 0 ? ` ${before}` : before}</Text>
+                {isCursorLine && (
+                  <Text color="white" inverse>{cursorCell}</Text>
+                )}
+                <Text>{after}</Text>
+                {isCursorLine && busy && <Text dimColor> (thinking...)</Text>}
+              </Box>
+            );
+          })}
+        </Box>
       </Box>
     </Box>
   );
