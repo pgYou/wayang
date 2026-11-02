@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { Box } from 'ink';
+import { Box, Text } from 'ink';
 import type { DisplayItem } from '@/tui/types/display-item';
 import { ChatArea } from '@/tui/components/chat-area/chat-area';
+import { UserRow } from '@/tui/components/chat-area/user-row';
 import { theme } from '@/tui/theme';
+import { stringWidth } from '@/tui/utils/text-width';
 import { renderToString, h } from './render-to-string';
 
 // Issue #17: while the controller is thinking/streaming, the pending
@@ -168,5 +170,84 @@ describe('ChatArea live region layout', () => {
     expect(hintLine.trim()).toBe(HINT);
     expect(hintLine).not.toContain(theme.spinner.frames[0]);
     expect(hintLine).not.toContain('streaming text');
+  });
+});
+
+// The gray band of a user row may only span the content width. The prefix
+// ("→ ") shares that budget, and the fill has to be measured in terminal
+// columns — a CJK glyph is one code unit but two columns. Padding past the
+// budget pushed the row beyond the content area and made Ink wrap the leftover
+// fill onto an extra, fully painted line.
+describe('ChatArea user row background width', () => {
+  /** Render one user row exactly like ChatArea does, plus a sentinel to measure it. */
+  function renderUserRow(content: string, columns = COLUMNS): string[] {
+    const element = h(
+      Box,
+      { paddingX: 1 },
+      h(
+        Box,
+        { flexDirection: 'row' },
+        h(UserRow, { item: userItem(content), width: columns - 4 }),
+        h(Text, null, '|'),
+      ),
+    );
+    return renderToString(element, columns).split('\n');
+  }
+
+  /** Columns painted before the sentinel: 1 column of indent + the laid-out row. */
+  function paintedWidth(lines: string[]): number {
+    const line = lineOf(lines, '|');
+    return stringWidth(line.slice(0, line.indexOf('|')));
+  }
+
+  it('fills a short user row exactly to the content width', () => {
+    expect(paintedWidth(renderUserRow('hello'))).toBe(1 + CONTENT_WIDTH);
+  });
+
+  it('fills a CJK user row by display columns, not code units', () => {
+    // 10 glyphs = 20 columns: padding on `text.length` would overshoot by 10.
+    expect(paintedWidth(renderUserRow('这是一条中文消息'))).toBe(1 + CONTENT_WIDTH);
+  });
+
+  it('keeps every line of a long user message inside the content width', () => {
+    const content = 'x'.repeat(CONTENT_WIDTH * 2);
+    const lines = render({ items: [userItem(content)] });
+
+    for (const line of lines) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(CONTENT_WIDTH + 1);
+    }
+    // Nothing of the message is lost or duplicated by the wrapping.
+    const painted = lines.join('').split('x').length - 1;
+    expect(painted).toBe(content.length);
+    expect(lines.filter(line => line.includes('x')).length).toBeGreaterThan(1);
+  });
+
+  it('does not spill an almost-full user message onto a stray background line', () => {
+    // Longer than the message budget but shorter than the old padEnd target,
+    // which used to push the row past the terminal and wrap the fill.
+    const content = 'x'.repeat(CONTENT_WIDTH + 2);
+    const lines = render({ items: [userItem(content)] });
+
+    for (const line of lines) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(CONTENT_WIDTH + 1);
+    }
+
+    const bodyLines = lines.filter(line => line.includes('x'));
+    expect(bodyLines.length).toBeGreaterThan(1);
+    // The wrapped message stays one contiguous block: no blank line between
+    // its rows, which is what a wrapped-away fill used to look like.
+    const first = lines.indexOf(bodyLines[0]);
+    const last = lines.indexOf(bodyLines[bodyLines.length - 1]);
+    for (const line of lines.slice(first, last + 1)) {
+      expect(line.trim()).not.toBe('');
+    }
+  });
+
+  it('keeps a user row within a narrow terminal', () => {
+    const columns = 40;
+    const lines = render({ items: [userItem('narrow user message ' + 'z'.repeat(40))] }, columns);
+    for (const line of lines) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(columns - 3);
+    }
   });
 });
