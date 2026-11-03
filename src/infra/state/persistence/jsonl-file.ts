@@ -60,9 +60,9 @@ export class JSONLFileHelper<T = unknown> implements IPersistenceHelper<T[]> {
     return entries;
   }
 
-  readFromEnd(stopCondition: (entry: any) => boolean): any[] {
+  readFromEnd(stopCondition: (entry: T) => boolean): T[] {
     const all = this.read();
-    const result: any[] = [];
+    const result: T[] = [];
     for (let i = all.length - 1; i >= 0; i--) {
       if (stopCondition(all[i])) break;
       result.unshift(all[i]);

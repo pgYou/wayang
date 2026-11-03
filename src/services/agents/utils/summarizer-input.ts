@@ -46,6 +46,7 @@ function clip(value: unknown, max: number): string {
 }
 
 /** "[task title · w:abcd] " context tag for signal lines ('' when unknown). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- signal entries carry optional context fields; defensive read of persisted JSON
 function signalTag(entry: any): string {
   const parts: string[] = [];
   if (entry.taskTitle) parts.push(entry.taskTitle);
@@ -58,6 +59,7 @@ function signalTag(entry: any): string {
  * summarizing: heartbeats, compaction markers (the previous summary is passed
  * separately), and empty steps.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- public summarizer surface: reads persisted conversation JSON defensively (legacy/unknown entry types must render via the default case, not crash)
 export function formatEntryForSummary(entry: any, index: number, caps: SummaryCaps): string | null {
   if (!entry) return null;
   const head = `[${index}]`;
@@ -86,8 +88,10 @@ export function formatEntryForSummary(entry: any, index: number, caps: SummaryCa
       if (text) lines.push(`${head} assistant: ${text}`);
 
       // Pair each call with its result so the summarizer sees call → outcome.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool records on persisted assistant entries (defensive read)
       const results = new Map<string, any>();
       for (const tr of entry.toolResults ?? []) results.set(tr.toolCallId, tr);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- same defensive read of toolCalls records
       const calls: any[] = (entry.toolCalls ?? []).filter((tc: any) => !NOISE_TOOLS.has(tc.toolName));
       if (calls.length > 0 && lines.length === 0) lines.push(`${head} assistant: (tool calls)`);
       for (const tc of calls) {
@@ -110,6 +114,7 @@ export function formatEntryForSummary(entry: any, index: number, caps: SummaryCa
 }
 
 /** Format all entries with one set of caps (empty entries skipped). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- element shape mirrors formatEntryForSummary's defensive entry read
 function formatAll(entries: readonly any[], caps: SummaryCaps): string[] {
   const out: string[] = [];
   entries.forEach((entry, i) => {
@@ -131,6 +136,7 @@ function totalLength(lines: readonly string[]): number {
  * not fit, keeps the newest lines that fit and prepends a note saying how many
  * older entries were left out.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- public API; element shape mirrors formatEntryForSummary's defensive entry read
 export function buildSummaryInput(entries: readonly any[], maxChars: number): string[] {
   let lines: string[] = [];
   for (const caps of SUMMARY_CAP_LEVELS) {

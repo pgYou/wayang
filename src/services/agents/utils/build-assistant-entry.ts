@@ -64,14 +64,17 @@ export function buildAssistantEntry(
     event.toolCalls?.length
       ? event.toolCalls.map((tc) => {
           const rec = lookupRecord?.(tc.toolCallId);
+          // SDK OnStepFinishEvent type incomplete: the tool input arrives as
+          // `args` (or legacy `input`) but the declared type omits both.
+          const args = (tc as { args?: unknown; input?: unknown }).args;
+          const input = (tc as { input?: unknown }).input;
           return {
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
             arguments:
-              // SDK OnStepFinishEvent type incomplete
-              typeof (tc as any).args === 'string'
-                ? (tc as any).args
-                : JSON.stringify((tc as any).args ?? (tc as any).input ?? {}),
+              typeof args === 'string'
+                ? args
+                : JSON.stringify(args ?? input ?? {}),
             ...(rec?.taskId !== undefined && { taskId: rec.taskId }),
             ...(rec?.status !== undefined && { status: rec.status }),
             ...(rec?.startedAt !== undefined && { startedAt: rec.startedAt }),
@@ -100,24 +103,30 @@ export function buildAssistantEntry(
   // Normal tool results
   if (event.toolResults?.length) {
     results.push(
-      ...event.toolResults.map((tr) => withRecordMeta({
-        toolCallId: tr.toolCallId,
-        toolName: tr.toolName,
-        output: {
-          type: 'text' as const,
-          value:
-            // SDK OnStepFinishEvent type incomplete
-            typeof (tr as any).output === 'string'
-              ? (tr as any).output
-              : JSON.stringify((tr as any).output ?? ''),
-        },
-      })),
+      ...event.toolResults.map((tr) => {
+        // SDK OnStepFinishEvent type incomplete: the raw output is omitted
+        // from the declared type.
+        const output = (tr as { output?: unknown }).output;
+        return withRecordMeta({
+          toolCallId: tr.toolCallId,
+          toolName: tr.toolName,
+          output: {
+            type: 'text' as const,
+            value:
+              typeof output === 'string'
+                ? output
+                : JSON.stringify(output ?? ''),
+          },
+        });
+      }),
     );
   }
 
   // Tool errors from SDK input validation failures (e.g. zod schema mismatch).
   // SDK produces type: "tool-error" chunks that are NOT included in event.toolResults.
-  const content = (event as any).content;
+  // SDK OnStepFinishEvent type incomplete: tool-error parts arrive in a
+  // `content` array the declared type omits.
+  const content = (event as { content?: unknown }).content;
   if (Array.isArray(content)) {
     for (const part of content) {
       if (part.type === 'tool-error' && part.toolCallId) {
@@ -139,7 +148,9 @@ export function buildAssistantEntry(
   const toolResults: ToolResultRecord[] | undefined = results;
 
   // --- Usage (single-step values, never cumulative) ---
-  const rawUsage: any = event.usage;
+  // SDK type omits usage fields some providers still send (deprecated
+  // top-level cached/reasoning tokens, *Details sub-objects).
+  const rawUsage = event.usage as UsageExtras | undefined;
   const usage = rawUsage
     ? {
         inputTokens: rawUsage.inputTokens ?? 0,
@@ -153,7 +164,7 @@ export function buildAssistantEntry(
   // --- Model metadata (best effort) ---
   // provider/model come from the SDK event; temperature/maxOutputTokens are
   // backfilled from ProviderConfig via extras. Any source missing → omitted.
-  const modelInfo: any = (event as any).model;
+  const modelInfo = (event as { model?: { provider?: string; modelId?: string } }).model;
   const model =
     (modelInfo && (modelInfo.provider !== undefined || modelInfo.modelId !== undefined))
       || extras?.temperature !== undefined
@@ -167,7 +178,9 @@ export function buildAssistantEntry(
       : undefined;
 
   // --- Timing (best effort; firstTokenAt comes from the streaming loop) ---
-  const stepStartedAt = toIso((event as any).response?.timestamp) ?? extras?.startedAt;
+  // SDK OnStepFinishEvent type incomplete: the provider response timestamp is
+  // omitted from the declared type.
+  const stepStartedAt = toIso((event as { response?: { timestamp?: unknown } }).response?.timestamp) ?? extras?.startedAt;
   const endedAt = extras?.endedAt ?? ts;
   const durationMs =
     stepStartedAt !== undefined
@@ -185,11 +198,11 @@ export function buildAssistantEntry(
       : { endedAt };
 
   // --- Provider response id, when exposed ---
-  const responseId = (event as any).response?.id;
+  const responseId = (event as { response?: { id?: unknown } }).response?.id;
   const requestId = typeof responseId === 'string' && responseId.length > 0 ? responseId : undefined;
 
   // --- Step index within the turn (SDK stepNumber is zero-based) ---
-  const stepNumber = (event as any).stepNumber;
+  const stepNumber = (event as { stepNumber?: unknown }).stepNumber;
 
   return {
     type: EEntryType.Assistant,
@@ -215,14 +228,27 @@ export function buildAssistantEntry(
   };
 }
 
+/** Usage fields read off OnStepFinishEvent.usage, incl. ones the SDK type omits. */
+interface UsageExtras {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  /** Deprecated top-level field (pre-cacheReadTokens SDKs). */
+  cachedInputTokens?: number;
+  /** Deprecated top-level field (pre-reasoningTokens SDKs). */
+  reasoningTokens?: number;
+  inputTokenDetails?: { cacheReadTokens?: number };
+  outputTokenDetails?: { reasoningTokens?: number };
+}
+
 /** Cached input tokens: deprecated top-level field or inputTokenDetails.cacheReadTokens. */
-function cachedInputOf(usage: any): number | undefined {
+function cachedInputOf(usage: UsageExtras): number | undefined {
   if (usage.cachedInputTokens !== undefined) return usage.cachedInputTokens;
   return usage.inputTokenDetails?.cacheReadTokens;
 }
 
 /** Reasoning tokens: deprecated top-level field or outputTokenDetails.reasoningTokens. */
-function reasoningTokensOf(usage: any): number | undefined {
+function reasoningTokensOf(usage: UsageExtras): number | undefined {
   if (usage.reasoningTokens !== undefined) return usage.reasoningTokens;
   return usage.outputTokenDetails?.reasoningTokens;
 }

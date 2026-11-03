@@ -49,6 +49,7 @@ export interface ControllerToolDeps {
   /** Workspace directory for file search. */
   cwd?: string;
   /** Get worker conversation entries for a task. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors TaskExecuteEngine.getWorkerConversation's defensive any[]
   getWorkerConversation?: (taskId: string) => any[];
   /** Read a worker's on-disk transcript (works after the worker is gone). */
   readTranscript: (workerId: string) => ConversationEntry[] | null;

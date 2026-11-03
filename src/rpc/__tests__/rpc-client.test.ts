@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { PassThrough } from 'node:stream';
 import { get, set } from 'lodash-es';
 import { RpcClient, RemoteStateStore, RemoteSubscribable } from '../rpc-client';
