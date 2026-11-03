@@ -90,6 +90,13 @@ export interface ControllerToolDeps {
   getTurnContext?: () => { turnId?: string; rootTurnId?: string; causationId?: string } | undefined;
   /** Notify the agent that an add_task call dispatched a task (toolCall→task link). */
   onTaskDispatched?: (info: { toolCallId?: string; taskId: string }) => void;
+  /**
+   * Workspace this process executes tasks in (ctx.workspaceDir). add_task only
+   * accepts a declared workspace that normalizes to this path.
+   */
+  workspaceDir?: string;
+  /** Wayang home dir for workspace-registry lookups (path + stable slug). */
+  wayangDir?: string | null;
 }
 
 export interface WorkerToolDeps {
@@ -115,6 +122,8 @@ export function createControllerTools(deps: ControllerToolDeps) {
       validateIdleWorker: deps.validateIdleWorker,
       getTurnContext: deps.getTurnContext,
       onTaskDispatched: deps.onTaskDispatched,
+      workspaceDir: deps.workspaceDir,
+      wayangDir: deps.wayangDir,
     }),
     list_tasks: listTasksTool({ listTasks: deps.listTasks }),
     cancel_task: cancelTaskTool({

@@ -23,6 +23,7 @@ import {
 } from './prompts/index';
 import { createControllerTools } from '@/services/tools/index';
 import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
+import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { SystemContext } from '@/infra/system-context';
 import type { TaskExecuteEngine } from '@/services/task-execute-engine';
 import type { SignalQueue } from '@/services/signal/signal-queue';
@@ -153,6 +154,11 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       onTaskDispatched: ({ toolCallId, taskId }) => {
         if (toolCallId) recorder.attachTask(toolCallId, taskId);
       },
+      // Workspace identity stamped onto tasks by add_task. The engine still
+      // executes everything in ctx.workspaceDir, so add_task rejects any other
+      // workspace instead of accepting it.
+      workspaceDir: ctx.workspaceDir,
+      wayangDir: wayangDirForSessionDir(ctx.sessionDir),
     });
 
     return new ControllerAgent(ctx, state, provider, tools, skills, recorder);

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { TaskDetail } from '@/types/index';
+import { normalizeWorkspacePath, resolveWorkspaceRef } from '@/infra/workspace-registry';
 import { generateId } from '@/utils/id';
 import { defineTool, safeExecute } from './common';
 
@@ -21,6 +22,63 @@ export interface AddTaskToolDeps {
   getTurnContext?: () => { turnId?: string; rootTurnId?: string; causationId?: string } | undefined;
   /** Notify the agent that this call dispatched a task (toolCall→task audit link). */
   onTaskDispatched?: (info: { toolCallId?: string; taskId: string }) => void;
+  /**
+   * The workspace this process executes in (ctx.workspaceDir). Task creation is
+   * single-workspace for now: a `workspace` argument is only accepted when it
+   * normalizes to this path. Undefined means "unknown context" — then no
+   * workspace identity is stamped and a declared workspace is rejected.
+   */
+  workspaceDir?: string;
+  /**
+   * Wayang home dir used to resolve the stable workspace identity (path+slug)
+   * from the workspace registry. Null/undefined degrades to the rule-based slug.
+   */
+  wayangDir?: string | null;
+}
+
+/**
+ * Decide which workspace a new task belongs to.
+ *
+ * Three states:
+ * - no `workspace` argument       → the current workspace (default).
+ * - `workspace` == current (after canonicalization) → the current workspace.
+ * - `workspace` != current        → error; the task must NOT be created, since
+ *   the engine still builds workers, tool cwd and permission gates from the
+ *   process-level workspace, so "accepted but executed elsewhere" would be a
+ *   silent inconsistency.
+ */
+function resolveTaskWorkspace(
+  requested: string | undefined,
+  deps: AddTaskToolDeps,
+): { workspace?: TaskDetail['workspace'] } | { error: string } {
+  const current = deps.workspaceDir;
+  const requestedPath = requested !== undefined && requested.trim() !== ''
+    ? normalizeWorkspacePath(requested)
+    : undefined;
+
+  if (!current) {
+    if (requestedPath !== undefined) {
+      return {
+        error: `Cannot resolve workspace ${requestedPath}: the current workspace is unknown in this context, so the task was NOT created.`,
+      };
+    }
+    return {};
+  }
+
+  const currentPath = normalizeWorkspacePath(current);
+  if (requestedPath !== undefined && requestedPath !== currentPath) {
+    return {
+      error: `Workspace ${requestedPath} is not the current workspace (${currentPath}). ` +
+        `Cross-workspace execution is not supported in the current version — the task was NOT created. ` +
+        `Omit "workspace" (or pass the current workspace path) to run the task here.`,
+    };
+  }
+
+  // Same workspace (explicitly declared in any equivalent spelling, or the
+  // default): stamp its canonical identity. resolveWorkspaceRef never throws —
+  // without a readable registry it degrades to the rule-based slug.
+  const ref = resolveWorkspaceRef(deps.wayangDir ?? null, currentPath);
+  return { workspace: { path: ref.path, slug: ref.slug } };
 }
 
 export function addTaskTool(deps: AddTaskToolDeps) {
@@ -37,9 +95,20 @@ export function addTaskTool(deps: AddTaskToolDeps) {
       assignToWorker: z.string().optional().describe(
         'Dispatch this task to an existing idle worker (the workerId returned from a prior multiStage task). The worker resumes with its accumulated context. Omit for a fresh worker.',
       ),
+      workspace: z.string().optional().describe(
+        'Target workspace path; defaults to the current workspace. The current version only accepts a path that resolves to the same workspace as the current one — cross-workspace execution is not supported yet.',
+      ),
     }),
-    execute: safeExecute('add_task', async ({ title, description, priority, workerType, multiStage, assignToWorker }, options) => {
+    execute: safeExecute('add_task', async (
+      { title, description, priority, workerType, multiStage, assignToWorker, workspace },
+      options,
+    ) => {
       const resolvedType = workerType || 'puppet';
+
+      // Workspace gate: declared workspace must be the one this process runs
+      // in. A mismatch fails the call before anything is created.
+      const workspaceResolution = resolveTaskWorkspace(workspace, deps);
+      if ('error' in workspaceResolution) return workspaceResolution.error;
 
       // Pre-validate workerType before adding task
       if (deps.validateWorkerType) {
@@ -72,6 +141,7 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         createdAt: Date.now(),
         multiStage,
         assignToWorker,
+        ...(workspaceResolution.workspace !== undefined && { workspace: workspaceResolution.workspace }),
         ...(turnCtx?.turnId !== undefined && { turnId: turnCtx.turnId }),
         ...(turnCtx?.rootTurnId !== undefined && { rootTurnId: turnCtx.rootTurnId }),
         ...((toolCallId ?? turnCtx?.causationId) !== undefined && { causationId: toolCallId ?? turnCtx?.causationId }),
