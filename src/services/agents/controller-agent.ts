@@ -44,6 +44,19 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
   private readonly recorder: ToolCallRecorder;
   /** Turn id of the most recent run — used to stamp late error entries. */
   private lastTurnId: string | null = null;
+  /**
+   * True once THIS turn's interrupt record has been persisted
+   * (recordUserAbort). Step finishes landing after that point would append
+   * behind the interrupt marker — the turn is closed, drop them. Checked by
+   * the onStep guard INSTEAD of the abort signal: the signal flips the moment
+   * the user presses ESC, but a step that was already executing completes
+   * normally afterwards (ai SDK enqueues finish-step only after the step's
+   * tools ran to completion), so it still carries complete toolCalls +
+   * toolResults and must be persisted (design §3.5) — dropping it would lose
+   * the add_task toolCall/taskId link and make the interrupted turn look
+   * cancelled while its workers are still running.
+   */
+  private turnInterruptRecorded = false;
 
   constructor(
     ctx: SystemContext,
@@ -181,6 +194,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     this.state.set('dynamicState.currentTurn', turnEnv);
     this.lastTurnId = turnId;
     this.recorder.beginTurn();
+    this.turnInterruptRecorded = false;
 
     // Append incoming signals to conversation. Signal entries keep their own
     // lineage (rootTurnId / causationId / actor from the originating worker)
@@ -204,12 +218,22 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       maxSteps: 50,
       stopTools: ['skip_reply'],
       onStreamError: (err) => {
+        // An aborted turn reports AbortError through onError — expected user
+        // action, not a provider failure. Keep it out of the error log.
+        if (this.abortController.signal.aborted) {
+          this.logger.debug({ agent: 'controller', err }, 'LLM stream aborted by user');
+          return;
+        }
         this.logger.error({ agent: 'controller', err }, 'LLM stream error');
       },
       onStep: (event, meta) => {
-        // A late step-finish that lands after the user aborted would append a
-        // complete step BEHIND the interrupt marker — the turn is over, drop it.
-        if (this.abortController.signal.aborted) return;
+        // A late step-finish that lands after this turn's interrupt record
+        // was persisted would append a complete step BEHIND the interrupt
+        // marker — the turn is over, drop it. Steps landing between the abort
+        // and that record are complete (their tools ran to finish) and are
+        // persisted below; recordUserAbort's uuid dedup guard reconciles them
+        // with any in-flight partial text.
+        if (this.turnInterruptRecorded) return;
         const streamingEntries = this.state.get<ConversationEntry[]>('dynamicState.streamingEntries');
         const streamingUuid = streamingEntries?.[0]?.uuid;
         const entry = buildAssistantEntry(event, this.ctx.sessionId, streamingUuid, {
@@ -271,6 +295,10 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
    * it twice.
    */
   private recordUserAbort(turnEnv: TurnEnvelope): void {
+    // From here the turn is closed: any step finish racing in after this
+    // point would land behind the interrupt marker and is dropped by the
+    // onStep guard. Set BEFORE the appends so nothing interleaves.
+    this.turnInterruptRecorded = true;
     const ts = nowISO();
     const streaming = this.state.get<ConversationEntry[]>('dynamicState.streamingEntries') ?? [];
     const inFlight = streaming[0];
