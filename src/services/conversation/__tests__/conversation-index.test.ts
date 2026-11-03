@@ -364,6 +364,28 @@ describe('ConversationIndexBuilder: status rules', () => {
     expect(idx.getTurn('T1')!.status).toBe('failed');
   });
 
+  it('marks a turn cancelled on a user-interrupt system entry', () => {
+    const idx = buildConversationIndex([
+      makeUser({ uuid: 'u1', turnId: 'T1' }),
+      makeStep({ uuid: 'a1', turnId: 'T1', interrupted: true }),
+      makeSystem({ uuid: 'i1', turnId: 'T1', subtype: ESystemSubtype.Interrupted, content: 'Response interrupted by user.' }),
+    ]);
+    expect(idx.getTurn('T1')!.status).toBe('cancelled');
+  });
+
+  it('keeps an interrupted turn running while its dispatched tasks are unfinished', () => {
+    const idx = buildConversationIndex([
+      makeUser({ uuid: 'u1', turnId: 'T1' }),
+      makeStep({
+        uuid: 'a1', turnId: 'T1',
+        toolCalls: [{ toolCallId: 'tc1', toolName: 'add_task', arguments: '{}', status: 'running', taskId: 'task-esc' }],
+      }),
+      makeSystem({ uuid: 'i1', turnId: 'T1', subtype: ESystemSubtype.Interrupted, content: 'Response interrupted by user.' }),
+    ]);
+    // Workers keep running after an interrupt — running wins over cancelled.
+    expect(idx.getTurn('T1')!.status).toBe('running');
+  });
+
   it('does not fail a turn for a compact marker', () => {
     const idx = buildConversationIndex([
       makeUser({ uuid: 'u1', turnId: 'T1' }),

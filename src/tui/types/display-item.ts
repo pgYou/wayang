@@ -32,6 +32,8 @@ export interface DisplayItem {
   sections?: DisplaySection[];
   /** signal / system subtype discriminator. */
   subtype?: string;
+  /** assistant-only: this step's output was truncated by a user interrupt (ESC). */
+  interrupted?: boolean;
   /** system-only: compaction marker metadata — present iff this is a real compact marker. */
   compactMeta?: { summarizedTokenCount?: number };
   isError?: boolean;
@@ -106,6 +108,7 @@ export function entryToDisplayItem(entry: ConversationEntry): DisplayItem | null
         role: 'assistant',
         content: entry.message.content,
         sections,
+        interrupted: entry.interrupted,
       };
     }
 

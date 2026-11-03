@@ -15,6 +15,7 @@ import type { ActiveWorkerInfo } from '@/types/index';
 import type { DisplayItem } from '@/tui/types/display-item';
 import type { Overlay } from '@/tui/types/overlay';
 import { entryToDisplayItem, signalToDisplayItem } from '@/tui/types/display-item';
+import { resolveEscapeAction } from '@/tui/utils/escape-action';
 
 interface ControllerPageProps {
   onExit: () => void;
@@ -84,6 +85,22 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
 
   const dismissOverlay = useMemoizedFn(() => setOverlay(null));
 
+  // ESC: dismiss an open overlay first (its hint says "esc to dismiss");
+  // otherwise abort the controller's current thinking/streaming. Never
+  // touches worker tasks.
+  const handleEscape = useMemoizedFn(() => {
+    switch (resolveEscapeAction({ overlayOpen: overlay !== null, busy })) {
+      case 'dismiss-overlay':
+        dismissOverlay();
+        break;
+      case 'abort':
+        supervisor.controllerAgent.abort();
+        break;
+      case 'none':
+        break;
+    }
+  });
+
   const { handleCommand } = useSlashCommands(supervisor);
 
   const handleSubmit = useMemoizedFn(async (input: string) => {
@@ -135,7 +152,7 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
       {pendingInquiry ? (
         <InquiryPrompt inquiry={pendingInquiry} onAnswer={(answer) => supervisor.resolveInquiry(answer)} />
       ) : (
-        <InputArea onSubmit={handleSubmit} onExit={onExit} onEscape={dismissOverlay} busy={busy} width={terminalCols} />
+        <InputArea onSubmit={handleSubmit} onExit={onExit} onEscape={handleEscape} busy={busy} width={terminalCols} />
       )}
       <StatusBar
         activeWorkers={activeWorkers ?? []}
