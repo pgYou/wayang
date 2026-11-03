@@ -41,6 +41,11 @@ export interface ControllerToolDeps {
   assignToWorker?: (workerId: string, task: TaskDetail) => boolean;
   /** Validate that a worker exists and is idle. Returns error message or null. */
   validateIdleWorker?: (workerId: string) => string | null;
+  /**
+   * Validate that an idle worker was created in the workspace the task targets.
+   * Returns error message or null (see AddTaskToolDeps.validateWorkerWorkspace).
+   */
+  validateWorkerWorkspace?: (workerId: string, workspacePath: string) => string | null;
   listTasks: (status?: TaskDetail['status']) => TaskDetail[];
   getTask: (taskId: string) => TaskDetail | undefined;
   cancelTask: (taskId: string) => boolean;
@@ -121,6 +126,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
       validateWorkerType: deps.validateWorkerType,
       assignToWorker: deps.assignToWorker,
       validateIdleWorker: deps.validateIdleWorker,
+      validateWorkerWorkspace: deps.validateWorkerWorkspace,
       getTurnContext: deps.getTurnContext,
       onTaskDispatched: deps.onTaskDispatched,
       workspaceDir: deps.workspaceDir,

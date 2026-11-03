@@ -193,6 +193,60 @@ describe('addTaskTool — workspace declaration', () => {
     }
   });
 
+  it('surfaces the engine\'s workspace guard when the idle worker belongs to another workspace', async () => {
+    const addTask = vi.fn((_t: TaskDetail) => 'w-1');
+    const assignToWorker = vi.fn(() => true);
+    const guardMessage =
+      'Worker "w-9" was created in workspace /repos/wayang and cannot take a task in ' +
+      `${normalizeWorkspacePath(otherDir)}. Create a new worker for that workspace instead (drop assignToWorker).`;
+    const validateWorkerWorkspace = vi.fn(() => guardMessage);
+
+    const tool = addTaskTool({
+      addTask,
+      validateIdleWorker: () => null, // the worker IS idle — only the workspace differs
+      assignToWorker,
+      validateWorkerWorkspace,
+      workspaceDir,
+      wayangDir,
+    });
+
+    const result = await exec(tool, {
+      title: 'T',
+      description: 'D',
+      assignToWorker: 'w-9',
+      workspace: otherDir,
+    });
+
+    // The controller gets the reason plus the remedy, and nothing is dispatched.
+    expect(result).toBe(guardMessage);
+    expect(validateWorkerWorkspace).toHaveBeenCalledWith('w-9', normalizeWorkspacePath(otherDir));
+    expect(addTask).not.toHaveBeenCalled();
+    expect(assignToWorker).not.toHaveBeenCalled();
+  });
+
+  it('assigns to an idle worker whose workspace matches', async () => {
+    const addTask = vi.fn((_t: TaskDetail) => 'w-1');
+    const assignToWorker = vi.fn(() => true);
+    const validateWorkerWorkspace = vi.fn(() => null);
+
+    const tool = addTaskTool({
+      addTask,
+      validateIdleWorker: () => null,
+      assignToWorker,
+      validateWorkerWorkspace,
+      workspaceDir,
+      wayangDir,
+    });
+
+    const result = await exec(tool, { title: 'T', description: 'D', assignToWorker: 'w-9' });
+
+    // No workspace declared → the process workspace is the target.
+    expect(validateWorkerWorkspace).toHaveBeenCalledWith('w-9', normalizeWorkspacePath(workspaceDir));
+    expect(assignToWorker).toHaveBeenCalledTimes(1);
+    expect(result).toContain('assigned to worker w-9');
+    expect(addTask).not.toHaveBeenCalled();
+  });
+
   it('rejects a declared workspace when the current workspace is unknown', async () => {
     const addTask = vi.fn((_t: TaskDetail) => 'w-1');
     const tool = addTaskTool({ addTask, wayangDir }); // no workspaceDir injected

@@ -115,6 +115,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       validateWorkerType: (type: string) => engine.validateWorkerType(type),
       assignToWorker: (workerId: string, task: TaskDetail) => engine.assignToExistingWorker(workerId, task),
       validateIdleWorker: (workerId: string) => engine.validateIdleWorker(workerId),
+      validateWorkerWorkspace: (workerId: string, workspacePath: string) => engine.validateWorkerWorkspace(workerId, workspacePath),
       listTasks: (status?: TaskDetail['status']) => engine.list(status),
       getTask: (taskId: string) => engine.get(taskId),
       getWorkerConversation: (taskId: string) => engine.getWorkerConversation(taskId),

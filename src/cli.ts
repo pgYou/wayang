@@ -32,6 +32,7 @@
 import * as path from 'node:path';
 import { parseCliArgs } from './cli-args';
 import { bootstrap } from './bootstrap';
+import { normalizeWorkspacePath } from './infra/workspace-registry';
 import { serverMain } from './server/main';
 
 const result = parseCliArgs(process.argv.slice(2));
@@ -57,7 +58,12 @@ if (result.status === 'error') {
 const { input, flags } = result;
 
 const homeDir = path.resolve(flags.homeDir ?? (process.env.HOME || '~'));
-const workspaceDir = path.resolve(flags.workspaceDir ?? process.cwd());
+// Canonicalize the process workspace exactly like a task workspace: add_task
+// stamps `task.workspace.path` through the same helper, and the permission
+// gate compares string prefixes. Resolving symlinks only on one side would
+// flip allow/deny decisions and make the prompt's WorkspaceDir disagree with
+// the tool cwd. Non-existent paths fall back to a plain resolve.
+const workspaceDir = normalizeWorkspacePath(flags.workspaceDir ?? process.cwd());
 const configPath = flags.config
   ? path.resolve(flags.config)
   : path.join(homeDir, '.wayang.config.json');

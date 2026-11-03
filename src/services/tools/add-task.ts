@@ -18,6 +18,13 @@ export interface AddTaskToolDeps {
   assignToWorker?: (workerId: string, task: TaskDetail) => boolean;
   /** Validate that a worker exists and is idle. Returns error message or null. */
   validateIdleWorker?: (workerId: string) => string | null;
+  /**
+   * Validate that the idle worker was created in the workspace this task will
+   * execute in. Returns an error message or null. A worker's cwd, permission
+   * boundary and identity are fixed at creation, so reuse never crosses
+   * workspaces — the caller must create a new worker for a different one.
+   */
+  validateWorkerWorkspace?: (workerId: string, workspacePath: string) => string | null;
   /** Current controller turn lineage — stamped onto the created task. */
   getTurnContext?: () => { turnId?: string; rootTurnId?: string; causationId?: string } | undefined;
   /** Notify the agent that this call dispatched a task (toolCall→task audit link). */
@@ -119,6 +126,17 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         }
         const err = deps.validateIdleWorker(assignToWorker);
         if (err) return err;
+
+        // Same-workspace requirement: the engine rejects a cross-workspace
+        // reuse anyway, but on its own it can only report a generic "could not
+        // accept" — this check tells the controller WHY and what to do instead
+        // (create a fresh worker). Skipped when the target workspace is unknown
+        // here; the engine then falls back to its process workspace.
+        const targetWorkspacePath = workspaceResolution.workspace?.path ?? deps.workspaceDir;
+        if (targetWorkspacePath !== undefined && deps.validateWorkerWorkspace) {
+          const wsErr = deps.validateWorkerWorkspace(assignToWorker, targetWorkspacePath);
+          if (wsErr) return wsErr;
+        }
       }
 
       const toolCallId: string | undefined = options?.toolCallId;

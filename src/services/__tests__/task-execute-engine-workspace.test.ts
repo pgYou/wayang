@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -25,16 +25,26 @@ const claudeWorkers: any[] = [];
 vi.mock('@/services/agents/worker-agent', () => ({
   WorkerAgent: class FakeWorkerAgent {
     readonly id: string;
+    /** Mirror the real ctor: (provider, ctx, skills, toolChoice, workspaceDir). */
+    readonly workspaceDir: string;
     ctorArgs: any[];
-    run = vi.fn(() => new Promise<any>(() => { /* stays pending */ }));
+    private deferred: { resolve: (r: any) => void } | null = null;
+    run = vi.fn(() => new Promise<any>((resolve) => { this.deferred = { resolve }; }));
     abort = vi.fn();
     getConversation = () => [];
     getState = () => null;
     acceptMessage = vi.fn(() => true);
     subscribe = () => () => {};
     getSnapshot = () => undefined;
+    /** Resolve the most recently started run() promise (stage boundary). */
+    resolveRun = (r: any) => {
+      if (!this.deferred) throw new Error('no pending run to resolve');
+      this.deferred.resolve(r);
+      this.deferred = null;
+    };
     constructor(...args: any[]) {
       this.id = `agent-fake-${puppetWorkers.length}`;
+      this.workspaceDir = args[4];
       this.ctorArgs = args;
       puppetWorkers.push(this);
     }
@@ -44,6 +54,8 @@ vi.mock('@/services/agents/worker-agent', () => ({
 vi.mock('@/services/agents/claude-code-worker', () => ({
   ClaudeCodeWorker: class FakeClaudeCodeWorker {
     readonly id: string;
+    /** Mirror the real ctor: (config, sessionDir, workspaceDir, ctx, skills). */
+    readonly workspaceDir: string;
     ctorArgs: any[];
     permissionHandler = { resolvePermission: vi.fn(() => true), cleanup: vi.fn() };
     setInquirySupport = vi.fn();
@@ -57,6 +69,7 @@ vi.mock('@/services/agents/claude-code-worker', () => ({
     getSnapshot = () => undefined;
     constructor(...args: any[]) {
       this.id = `cw-fake-${claudeWorkers.length}`;
+      this.workspaceDir = args[2];
       this.ctorArgs = args;
       claudeWorkers.push(this);
     }
@@ -73,10 +86,11 @@ let sessionDir: string;
 let processWs: string;
 let taskWs: string;
 
-function makeEngine() {
+/** @param processWorkspace Overrides the process workspace (e.g. a symlinked spelling). */
+function makeEngine(processWorkspace: string = processWs) {
   const ctx = createMockCtx({
     sessionDir,
-    workspaceDir: processWs,
+    workspaceDir: processWorkspace,
     maxConcurrency: 3,
     config: {
       providers: {},
@@ -108,6 +122,15 @@ function firstRunTools(worker: any): Record<string, any> {
 /** Let the wrapped tool's async gate/execute chain reach its await point. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+}
+
+/** Resolve a worker's run() and flush the engine's done/fail continuation chain. */
+async function resolveAndSettle(
+  worker: any,
+  result: { status: string; summary?: string; error?: string },
+): Promise<void> {
+  worker.resolveRun(result);
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
 describe('TaskExecuteEngine — task-level workspace execution', () => {
@@ -243,5 +266,120 @@ describe('TaskExecuteEngine — task-level workspace execution', () => {
 
     const bashInside = await tools.bash.execute({ command: `cat ${join(ws.path, 'inside.txt')}` });
     expect(bashInside).toContain('inside-marker');
+  });
+});
+
+/**
+ * Reuse of an idle (multi-stage) worker is workspace-bound.
+ *
+ * A worker's workspace is fixed at construction — its identity, its cwd, its
+ * permission boundary and the relative-path assumptions in its accumulated
+ * conversation all belong to the workspace it was born in. `wireWorker` builds
+ * the next run's tools/cwd/gate from the NEW task's workspace, so a reuse
+ * across workspaces would silently point the run at one directory while the
+ * worker still thinks in another. The engine therefore refuses the reuse and
+ * the caller has to create a fresh worker.
+ */
+describe('TaskExecuteEngine — worker reuse is workspace-bound', () => {
+  beforeEach(() => {
+    sessionDir = mkdtempSync(join(tmpdir(), 'wayang-ws-reuse-session-'));
+    processWs = mkdtempSync(join(tmpdir(), 'wayang-ws-reuse-proc-'));
+    taskWs = mkdtempSync(join(tmpdir(), 'wayang-ws-reuse-task-'));
+    puppetWorkers.length = 0;
+    claudeWorkers.length = 0;
+  });
+  afterEach(() => {
+    rmSync(sessionDir, { recursive: true, force: true });
+    rmSync(processWs, { recursive: true, force: true });
+    rmSync(taskWs, { recursive: true, force: true });
+  });
+
+  /** Workspace identity of an arbitrary directory (realpath-canonical, as add_task stamps it). */
+  function wsRefOf(dir: string, slug: string): { path: string; slug: string } {
+    return { path: realpathSync(dir), slug };
+  }
+
+  it('rejects reuse when the task targets another workspace', async () => {
+    const { engine } = makeEngine();
+    await engine.restore();
+
+    // Stage 1: a multi-stage worker born in the PROCESS workspace.
+    engine.add(makeTask('t1', { multiStage: true, workspace: wsRefOf(processWs, 'proc-ws') }));
+    const worker = puppetWorkers[0];
+    await resolveAndSettle(worker, { status: 'completed', summary: 'stage 1' });
+    const idleId = engine.getActiveWorkers()[0].workerId;
+    expect(engine.getActiveWorkers()[0].status).toBe('idle');
+
+    // Stage 2: the follow-up asks for a DIFFERENT workspace.
+    const otherWs = wsRefOf(taskWs, 'task-ws');
+    const ok = engine.assignToExistingWorker(idleId, makeTask('t2', { workspace: otherWs }));
+
+    // Reuse refused with an explicit, actionable message.
+    expect(ok).toBe(false);
+    const err = engine.validateWorkerWorkspace(idleId, otherWs.path);
+    expect(err).toContain(`Worker "${idleId}"`);
+    expect(err).toContain('was created in workspace');
+    expect(err).toContain(realpathSync(processWs));
+    expect(err).toContain(otherWs.path);
+    expect(err).toContain('Create a new worker');
+
+    // The worker was NOT reused: no second run, still idle, task not dispatched.
+    expect(worker.run).toHaveBeenCalledTimes(1);
+    expect(engine.getActiveWorkers()[0].status).toBe('idle');
+    expect(engine.getActiveWorkers()[0].taskId).toBe('t1');
+    expect(engine.list('running').find((t) => t.id === 't2')).toBeUndefined();
+    expect(puppetWorkers).toHaveLength(1);
+  });
+
+  it('still reuses an idle worker for a task in the same workspace', async () => {
+    const { engine } = makeEngine();
+    await engine.restore();
+
+    const ws = wsRefOf(processWs, 'proc-ws');
+    engine.add(makeTask('t1', { multiStage: true, workspace: ws }));
+    const worker = puppetWorkers[0];
+    await resolveAndSettle(worker, { status: 'completed', summary: 'stage 1' });
+    const idleId = engine.getActiveWorkers()[0].workerId;
+
+    // Same workspace, re-declared. (The undeclared form — the common one — is
+    // covered by the engine's existing reuse tests: it falls back to
+    // ctx.workspaceDir, which normalizes to this same boundary.)
+    const ok = engine.assignToExistingWorker(idleId, makeTask('t2', { workspace: ws }));
+    expect(ok).toBe(true);
+    expect(worker.run).toHaveBeenCalledTimes(2);
+    expect(puppetWorkers).toHaveLength(1); // same instance, not reconstructed
+    expect(engine.getActiveWorkers()[0].status).toBe('running');
+    expect(engine.getActiveWorkers()[0].taskId).toBe('t2');
+  });
+
+  it('symlink equivalence: a symlinked process workspace and the canonical task workspace are the same workspace', async () => {
+    // The process was started through a symlink; add_task stamps the realpath.
+    const linkPath = join(sessionDir, 'ws-link');
+    symlinkSync(processWs, linkPath, 'dir');
+
+    const { engine } = makeEngine(linkPath);
+    await engine.restore();
+
+    // Stage 1: no workspace stamp → the worker is created in the (symlinked)
+    // process workspace.
+    engine.add(makeTask('t1', { multiStage: true }));
+    const worker = puppetWorkers[0];
+    expect(worker.workspaceDir).toBe(linkPath);
+    await resolveAndSettle(worker, { status: 'completed', summary: 'stage 1' });
+    const idleId = engine.getActiveWorkers()[0].workerId;
+
+    // Stage 2: the task carries the canonical (realpath) spelling of the SAME
+    // directory — normalization makes the two spellings agree, so the reuse is
+    // not mis-rejected.
+    const canonical = wsRefOf(processWs, 'proc-ws');
+    expect(engine.validateWorkerWorkspace(idleId, canonical.path)).toBeNull();
+    expect(engine.assignToExistingWorker(idleId, makeTask('t2', { workspace: canonical }))).toBe(true);
+    expect(worker.run).toHaveBeenCalledTimes(2);
+
+    // And the permission boundary / cwd of the reused run is that same root.
+    const tools = worker.run.mock.calls[1][1];
+    writeFileSync(join(processWs, 'marker.txt'), 'inside-marker');
+    const read = await tools.read_file.execute({ path: join(canonical.path, 'marker.txt') });
+    expect(read).toContain('inside-marker');
   });
 });

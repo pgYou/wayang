@@ -9,6 +9,7 @@
 import * as path from 'node:path';
 import { connectRemoteServer } from './client/connect';
 import { getSession, getLatestSessionForWorkspace } from './infra/session-helpers';
+import { normalizeWorkspacePath } from './infra/workspace-registry';
 import { renderInkUI } from './tui/render';
 import { loadConfig } from './onboard';
 import { selectSessionInteractive } from './session-select';
@@ -90,6 +91,14 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     session = { resume: existing.sessionId };
     console.log(`  Resuming session ${existing.sessionId}`);
   }
+
+  // Resume paths replace the CLI workspace with the session's recorded one,
+  // which may predate canonicalization (or have been written by another tool).
+  // Canonicalize it the same way the CLI does — realpath when it exists, plain
+  // resolve otherwise — so the process workspace always matches the
+  // normalization used for task workspaces and the permission gate. The
+  // session meta itself is read, never rewritten.
+  workspaceDir = normalizeWorkspacePath(workspaceDir);
 
   const { remote, stop } = await connectRemoteServer({
     configPath: options.configPath,

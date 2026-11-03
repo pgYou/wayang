@@ -14,6 +14,8 @@ const constructedWorkers: any[] = [];
 vi.mock('@/services/agents/worker-agent', () => ({
   WorkerAgent: class FakeWorker {
     readonly id = `fake-${constructedWorkers.length}`;
+    /** Mirror the real ctor: (provider, ctx, skills, toolChoice, workspaceDir). */
+    readonly workspaceDir: string;
     conversation: any[] = [];
     private deferred: { resolve: (r: any) => void } | null = null;
     run = vi.fn(() => new Promise<any>((resolve) => { this.deferred = { resolve }; }));
@@ -29,7 +31,8 @@ vi.mock('@/services/agents/worker-agent', () => ({
       this.deferred.resolve(r);
       this.deferred = null;
     };
-    constructor(..._args: any[]) {
+    constructor(...args: any[]) {
+      this.workspaceDir = args[4];
       constructedWorkers.push(this);
     }
   },

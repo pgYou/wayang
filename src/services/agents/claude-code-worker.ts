@@ -50,7 +50,8 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   readonly id: string;
   private readonly config: WorkerConfig;
   private readonly state: WorkerState;
-  private readonly workspaceDir: string;
+  /** Workspace this worker executes in — fixed at construction (IWorkerInstance). */
+  readonly workspaceDir: string;
   private readonly logger: Logger;
   private readonly abortController = new AbortController();
   private _terminalResult: WorkerResult | null = null;

@@ -25,7 +25,8 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly state: WorkerState;
   private readonly logger: Logger;
   private _terminalResult: WorkerResult | null = null;
-  private readonly workspaceDir: string;
+  /** Workspace this worker executes in — fixed at construction (IWorkerInstance). */
+  readonly workspaceDir: string;
   private readonly toolChoice: ToolChoice | undefined;
   private readonly provider: ProviderConfig;
   private contextManager: ContextManager;
@@ -63,9 +64,12 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     );
     // No context window budget: workers never call isFull()/compact today,
     // so passing provider.contextWindowTokens would be a dead setting.
+    // The prompt is built for THIS worker's workspace, not the process
+    // workspace: project rules (AGENTS.md) and the Environment section must
+    // describe the directory the worker's tools actually run in.
     this.contextManager = new ContextManager(
       this.state,
-      buildWorkerSystemPrompt(this.ctx, skills),
+      buildWorkerSystemPrompt(this.ctx, skills, this.workspaceDir),
     );
   }
 

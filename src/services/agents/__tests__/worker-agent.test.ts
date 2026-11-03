@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import { SkillRegistry } from '@/services/skills/registry';
@@ -38,6 +38,37 @@ function mockStreamResponse(text: string, toolResults?: any[]) {
 describe('WorkerAgent', () => {
   beforeEach(() => {
     vi.mocked(streamText).mockReset();
+  });
+
+  it('builds its system prompt for the workspace it executes in, not the process workspace', () => {
+    const procDir = mkdtempSync(join(tmpdir(), 'wayang-worker-proc-'));
+    const taskDir = mkdtempSync(join(tmpdir(), 'wayang-worker-task-'));
+    const sessionDir = mkdtempSync(join(tmpdir(), 'wayang-worker-session-'));
+    try {
+      writeFileSync(join(procDir, 'AGENTS.md'), 'Rules of the PROCESS workspace.');
+      writeFileSync(join(taskDir, 'AGENTS.md'), 'Rules of the TASK workspace.');
+
+      // (provider, ctx, skills, toolChoice, workspaceDir) — the engine passes
+      // the task's workspace here.
+      const worker = new WorkerAgent(
+        mockProvider,
+        createMockCtx({ workspaceDir: procDir, sessionDir }),
+        skills,
+        undefined,
+        taskDir,
+      );
+
+      expect(worker.workspaceDir).toBe(taskDir);
+      const prompt = (worker as any).contextManager.getSystemPrompt() as string;
+      expect(prompt).toContain(`- WorkspaceDir: ${taskDir}`);
+      expect(prompt).not.toContain(`- WorkspaceDir: ${procDir}`);
+      expect(prompt).toContain('Rules of the TASK workspace.');
+      expect(prompt).not.toContain('Rules of the PROCESS workspace.');
+    } finally {
+      rmSync(procDir, { recursive: true, force: true });
+      rmSync(taskDir, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 
   it('should create worker with unique id', () => {

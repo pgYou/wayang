@@ -44,6 +44,7 @@ import { BlockingRequestMap } from '@/infra/blocking-requests';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
 import { resolve } from 'node:path';
+import { normalizeWorkspacePath } from '@/infra/workspace-registry';
 
 const PUPPET_WORKER_TYPE = 'puppet';
 
@@ -370,6 +371,42 @@ export class TaskExecuteEngine implements Subscribable {
     const info = this.getActiveWorkers().find(w => w.workerId === workerId);
     if (!info) return `Worker "${workerId}" not found.`;
     if (info.status !== 'idle') return `Worker "${workerId}" is not idle (status: ${info.status}).`;
+    return null;
+  }
+
+  /**
+   * Validate that an idle worker may take a task executing in `workspacePath`.
+   * Returns an error message or null.
+   *
+   * A worker's workspace is fixed at construction: its state identity, the
+   * relative-path assumptions in its accumulated conversation, and the identity
+   * stamped on its records all belong to the workspace it was born in. Reuse
+   * across workspaces would silently re-point only the RUN (cwd, tools,
+   * permission gate) at the new workspace while the worker keeps the old
+   * identity — so both sides are canonicalized (realpath, resolve fallback)
+   * and compared before any reuse. A mismatch is never resolved by re-stamping
+   * the worker; the caller must create a new one.
+   *
+   * Two consumers: `assignToExistingWorker` (the single reuse choke point, so
+   * no caller can bypass it) and the add_task tool's pre-check (which turns the
+   * rejection into an explicit instruction instead of a generic failure).
+   * `workspacePath` falls back to the process workspace, mirroring
+   * `taskWorkspaceDir` for tasks without a workspace stamp.
+   */
+  validateWorkerWorkspace(workerId: string, workspacePath?: string): string | null {
+    const worker = this.workers.get(workerId);
+    if (!worker) return `Worker "${workerId}" not found.`;
+
+    const workerWorkspace = worker.workspaceDir;
+    if (!workerWorkspace) {
+      return `Worker "${workerId}" does not report the workspace it was created in, so reuse cannot be verified across workspaces. Create a new worker instead (drop assignToWorker).`;
+    }
+
+    const createdIn = normalizeWorkspacePath(workerWorkspace);
+    const target = normalizeWorkspacePath(workspacePath ?? this.ctx.workspaceDir);
+    if (createdIn !== target) {
+      return `Worker "${workerId}" was created in workspace ${createdIn} and cannot take a task in ${target}. Create a new worker for that workspace instead (drop assignToWorker).`;
+    }
     return null;
   }
 
@@ -917,7 +954,8 @@ export class TaskExecuteEngine implements Subscribable {
   /**
    * Dispatch a follow-up task to an existing idle (multi-stage) worker.
    * Reuses the worker instance + its accumulated conversation context.
-   * Returns false if the worker is missing or not idle.
+   * Returns false if the worker is missing, not idle, or was created in a
+   * different workspace than the task executes in.
    */
   assignToExistingWorker(workerId: string, task: TaskDetail): boolean {
     const err = this.validateIdleWorker(workerId);
@@ -929,6 +967,19 @@ export class TaskExecuteEngine implements Subscribable {
     const worker = this.workers.get(workerId);
     if (!worker) {
       this.logger.warn({ workerId }, 'Idle worker instance missing');
+      return false;
+    }
+
+    // Reuse is workspace-bound — enforced here, the single choke point every
+    // reuse goes through, so a caller that skipped the add_task pre-check
+    // (direct engine call, future dispatch path) cannot cross workspaces.
+    const taskWorkspace = this.taskWorkspaceDir(task);
+    const workspaceErr = this.validateWorkerWorkspace(workerId, taskWorkspace);
+    if (workspaceErr) {
+      this.logger.warn(
+        { workerId, taskId: task.id, taskWorkspace, err: workspaceErr },
+        'Refusing to reuse a worker across workspaces',
+      );
       return false;
     }
 

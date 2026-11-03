@@ -10,7 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 vi.mock('@/client/connect');
@@ -145,6 +145,28 @@ describe('bootstrap — homeDir root semantics', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Session "missing-session" not found.'));
     expect(connectRemoteServer).not.toHaveBeenCalled();
+  });
+
+  it('canonicalizes the forwarded workspace (symlinked spelling → realpath)', async () => {
+    const realDir = join(root, 'real-repo');
+    mkdirSync(realDir, { recursive: true });
+    const linkDir = join(root, 'repo-link');
+    symlinkSync(realDir, linkDir, 'dir');
+    writeSessionMeta('20260103-000000', { workspace: linkDir, createdAt: 3000 });
+
+    await bootstrap({
+      configPath: join(root, 'wayang.config.json'),
+      homeDir: root,
+      workspaceDir: '/repo-a',
+      resume: '20260103-000000',
+    });
+
+    // The session's recorded workspace is a symlink; the process workspace is
+    // forwarded canonicalized, matching how add_task stamps task workspaces
+    // (and therefore how the permission gate compares roots).
+    const call = connectCall();
+    expect(call.workspaceDir).toBe(realpathSync(realDir));
+    expect(call.workspaceDir).not.toBe(linkDir);
   });
 
   it('forwards logLevel to the server spawn', async () => {
