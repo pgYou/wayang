@@ -36,6 +36,8 @@ import {
 } from './utils/claude-tool-records';
 import { buildThirdPartyPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
+import { wayangDirForSessionDir } from '@/infra/session-helpers';
+import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
@@ -157,7 +159,13 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     this.workspaceDir = workspaceDir;
     this.logger = ctx.logger;
     this.skills = skills;
-    this.state = new WorkerState(sessionDir, this.id, ctx.logger);
+    // Workspace identity is stamped into runtime-state (see WorkerState).
+    this.state = new WorkerState(
+      sessionDir,
+      this.id,
+      ctx.logger,
+      resolveWorkspaceRef(wayangDirForSessionDir(sessionDir), workspaceDir),
+    );
   }
 
   async run(

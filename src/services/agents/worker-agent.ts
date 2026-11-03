@@ -18,6 +18,8 @@ import { checkControllerMessagesTool } from '@/services/tools/check-messages';
 import { buildWorkerSystemPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
 import type { SkillRegistry } from '@/services/skills/registry';
+import { wayangDirForSessionDir } from '@/infra/session-helpers';
+import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly state: WorkerState;
@@ -47,7 +49,14 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     this.logger = ctx.logger;
     this.workspaceDir = ctx.workspaceDir;
     this.toolChoice = toolChoice;
-    this.state = new WorkerState(ctx.sessionDir, this.id, ctx.logger);
+    // Workspace identity is stamped into runtime-state so a worker's records
+    // stay attributable after it finished (registry slug keeps it stable).
+    this.state = new WorkerState(
+      ctx.sessionDir,
+      this.id,
+      ctx.logger,
+      resolveWorkspaceRef(wayangDirForSessionDir(ctx.sessionDir), ctx.workspaceDir),
+    );
     // No context window budget: workers never call isFull()/compact today,
     // so passing provider.contextWindowTokens would be a dead setting.
     this.contextManager = new ContextManager(

@@ -47,7 +47,11 @@ export class Supervisor {
 
     // Create session manager
     if (options.resume) {
-      this.sessionManager = SessionManager.resume(options.resume.sessionId, options.resume.sessionDir);
+      this.sessionManager = SessionManager.resume(
+        options.resume.sessionId,
+        options.resume.sessionDir,
+        options.homeDir,
+      );
     } else {
       if (!options.homeDir) throw new Error('homeDir is required for new sessions');
       this.sessionManager = SessionManager.create(options.homeDir, workspaceDir);

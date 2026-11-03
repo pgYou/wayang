@@ -45,4 +45,11 @@ export interface TaskDetail {
    * engine on the per-run task copy handed to the worker, never persisted.
    */
   executionTurnId?: string;
+  /**
+   * Workspace identity this task belongs to, as resolved by the workspace
+   * registry (`path` is canonical, `slug` is stable). Optional: tasks written
+   * before workspaces existed simply have no identity, and readers must fall
+   * back to the session's own workspace.
+   */
+  workspace?: { path: string; slug: string };
 }

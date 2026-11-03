@@ -8,20 +8,25 @@
 
 import * as path from 'node:path';
 import { formatTimestamp } from '@/utils/id';
-import { sessionDisplayTitle } from '@/infra/session-helpers';
+import { sessionDisplayTitle, wayangDirForSessionDir } from '@/infra/session-helpers';
 import type { SessionMeta } from '@/infra/session-helpers';
+import { resolveWorkspaceRef } from '@/infra/workspace-registry';
+import type { WorkspaceRef } from '@/infra/workspace-registry';
 import { SessionState } from './session-state';
 
 export class SessionManager {
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly isResume: boolean;
+  /** Wayang home dir (parent of `sessions/`), or null for ad-hoc session dirs. */
+  private readonly wayangDir: string | null;
   private state: SessionState;
 
-  private constructor(sessionId: string, sessionDir: string, isResume: boolean) {
+  private constructor(sessionId: string, sessionDir: string, isResume: boolean, wayangDir: string | null) {
     this.sessionId = sessionId;
     this.sessionDir = sessionDir;
     this.isResume = isResume;
+    this.wayangDir = wayangDir;
     this.state = new SessionState(sessionDir);
   }
 
@@ -29,12 +34,15 @@ export class SessionManager {
   static create(homeDir: string, workspaceDir: string): SessionManager {
     const sessionId = `${formatTimestamp()}-${Math.random().toString(36).slice(2, 6)}`;
     const sessionDir = path.join(homeDir, 'sessions', sessionId);
-    const mgr = new SessionManager(sessionId, sessionDir, false);
+    const mgr = new SessionManager(sessionId, sessionDir, false, homeDir);
 
-    // Initialize meta via state — persistence layer handles mkdir + write
+    // Initialize meta via state — persistence layer handles mkdir + write.
+    // `workspace` (single value) stays for older readers; `workspaces` carries
+    // the same workspace as its first entry.
     mgr.state.set('meta', {
       sessionId,
       workspace: workspaceDir,
+      workspaces: [resolveWorkspaceRef(homeDir, workspaceDir)],
       firstInput: null,
       createdAt: Date.now(),
       lastActiveAt: Date.now(),
@@ -43,20 +51,54 @@ export class SessionManager {
     return mgr;
   }
 
-  /** Resume an existing session. State is restored in restore(). */
-  static resume(sessionId: string, sessionDir: string): SessionManager {
-    return new SessionManager(sessionId, sessionDir, true);
+  /**
+   * Resume an existing session. State is restored in restore().
+   *
+   * @param wayangDir  Wayang home dir, used to resolve workspace slugs. Omitted
+   *   callers fall back to the layout-derived parent of `sessions/`.
+   */
+  static resume(sessionId: string, sessionDir: string, wayangDir?: string): SessionManager {
+    return new SessionManager(sessionId, sessionDir, true, wayangDir ?? wayangDirForSessionDir(sessionDir));
   }
 
   /** Restore state from disk (resume only, no-op for new sessions). */
   async restore(): Promise<void> {
     if (!this.isResume) return;
     await this.state.restore();
+    this.backfillWorkspaces();
   }
 
   /** Workspace directory of this session. */
   get workspace(): string {
     return this.state.get<string>('meta.workspace');
+  }
+
+  /**
+   * Workspace identities of this session, always including the one matching
+   * `workspace`. Legacy meta (written before `workspaces` existed) is
+   * synthesized on read — see `backfillWorkspaces`.
+   */
+  get workspaces(): WorkspaceRef[] {
+    this.backfillWorkspaces();
+    return this.state.get<WorkspaceRef[] | undefined>('meta.workspaces') ?? [];
+  }
+
+  /**
+   * Synthesize `meta.workspaces` from the single-valued `meta.workspace` when a
+   * session predates the array. Memory only: nothing is written, so neither
+   * resume nor `workspaces` ever rewrites a historical meta.json.
+   *
+   * Idempotent — a filled array short-circuits, and `resolveWorkspaceRef`
+   * returns the same slug for the same canonical path, so repeated reads of one
+   * legacy session yield an identical result.
+   */
+  private backfillWorkspaces(): void {
+    const existing = this.state.get<WorkspaceRef[] | undefined>('meta.workspaces');
+    if (existing && existing.length > 0) return;
+    const workspace = this.state.get<string | undefined>('meta.workspace');
+    // An empty/absent workspace means a half-written meta; leave it untouched.
+    if (!workspace) return;
+    this.state.fillWorkspacesInMemory(resolveWorkspaceRef(this.wayangDir, workspace));
   }
 
   /** Whether firstInput has already been recorded. */

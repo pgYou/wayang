@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createLogger } from '@/infra/logger';
 import { WorkerState } from '@/services/agents/worker-state';
@@ -123,6 +123,63 @@ describe('WorkerState', () => {
     expect(uuids).not.toContain('old-big-1');
     expect(uuids).not.toContain('old-big-2');
     expect(uuids).toEqual(['old-light', 'm-1', 'new-1']);
+  });
+
+  describe('workspace identity', () => {
+    const workspace = { path: '/repo/my-project', slug: 'my-project' };
+    const runtimeStatePath = () => join(tempDir, 'workers', workerId, 'runtime-state.json');
+
+    it('stamps workspace into runtime-state and reads it back', async () => {
+      const stateWithWs = new WorkerState(tempDir, workerId, logger, workspace);
+      stateWithWs.set('runtimeState.task', { id: 't1', description: 'ship it' });
+
+      const onDisk = JSON.parse(readFileSync(runtimeStatePath(), 'utf-8'));
+      expect(onDisk.workspace).toEqual(workspace);
+
+      const restored = new WorkerState(tempDir, workerId, logger, workspace);
+      await restored.restore();
+      expect(restored.get('runtimeState.workspace')).toEqual(workspace);
+      expect(restored.get('runtimeState.task')).toEqual({ id: 't1', description: 'ship it' });
+    });
+
+    it('reads a pre-workspace runtime-state.json without losing fields', async () => {
+      mkdirSync(join(tempDir, 'workers', workerId), { recursive: true });
+      writeFileSync(
+        runtimeStatePath(),
+        JSON.stringify({
+          session: { id: workerId, startedAt: 1 },
+          task: { id: 'legacy-task', description: 'old' },
+        }),
+      );
+
+      const legacy = new WorkerState(tempDir, workerId, logger);
+      await legacy.restore();
+      expect(legacy.get('runtimeState.workspace')).toBeUndefined();
+      expect(legacy.get('runtimeState.task')).toEqual({ id: 'legacy-task', description: 'old' });
+    });
+
+    it('re-applies the resolved identity to a pre-workspace file on restore', async () => {
+      mkdirSync(join(tempDir, 'workers', workerId), { recursive: true });
+      writeFileSync(
+        runtimeStatePath(),
+        JSON.stringify({
+          session: { id: workerId, startedAt: 1 },
+          task: { id: 'legacy-task', description: 'old' },
+        }),
+      );
+
+      const stateWithWs = new WorkerState(tempDir, workerId, logger, workspace);
+      await stateWithWs.restore();
+      expect(stateWithWs.get('runtimeState.workspace')).toEqual(workspace);
+      expect(stateWithWs.get('runtimeState.task')).toEqual({ id: 'legacy-task', description: 'old' });
+    });
+
+    it('omits workspace when none was resolved', () => {
+      const plain = new WorkerState(tempDir, workerId, logger);
+      plain.set('runtimeState.task', { id: 't1', description: 'x' });
+      const onDisk = JSON.parse(readFileSync(runtimeStatePath(), 'utf-8'));
+      expect('workspace' in onDisk).toBe(false);
+    });
   });
 
   it('should not misjudge ClaudeCodeWorker-style records as compact markers', async () => {

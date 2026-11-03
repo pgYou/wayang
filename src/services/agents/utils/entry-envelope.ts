@@ -21,6 +21,11 @@ export interface TurnEnvelope {
   rootTurnId?: string;
   causationId?: string;
   actor?: EntryActor;
+  /**
+   * Registry slug of the workspace this activation ran in. Optional: callers
+   * that cannot resolve an identity simply omit it, and entries stay readable.
+   */
+  workspaceSlug?: string;
 }
 
 /**
@@ -36,6 +41,7 @@ export function applyTurnEnvelope<T extends ConversationEntry>(entry: T, env: Tu
   if (entry.rootTurnId === undefined && env.rootTurnId !== undefined) entry.rootTurnId = env.rootTurnId;
   if (entry.causationId === undefined && env.causationId !== undefined) entry.causationId = env.causationId;
   if (entry.actor === undefined && env.actor !== undefined) entry.actor = env.actor;
+  if (entry.workspaceSlug === undefined && env.workspaceSlug !== undefined) entry.workspaceSlug = env.workspaceSlug;
   return entry;
 }
 

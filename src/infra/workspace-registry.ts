@@ -237,6 +237,34 @@ export function getOrCreateWorkspace(wayangDir: string, rawPath: string): Worksp
   return { path: resolvedPath, slug };
 }
 
+/**
+ * Identity to stamp into a persisted record (session meta, task, worker
+ * runtime-state) for the workspace at `rawPath`.
+ *
+ * Registry-first, so one directory keeps one slug across every record. The
+ * lookup is read-only when the path is already registered (no timestamp churn
+ * on a pure read path) and registers on first sight.
+ *
+ * `wayangDir` is null when the caller has no home dir to consult; then, and
+ * whenever the registry is unreadable or corrupt, resolution degrades to the
+ * pure slug rule. Stamping a *metadata* field must never be the reason a
+ * session or worker fails to start, so the failure is not propagated — the
+ * registry's own corruption error still surfaces from `getOrCreateWorkspace`.
+ */
+export function resolveWorkspaceRef(wayangDir: string | null, rawPath: string): WorkspaceRef {
+  const resolvedPath = normalizeWorkspacePath(rawPath);
+  if (wayangDir) {
+    try {
+      const registered = findWorkspace(wayangDir, resolvedPath);
+      if (registered) return { path: registered.path, slug: registered.slug };
+      return getOrCreateWorkspace(wayangDir, resolvedPath);
+    } catch {
+      // Degrade below: an unusable registry must not break callers.
+    }
+  }
+  return { path: resolvedPath, slug: workspaceSlugFromPath(resolvedPath) };
+}
+
 /** Look up a registered workspace without writing anything. */
 export function findWorkspace(wayangDir: string, rawPath: string): WorkspaceEntry | undefined {
   const registry = readRegistry(wayangDir);
