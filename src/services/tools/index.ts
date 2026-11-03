@@ -58,6 +58,12 @@ export interface ControllerToolDeps {
   }) => ControllerSignal[];
   /** Workspace directory for file search. */
   cwd?: string;
+  /**
+   * The user's home directory — the read scope for search_files. Denylisted
+   * subpaths (credentials, tool config, ~/.wayang) stay unreadable. This is
+   * NOT ~/.wayang; it is the home that contains it.
+   */
+  homeDir?: string;
   /** Get worker conversation entries for a task. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors TaskExecuteEngine.getWorkerConversation's defensive any[]
   getWorkerConversation?: (taskId: string) => any[];
@@ -171,7 +177,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
     skip_reply: skipReplyTool(),
     read_notebook: readNotebookTool({ getNotebook: deps.getNotebook }),
     update_notebook: updateNotebookTool({ setNotebook: deps.setNotebook }),
-    search_files: searchFilesTool({ cwd: deps.cwd }),
+    search_files: searchFilesTool({ cwd: deps.cwd, homeDir: deps.homeDir }),
     inquire: inquireTool({ inquire: deps.inquire }),
     chat_worker: chatWorkerTool({
       sendMessageToWorker: deps.sendMessageToWorker,

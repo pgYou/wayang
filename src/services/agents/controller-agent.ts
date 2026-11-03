@@ -24,6 +24,8 @@ import {
 import { createControllerTools } from '@/services/tools/index';
 import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
 import { wayangDirForSessionDir } from '@/infra/session-helpers';
+import { basename, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { SystemContext } from '@/infra/system-context';
 import type { TaskExecuteEngine } from '@/services/task-execute-engine';
 import type { SignalQueue } from '@/services/signal/signal-queue';
@@ -110,6 +112,16 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     // record) surface as debug logs instead of silent no-ops.
     const recorder = new ToolCallRecorder(ctx.logger);
 
+    // Derive the read scope for controller file access. The wayang data dir
+    // lives at <userHome>/.wayang, so its parent is the user's home — the home
+    // the read policy anchors on (denylisting ~/.wayang inside it in turn).
+    // Ad-hoc session dirs (hand-built temp dirs in tests) don't follow the
+    // `<wayangDir>/sessions/<id>` layout, so fall back to the OS home rather
+    // than guessing a parent.
+    const wayangDir = wayangDirForSessionDir(ctx.sessionDir);
+    const homeDir =
+      wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
+
     const tools = createControllerTools({
       addTask: (task: TaskDetail) => engine.add(task),
       validateWorkerType: (type: string) => engine.validateWorkerType(type),
@@ -137,6 +149,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       updateTask: (taskId, updates) => engine.updatePending(taskId, updates),
       queryMessages: (filter) => signalQueue.query(filter),
       cwd: ctx.workspaceDir,
+      homeDir,
       getNotebook: () => state.get<string>('runtimeState.notebook') ?? '',
       setNotebook: (content, mode) => {
         const current = state.get<string>('runtimeState.notebook') ?? '';
@@ -158,7 +171,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       // Default workspace for tasks created by add_task; a declared workspace
       // is stamped instead and the engine executes the task there.
       workspaceDir: ctx.workspaceDir,
-      wayangDir: wayangDirForSessionDir(ctx.sessionDir),
+      wayangDir,
     });
 
     return new ControllerAgent(ctx, state, provider, tools, skills, recorder);
