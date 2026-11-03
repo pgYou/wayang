@@ -18,7 +18,7 @@
 
 **Ctrl+C 归还应用层** — Ink's default exitOnCtrlC consumed Ctrl+C before the app saw it, so a single press quit regardless of state. Ctrl+C is now owned by the app: while a turn is running it aborts that turn; when idle the first press shows a "Press Ctrl+C again to quit" notice and a second press within one second exits
 
-**get_worker_status 活动字段恒为空** — The tool resolved the transcript by the engine worker id (w-…), while transcripts live under the worker's own id (agent-… / cw-…), so every activity field came back null. It now resolves through memory, the persisted transcript id and id candidates, and exposes activitySource so "no activity" is distinguishable from "this worker type reports none"
+**get_worker_status 活动字段恒为空** — The tool resolved the transcript by the engine worker id (w-…), while transcripts live under the worker's own id (agent-… / cw-…), so every activity field came back null. It now resolves through memory, the persisted transcript id and id candidates, and exposes activitySource so "no activity" is distinguishable from "this worker type reports none"（Closes #28）
 
 **TUI 活动 worker 条目** — A finished worker could linger on screen with a truncated task id and an ever-growing timer. Rows now prefer the task title with a documented fallback chain, disambiguate colliding labels, mark idle entries and count them from idleSince, and render elapsed time as 42s / 1m41s / 1h05m
 
