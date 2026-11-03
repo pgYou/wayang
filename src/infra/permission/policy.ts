@@ -7,6 +7,8 @@
  * Callers pass every relevant input in and get a decision back:
  *
  *   1. denylist            → deny   (wins over everything else)
+ *      - anchor-independent "sensitive segment" rule (any `.ssh`/`.aws`/…),
+ *      - home-anchored built-in entries + configurable deniedDirs.
  *   2. config allowedDirs  → allow
  *   3. config autoAllowRoots → allow
  *   4. task allowedDirs    → allow
@@ -110,6 +112,45 @@ const DEFAULT_DENIED_RELATIVE_PATHS = [
 ] as const;
 
 /**
+ * Anchor-INDEPENDENT sensitive path segments.
+ *
+ * The list above is anchored to the injected home directory (`--home-dir`).
+ * That is not enough on its own: when the injected home is not the real home
+ * (or a task reaches the real home by absolute path / symlink), a credential
+ * directory like `/data/home/alice/.ssh` sits *outside* that anchor and would
+ * otherwise fall through to "outside-all → ask". These segments are therefore
+ * matched against EVERY normalized absolute path, whatever root it lives
+ * under, and denied outright regardless of any allow rule.
+ *
+ * Matching is WHOLE-SEGMENT equality (`.sshfoo` and `b.ssh` never match),
+ * and — deliberately — case-SENSITIVE, mirroring the Linux filesystem where
+ * `.SSH` is a different directory from `.ssh`. Do NOT lowercase here.
+ */
+const SENSITIVE_SEGMENTS: ReadonlySet<string> = new Set([
+  '.ssh',
+  '.gnupg',
+  '.aws',
+  '.azure',
+  '.gcloud',
+  '.kube',
+  '.netrc',
+  '.git-credentials',
+  '.npmrc',
+  '.pypirc',
+  // The wayang data dir (sessions/conversations) — same intent as the
+  // home-anchored `.wayang` entry, but applied wherever it appears.
+  '.wayang',
+]);
+
+/**
+ * Sensitive file-name segments that are not themselves directory names. A path
+ * is denied when any one of its segments equals one of these.
+ */
+const SENSITIVE_FILENAMES: ReadonlySet<string> = new Set([
+  '.wayang.config.json',
+]);
+
+/**
  * Upper bound on how many parents we walk up while looking for the deepest
  * existing ancestor of a path. Keeps canonicalization O(1)-ish in the worst
  * case instead of walking to the root for pathological inputs.
@@ -202,6 +243,34 @@ export function isDenied(absPath: string, deniedPaths: string[]): boolean {
   return deniedPaths.some((denied) => isPathWithin(denied, absPath));
 }
 
+/**
+ * Anchor-independent sensitive-segment check. `absPath` is expected to be an
+ * absolute, normalized path (see `normalizePath`). Returns true when any
+ * whole path segment hits the sensitive set — regardless of which directory
+ * the path lives under.
+ *
+ * Intentionally strict: a `.ssh` directory *inside* a task workspace is also
+ * denied. The point is that credentials never get read or written silently,
+ * even when they happen to live inside an otherwise allowed tree; this is a
+ * deliberate trade-off (false positives are acceptable, silent credential
+ * access is not).
+ */
+export function isSensitiveSegmentPath(absPath: string): boolean {
+  const segments = absPath.split(sep).filter((s) => s.length > 0);
+  for (let i = 0; i < segments.length; i += 1) {
+    const segment = segments[i];
+    if (SENSITIVE_SEGMENTS.has(segment) || SENSITIVE_FILENAMES.has(segment)) {
+      return true;
+    }
+    // `.docker` only counts as the pair `.docker/config.json` — matching the
+    // existing home-anchored default entry's semantics.
+    if (segment === '.docker' && segments[i + 1] === 'config.json') {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Normalize a list of configured directories; relative entries resolve against `base`. */
 function normalizeDirs(dirs: string[] | undefined, base: string): string[] {
   if (!dirs) return [];
@@ -231,6 +300,17 @@ export function decideAccess(input: DecideAccessInput): DecideAccessResult {
   ].map((d) => normalizePath(d));
 
   // 1. Denylist — highest priority, not overridable by any allow rule.
+  //
+  // 1a. Anchor-independent sensitive segments first: this catches credential
+  //     locations even when the injected home is not the real home (the
+  //     original single-anchor denylist missed `/real/home/.ssh` and merely
+  //     asked). Applies to both read and write.
+  if (isSensitiveSegmentPath(resolvedPath)) {
+    return { decision: 'deny', matchedRule: 'denylist', resolvedPath };
+  }
+
+  // 1b. Home-anchored denylist (built-in entries + configurable deniedDirs),
+  //     unchanged: `deniedDirs` entries keep resolving against `homeDir`.
   if (isDenied(resolvedPath, deniedPaths)) {
     return { decision: 'deny', matchedRule: 'denylist', resolvedPath };
   }

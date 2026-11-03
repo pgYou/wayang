@@ -52,6 +52,26 @@ export function truncateToWidth(s: string, maxWidth: number): string {
   return out + '…';
 }
 
+/**
+ * Hard-truncate to at most `maxWidth` display columns WITHOUT appending an
+ * ellipsis — the width-equivalent of `String.prototype.slice`, so ASCII input
+ * yields exactly `s.slice(0, maxWidth)` while CJK is cut by columns. Used where
+ * a value is capped by column budget but an ellipsis would be noise (e.g. the
+ * status-bar label cap).
+ */
+export function sliceToWidth(s: string, maxWidth: number): string {
+  if (maxWidth <= 0) return '';
+  let w = 0;
+  let out = '';
+  for (const ch of s) {
+    const cw = charWidth(ch.codePointAt(0) ?? 0);
+    if (w + cw > maxWidth) break;
+    out += ch;
+    w += cw;
+  }
+  return out;
+}
+
 /** Collapse runs of whitespace (incl. newlines) to single spaces. */
 export function collapseWhitespace(s: string): string {
   return s.replace(/\s+/g, ' ').trim();

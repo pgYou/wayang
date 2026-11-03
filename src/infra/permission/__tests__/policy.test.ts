@@ -7,6 +7,7 @@ import {
   defaultDeniedPaths,
   isDenied,
   isPathWithin,
+  isSensitiveSegmentPath,
   normalizePath,
 } from '@/infra/permission/policy';
 
@@ -379,5 +380,94 @@ describe('normalizePath: deepest existing ancestor through symlinked parents', (
     expect(normalizePath(target)).toBe(join(realHome, 'a', 'b', 'c'));
     expect(normalizePath(`${target}/`)).toBe(join(realHome, 'a', 'b', 'c'));
     expect(normalizePath(join(homeLink, 'documents', '..', 'a', 'b', 'c'))).toBe(join(realHome, 'a', 'b', 'c'));
+  });
+});
+
+/**
+ * Regression suite for the single-home-anchor denylist bug: with
+ * `--home-dir` pointing somewhere other than the real home, the credential
+ * directories under the REAL home fell outside the home-anchored denylist and
+ * only produced an approval prompt (`outside-all`) instead of a hard deny.
+ * The anchor-independent sensitive-segment rule closes that gap.
+ */
+describe('decideAccess: anchor-independent sensitive segments', () => {
+  it('denies a sensitive dir under a root that is NOT the injected home (no ask)', () => {
+    // `outside` is a sibling of home — the injected homeDir does NOT contain it.
+    const target = join(outside, '.ssh', 'id_rsa');
+    const result = decideAccess({ path: target, access: 'read', homeDir: home });
+    expect(result.decision).toBe('deny');
+    expect(result.matchedRule).toBe('denylist');
+  });
+
+  it('denies BOTH read and write (access-agnostic)', () => {
+    for (const access of ['read', 'write'] as const) {
+      expect(decideAccess({ path: join(outside, '.aws', 'credentials'), access, homeDir: home }).decision).toBe('deny');
+      expect(decideAccess({ path: join(outside, '.netrc'), access, homeDir: home }).decision).toBe('deny');
+    }
+  });
+
+  it('outranks every allow rule: config allowedDirs, autoAllowRoots, task allowedDirs and the workspace', () => {
+    const result = decideAccess({
+      path: join(outside, '.ssh', 'id_rsa'),
+      access: 'read',
+      homeDir: home,
+      configAllowedDirs: [outside],
+      autoAllowRoots: [outside],
+      taskWorkspace: outside,
+      taskAllowedDirs: [outside],
+    });
+    expect(result.decision).toBe('deny');
+    expect(result.matchedRule).toBe('denylist');
+  });
+
+  it('denies a sensitive path reached through a symlink, even when the leaf does not exist', () => {
+    mkdirSync(join(outside, '.ssh'), { recursive: true });
+    const linkToSsh = join(root, 'link-to-outside-ssh');
+    symlinkSync(join(outside, '.ssh'), linkToSsh);
+    const target = join(linkToSsh, 'missing_key'); // leaf missing on purpose
+    expect(normalizePath(target)).toBe(join(outside, '.ssh', 'missing_key'));
+    expect(decideAccess({ path: target, access: 'read', homeDir: home }).decision).toBe('deny');
+    expect(decideAccess({ path: target, access: 'write', homeDir: home }).decision).toBe('deny');
+  });
+
+  it('denies a .ssh directory INSIDE the task workspace (intentional strictness)', () => {
+    // Deliberately stricter than the workspace allow: credentials must never be
+    // touched silently, even when they happen to live inside an allowed tree.
+    const result = decideAccess({
+      path: join(work, '.ssh', 'id_rsa'),
+      access: 'write',
+      homeDir: home,
+      taskWorkspace: work,
+      taskAllowedDirs: [work],
+    });
+    expect(result.decision).toBe('deny');
+    expect(result.matchedRule).toBe('denylist');
+  });
+
+  it('matches WHOLE segments only: b.ssh / .sshfoo / .SSH are not sensitive', () => {
+    expect(isSensitiveSegmentPath('/a/b.ssh')).toBe(false);
+    expect(isSensitiveSegmentPath('/a/.sshfoo')).toBe(false);
+    // Case-sensitive on Linux: .SSH is a different directory from .ssh.
+    expect(isSensitiveSegmentPath('/a/.SSH')).toBe(false);
+    // And decideAccess does not deny them (they fall through to ask here).
+    expect(decideAccess({ path: '/a/b.ssh', access: 'read', homeDir: home }).decision).not.toBe('deny');
+    expect(decideAccess({ path: '/a/.sshfoo', access: 'read', homeDir: home }).decision).not.toBe('deny');
+    expect(decideAccess({ path: '/a/.SSH', access: 'read', homeDir: home }).decision).not.toBe('deny');
+  });
+
+  it('covers every configured sensitive segment anywhere in the path', () => {
+    for (const segment of [
+      '.ssh', '.gnupg', '.aws', '.azure', '.gcloud', '.kube',
+      '.netrc', '.git-credentials', '.npmrc', '.pypirc', '.wayang',
+    ]) {
+      expect(isSensitiveSegmentPath(`/srv/project/${segment}`)).toBe(true);
+    }
+    expect(isSensitiveSegmentPath('/srv/project/.wayang.config.json')).toBe(true);
+  });
+
+  it('.docker counts only as the pair .docker/config.json', () => {
+    expect(isSensitiveSegmentPath('/srv/x/.docker/config.json')).toBe(true);
+    expect(isSensitiveSegmentPath('/srv/x/.docker')).toBe(false);
+    expect(isSensitiveSegmentPath('/srv/x/.docker/other.json')).toBe(false);
   });
 });

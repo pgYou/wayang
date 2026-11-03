@@ -316,3 +316,40 @@ describe('decideToolAccess', () => {
     expect(decideToolAccess(scope(), 'read_file', { path: '/etc/hosts' }).message).toBeUndefined();
   });
 });
+
+/**
+ * Regression: with `--home-dir` pointing at a directory that is NOT the real
+ * home, the real home's credential dirs sit outside the home anchor. They must
+ * still be a hard DENY (no approval request), not an "outside-all → ask".
+ */
+describe('anchor-independent denylist: real home outside the injected home', () => {
+  let realHome: string;
+
+  beforeEach(() => {
+    realHome = mkdtempSync(join(tmpdir(), 'wayang-real-home-'));
+    mkdirSync(join(realHome, '.ssh'), { recursive: true });
+    writeFileSync(join(realHome, '.ssh', 'id_rsa'), 'PRIVATE');
+    writeFileSync(join(realHome, 'notes.txt'), 'public');
+  });
+
+  afterEach(() => {
+    rmSync(realHome, { recursive: true, force: true });
+  });
+
+  it('read_file on <realHome>/.ssh/id_rsa → deny (no approval prompt)', () => {
+    const verdict = decideToolAccess(scope(), 'read_file', { path: join(realHome, '.ssh', 'id_rsa') });
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.matchedRule).toBe('denylist');
+    expect(verdict.message).toContain('deny list');
+  });
+
+  it('bash `cat <realHome>/.ssh/id_rsa` → deny (no approval prompt)', () => {
+    const verdict = decideToolAccess(scope(), 'bash', { command: `cat ${join(realHome, '.ssh', 'id_rsa')}` });
+    expect(verdict.decision).toBe('deny');
+  });
+
+  it('a non-sensitive file in the real home still asks (the rule is segment-scoped)', () => {
+    const verdict = decideToolAccess(scope(), 'read_file', { path: join(realHome, 'notes.txt') });
+    expect(verdict.decision).toBe('ask');
+  });
+});

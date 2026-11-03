@@ -9,6 +9,7 @@ import {
   type WorkerRow,
 } from '@/tui/components/status-bar';
 import { theme } from '@/tui/theme';
+import { stringWidth } from '@/tui/utils/text-width';
 import type { ActiveWorkerInfo, ContextUsage, TaskDetail } from '@/types/index';
 
 const makeUsage = (usedTokens: number, contextWindowTokens = 100_000): ContextUsage => ({
@@ -367,5 +368,85 @@ describe('workspace attribution in worker rows', () => {
     });
     expect(seg.workerTexts).toEqual(['Research the branch (1m40s)']);
     expect(seg.workerTexts.join(' ')).not.toContain('[wayang]');
+  });
+});
+
+/**
+ * Display-width regression: the status line used to budget worker rows by JS
+ * string length (UTF-16 code units), so a Chinese title counted 1 column per
+ * glyph while rendering as 2. At 60 columns the row looked like it fit but
+ * overflowed, wrapping the elapsed time onto a second terminal line and eating
+ * the separator. These assertions measure in DISPLAY columns.
+ */
+describe('status bar: display-width budget (CJK is two columns)', () => {
+  /** Total rendered width of a status line, measured in display columns. */
+  function renderedStatusWidth(seg: ReturnType<typeof buildStatusSegments>): number {
+    // padding(2) + ' counts '(counts + 2) + workers + context wrapper (ctx + 3)
+    return 4
+      + stringWidth(seg.countsText)
+      + stringWidth(seg.workerTexts.join(' · '))
+      + (seg.contextText ? stringWidth(seg.contextText) + 3 : 0);
+  }
+
+  it('keeps a 60-column line within 60 columns, with elapsed and separators intact', () => {
+    const seg = buildStatusSegments({
+      pendingCount: 0,
+      activeCount: 2,
+      workerRows: [
+        row({ workerId: 'w-1', taskId: 't-1', label: '修复状态栏宽度溢出问题', elapsed: 42 }),
+        row({ workerId: 'w-2', taskId: 't-2', label: '部署到生产环境并验证', elapsed: 65 }),
+      ],
+      contextUsage: null,
+      terminalCols: 60,
+    });
+
+    // The whole line fits the terminal — nothing wraps to a second row.
+    expect(renderedStatusWidth(seg)).toBeLessThanOrEqual(60);
+
+    const line = seg.workerTexts.join(' · ');
+    // Elapsed time stays on THIS line (not squeezed off / wrapped away).
+    expect(line).toContain('(42s)');
+    expect(line).toContain('(1m5s)');
+    // The inter-row separator survives.
+    expect(line).toContain(' · ');
+  });
+
+  it('a single overflowing CJK row keeps its elapsed suffix on the same row', () => {
+    const seg = buildStatusSegments({
+      pendingCount: 0,
+      activeCount: 1,
+      // 19 CJK glyphs = 38 columns; the row only fits after the label is cut.
+      workerRows: [row({ label: '修复状态栏宽度溢出与折行问题的处理方案', elapsed: 125 })],
+      contextUsage: null,
+      terminalCols: 60,
+    });
+    expect(renderedStatusWidth(seg)).toBeLessThanOrEqual(60);
+    expect(seg.workerTexts).toHaveLength(1);
+    // Elapsed survives; the LABEL is what gets truncated.
+    expect(seg.workerTexts[0]).toContain('(2m5s)');
+  });
+
+  it('pure-ASCII rows render exactly as before (full row, no truncation)', () => {
+    // Wide enough that nothing is truncated: output must be byte-identical to
+    // the pre-display-width behaviour.
+    const seg = buildStatusSegments({
+      pendingCount: 0,
+      activeCount: 2,
+      workerRows: [
+        row({ workerId: 'w-1', taskId: 't-1', label: 'build project', elapsed: 7 }),
+        row({ workerId: 'w-2', taskId: 't-2', label: 'run tests', elapsed: 101 }),
+      ],
+      contextUsage: makeUsage(12_300),
+      terminalCols: 120,
+    });
+    expect(seg.workerTexts).toEqual(['build project (7s)', 'run tests (1m41s)']);
+    expect(seg.countsText).toBe('active workers:2');
+  });
+
+  it('display width counts CJK as 2, combining as 0, emoji as 2, ASCII as 1', () => {
+    expect(stringWidth('abc')).toBe(3);
+    expect(stringWidth('中文')).toBe(4);
+    expect(stringWidth('e\u0301')).toBe(1); // e + combining acute
+    expect(stringWidth('🤖')).toBe(2);
   });
 });
