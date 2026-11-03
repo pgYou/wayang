@@ -20,6 +20,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SessionMeta } from './session-helpers';
+import { normalizeWorkspacePath } from './workspace-registry';
 
 /** A session entry as exposed by the index: metadata plus resolved paths. */
 export interface SessionEntry {
@@ -29,7 +30,7 @@ export interface SessionEntry {
 }
 
 export interface ListSessionsQuery {
-  /** Only return sessions belonging to this workspace directory. */
+  /** Only return sessions associated with this workspace directory. */
   workspace?: string;
   /** Include archived sessions. Defaults to false. */
   includeArchived?: boolean;
@@ -61,6 +62,40 @@ interface CacheState {
 
 function sortNewestFirst(entries: SessionEntry[]): SessionEntry[] {
   return entries.sort((a, b) => b.meta.createdAt - a.meta.createdAt);
+}
+
+/**
+ * Workspace paths a session is associated with.
+ *
+ * `workspaces` is the multi-workspace view and wins when present. Legacy meta
+ * (written before the array existed) carries only the single `workspace`
+ * field, so it is used as the fallback source.
+ *
+ * Exported so the CLI session picker applies exactly the same membership rule
+ * when it decides whether to warn about a workspace mismatch.
+ */
+export function sessionWorkspacePaths(meta: SessionMeta): string[] {
+  if (meta.workspaces && meta.workspaces.length > 0) {
+    return meta.workspaces.map(w => w.path).filter(p => typeof p === 'string' && p.length > 0);
+  }
+  return meta.workspace ? [meta.workspace] : [];
+}
+
+/**
+ * Whether a session belongs to `normalizedTarget`.
+ *
+ * Both sides are canonicalized through `normalizeWorkspacePath` so symlinked,
+ * relative, trailing-slash and `..`-laden spellings of the same directory all
+ * collapse to one identity. This is what keeps a session created via a symlink
+ * findable through the real path (and vice versa) — the earlier raw string
+ * comparison missed exactly those cases.
+ *
+ * The caller passes an already-normalized target so the (potentially
+ * `realpath`-backed) canonicalization runs once per query rather than once per
+ * candidate.
+ */
+function matchesWorkspace(meta: SessionMeta, normalizedTarget: string): boolean {
+  return sessionWorkspacePaths(meta).some(p => normalizeWorkspacePath(p) === normalizedTarget);
 }
 
 /**
@@ -122,7 +157,8 @@ class InMemorySessionIndex implements SessionIndex {
 
     let result = entries;
     if (query.workspace !== undefined) {
-      result = result.filter(e => e.meta.workspace === query.workspace);
+      const target = normalizeWorkspacePath(query.workspace);
+      result = result.filter(e => matchesWorkspace(e.meta, target));
     }
     if (!includeArchived) {
       result = result.filter(e => !e.meta.archived);

@@ -14,7 +14,7 @@ export function renderInkUI(supervisor: RemoteSupervisor): Promise<void> {
   return new Promise((resolve) => {
     // Clear screen, then write welcome banner before Ink takes over stdout
     process.stdout.write('\x1B[2J\x1B[H');
-    writeWelcome(supervisor.ctx.workspaceDir);
+    writeWelcome(supervisor.ctx.workspaceDir, supervisor.ctx.workspaces);
 
     const { waitUntilExit } = render(
       React.createElement(App, { supervisor }),

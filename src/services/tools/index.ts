@@ -1,4 +1,5 @@
 import type { TaskDetail, ControllerSignal, InquireQuestion, ActiveWorkerInfo, WorkerLiveStatus } from '@/types/index';
+import type { PermissionConfig } from '@/types/config';
 import type { ConversationEntry } from '@/types/conversation';
 import { addTaskTool } from './add-task';
 import { listTasksTool } from './list-tasks';
@@ -41,6 +42,11 @@ export interface ControllerToolDeps {
   assignToWorker?: (workerId: string, task: TaskDetail) => boolean;
   /** Validate that a worker exists and is idle. Returns error message or null. */
   validateIdleWorker?: (workerId: string) => string | null;
+  /**
+   * Validate that an idle worker was created in the workspace the task targets.
+   * Returns error message or null (see AddTaskToolDeps.validateWorkerWorkspace).
+   */
+  validateWorkerWorkspace?: (workerId: string, workspacePath: string) => string | null;
   listTasks: (status?: TaskDetail['status']) => TaskDetail[];
   getTask: (taskId: string) => TaskDetail | undefined;
   cancelTask: (taskId: string) => boolean;
@@ -53,6 +59,18 @@ export interface ControllerToolDeps {
   }) => ControllerSignal[];
   /** Workspace directory for file search. */
   cwd?: string;
+  /**
+   * The user's home directory — the read scope for search_files, and the
+   * boundary add_task's `allowedDirs` must stay inside. Denylisted subpaths
+   * (credentials, tool config, ~/.wayang) stay unreadable. This is NOT
+   * ~/.wayang; it is the home that contains it.
+   */
+  homeDir?: string;
+  /**
+   * User-config permission section, injected into add_task so its `deniedDirs`
+   * extend the built-in denylist when validating `allowedDirs`.
+   */
+  permissionConfig?: PermissionConfig;
   /** Get worker conversation entries for a task. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors TaskExecuteEngine.getWorkerConversation's defensive any[]
   getWorkerConversation?: (taskId: string) => any[];
@@ -90,6 +108,14 @@ export interface ControllerToolDeps {
   getTurnContext?: () => { turnId?: string; rootTurnId?: string; causationId?: string } | undefined;
   /** Notify the agent that an add_task call dispatched a task (toolCall→task link). */
   onTaskDispatched?: (info: { toolCallId?: string; taskId: string }) => void;
+  /**
+   * Workspace this process runs in (ctx.workspaceDir). add_task uses it as the
+   * default target; a declared workspace may point elsewhere and the engine
+   * executes the task there.
+   */
+  workspaceDir?: string;
+  /** Wayang home dir for workspace-registry lookups (path + stable slug). */
+  wayangDir?: string | null;
 }
 
 export interface WorkerToolDeps {
@@ -113,8 +139,13 @@ export function createControllerTools(deps: ControllerToolDeps) {
       validateWorkerType: deps.validateWorkerType,
       assignToWorker: deps.assignToWorker,
       validateIdleWorker: deps.validateIdleWorker,
+      validateWorkerWorkspace: deps.validateWorkerWorkspace,
       getTurnContext: deps.getTurnContext,
       onTaskDispatched: deps.onTaskDispatched,
+      workspaceDir: deps.workspaceDir,
+      wayangDir: deps.wayangDir,
+      homeDir: deps.homeDir,
+      permissionConfig: deps.permissionConfig,
     }),
     list_tasks: listTasksTool({ listTasks: deps.listTasks }),
     cancel_task: cancelTaskTool({
@@ -155,7 +186,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
     skip_reply: skipReplyTool(),
     read_notebook: readNotebookTool({ getNotebook: deps.getNotebook }),
     update_notebook: updateNotebookTool({ setNotebook: deps.setNotebook }),
-    search_files: searchFilesTool({ cwd: deps.cwd }),
+    search_files: searchFilesTool({ cwd: deps.cwd, homeDir: deps.homeDir }),
     inquire: inquireTool({ inquire: deps.inquire }),
     chat_worker: chatWorkerTool({
       sendMessageToWorker: deps.sendMessageToWorker,

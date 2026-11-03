@@ -217,3 +217,64 @@ describe('buildWorkerSystemPrompt project-rules injection', () => {
     }
   });
 });
+
+describe('buildWorkerSystemPrompt — the executing workspace wins over the process workspace', () => {
+  const skills = new SkillRegistry([]);
+
+  /** Extract the `- WorkspaceDir: <path>` line from the Environment section. */
+  function workspaceDirLine(prompt: string): string | undefined {
+    return prompt.split('\n').find((line) => line.startsWith('- WorkspaceDir:'));
+  }
+
+  it('task workspace: both WorkspaceDir and the project rules come from it', () => {
+    const proc = makeTempDir();
+    const task = makeTempDir();
+    try {
+      writeFileSync(join(proc.dir, 'AGENTS.md'), 'Rules of the PROCESS workspace.');
+      writeFileSync(join(task.dir, 'AGENTS.md'), 'Rules of the TASK workspace.');
+
+      const prompt = buildWorkerSystemPrompt(createMockCtx({ workspaceDir: proc.dir }), skills, task.dir);
+
+      // Environment reports the directory the worker's tools actually run in.
+      expect(workspaceDirLine(prompt)).toBe(`- WorkspaceDir: ${task.dir}`);
+      expect(prompt).not.toContain(`- WorkspaceDir: ${proc.dir}`);
+      // Project rules are discovered at that same root — never the process one.
+      expect(prompt).toContain('Rules of the TASK workspace.');
+      expect(prompt).toContain(`Source: ${join(task.dir, 'AGENTS.md')}`);
+      expect(prompt).not.toContain('Rules of the PROCESS workspace.');
+    } finally {
+      proc.cleanup();
+      task.cleanup();
+    }
+  });
+
+  it('no workspace given (no task context): falls back to ctx.workspaceDir', () => {
+    const proc = makeTempDir();
+    try {
+      writeFileSync(join(proc.dir, 'AGENTS.md'), 'Rules of the PROCESS workspace.');
+      const prompt = buildWorkerSystemPrompt(createMockCtx({ workspaceDir: proc.dir }), skills);
+      expect(workspaceDirLine(prompt)).toBe(`- WorkspaceDir: ${proc.dir}`);
+      expect(prompt).toContain('Rules of the PROCESS workspace.');
+    } finally {
+      proc.cleanup();
+    }
+  });
+
+  it('task workspace without a rules file: no rules section leaks in from the process workspace', () => {
+    const proc = makeTempDir();
+    const task = makeTempDir();
+    try {
+      writeFileSync(join(proc.dir, 'AGENTS.md'), 'Rules of the PROCESS workspace.');
+      markGitRoot(task.dir); // a rulesless, git-root task workspace
+
+      const prompt = buildWorkerSystemPrompt(createMockCtx({ workspaceDir: proc.dir }), skills, task.dir);
+
+      expect(workspaceDirLine(prompt)).toBe(`- WorkspaceDir: ${task.dir}`);
+      expect(prompt).not.toContain('Project rules');
+      expect(prompt).not.toContain('Rules of the PROCESS workspace.');
+    } finally {
+      proc.cleanup();
+      task.cleanup();
+    }
+  });
+});

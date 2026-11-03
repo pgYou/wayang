@@ -37,12 +37,21 @@ export function kvBlock(pairs: Record<string, string | number | undefined | null
 export interface EnvironmentExtra {
   /** Additional key-value lines appended after the common info. */
   extras?: Record<string, string | number | undefined | null>;
+  /**
+   * Workspace root the agent actually executes in, when it differs from the
+   * process workspace. A worker running a task pinned to another workspace
+   * passes that task's path, so the prompt never claims the process directory
+   * (which would contradict the tool cwd and the permission boundary).
+   * Defaults to `ctx.workspaceDir`.
+   */
+  workspaceDir?: string;
 }
 
 /**
  * Build the "Environment" section shared by Controller and Worker prompts.
  *
- * Includes date, OS info, shell, home directory, and current working directory.
+ * Includes date, OS info, shell, home directory, and the workspace the agent
+ * executes in (`opts.workspaceDir`, defaulting to `ctx.workspaceDir`).
  * Callers can pass extra key-value pairs (e.g. taskId, workspace) via `opts.extras`.
  */
 export function buildEnvironment(ctx: SystemContext, opts?: EnvironmentExtra): string {
@@ -58,7 +67,7 @@ export function buildEnvironment(ctx: SystemContext, opts?: EnvironmentExtra): s
     'OS': `${os.platform()} (${os.arch()})`,
     'Shell': `${shellName} (${shell})`,
     'Home': os.homedir(),
-    'WorkspaceDir': ctx.workspaceDir ?? process.cwd(),
+    'WorkspaceDir': opts?.workspaceDir ?? ctx.workspaceDir ?? process.cwd(),
     ...opts?.extras,
   };
 

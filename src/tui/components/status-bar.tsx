@@ -6,10 +6,17 @@ import { useWayangState } from '@/tui/hooks/use-wayang-state';
 import { CONTEXT_USAGE_STATE_PATH } from '@/client/remote-supervisor';
 import { theme } from '@/tui/theme';
 import { formatTokenCount } from '@/tui/utils/format-tokens';
-import { truncateToWidth } from '@/tui/utils/text-width';
+import { fitWithSuffix, sliceToWidth, stringWidth, truncateToWidth } from '@/tui/utils/text-width';
+import { formatWorkspaceSlug } from '@/tui/utils/workspace-display';
 
 /** Hard cap for the context segment — the rest of the line yields to it. */
 export const CONTEXT_SEGMENT_MAX_WIDTH = 22;
+
+/** Column cap for a worker row's label — measured in display columns, not code units. */
+const LABEL_MAX_WIDTH = 20;
+
+/** Separator between worker rows: ' · ' (3 columns). */
+const ROW_SEPARATOR = ' · ';
 
 /**
  * Format the persistent context segment, e.g. "12.3k/100k (12%)" — the token
@@ -67,6 +74,12 @@ export interface WorkerRow {
   elapsed: number;
   /** True for a parked multi-stage worker — rendered with an "idle" marker. */
   idle: boolean;
+  /**
+   * The task's workspace slug, shown after the label. Absent when the task
+   * carries no workspace identity (legacy task, or the task already moved to
+   * history so it is not in runningTasks) — the row then shows nothing extra.
+   */
+  workspaceSlug?: string;
 }
 
 /**
@@ -126,9 +139,12 @@ export function buildWorkerRows(
     return {
       workerId: w.workerId,
       taskId: w.taskId,
-      label: text ? text.slice(0, 20) : `${w.workerType || 'worker'} ${idTail(w.taskId)}`,
+      // Cap by DISPLAY columns, not code units: a 20-code-unit Chinese title is
+      // 40 columns wide and would blow the row budget before fitting even runs.
+      label: text ? sliceToWidth(text, LABEL_MAX_WIDTH) : `${w.workerType || 'worker'} ${idTail(w.taskId)}`,
       elapsed,
       idle,
+      workspaceSlug: formatWorkspaceSlug(task?.workspace) ?? undefined,
     };
   });
   disambiguateRowLabels(rows);
@@ -155,26 +171,61 @@ export interface StatusSegments {
   contextColor: string | undefined;
 }
 
+/** The trailing status/elapsed suffix of a worker row, e.g. " (idle 1m41s)". */
+function rowSuffix(row: WorkerRow): string {
+  return ` (${row.idle ? 'idle ' : ''}${formatElapsedSeconds(row.elapsed)})`;
+}
+
+/** Full row text. `withSlug` toggles the optional workspace segment. */
+function workerRowText(row: WorkerRow, withSlug: boolean): string {
+  const slug = withSlug && row.workspaceSlug ? ` [${row.workspaceSlug}]` : '';
+  return `${row.label}${slug}${rowSuffix(row)}`;
+}
+
 /**
- * Fit worker rows into `budget` chars: keep whole rows while they fit,
- * hard-truncate only the row that overflows, drop the rest. Idle rows carry
- * an "idle" marker so a parked multi-stage worker cannot be misread as a
- * running task.
+ * Fit worker rows into `budget` DISPLAY COLUMNS (not code units): keep whole
+ * rows while they fit, truncate only the row that overflows, drop the rest.
+ * Idle rows carry an "idle" marker so a parked multi-stage worker cannot be
+ * misread as a running task.
+ *
+ * Width is measured with `stringWidth` (CJK/emoji = 2 columns, combining = 0);
+ * using `.length` here undercounted double-width titles and let a 60-column
+ * line overflow, pushing the elapsed time onto a second terminal row.
+ *
+ * The workspace slug is the first thing to go under pressure: a row that does
+ * not fit in full is retried without it, so the task title and the worker
+ * status/elapsed survive at the expense of the workspace attribution. If even
+ * the compact row still overflows, its LABEL is truncated while the elapsed
+ * suffix is preserved.
  */
 function fitWorkerRows(rows: WorkerRow[], budget: number): string[] {
   if (budget <= 0) return [];
   const fitted: string[] = [];
   let used = 0;
   for (const row of rows) {
-    const text = `${row.label} (${row.idle ? 'idle ' : ''}${formatElapsedSeconds(row.elapsed)})`;
-    const sep = fitted.length > 0 ? 3 : 0; // ' · '
-    if (used + sep + text.length <= budget) {
-      fitted.push(text);
-      used += sep + text.length;
+    const sep = fitted.length > 0 ? stringWidth(ROW_SEPARATOR) : 0;
+    const full = workerRowText(row, true);
+    const fullWidth = stringWidth(full);
+    if (used + sep + fullWidth <= budget) {
+      fitted.push(full);
+      used += sep + fullWidth;
+      continue;
+    }
+    const compact = workerRowText(row, false);
+    const compactWidth = stringWidth(compact);
+    if (used + sep + compactWidth <= budget) {
+      fitted.push(compact);
+      used += sep + compactWidth;
       continue;
     }
     const remaining = budget - used - sep;
-    if (remaining > 0) fitted.push(text.slice(0, remaining));
+    if (remaining > 0) {
+      // Truncate the LABEL, keeping the status/elapsed suffix (the compact row
+      // has no slug) so the elapsed time stays on this row instead of being
+      // squeezed off the end. Width-aware, unlike the old code-unit slice that
+      // miscounted double-width CJK and let the line overflow/wrap.
+      fitted.push(fitWithSuffix(row.label, rowSuffix(row), remaining));
+    }
     break;
   }
   return fitted;
@@ -200,8 +251,9 @@ export function buildStatusSegments(input: StatusSegmentsInput): StatusSegments 
 
   // Width accounting: padding(2) + context segment with its ' … │'
   // wrapper(3) + ' counts '(counts + 2). Whatever remains is the worker budget.
-  const contextWidth = contextText ? contextText.length + 3 : 0;
-  const workerBudget = Math.max(0, terminalCols - 4 - countsText.length - contextWidth);
+  // Measured in DISPLAY COLUMNS (stringWidth), not code units.
+  const contextWidth = contextText ? stringWidth(contextText) + 3 : 0;
+  const workerBudget = Math.max(0, terminalCols - 4 - stringWidth(countsText) - contextWidth);
 
   return {
     countsText,

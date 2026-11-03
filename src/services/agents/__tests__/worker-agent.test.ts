@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import { SkillRegistry } from '@/services/skills/registry';
@@ -38,6 +38,37 @@ function mockStreamResponse(text: string, toolResults?: any[]) {
 describe('WorkerAgent', () => {
   beforeEach(() => {
     vi.mocked(streamText).mockReset();
+  });
+
+  it('builds its system prompt for the workspace it executes in, not the process workspace', () => {
+    const procDir = mkdtempSync(join(tmpdir(), 'wayang-worker-proc-'));
+    const taskDir = mkdtempSync(join(tmpdir(), 'wayang-worker-task-'));
+    const sessionDir = mkdtempSync(join(tmpdir(), 'wayang-worker-session-'));
+    try {
+      writeFileSync(join(procDir, 'AGENTS.md'), 'Rules of the PROCESS workspace.');
+      writeFileSync(join(taskDir, 'AGENTS.md'), 'Rules of the TASK workspace.');
+
+      // (provider, ctx, skills, toolChoice, workspaceDir) — the engine passes
+      // the task's workspace here.
+      const worker = new WorkerAgent(
+        mockProvider,
+        createMockCtx({ workspaceDir: procDir, sessionDir }),
+        skills,
+        undefined,
+        taskDir,
+      );
+
+      expect(worker.workspaceDir).toBe(taskDir);
+      const prompt = (worker as any).contextManager.getSystemPrompt() as string;
+      expect(prompt).toContain(`- WorkspaceDir: ${taskDir}`);
+      expect(prompt).not.toContain(`- WorkspaceDir: ${procDir}`);
+      expect(prompt).toContain('Rules of the TASK workspace.');
+      expect(prompt).not.toContain('Rules of the PROCESS workspace.');
+    } finally {
+      rmSync(procDir, { recursive: true, force: true });
+      rmSync(taskDir, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 
   it('should create worker with unique id', () => {
@@ -136,6 +167,46 @@ describe('WorkerAgent', () => {
 
     expect(result.status).toBe('completed');
     expect(result.summary).toBe('Task finished');
+  });
+
+  it('stamps workspaceSlug from the task workspace on every conversation entry', async () => {
+    // Drive a step so a real assistant entry lands alongside the task prompt.
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final'; })(),
+        text: Promise.resolve('final'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+      };
+    }) as any);
+
+    const tempDir = mkdtempSync(join(tmpdir(), 'wayang-wa-ws-'));
+    try {
+      const ctx = createMockCtx({ sessionDir: tempDir });
+      const worker = new WorkerAgent(mockProvider, ctx, skills, undefined, tempDir);
+      await worker.run(
+        {
+          id: 't-ws', title: 'test', description: 'workspace stamp',
+          workerId: 'w-ws', priority: 'normal', status: 'running', createdAt: Date.now(),
+          // The task carries its own registry identity (as add_task stamps it).
+          workspace: { path: tempDir, slug: 'task-workspace-slug' },
+        },
+        {},
+      );
+
+      const conversation = worker.getConversation();
+      expect(conversation.length).toBeGreaterThanOrEqual(2);
+      for (const entry of conversation) {
+        expect(entry.workspaceSlug).toBe('task-workspace-slug');
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('should write the session id (not the worker id) on conversation entries', async () => {
