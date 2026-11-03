@@ -18,10 +18,11 @@ export function renderInkUI(supervisor: RemoteSupervisor): Promise<void> {
 
     const { waitUntilExit } = render(
       React.createElement(App, { supervisor }),
-      // Ctrl+C ownership belongs to AppContent's useInput handler (busy →
-      // abort the turn; idle → double-press to quit). Ink's default
-      // exitOnCtrlC would unmount on the FIRST press, before the app-level
-      // handler ever sees the key.
+      // Ctrl+C ownership belongs to AppContent's useInput handler. Ctrl+C
+      // only ever quits: in every state the first press shows a notice and a
+      // second press within 1s exits. Aborting a turn is ESC's job. Ink's
+      // default exitOnCtrlC would unmount on the FIRST press, before the
+      // app-level handler ever sees the key.
       { exitOnCtrlC: false },
     );
     waitUntilExit().then(() => resolve());

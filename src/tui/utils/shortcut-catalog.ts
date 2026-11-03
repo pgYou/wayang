@@ -61,11 +61,15 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
   { keys: 'Backspace / Delete', action: 'Delete the character before the cursor', category: 'input', when: 'with a selection, delete it' },
 
   // --- Application (app.tsx owns Ctrl+C; controller-page routes Escape) ---
-  { keys: 'Ctrl+C', action: 'Abort the current turn', category: 'app', when: 'controller busy' },
   { keys: 'Esc', action: 'Dismiss the overlay', category: 'app', when: 'overlay open' },
 
   // --- Session lifecycle ---
-  { keys: 'Ctrl+C', action: 'Press twice within 1s to quit', category: 'session', when: 'idle' },
+  {
+    keys: 'Ctrl+C',
+    action: 'Press once for a hint, again within 1s to quit',
+    category: 'session',
+    when: 'always, whether the controller is busy or idle — use Esc to abort a turn',
+  },
   { keys: '/exit, /quit', action: 'Quit the session', category: 'session' },
 ];
 

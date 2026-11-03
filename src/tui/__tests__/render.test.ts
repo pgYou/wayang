@@ -41,7 +41,7 @@ describe('renderInkUI render options', () => {
     expect(node.props).toMatchObject({ supervisor });
     // ...and Ink must NOT own Ctrl+C: with the default (true) Ink unmounts on
     // the first press, before AppContent's useInput handler ever sees the key
-    // (busy → abort / idle → double-press quit would both be unreachable).
+    // (the app's press-once-then-quit-within-1s handling would be unreachable).
     expect(options).toMatchObject({ exitOnCtrlC: false });
   });
 });
