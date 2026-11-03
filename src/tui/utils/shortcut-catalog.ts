@@ -13,12 +13,6 @@
  * `when` is a plain condition string, rendered as a parenthetical — keys
  * whose meaning depends on context (panel open, controller busy, …) say so
  * there instead of growing multiple rows.
- *
- * Rendering is two-layered: `renderShortcutSpans` cuts each line into
- * role-tagged spans — the only place the line layout is defined — and the
- * Ink layer (`shortcut-overlay.tsx`) maps roles to styles (keys anchor the
- * line, actions stay quiet). The copy lives once, here; the plain-text
- * `renderShortcutList` is derived from the same spans.
  */
 
 /** Which layer of the app owns the binding. */
@@ -75,45 +69,20 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
   { keys: '/exit, /quit', action: 'Quit the session', category: 'session' },
 ];
 
-/** Visual role of one run of a rendered line — the Ink layer maps it to a style. */
-export type ShortcutSpanRole = 'heading' | 'key' | 'action';
-
-/** One styled run of a cheat-sheet line; `text` is the only copy of the copy. */
-export interface ShortcutSpan {
-  text: string;
-  role: ShortcutSpanRole;
-}
-
 /**
- * The catalog as `/shortcut` shows it: one heading line per group, then one
- * `键 — 动作` line per entry, indented. Each line is a run of role-tagged
- * spans — plain lines, no table grid; the overlay spans the terminal width
- * and a grid would wrap on narrow terms (the render layer truncates
- * instead).
- */
-export function renderShortcutSpans(): ShortcutSpan[][] {
-  const lines: ShortcutSpan[][] = [];
-  for (const category of SHORTCUT_CATEGORIES) {
-    lines.push([{ text: SHORTCUT_CATEGORY_LABELS[category], role: 'heading' }]);
-    for (const entry of SHORTCUTS.filter(e => e.category === category)) {
-      const line: ShortcutSpan[] = [
-        { text: `  ${entry.keys}`, role: 'key' },
-        { text: ` — ${entry.action}`, role: 'action' },
-      ];
-      if (entry.when) line.push({ text: ` (${entry.when})`, role: 'action' });
-      lines.push(line);
-    }
-  }
-  return lines;
-}
-
-/**
- * The catalog as plain text. Derived from the span lines — not a second
- * rendering — so the styled overlay and this string share one layout and
- * one copy of the copy.
+ * The catalog as `/shortcut` prints it: one heading per group, then one
+ * `键 — 动作` line per entry, indented. Plain lines, no table grid — the
+ * overlay spans the terminal width and a grid would wrap on narrow terms.
  */
 export function renderShortcutList(): string {
-  return renderShortcutSpans()
-    .map(line => line.map(span => span.text).join(''))
-    .join('\n');
+  const lines: string[] = [];
+  for (const category of SHORTCUT_CATEGORIES) {
+    lines.push(SHORTCUT_CATEGORY_LABELS[category]);
+    for (const entry of SHORTCUTS.filter(e => e.category === category)) {
+      lines.push(entry.when
+        ? `  ${entry.keys} — ${entry.action} (${entry.when})`
+        : `  ${entry.keys} — ${entry.action}`);
+    }
+  }
+  return lines.join('\n');
 }

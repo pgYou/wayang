@@ -124,12 +124,6 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
           .catch(() => setOverlay({ kind: 'text', content: 'Compaction failed', hint: '(esc to dismiss)' }));
         return;
       }
-      if (cmdResult.overlay) {
-        // Commands whose output needs styles (e.g. /shortcut) bring their
-        // own overlay component.
-        setOverlay(cmdResult.overlay);
-        return;
-      }
       if (cmdResult.output) {
         setOverlay({ kind: 'text', content: cmdResult.output, hint: '(esc to dismiss)' });
       }

@@ -4,7 +4,6 @@ import {
   SHORTCUT_CATEGORIES,
   SHORTCUT_CATEGORY_LABELS,
   renderShortcutList,
-  renderShortcutSpans,
 } from '@/tui/utils/shortcut-catalog';
 
 /** Entries filed under one category. */
@@ -70,42 +69,5 @@ describe('shortcut catalog', () => {
       // eslint-disable-next-line no-control-regex
       expect(entry.keys).not.toMatch(/[\x00-\x1f]/);
     }
-  });
-});
-
-describe('renderShortcutSpans', () => {
-  it('reassembles every entry line verbatim from the catalog copy', () => {
-    const entryLines = renderShortcutSpans()
-      .filter(line => line[0]?.role === 'key')
-      .map(line => line.map(span => span.text).join(''));
-    const expected = SHORTCUTS.map(e => e.when
-      ? `  ${e.keys} — ${e.action} (${e.when})`
-      : `  ${e.keys} — ${e.action}`);
-
-    expect(entryLines).toHaveLength(SHORTCUTS.length);
-    expect(entryLines).toEqual(expect.arrayContaining(expected));
-  });
-
-  it('tags each entry with the keys first, then only action spans', () => {
-    const entryLines = renderShortcutSpans().filter(line => line[0]?.role === 'key');
-    for (const line of entryLines) {
-      const [keys, ...rest] = line;
-      expect(keys?.text.startsWith('  ')).toBe(true);
-      expect(rest.length).toBeGreaterThan(0);
-      expect(rest.every(span => span.role === 'action')).toBe(true);
-    }
-  });
-
-  it('gives every group one heading line, in display order', () => {
-    const headings = renderShortcutSpans()
-      .filter(line => line.length === 1 && line[0]?.role === 'heading')
-      .map(line => line[0]?.text);
-    expect(headings).toEqual(SHORTCUT_CATEGORIES.map(c => SHORTCUT_CATEGORY_LABELS[c]));
-  });
-
-  it('is the single layout definition — the plain list is its spans joined', () => {
-    expect(renderShortcutList()).toBe(renderShortcutSpans()
-      .map(line => line.map(span => span.text).join(''))
-      .join('\n'));
   });
 });
