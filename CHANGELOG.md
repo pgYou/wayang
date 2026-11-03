@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.2 (2026-11-03)
+
+### Fixes
+
+**Ctrl+C 只退出，不再中止回合** — Ctrl+C now has a single meaning: quit. Previously, while a turn was running, every press aborted the turn and returned early without arming the quit window, so two presses could never exit (and with back-to-back turns the controller could stay busy indefinitely). Every press now arms the same 1s double-press window regardless of state: the first press shows the notice, the second within one second shuts down and exits. Aborting a turn is ESC's job alone. BREAKING: this changes behavior for anyone relying on Ctrl+C to abort a turn — use ESC instead
+
+**注释与快捷键目录同步** — The Ctrl+C comment in render.ts, its render test, the controller-agent abort comments and the /shortcut catalog all still described the old busy→abort semantics. They now match the quit-only behavior: Esc is listed as the abort key and Ctrl+C is a single quit-only row in the session category
+
 ## v0.7.1 (2026-11-03)
 
 ### Features
