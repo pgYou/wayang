@@ -8,8 +8,10 @@
 
 import * as path from 'node:path';
 import { connectRemoteServer } from './client/connect';
+import type { ConnectOptions, RemoteConnection } from './client/connect';
 import { getSession, getLatestSessionForWorkspace } from './infra/session-helpers';
 import { normalizeWorkspacePath } from './infra/workspace-registry';
+import { SESSION_LOCKED_MARKER } from './infra/session-lock';
 import { renderInkUI } from './tui/render';
 import { loadConfig } from './onboard';
 import { selectSessionInteractive } from './session-select';
@@ -45,6 +47,27 @@ export interface BootstrapOptions {
 function die(msg: string): never {
   console.error(`Error: ${msg}`);
   process.exit(1);
+}
+
+/**
+ * Spawn the server, turning a session-ownership conflict into a plain-language
+ * message instead of "server exited before becoming ready".
+ *
+ * The lock check lives in the server process (it owns the session directory),
+ * so a conflict arrives here only as the child's stderr tail, embedded in the
+ * transport error. We look for the marker the server prints and re-surface that
+ * block verbatim — it already contains the holder pid/start time, the session
+ * path, and the --resume / --fresh next steps.
+ */
+async function connectToServer(options: ConnectOptions): Promise<RemoteConnection> {
+  try {
+    return await connectRemoteServer(options);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const markerAt = message.indexOf(SESSION_LOCKED_MARKER);
+    if (markerAt === -1) throw err;
+    die(message.slice(markerAt).trim());
+  }
 }
 
 // --- Bootstrap ---
@@ -100,7 +123,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   // session meta itself is read, never rewritten.
   workspaceDir = normalizeWorkspacePath(workspaceDir);
 
-  const { remote, stop } = await connectRemoteServer({
+  const { remote, stop } = await connectToServer({
     configPath: options.configPath,
     // Pass the ROOT dir: the server's `--home-dir` flag expects it and joins
     // `.wayang` itself. Passing the pre-joined dir caused a double join.

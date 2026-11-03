@@ -7,6 +7,7 @@ import { ControllerAgent } from './agents/controller-agent';
 import { SkillRegistry } from '@/services/skills/registry';
 import { resolveSkillDirs } from '@/services/skills/skill-dir';
 import { readSessionUnfinishedTasks } from '@/infra/session-helpers';
+import { SessionLock } from '@/infra/session-lock';
 import type { ConversationIndex, TurnView, WayangConfig } from '@/types/index';
 
 /** Parameters for Supervisor initialization. */
@@ -36,6 +37,8 @@ export class Supervisor {
   readonly sessionManager: SessionManager;
   /** Shared skill registry — discovered at startup, used by all agents. */
   readonly skills: SkillRegistry;
+  /** Exclusive ownership of this session's directory (see SessionLock). */
+  readonly sessionLock: SessionLock;
   private controllerLoop: ControllerLoop;
   private readonly resumeSessionDir?: string;
   private readonly injectPreviousTasks: boolean;
@@ -57,6 +60,16 @@ export class Supervisor {
       this.sessionManager = SessionManager.create(options.homeDir, workspaceDir);
     }
 
+    // Take ownership of the session directory BEFORE anything writes into it.
+    // Both paths need the lock: a resumed session already has a transcript that
+    // a second process would append to concurrently, and a new session must not
+    // be reopened by another process either. Acquiring here (rather than in
+    // restore()/start()) means a conflict aborts construction before the log
+    // sink below opens <sessionDir>/wayang.log from a worker thread.
+    // Throws SessionLockedError carrying the holder's pid/startedAt/session dir.
+    this.sessionLock = new SessionLock(this.sessionManager.sessionDir);
+    const lockResult = this.sessionLock.acquire();
+
     // Create system context (logger, providers, hooks, abort controller)
     this.ctx = new SystemContext(
       config,
@@ -65,6 +78,16 @@ export class Supervisor {
       workspaceDir,
       logLevel,
     );
+
+    if (lockResult.staleTakeover) {
+      // The previous owner died without releasing (SIGKILL, power loss). We
+      // replaced its lock after the heartbeat expired — worth warning about,
+      // since that session's last run ended abnormally.
+      this.ctx.logger.warn(
+        { sessionDir: this.sessionManager.sessionDir },
+        'Took over a stale session lock left by an abnormally terminated process',
+      );
+    }
 
     this.ctx.logger.info(
       { controllerEndpoint: this.ctx.controllerProvider.endpoint, controllerModel: this.ctx.controllerProvider.modelName },
@@ -208,6 +231,19 @@ export class Supervisor {
     this.controllerLoop.shutdown();
     this.engine.abortAll();
     this.ctx.abortController.abort();
+
+    // Release the session lock only after the loops above are stopped, so no
+    // in-flight work can still write to the transcript once another process is
+    // allowed in. Done before the log sink closes so a failed unlink can be
+    // logged. release() is idempotent — shutdown() may be called more than
+    // once (SIGTERM after an explicit SHUTDOWN, test teardown).
+    try {
+      this.sessionLock.release();
+    } catch (err) {
+      // A leftover lock is recoverable: the next process sees an expired
+      // heartbeat and takes it over. Never let it break shutdown.
+      this.ctx.logger.warn({ error: (err as Error).message }, 'Failed to release session lock');
+    }
 
     this.ctx.logger.info('Supervisor shutdown complete');
 

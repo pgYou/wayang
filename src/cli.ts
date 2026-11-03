@@ -33,6 +33,7 @@ import * as path from 'node:path';
 import { parseCliArgs } from './cli-args';
 import { bootstrap } from './bootstrap';
 import { normalizeWorkspacePath } from './infra/workspace-registry';
+import { SessionLockedError, formatSessionLockHint } from './infra/session-lock';
 import { serverMain } from './server/main';
 
 const result = parseCliArgs(process.argv.slice(2));
@@ -69,6 +70,13 @@ const configPath = flags.config
   : path.join(homeDir, '.wayang.config.json');
 
 function fatal(err: unknown): never {
+  if (err instanceof SessionLockedError) {
+    // Not a crash but a conflict the user can resolve: print the explanation
+    // and next steps. The marker inside the message is what the client process
+    // scans this stderr for when the server exits before becoming ready.
+    console.error(formatSessionLockHint(err));
+    process.exit(1);
+  }
   console.error('Fatal:', err instanceof Error ? err.message : err);
   process.exit(1);
 }

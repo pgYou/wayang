@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdirSync, mkdtempSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Supervisor } from '@/services/supervisor';
 import { normalizeWorkspacePath, workspaceSlugFromPath } from '@/infra/workspace-registry';
+import { SessionLockedError } from '@/infra/session-lock';
 import type { TaskDetail } from '@/types/index';
 import type { WayangConfig } from '@/types/index';
 
@@ -199,9 +200,13 @@ describe('Supervisor', () => {
         engineState.append('tasks.running', { ...task, status: 'running', startedAt: Date.now(), workerSessionId: 'w-old' });
       }
 
-      // Re-create supervisor with resume to trigger recovery
+      // Re-create supervisor with resume to trigger recovery. The running task
+      // is already persisted to tasks.json (the state write above), exactly as
+      // a crash leaves it; the dead process's session lock must be given up
+      // first, because a session has exactly one live owner (SessionLock).
       const sessionDir = sup.ctx.sessionDir;
       const sessionId = sup.ctx.sessionId;
+      sup.sessionLock.release();
       const sup2 = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
       await sup2.restore();
 
@@ -303,6 +308,61 @@ describe('Supervisor', () => {
 
       const [task] = sup.engine.list('pending');
       expect(task.workspace).toEqual(workspaceRef(dirC));
+    });
+  });
+
+  describe('session ownership lock', () => {
+    it('refuses a second supervisor on the same resumed session without touching its transcript', async () => {
+      const { sessionId, sessionDir } = writeSession(tempDir, 'sess-locked', { workspace: tempDir }, []);
+      const conversationFile = join(sessionDir, 'conversation.jsonl');
+
+      const first = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
+      await first.restore();
+
+      // Let the first supervisor's log sink finish creating wayang.log (its
+      // pino transport opens the file from a worker thread a few ms after
+      // construction), so the snapshot below only misses files the rejected
+      // second supervisor could have created.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const filesBefore = readdirSync(sessionDir).sort();
+      const holderBefore = JSON.parse(readFileSync(join(sessionDir, '.owner.json'), 'utf-8')) as { pid: number; token: string };
+
+      let thrown: unknown;
+      try {
+        createSupervisor(tempDir, undefined, { sessionId, sessionDir });
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeInstanceOf(SessionLockedError);
+      expect((thrown as Error).message).toContain(`pid ${holderBefore.pid}`);
+      expect((thrown as Error).message).toContain(sessionDir);
+
+      // The rejected supervisor never got as far as its log sink or transcript.
+      expect(existsSync(conversationFile)).toBe(false);
+      const newFiles = readdirSync(sessionDir).filter((f) => !filesBefore.includes(f));
+      expect(newFiles).toEqual([]);
+
+      // The holder's lock document is untouched by the rejected attempt.
+      const holderAfter = JSON.parse(readFileSync(join(sessionDir, '.owner.json'), 'utf-8')) as { token: string };
+      expect(holderAfter.token).toBe(holderBefore.token);
+    });
+
+    it('lets the same session be resumed after the first supervisor shuts down', async () => {
+      const { sessionId, sessionDir } = writeSession(tempDir, 'sess-handover', { workspace: tempDir }, []);
+
+      const first = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
+      await first.restore();
+      expect(() => createSupervisor(tempDir, undefined, { sessionId, sessionDir })).toThrow(SessionLockedError);
+
+      await first.shutdown();
+      expect(existsSync(join(sessionDir, '.owner.json'))).toBe(false);
+
+      const second = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
+      await second.restore();
+      expect(second.ctx.sessionId).toBe(sessionId);
+      expect(second.sessionLock.held).toBe(true);
     });
   });
 
