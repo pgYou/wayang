@@ -192,5 +192,12 @@ export class Supervisor {
     this.ctx.abortController.abort();
 
     this.ctx.logger.info('Supervisor shutdown complete');
+
+    // Close the log sink last: everything above may still log, and this
+    // waits for the pino transport worker thread to flush and exit. Before
+    // this, that worker kept opening <sessionDir>/wayang.log for a while
+    // after construction (even at level 'silent'), racing with anything
+    // that cleans the session directory once shutdown() returns.
+    await this.ctx.closeLogger();
   }
 }

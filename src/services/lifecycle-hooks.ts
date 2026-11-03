@@ -38,14 +38,16 @@ export interface HookMap {
 type Listener<T = unknown> = (payload: T) => void;
 
 export class LifecycleHooks {
-  private listeners = new Map<keyof HookMap, Set<Listener<any>>>();
+  /** Heterogeneous per-hook listeners in one map: stored as the payload union. */
+  private listeners = new Map<keyof HookMap, Set<Listener<HookMap[keyof HookMap]>>>();
 
   on<K extends keyof HookMap>(hook: K, fn: Listener<HookMap[K]>): () => void {
     if (!this.listeners.has(hook)) {
       this.listeners.set(hook, new Set());
     }
-    this.listeners.get(hook)!.add(fn);
-    return () => this.listeners.get(hook)?.delete(fn);
+    const stored = fn as Listener<HookMap[keyof HookMap]>;
+    this.listeners.get(hook)!.add(stored);
+    return () => this.listeners.get(hook)?.delete(stored);
   }
 
   emit<K extends keyof HookMap>(hook: K, payload: HookMap[K]): void {

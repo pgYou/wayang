@@ -3,6 +3,7 @@ import { createElement as h } from 'react';
 import { render } from 'ink';
 import { InputArea } from '@/tui/components/input-area';
 import { stringWidth } from '@/tui/utils/text-width';
+import { MERGE_WINDOW_MS } from '@/tui/utils/input-history';
 
 // Selection highlighting is reverse video, which Ink only emits when chalk
 // has colors enabled — force a color level so the frames carry `inverse`.
@@ -198,8 +199,30 @@ function rowTexts(rawFrame: string): string[] {
   return contentRows(rawFrame).map(row => row.replace(/^[\s→]+/, ''));
 }
 
+/**
+ * The input box's rows between its top and bottom borders — blank rows
+ * included, unlike `rowTexts`. A trailing newline's row is blank (just the
+ * gutter and the cursor block), so counting rows is how a value's newline
+ * count stays observable even though submission trims trailing whitespace.
+ */
+function boxRows(rawFrame: string): string[] {
+  const rows = stripAnsi(rawFrame).split('\n');
+  let top = -1;
+  let bottom = -1;
+  rows.forEach((row, i) => {
+    if (row.startsWith('─')) {
+      if (top === -1) top = i;
+      bottom = i;
+    }
+  });
+  return top === -1 ? [] : rows.slice(top + 1, bottom);
+}
+
 /** Let React flush effects and commits between keystrokes. */
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** Real-timer wait; used to let an undo merge window (MERGE_WINDOW_MS) close. */
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 async function drive(keys: string[], options: HarnessOptions = {}) {
   const r = renderInteractive(options);
@@ -385,6 +408,136 @@ describe('InputArea submission', () => {
   });
 });
 
+describe('InputArea manual newline', () => {
+  it('inserts a newline with Ctrl+J and lands the cursor on the next line', async () => {
+    // Ctrl+J is a bare '\n', which Ink reports as a plain character.
+    const r = await drive(['ab', '\n', 'c']);
+    try {
+      expect(r.submitted).toEqual([]);
+      // 'c' landing at the start of the second row proves the newline moved
+      // the cursor to the next line's beginning before 'c' was typed.
+      expect(rowTexts(r.frame())).toEqual(['ab', 'c']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('inserts the newline at the cursor, mid-line', async () => {
+    const r = await drive(['abc', '\x1b[D', '\n']);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['ab', 'c']);
+      expect(cursorRuns(r.rawFrame())).toEqual(['c']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('inserts a newline with Alt+Enter (ESC + CR in one chunk)', async () => {
+    const r = await drive(['ab', '\x1b\r', 'c']);
+    try {
+      expect(r.submitted).toEqual([]);
+      expect(rowTexts(r.frame())).toEqual(['ab', 'c']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('submits on Enter instead of inserting a newline', async () => {
+    const r = await drive(['ab', '\r']);
+    try {
+      expect(r.submitted).toEqual(['ab']);
+      expect(rowTexts(r.frame())).toEqual(['']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('replaces the selection with a newline, like typed text', async () => {
+    const r = await drive(['abc', SHIFT_LEFT, SHIFT_LEFT, '\n', 'x']);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['a', 'x']);
+      r.send('\r');
+      await flush();
+      expect(r.submitted).toEqual(['a\nx']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('decodes kitty CSI u reports for Ctrl+Enter and Alt+Enter into newlines', async () => {
+    // Raw injection, as a report-all-keys terminal would deliver them.
+    const r = await drive(['ab', '\x1b[13;5u', 'c']);
+    try {
+      expect(r.submitted).toEqual([]);
+      expect(rowTexts(r.frame())).toEqual(['ab', 'c']);
+    } finally {
+      r.unmount();
+    }
+
+    const alt = await drive(['ab', '\x1b[13;3u', 'c']);
+    try {
+      expect(alt.submitted).toEqual([]);
+      expect(rowTexts(alt.frame())).toEqual(['ab', 'c']);
+    } finally {
+      alt.unmount();
+    }
+  });
+
+  it('ignores the CSI u release event so a press+release pair inserts once', async () => {
+    // With key-event reporting on, a keystroke arrives as press (:1) then
+    // release (:3); only the press may insert. One newline = two box rows.
+    const r = await drive(['ab', '\x1b[13;5:1u', '\x1b[13;5:3u']);
+    try {
+      expect(r.submitted).toEqual([]);
+      expect(boxRows(r.rawFrame())).toHaveLength(2);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('lets a shift-only CSI u Enter fall through as plain text', async () => {
+    // Shift+Enter is deliberately unbound: only the Alt/Ctrl variants are
+    // newlines, anything else falls back to the ordinary character path.
+    const r = await drive(['ab', '\x1b[13;2u', '\r']);
+    try {
+      expect(r.submitted).toEqual(['ab[13;2u']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('undoes a newline as its own step once the typing run has closed', async () => {
+    const r = await drive(['ab']);
+    try {
+      // Let the 'ab' typing run's merge window close so the newline commits
+      // as a separate entry.
+      await sleep(MERGE_WINDOW_MS + 20);
+      r.send('\n');
+      await flush();
+      r.send(CTRL_Z);
+      await flush();
+      // The undo restored the pre-newline state: typing continues on the
+      // single 'ab' row, not below a line break.
+      r.send('x');
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['abx']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('merges a newline into a fast typing run like an ordinary character', async () => {
+    // One undo step removes the whole run — 'c', the newline and 'ab' —
+    // exactly as typing 'ab\nc' without a pause would behave.
+    const r = await drive(['a', 'b', '\n', 'c', CTRL_Z]);
+    try {
+      expect(rowTexts(r.frame())).toEqual(['']);
+    } finally {
+      r.unmount();
+    }
+  });
+});
+
 describe('InputArea busy indicator', () => {
   it('shows the thinking note on the cursor row of multi-line input', async () => {
     const r = await drive(['a\nb'], { busy: true });
@@ -471,7 +624,8 @@ describe('InputArea selection', () => {
       r.send('\x1b');
       await flush();
       expect(escapes).toEqual(['esc']);
-      expect(rowTexts(r.frame())).toEqual(['']);
+      // The abort keeps the draft — Escape never clears the input box.
+      expect(rowTexts(r.frame())).toEqual(['hello']);
     } finally {
       r.unmount();
     }
@@ -561,6 +715,88 @@ describe('InputArea selection', () => {
       expect(selectionRuns(selecting.rawFrame())).toEqual(['/']);
     } finally {
       selecting.unmount();
+    }
+  });
+});
+
+describe('InputArea Escape semantics', () => {
+  it('aborts via onEscape and keeps the draft when no panel is open', async () => {
+    const escapes: string[] = [];
+    const r = await drive(['hello', '\x1b'], { onEscape: () => escapes.push('esc') });
+    try {
+      expect(escapes).toEqual(['esc']);
+      expect(rowTexts(r.frame())).toEqual(['hello']);
+      expect(r.submitted).toEqual([]);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('still aborts with an empty draft', async () => {
+    const escapes: string[] = [];
+    const r = await drive(['\x1b'], { onEscape: () => escapes.push('esc') });
+    try {
+      expect(escapes).toEqual(['esc']);
+      expect(rowTexts(r.frame())).toEqual(['']);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('closes the suggestion panel without clearing the draft or aborting', async () => {
+    const escapes: string[] = [];
+    const r = await drive(['/he', '\x1b'], { onEscape: () => escapes.push('esc') });
+    try {
+      expect(escapes).toEqual([]);
+      expect(rowTexts(r.frame())).toEqual(['/he']);
+      expect(highlightedSuggestion(r.rawFrame())).toBe('');
+      expect(r.submitted).toEqual([]);
+
+      // Still dismissed while the draft keeps matching commands: typing on
+      // must not resurrect the panel the user just closed.
+      r.send('l');
+      await flush();
+      expect(rowTexts(r.frame())).toEqual(['/hel']);
+      expect(highlightedSuggestion(r.rawFrame())).toBe('');
+
+      // The dismissal lapses with its trigger: the space takes the draft
+      // out of command territory and re-arms the panel, so removing it
+      // again reopens the suggestions.
+      r.send(' ');
+      await flush();
+      r.send('\x7f');
+      await flush();
+      expect(highlightedSuggestion(r.rawFrame())).toContain('/help');
+      expect(escapes).toEqual([]);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('dismisses the selection before the panel, one Escape at a time', async () => {
+    const escapes: string[] = [];
+    // '/' opens the panel; Shift+Left selects the '/' character itself.
+    const r = await drive(['/', SHIFT_LEFT, '\x1b'], { onEscape: () => escapes.push('esc') });
+    try {
+      // First Escape: only the selection goes; the panel stays open.
+      expect(escapes).toEqual([]);
+      expect(selectionRuns(r.rawFrame())).toEqual([]);
+      expect(highlightedSuggestion(r.rawFrame())).toContain('/tasks');
+
+      // Second Escape: the panel closes, the draft stays.
+      r.send('\x1b');
+      await flush();
+      expect(escapes).toEqual([]);
+      expect(highlightedSuggestion(r.rawFrame())).toBe('');
+      expect(rowTexts(r.frame())).toEqual(['/']);
+
+      // Third Escape: now the abort path fires — and still keeps the draft.
+      r.send('\x1b');
+      await flush();
+      expect(escapes).toEqual(['esc']);
+      expect(rowTexts(r.frame())).toEqual(['/']);
+    } finally {
+      r.unmount();
     }
   });
 });

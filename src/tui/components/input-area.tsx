@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useMemoizedFn } from '@/tui/hooks/use-memoized-fn';
 import { SLASH_COMMANDS } from '@/tui/hooks/use-slash-commands';
 import { Box, Text, useInput } from 'ink';
@@ -43,6 +43,32 @@ interface InputAreaProps {
 const PREFIX = `${theme.user.prefix} `;
 const PREFIX_WIDTH = stringWidth(PREFIX);
 
+/**
+ * Decode a CSI u key report for Enter coming from a terminal with the kitty
+ * keyboard protocol active (its "report all keys as escape codes" mode).
+ * Ink 4 cannot parse these sequences, so they arrive as their literal text
+ * with the leading ESC already stripped: `'[13;5u'` for Ctrl+Enter,
+ * `'[13;3u'` for Alt+Enter. Per the protocol: `13` is Enter's code point,
+ * the second field is `1 + modifier bits` (shift=1, alt=2, ctrl=4), and an
+ * optional `:event` suffix distinguishes press (1), repeat (2) and release
+ * (3).
+ *
+ * Returns the decoded modifiers and event type when the sequence is an
+ * Enter with Alt or Ctrl held — the newline variants — and `null` for
+ * everything else (other keys, plain or shift-only Enter).
+ */
+const CSI_ENTER_RE = /^\[13;(\d+)(?::(\d))?u$/;
+function matchCsiEnter(s: string): { modifiers: number; event: number } | null {
+  const m = CSI_ENTER_RE.exec(s);
+  if (!m) return null;
+  const modifiers = Number(m[1]) - 1; // the wire value is 1 + the bit field
+  // Shift-only Enter stays unbound: in every legacy terminal it is
+  // byte-identical to plain Enter, so it must not grow a meaning only an
+  // enhanced keyboard can trigger.
+  if ((modifiers & 0b110) === 0) return null;
+  return { modifiers, event: m[2] === undefined ? 1 : Number(m[2]) };
+}
+
 export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputAreaProps) {
   const [input, setInput] = useState('');
   const [cursor, setCursor] = useState(0);
@@ -51,6 +77,10 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
   // Only ever copied from `cursor`, so it is always a code-point boundary.
   const [anchor, setAnchor] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Escape closes the suggestion panel without touching the draft; this flag
+  // is that dismissal. It lapses (effect below) once the input stops
+  // matching any command, so a fresh '/' reopens the panel.
+  const [panelDismissed, setPanelDismissed] = useState(false);
   // Undo stack. Must be a ref: state would re-render on every keystroke and a
   // value rebuilt per render would lose the history. Applying a snapshot goes
   // through setInput/setCursor, which already triggers the render.
@@ -63,7 +93,14 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
     return SLASH_COMMANDS.filter(c => c.name.startsWith(typed));
   }, [input]);
 
-  const showSuggestions = suggestions.length > 0;
+  const showSuggestions = suggestions.length > 0 && !panelDismissed;
+
+  // The dismissal lapses with its trigger: once no command matches any more
+  // (draft submitted, prefix removed, space typed), the panel re-arms so a
+  // new '/' command can open it again.
+  useEffect(() => {
+    if (suggestions.length === 0) setPanelDismissed(false);
+  }, [suggestions.length]);
 
   // A collapsed selection (anchor === null or anchor === cursor) needs no
   // special casing anywhere: replaceRange over an empty range is a plain
@@ -91,7 +128,8 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
     setCursor(0);
     setAnchor(null);
     setSelectedIndex(0);
-    // Submitted (or discarded) text must not come back with Ctrl-Z.
+    setPanelDismissed(false);
+    // Submitted text must not come back with Ctrl-Z.
     historyRef.current = initInputHistory('');
   });
 
@@ -174,6 +212,35 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
       return;
     }
 
+    // --- Newline: Ctrl+J / Alt+Enter / Ctrl+Enter (kitty CSI u) ---
+    // Enter itself ('\r' → key.return) submits above; every manual-newline
+    // key arrives as something else, and none of them carries key.return:
+    //   Ctrl+J      a bare '\n' — Ink 4 parses it as key name 'enter', which
+    //               is NOT 'return', so it lands here as a character.
+    //   Alt+Enter   ESC + '\r' in one chunk — Ink strips the ESC and reports
+    //               the '\r' as a plain character with no meta flag.
+    //   Ctrl+Enter  '\x1b[13;5u' under the kitty keyboard protocol's
+    //               report-all-keys mode (Alt+Enter is '\x1b[13;3u' there);
+    //               see matchCsiEnter for why the sequence arrives as text.
+    // A newline is an ordinary character: it replaces an active selection,
+    // joins the typing run on the undo stack, and renders through the same
+    // multi-line layout as pasted text. Shift+Enter is deliberately not
+    // handled — most terminals send the same '\r' as Enter, so binding it
+    // would promise what a stock terminal cannot deliver.
+    if (ch === '\n' || ch === '\r') {
+      applyEdit(replaceRange(input, sel.start, sel.end, '\n'), 'insert');
+      return;
+    }
+    const csiEnter = matchCsiEnter(ch);
+    if (csiEnter) {
+      // With key-event reporting on, the terminal sends press AND release;
+      // only press and repeat events insert.
+      if (csiEnter.event !== 3) {
+        applyEdit(replaceRange(input, sel.start, sel.end, '\n'), 'insert');
+      }
+      return;
+    }
+
     // --- Tab: autocomplete ---
     if (key.tab) {
       if (showSuggestions) {
@@ -197,20 +264,22 @@ export function InputArea({ onSubmit, onExit, onEscape, busy, width }: InputArea
     }
 
     // --- Escape ---
+    // First match wins, and the draft is never touched: a selection is
+    // dismissed (value and cursor stay put), an open suggestion panel is
+    // closed (it re-arms once the input stops matching commands), and only
+    // a bare Escape travels on to the controller — which dismisses an
+    // overlay or aborts the current turn (controller-page owns that
+    // wiring; nothing here may reset the draft).
     if (key.escape) {
-      // A selection is dismissed first; the value and cursor stay put.
       if (hasSelection) {
         setAnchor(null);
         return;
       }
       if (showSuggestions) {
-        // Close suggestions by discarding the slash prefix; the draft dies
-        // with the panel, so the history goes too.
-        reset();
-      } else {
-        onEscape?.();
-        reset();
+        setPanelDismissed(true);
+        return;
       }
+      onEscape?.();
       return;
     }
 

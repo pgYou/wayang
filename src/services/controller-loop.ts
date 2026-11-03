@@ -105,11 +105,14 @@ export class ControllerLoop {
         hooks.emit('controller:loop-end', { lastWakeAt: this.lastWakeAt });
 
         await signalQueue.waitForSignal();
-      } catch (err: any) {
+      } catch (err) {
         if (ctx.abortController.signal.aborted) break;
         const friendly = formatLlmError(err);
+        // AI SDK error wrappers (AI_APICallError / AI_RetryError) carry the
+        // status code on optional fields not part of the Error base type.
+        const { statusCode, lastError } = err as { statusCode?: number; lastError?: { statusCode?: number } };
         ctx.logger.error(
-          { error: friendly, statusCode: err.statusCode ?? err.lastError?.statusCode },
+          { error: friendly, statusCode: statusCode ?? lastError?.statusCode },
           'Controller loop error',
         );
 

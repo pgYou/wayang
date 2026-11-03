@@ -4,7 +4,9 @@ import { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ControllerAgentState } from '@/services/agents/controller-state';
 import type { ControllerSignal } from '@/types/index';
 import { SkillRegistry } from '@/services/skills/registry';
-import { mockProvider, createMockCtx } from '@/__tests__/helpers';
+import { ToolCallRecorder } from '../utils/tool-call-recorder';
+import { ConversationIndexBuilder } from '@/services/conversation/conversation-index';
+import { mockProvider, createMockCtx, createMockLogger } from '@/__tests__/helpers';
 
 // Empty registry — controller needs it for prompt building.
 const skills = new SkillRegistry([]);
@@ -776,5 +778,298 @@ describe('ControllerAgent', () => {
       cachedInputTokens: 4_000,
     });
     expect(usage.breakdown.total).toBeGreaterThan(0);
+  });
+});
+
+describe('ControllerAgent: user abort (ESC)', () => {
+  let state: any;
+  let agent: ControllerAgent;
+
+  beforeEach(() => {
+    state = createMockState();
+    vi.mocked(streamText).mockReset();
+    vi.mocked(generateText).mockReset();
+    agent = new ControllerAgent(
+      createMockCtx(),
+      state as ControllerAgentState,
+      mockProvider,
+      {}, // tools
+      skills,
+    );
+  });
+
+  const inputSignal = (id: string): ControllerSignal => ({
+    id,
+    source: 'user',
+    type: 'input',
+    payload: { text: 'long question' },
+    timestamp: Date.now(),
+    status: 'unread',
+  });
+
+  /** Mock stream that mimics the SDK on abort: chunks, then abort + AbortError. */
+  const mockAbortingStream = (chunksBeforeAbort: string[], onStepFinish?: (opts: any) => void) => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        for (const chunk of chunksBeforeAbort) {
+          yield chunk;
+        }
+        onStepFinish?.(opts);
+        agent.abort(); // user presses ESC mid-stream
+        throw new Error('AbortError'); // what the real SDK does once the signal fires
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+  };
+
+  const appendedEntries = () =>
+    state.append.mock.calls
+      .filter((call: any[]) => call[0] === 'conversation')
+      .map((call: any[]) => call[1]);
+
+  it('appends a truncated assistant entry and an interrupted marker when aborted mid-stream', async () => {
+    // Realistic interleaving: step one completes (onStepFinish records it),
+    // step two streams a partial, THEN the user aborts.
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'step one full';
+        opts.onStepFinish?.({
+          text: 'step one full',
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        yield 'partial two';
+        agent.abort(); // user presses ESC mid-stream
+        throw new Error('AbortError'); // what the real SDK does once the signal fires
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    const result = await agent.run([inputSignal('sig-abort-1')]);
+
+    // Partial text of the interrupted step is returned, not lost.
+    expect(result.text).toBe('step one fullpartial two');
+
+    const entries = appendedEntries();
+
+    // Step one completed normally — recorded without the interrupted flag.
+    const complete = entries.find((e: any) => e?.type === 'assistant' && e.interrupted !== true);
+    expect(complete).toBeDefined();
+    expect(complete.message.content).toBe('step one full');
+
+    // Step two's partial survives as a truncated entry.
+    const truncated = entries.find((e: any) => e?.type === 'assistant' && e.interrupted === true);
+    expect(truncated).toBeDefined();
+    expect(truncated.message.content).toBe('partial two');
+    expect(truncated.turnId).toEqual(expect.any(String));
+    expect(truncated.finishReason).toBeUndefined();
+
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+    expect(marker.content).toContain('interrupted');
+    expect(marker.actor).toEqual({ kind: 'user', id: 'user' });
+    expect(marker.turnId).toBe(truncated.turnId);
+
+    // Marker sits directly behind the truncated entry.
+    expect(entries.indexOf(truncated)).toBe(entries.indexOf(marker) - 1);
+
+    // Live streaming region is cleared.
+    expect(state.get('dynamicState.streamingEntries')).toEqual([]);
+  });
+
+  it('writes only the interrupt marker when aborted before any output', async () => {
+    mockAbortingStream([]);
+
+    await agent.run([inputSignal('sig-abort-2')]);
+
+    const entries = appendedEntries();
+    // User entry + marker — and crucially NO assistant entry at all.
+    expect(entries.some((e: any) => e?.type === 'assistant')).toBe(false);
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+  });
+
+  it('does not duplicate the step entry when abort lands after step finish', async () => {
+    // Step one completes via onStepFinish; abort arrives with NO further
+    // chunks, so the recorded step must not be appended a second time.
+    mockAbortingStream(['step one full'], opts => {
+      opts.onStepFinish?.({
+        text: 'step one full',
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: 'stop',
+      });
+    });
+
+    await agent.run([inputSignal('sig-abort-3')]);
+
+    const entries = appendedEntries();
+    const stepEntries = entries.filter((e: any) => e?.type === 'assistant');
+    // One complete step entry, no truncated duplicate of it.
+    expect(stepEntries).toHaveLength(1);
+    expect(stepEntries[0].interrupted).toBeUndefined();
+    expect(stepEntries[0].message.content).toBe('step one full');
+    const markers = entries.filter((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(markers).toHaveLength(1);
+  });
+
+  it('persists a complete late step finish that lands after the abort', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'partial';
+        agent.abort();
+        // Late step finish after the abort: its tools already ran to
+        // completion, so it carries the full step record — persist it, the
+        // interrupt marker follows right behind.
+        opts.onStepFinish?.({
+          text: 'partial',
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        throw new Error('AbortError');
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    await agent.run([inputSignal('sig-abort-4')]);
+
+    const entries = appendedEntries();
+    const assistantEntries = entries.filter((e: any) => e?.type === 'assistant');
+    // The complete step is recorded — not dropped, not duplicated as a
+    // truncated partial (onStep consumed the streaming uuid).
+    expect(assistantEntries).toHaveLength(1);
+    expect(assistantEntries[0].interrupted).toBeUndefined();
+    expect(assistantEntries[0].message.content).toBe('partial');
+    expect(assistantEntries[0].finishReason).toBe('stop');
+
+    // …and the interrupt marker lands directly behind it.
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+    expect(entries.indexOf(assistantEntries[0])).toBe(entries.indexOf(marker) - 1);
+  });
+
+  it('keeps an add_task toolCall linkable when the abort lands during tool execution', async () => {
+    // MF-1 regression: ESC during add_task execution. The tool completes and
+    // dispatches its task; finish-step flows in AFTER the abort carrying the
+    // complete toolCalls+toolResults. Dropping it would orphan the taskId:
+    // the interrupted turn would derive as cancelled instead of running, and
+    // the worker's completion signal would point at a task absent from the
+    // conversation.
+    const recorder = new ToolCallRecorder();
+    const taskAgent = new ControllerAgent(
+      createMockCtx(),
+      state as ControllerAgentState,
+      mockProvider,
+      {}, // tools
+      skills,
+      recorder,
+    );
+
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'dispatching task';
+        recorder.start('tc-add-1', 'add_task');
+        taskAgent.abort(); // user presses ESC while add_task is executing
+        recorder.attachTask('tc-add-1', 'task-esc-tool'); // tool completes, task dispatched
+        opts.onStepFinish?.({
+          text: 'dispatching task',
+          toolCalls: [{ toolCallId: 'tc-add-1', toolName: 'add_task', args: '{"title":"long task"}' }],
+          toolResults: [{ toolCallId: 'tc-add-1', toolName: 'add_task', output: 'task created: task-esc-tool' }],
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'tool-calls',
+        });
+        throw new Error('AbortError');
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    await taskAgent.run([inputSignal('sig-abort-7')]);
+
+    const entries = appendedEntries();
+    const step = entries.find((e: any) => e?.type === 'assistant');
+    expect(step).toBeDefined();
+    // The persisted tool call keeps its taskId association and running status.
+    expect(step.toolCalls).toHaveLength(1);
+    expect(step.toolCalls[0].toolName).toBe('add_task');
+    expect(step.toolCalls[0].taskId).toBe('task-esc-tool');
+    expect(step.toolCalls[0].status).toBe('running');
+
+    // The marker still closes the turn…
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+
+    // …and the conversation index derives the interrupted turn as RUNNING —
+    // the dispatched task is unfinished, so its worker's later signals can
+    // resolve against this turn.
+    const idx = new ConversationIndexBuilder(state.get('conversation'));
+    const turn = idx.getTurn(marker.turnId);
+    expect(turn).toBeDefined();
+    expect(turn!.status).toBe('running');
+    expect(turn!.toolCalls[0].taskId).toBe('task-esc-tool');
+  });
+
+  it('does not log an error when the stream is aborted by the user', async () => {
+    const logger = createMockLogger();
+    const logAgent = new ControllerAgent(
+      createMockCtx({ logger }),
+      state as ControllerAgentState,
+      mockProvider,
+      {}, // tools
+      skills,
+    );
+
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'partial';
+        logAgent.abort();
+        // The real SDK reports the abort through onError before the throw.
+        opts.onError?.({ error: new Error('AbortError') });
+        throw new Error('AbortError');
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    await logAgent.run([inputSignal('sig-abort-8')]);
+
+    // The abort is a user action, not a provider failure — no error-level log.
+    expect(logger.error).not.toHaveBeenCalled();
+    // It is still traceable at debug level.
+    const debugMessages = vi.mocked(logger.debug).mock.calls.map((c: any[]) => String(c[1]));
+    expect(debugMessages).toContain('LLM stream aborted by user');
+  });
+
+  it('recovers and runs normally after an aborted turn', async () => {
+    mockAbortingStream(['partial']);
+    await agent.run([inputSignal('sig-abort-5a')]);
+
+    // Second turn on the SAME agent — the abort must not poison it.
+    mockStreamResponse('fresh full answer');
+    const result = await agent.run([inputSignal('sig-abort-5b')]);
+
+    expect(result.text).toBe('fresh full answer');
+    // Only the first turn left an interrupt marker.
+    const markers = appendedEntries().filter((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(markers).toHaveLength(1);
+    // And no busy flag is left behind.
+    expect(state.get('dynamicState.busy')).toBe(false);
+  });
+
+  it('writes no interrupt records on normal completion', async () => {
+    mockStreamResponse('ok');
+
+    await agent.run([inputSignal('sig-abort-6')]);
+
+    const entries = appendedEntries();
+    expect(entries.some((e: any) => e?.type === 'system' && e.subtype === 'interrupted')).toBe(false);
+    expect(entries.some((e: any) => e?.type === 'assistant' && e.interrupted === true)).toBe(false);
   });
 });

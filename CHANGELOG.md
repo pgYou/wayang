@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.7.1 (2026-11-03)
+
+### Features
+
+**CLI 短参数与严格参数校验** — Adds -v/--version and -h/--help (-r/--resume was already short). BREAKING: -v previously meant --verbose and now prints the version and exits; --verbose is long-only. Unknown options, missing values, boolean flags given a value, case variants and --no- forms now fail fast — error to stderr, help printed, exit code 1 — instead of being silently ignored
+
+**输入框手动换行** — Ctrl+J and Alt+Enter insert a newline instead of sending, while Enter still sends. Terminals speaking the kitty keyboard protocol additionally deliver Ctrl+Enter as a newline. Newlines join the existing snapshot undo history like any typed character
+
+**/shortcut 命令** — Lists every available key binding grouped by input editing, app and session, rendered from a single catalog shared with the implementation so the help text cannot drift from the real bindings
+
+### Fixes
+
+**ESC 中止 controller 回合** — ESC in the input area aborts the controller's current turn. The draft is preserved in every case; an active selection or an open suggestion panel consumes ESC first. Partial output is kept as one truncated message followed by an explicit interrupt marker, replayed to the model as [USER INTERRUPT]; a zero-output abort records only the marker
+
+**工具执行期间中止不再丢失派发记录** — Aborting while the controller was running a tool dropped the finished step together with its tool calls and results, so a dispatched task vanished from the conversation and the interrupted turn was reported as cancelled. Steps completing before the interrupt record lands are now persisted, keeping task ids linkable
+
+**Ctrl+C 归还应用层** — Ink's default exitOnCtrlC consumed Ctrl+C before the app saw it, so a single press quit regardless of state. Ctrl+C is now owned by the app: while a turn is running it aborts that turn; when idle the first press shows a "Press Ctrl+C again to quit" notice and a second press within one second exits
+
+**get_worker_status 活动字段恒为空** — The tool resolved the transcript by the engine worker id (w-…), while transcripts live under the worker's own id (agent-… / cw-…), so every activity field came back null. It now resolves through memory, the persisted transcript id and id candidates, and exposes activitySource so "no activity" is distinguishable from "this worker type reports none"（Closes #28）
+
+**TUI 活动 worker 条目** — A finished worker could linger on screen with a truncated task id and an ever-growing timer. Rows now prefer the task title with a documented fallback chain, disambiguate colliding labels, mark idle entries and count them from idleSince, and render elapsed time as 42s / 1m41s / 1h05m
+
+**状态栏上下文占用去掉 ctx 前缀** — The context usage segment keeps the token counts and the percentage (e.g. `227.9k/1M (23%)`) and only drops the "ctx" label
+
+### Refactoring
+
+**eslint 存量告警清零** — 466 warnings (452 no-explicit-any, 14 no-unused-vars) reduced to zero. Implementation files received real types or per-line disables with reasons; test files get scoped overrides for the two type-loose rules only, with correctness rules still enforced
+
 ## v0.7.0 (2026-11-02)
 
 ### Features

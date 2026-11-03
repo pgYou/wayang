@@ -62,6 +62,13 @@ export function getLatestSessionForWorkspace(
   return createSessionIndex(homeDir).latestForWorkspace(workspaceDir);
 }
 
+/** Task snapshot fields read from a session's tasks.json. */
+interface UnfinishedTaskSnapshot {
+  id: string;
+  title: string;
+  description: string;
+}
+
 /**
  * Read a session's tasks.json and return the pending + running tasks.
  * Used at sessionless resume to surface unfinished work to the controller
@@ -76,12 +83,15 @@ export function readSessionUnfinishedTasks(
   const tasksPath = path.join(sessionDir, 'tasks.json');
   if (!fs.existsSync(tasksPath)) return null;
   try {
+    // Shape assumed from the writer side (tasks.json); malformed files are
+    // filtered out below, and missing fields surface as undefined just as
+    // they did when this was read through `any`.
     const data = JSON.parse(fs.readFileSync(tasksPath, 'utf-8')) as {
-      tasks?: { pending?: any[]; running?: any[] };
+      tasks?: { pending?: UnfinishedTaskSnapshot[]; running?: UnfinishedTaskSnapshot[] };
     };
     const pending = data.tasks?.pending ?? [];
     const running = data.tasks?.running ?? [];
-    const pick = (status: 'pending' | 'running') => (t: any) => ({
+    const pick = (status: 'pending' | 'running') => (t: UnfinishedTaskSnapshot) => ({
       id: t.id,
       title: t.title,
       description: t.description,

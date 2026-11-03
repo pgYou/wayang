@@ -35,6 +35,7 @@ export interface IPersistenceHelper<T = unknown> {
   /** Load the persisted value, or null when absent/unreadable. */
   read(): unknown;
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- entry shape is the concrete helper's generic T (e.g. JSONLFileHelper<T>); the interface stays permissive
   readFromEnd?(stopCondition: (entry: any) => boolean): any[];
 
   clear(): void;

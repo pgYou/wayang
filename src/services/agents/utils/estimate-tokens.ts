@@ -21,6 +21,7 @@ export function estimateTokens(text: string): number {
  * context breakdown uses — so the estimate and the breakdown agree. Tool
  * payloads regularly dominate an agent step's real token footprint.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberately accepts two shapes (conversation entry | SDK ModelMessage) read defensively; see doc comment above
 export function estimateEntryTokens(entry: any): number {
   if (!entry) return 0;
   const content = entry.message?.content ?? entry.content ?? '';
@@ -47,6 +48,7 @@ export function estimateEntryTokens(entry: any): number {
 }
 
 /** Estimate total tokens for conversation entries. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- element shape varies by caller (entries or ModelMessages); see estimateEntryTokens
 export function estimateConversationTokens(entries: any[]): number {
   let total = 0;
   for (const entry of entries) {

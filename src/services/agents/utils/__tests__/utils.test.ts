@@ -119,6 +119,91 @@ describe('conversationToSdkMessages', () => {
     expect(msgs).toHaveLength(0);
   });
 
+  it('should replay interrupted markers as an explicit [USER INTERRUPT] system message', () => {
+    const ts = new Date().toISOString();
+    const entries = [
+      {
+        type: EEntryType.User,
+        uuid: 'u-abort-1',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        message: { role: 'user', content: 'long question' },
+      },
+      {
+        type: EEntryType.Assistant,
+        uuid: 'a-abort-1',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        message: { role: 'assistant', content: 'partial answer so fa' },
+        interrupted: true,
+      },
+      {
+        type: EEntryType.System,
+        uuid: 's-abort-1',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        subtype: 'interrupted',
+        content: 'Response interrupted by user.',
+      },
+    ];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    // user + truncated assistant + interrupt marker
+    expect(msgs).toHaveLength(3);
+    expect(msgs[0]).toEqual({ role: 'user', content: 'long question' });
+    expect(msgs[1]).toEqual({ role: 'assistant', content: 'partial answer so fa' });
+    expect(msgs[2].role).toBe('system');
+    expect((msgs[2] as any).content).toContain('[USER INTERRUPT]');
+    expect((msgs[2] as any).content).toContain('truncated partial');
+  });
+
+  it('should keep the marker as the only interrupt artifact for zero-output aborts', () => {
+    const ts = new Date().toISOString();
+    const entries = [
+      {
+        type: EEntryType.User,
+        uuid: 'u-abort-2',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        message: { role: 'user', content: 'question' },
+      },
+      // Zero-token abort: no assistant entry at all — only the marker.
+      {
+        type: EEntryType.System,
+        uuid: 's-abort-2',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        subtype: 'interrupted',
+        content: 'Response interrupted by user.',
+      },
+    ];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    expect(msgs).toHaveLength(2);
+    expect(msgs[1].role).toBe('system');
+    expect((msgs[1] as any).content).toContain('[USER INTERRUPT]');
+  });
+
+  it('should still skip error system entries (only interrupted ones replay)', () => {
+    const entries = [{
+      type: EEntryType.System,
+      uuid: 's-err-1',
+      parentUuid: null,
+      sessionId: 's1',
+      timestamp: new Date().toISOString(),
+      subtype: 'error',
+      content: 'LLM error',
+    }];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    expect(msgs).toHaveLength(0);
+  });
+
   it('should convert SignalEntry to system message', () => {
     const entries = [{
       type: EEntryType.Signal,

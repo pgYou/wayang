@@ -133,6 +133,24 @@ describe('TaskExecuteEngine — multi-stage worker lifecycle', () => {
     expect(engine.list('completed')).toHaveLength(1);
   });
 
+  it('parked idle entry keeps taskId + taskTitle for the TUI label fallback', async () => {
+    // The status bar falls back to ActiveWorkerInfo.taskTitle once the task
+    // moved to history — the idle entry must carry it (and the task id the
+    // row keying depends on) through the moveToIdle transition.
+    const { engine } = makeEngine();
+    await engine.restore();
+
+    engine.add(makeTask('t9', { multiStage: true, title: 'Research stage' }));
+    const worker = lastWorker();
+    await resolveAndSettle(worker, { status: 'completed', summary: 's1' });
+
+    const active = engine.getActiveWorkers();
+    expect(active).toHaveLength(1);
+    expect(active[0].status).toBe('idle');
+    expect(active[0].taskId).toBe('t9');
+    expect(active[0].taskTitle).toBe('Research stage');
+  });
+
   it('failed multiStage task: does NOT park in idle (failure always disposes)', async () => {
     const { engine } = makeEngine();
     await engine.restore();

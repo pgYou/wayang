@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Supervisor } from '@/services/supervisor';
 import type { TaskDetail } from '@/types/index';
@@ -24,14 +24,21 @@ function makeConfig(overrides?: Partial<WayangConfig>): WayangConfig {
   return { ...defaultConfig, ...overrides };
 }
 
+// Supervisors created by the current test; afterEach shuts them down so
+// their log sinks (pino transport worker threads writing
+// <sessionDir>/wayang.log) stop before the temp directory is removed.
+const createdSupervisors: Supervisor[] = [];
+
 function createSupervisor(tempDir: string, configOverrides?: Partial<WayangConfig>, resume?: { sessionId: string; sessionDir: string }) {
-  return new Supervisor({
+  const sup = new Supervisor({
     config: makeConfig(configOverrides),
     workspaceDir: tempDir,
     homeDir: tempDir,
     logLevel: 'silent',
     resume,
   });
+  createdSupervisors.push(sup);
+  return sup;
 }
 
 // --- Tests ---
@@ -43,8 +50,38 @@ describe('Supervisor', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'wayang-supervisor-test-'));
   });
 
-  afterEach(() => {
-    rmSync(tempDir, { recursive: true, force: true });
+  afterEach(async () => {
+    // Defensive teardown, not masking. The real guarantee is product-side:
+    // Supervisor.shutdown() awaits SystemContext.closeLogger(), so once a
+    // supervisor is shut down its log sink's worker thread has exited and
+    // the session directory is quiescent (proved by the regression test
+    // "stops creating files in the session dir after shutdown" below).
+    // Tests here construct supervisors without always shutting them down
+    // themselves, so do it before deleting the directory.
+    await Promise.allSettled(createdSupervisors.map((sup) => sup.shutdown()));
+    createdSupervisors.length = 0;
+
+    // Defensive cleanup for any other late writer. rmSync's own maxRetries
+    // is NOT enough here: Node's internal retry loop re-attempts the bare
+    // rmdir without re-enumerating the directory, so a file created after
+    // its children pass survives every internal retry. A fresh full rmSync
+    // invocation re-walks the tree and removes such a file — this recovers
+    // whenever no one keeps writing, which the shutdown above guarantees
+    // for the logger. Genuine failures still surface: bounded attempts,
+    // rethrown after the last one.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+        return;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if ((code === 'ENOTEMPTY' || code === 'EBUSY') && attempt < 5) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
+          continue;
+        }
+        throw err;
+      }
+    }
   });
 
   describe('constructor', () => {
@@ -111,7 +148,6 @@ describe('Supervisor', () => {
 
       // Manually move to running to simulate a task in progress
       // (scheduleNext would try to spawn a real worker, so we inject via internal state)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const engineState = (sup.engine as any).taskState;
       const pending: TaskDetail[] = engineState.get('tasks.pending');
       if (pending.length > 0) {
@@ -136,6 +172,22 @@ describe('Supervisor', () => {
       const sup = createSupervisor(tempDir);
       await sup.shutdown();
       expect(sup.ctx.abortController.signal.aborted).toBe(true);
+    });
+
+    it('stops creating files in the session dir after shutdown', async () => {
+      const sup = createSupervisor(tempDir);
+      await sup.shutdown();
+
+      const sessionDir = sup.ctx.sessionDir;
+      const filesBefore = new Set(readdirSync(sessionDir));
+
+      // Pre-fix, the log sink's transport worker thread opened
+      // <sessionDir>/wayang.log ~60ms after construction — well after
+      // shutdown() had returned. Poll past that window.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const lateFiles = readdirSync(sessionDir).filter((f) => !filesBefore.has(f));
+      expect(lateFiles).toEqual([]);
     });
   });
 });

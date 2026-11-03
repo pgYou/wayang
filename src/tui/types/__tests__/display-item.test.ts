@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { entryToDisplayItem, signalToDisplayItem } from '@/tui/types/display-item';
 import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/conversation';
-import type { ConversationEntry, UserEntry, AssistantEntry, SignalEntry, SystemEntry } from '@/types/conversation';
+import type { UserEntry, AssistantEntry, SignalEntry, SystemEntry } from '@/types/conversation';
 import type { ControllerSignal } from '@/types/signal';
 
 // --- entryToDisplayItem ---
@@ -66,6 +66,14 @@ describe('entryToDisplayItem', () => {
     const item = entryToDisplayItem(entry)!;
     expect(item.role).toBe('assistant');
     expect(item.sections).toHaveLength(3); // content + tool_call + tool_result
+  });
+
+  it('should pass the interrupted flag through for truncated assistant entries', () => {
+    const item = entryToDisplayItem(makeAssistantEntry('partial answer', { interrupted: true }))!;
+    expect(item.role).toBe('assistant');
+    expect(item.interrupted).toBe(true);
+    // Absent on normal entries — not fabricated.
+    expect(entryToDisplayItem(makeAssistantEntry('full answer'))!.interrupted).toBeUndefined();
   });
 
   it('should return null for skip_reply entries', () => {

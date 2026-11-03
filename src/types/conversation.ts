@@ -24,6 +24,8 @@ export enum ESystemSubtype {
   TaskResult = 'task_result',
   /** ask_controller Q&A record (third-party workers) — audit only, never read back. */
   Inquiry = 'inquiry',
+  /** Controller turn aborted by the user (ESC) mid-stream — not a failure. */
+  Interrupted = 'interrupted',
 }
 
 /** SignalEntry event kind — worker notifications delivered to Controller. */
@@ -192,6 +194,12 @@ export interface AssistantEntry extends ConversationEntryEnvelope {
   toolResults?: ToolResultRecord[];
   /** SDK finish reason for this step. */
   finishReason?: string;
+  /**
+   * Present when this step's output was truncated by a user interrupt (ESC).
+   * The SDK never finished the step, so there is no finishReason/usage — the
+   * content is a partial, followed by an `interrupted` system marker entry.
+   */
+  interrupted?: boolean;
   /** Zero-based index of this step within its turn. */
   stepIndex?: number;
   /**

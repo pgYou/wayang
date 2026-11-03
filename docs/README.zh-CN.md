@@ -122,8 +122,10 @@ wayang --resume --all             # 查看所有会话并选择
 | `--home-dir`          | 数据存储目录   | `~/.wayang`             |
 | `-w, --workspace-dir` | Agent 工作目录 | 当前目录                |
 | `-c, --config`        | 配置文件路径   | `~/.wayang.config.json` |
-| `--resume [id]`       | 恢复会话       | —                       |
+| `-r, --resume [id]`   | 恢复会话       | —                       |
 | `--verbose`           | 启用详细日志   | —                       |
+| `-h, --help`          | 显示帮助       | —                       |
+| `-v, --version`       | 显示版本       | —                       |
 
 ## 项目结构
 

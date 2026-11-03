@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import type { ExecException } from 'node:child_process';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
@@ -36,10 +37,13 @@ export function searchContentTool(deps: { cwd?: string }) {
           encoding: 'utf-8',
         });
         return output || 'No matches found';
-      } catch (err: any) {
-        // grep exits with code 1 when no matches found — not a real error
-        if (err.status === 1) return 'No matches found';
-        return `Exit code ${err.status ?? 1}\n${err.stderr?.toString() || ''}`;
+      } catch (err) {
+        // grep exits with code 1 when no matches found — not a real error.
+        // execSync failures carry status/stderr beyond the declared
+        // ExecException fields (Node attaches them at runtime).
+        const e = err as Partial<ExecException> & { status?: number | null };
+        if (e.status === 1) return 'No matches found';
+        return `Exit code ${e.status ?? 1}\n${e.stderr?.toString() || ''}`;
       }
     }),
   });

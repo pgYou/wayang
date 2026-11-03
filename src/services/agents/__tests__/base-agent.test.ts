@@ -27,6 +27,10 @@ class TestAgent extends BaseAgent {
   runLoop(opts: StreamLoopOptions) {
     return this.streamLoop(opts);
   }
+  /** Expose the protected reset for direct testing. */
+  reset() {
+    this.resetAbortController();
+  }
 }
 
 describe('BaseAgent', () => {
@@ -40,6 +44,14 @@ describe('BaseAgent', () => {
     const agent = new TestAgent(mockProvider);
     agent.abort();
     expect(agent.abortController.signal.aborted).toBe(true);
+  });
+
+  it('should clear aborted state on resetAbortController (controller per-run aborts)', () => {
+    const agent = new TestAgent(mockProvider);
+    agent.abort();
+    expect(agent.abortController.signal.aborted).toBe(true);
+    agent.reset();
+    expect(agent.abortController.signal.aborted).toBe(false);
   });
 
   it('should create model from provider', () => {
@@ -305,7 +317,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
   });
 
   it('is disabled when idleTimeoutMs is 0', async () => {
-    vi.mocked(streamText).mockImplementation(((opts: any) => {
+    vi.mocked(streamText).mockImplementation(((_opts: any) => {
       const textStream = (async function* () {
         // A long silent stretch, then normal completion — with the watchdog
         // disabled this must not throw.

@@ -13,6 +13,7 @@
 
 import type { ToolRecordStatus } from '@/types/index';
 import type { Logger } from '@/infra/logger';
+import type { Tool } from 'ai';
 import { nowISO } from '@/utils/time';
 
 /** Live record of one tool execution. */
@@ -89,10 +90,12 @@ const TOOL_ERROR_PREFIX = '[ERROR]';
  * pass through untouched.
  */
 export function recordToolCalls(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous zod-inferred tool set (see common.ts relaxation boundary)
   tools: Record<string, any>,
   recorder: ToolCallRecorder,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pass-through of the input tool set's shape
 ): Record<string, any> {
-  const wrapped: Record<string, any> = {};
+  const wrapped: Record<string, Tool> = {};
   for (const [name, def] of Object.entries(tools)) {
     if (!def || typeof def.execute !== 'function') {
       wrapped[name] = def;
@@ -101,7 +104,7 @@ export function recordToolCalls(
     const original = def.execute;
     wrapped[name] = {
       ...def,
-      execute: async (args: any, options?: { toolCallId?: string }) => {
+      execute: async (args: unknown, options?: { toolCallId?: string }) => {
         const toolCallId = options?.toolCallId
           ?? `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         recorder.start(toolCallId, name);
@@ -115,8 +118,8 @@ export function recordToolCalls(
             recorder.finish(toolCallId, 'succeeded');
           }
           return result;
-        } catch (err: any) {
-          recorder.finish(toolCallId, 'failed', err?.constructor?.name ?? 'Error');
+        } catch (err) {
+          recorder.finish(toolCallId, 'failed', (err as { constructor?: { name?: string } })?.constructor?.name ?? 'Error');
           throw err;
         }
       },

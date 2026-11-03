@@ -265,7 +265,7 @@ describe('ClaudeCodeWorker controller messaging', () => {
 
   it('accepts messages again between stages (folded into the next prompt)', async () => {
     const worker = makeWorker();
-    const { stream, release } = gatedStream([assistant('working')], 'before-result');
+    const { stream } = gatedStream([assistant('working')], 'before-result');
     mockQuery.mockReturnValueOnce(stream as never);
     const runP = worker.run(makeTask(), {});
     const result = await runP;

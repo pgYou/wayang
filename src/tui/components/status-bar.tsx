@@ -12,14 +12,29 @@ import { truncateToWidth } from '@/tui/utils/text-width';
 export const CONTEXT_SEGMENT_MAX_WIDTH = 22;
 
 /**
- * Format the persistent context segment, e.g. "ctx 12.3k/100k (12%)".
- * Percent is rounded to integer and not clamped to 100. Output is capped
- * at CONTEXT_SEGMENT_MAX_WIDTH.
+ * Format the persistent context segment, e.g. "12.3k/100k (12%)" — the token
+ * counts and the percent, with no prefix label. Percent is rounded to integer
+ * and not clamped to 100. Output is capped at CONTEXT_SEGMENT_MAX_WIDTH.
  */
 export function formatContextUsage(usedTokens: number, contextWindowTokens: number): string {
   const percent = contextWindowTokens > 0 ? Math.round((usedTokens / contextWindowTokens) * 100) : 0;
-  const text = `ctx ${formatTokenCount(usedTokens)}/${formatTokenCount(contextWindowTokens)} (${percent}%)`;
+  const text = `${formatTokenCount(usedTokens)}/${formatTokenCount(contextWindowTokens)} (${percent}%)`;
   return truncateToWidth(text, CONTEXT_SEGMENT_MAX_WIDTH);
+}
+
+/**
+ * Compact elapsed-time format for the status-bar worker rows:
+ * - under a minute: "42s"
+ * - a minute and up: "1m41s" (minutes + seconds, neither zero-padded)
+ * - an hour and up: "1h05m" (minutes zero-padded, seconds dropped)
+ */
+export function formatElapsedSeconds(totalSeconds: number): string {
+  const s = Math.max(0, Math.trunc(totalSeconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${String(m % 60).padStart(2, '0')}m`;
 }
 
 /**
@@ -33,10 +48,97 @@ export function contextUsageColor(ratio: number): string | undefined {
   return undefined;
 }
 
+/** Unique tail of a generated id: the random suffix after the last dash. */
+function idTail(id: string): string {
+  const parts = id.split('-');
+  return parts.length > 1 ? parts[parts.length - 1] : id;
+}
+
+/** One status-bar worker row, built by {@link buildWorkerRows}. */
+export interface WorkerRow {
+  workerId: string;
+  taskId: string;
+  label: string;
+  /**
+   * Elapsed seconds. While running: since the worker started. While idle:
+   * since it parked (idleSinceMs) — a parked multi-stage worker must not look
+   * like a task still burning time.
+   */
+  elapsed: number;
+  /** True for a parked multi-stage worker — rendered with an "idle" marker. */
+  idle: boolean;
+}
+
+/**
+ * Two rows must never render the same label: a bare truncated task id is
+ * exactly what made finished workers indistinguishable (an 8-char "t-179367"
+ * prefix covers a ~2.8h window of task creation). Every row of a colliding
+ * group gets the task id's random tail appended; if that is still ambiguous
+ * (identical tails), the whole group escalates to full task ids (unique per
+ * task). Duplicate counts are taken BEFORE each mutation pass — mutating
+ * mid-pass would make the remaining rows of a group look already-unique.
+ */
+function disambiguateRowLabels(rows: WorkerRow[]): void {
+  const countLabels = (): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(row.label, (counts.get(row.label) ?? 0) + 1);
+    return counts;
+  };
+
+  const baseCounts = countLabels();
+  for (const row of rows) {
+    if ((baseCounts.get(row.label) ?? 0) < 2) continue;
+    const tail = idTail(row.taskId);
+    if (!row.label.includes(tail)) row.label = `${row.label} ${tail}`;
+  }
+
+  const finalCounts = countLabels();
+  for (const row of rows) {
+    if ((finalCounts.get(row.label) ?? 0) < 2) continue;
+    row.label = row.taskId;
+  }
+}
+
+/**
+ * Derive the status-bar rows from the engine's active workers.
+ *
+ * Label chain (never a bare truncated id):
+ *  1. the running task's title (or description);
+ *  2. the task title stamped on the worker entry at dispatch — this survives
+ *     the task's move to history, which is exactly when a parked multi-stage
+ *     worker's task is no longer in runningTasks;
+ *  3. "workerType idTail" as an explicit fallback.
+ *
+ * Elapsed: since start while running; since parking while idle.
+ */
+export function buildWorkerRows(
+  activeWorkers: ActiveWorkerInfo[],
+  runningTasks: TaskDetail[],
+  now: number,
+): WorkerRow[] {
+  const rows: WorkerRow[] = activeWorkers.map((w) => {
+    const task = runningTasks.find((t) => t.id === w.taskId);
+    const text = String(task?.title ?? '').trim()
+      || String(task?.description ?? '').trim()
+      || String(w.taskTitle ?? '').trim();
+    const idle = w.status === 'idle';
+    const elapsed = Math.max(0, Math.round((now - (idle ? (w.idleSinceMs ?? w.startedAt) : w.startedAt)) / 1000));
+    return {
+      workerId: w.workerId,
+      taskId: w.taskId,
+      label: text ? text.slice(0, 20) : `${w.workerType || 'worker'} ${idTail(w.taskId)}`,
+      elapsed,
+      idle,
+    };
+  });
+  disambiguateRowLabels(rows);
+  return rows;
+}
+
 export interface StatusSegmentsInput {
   pendingCount: number;
   activeCount: number;
-  workerLabels: Array<{ label: string; elapsed: number }>;
+  workerRows: WorkerRow[];
   contextUsage?: ContextUsage | null;
   /** Terminal width in columns. */
   terminalCols?: number;
@@ -55,17 +157,16 @@ export interface StatusSegments {
 
 /**
  * Fit worker rows into `budget` chars: keep whole rows while they fit,
- * hard-truncate only the row that overflows, drop the rest.
+ * hard-truncate only the row that overflows, drop the rest. Idle rows carry
+ * an "idle" marker so a parked multi-stage worker cannot be misread as a
+ * running task.
  */
-function fitWorkerRows(
-  rows: Array<{ label: string; elapsed: number }>,
-  budget: number,
-): string[] {
+function fitWorkerRows(rows: WorkerRow[], budget: number): string[] {
   if (budget <= 0) return [];
   const fitted: string[] = [];
   let used = 0;
   for (const row of rows) {
-    const text = `${row.label} (${row.elapsed}s)`;
+    const text = `${row.label} (${row.idle ? 'idle ' : ''}${formatElapsedSeconds(row.elapsed)})`;
     const sep = fitted.length > 0 ? 3 : 0; // ' · '
     if (used + sep + text.length <= budget) {
       fitted.push(text);
@@ -85,7 +186,7 @@ function fitWorkerRows(
  * the overflow.
  */
 export function buildStatusSegments(input: StatusSegmentsInput): StatusSegments {
-  const { pendingCount, activeCount, workerLabels, contextUsage, terminalCols = 80 } = input;
+  const { pendingCount, activeCount, workerRows, contextUsage, terminalCols = 80 } = input;
 
   const parts: string[] = [];
   if (pendingCount > 0) parts.push(`pending tasks:${pendingCount}`);
@@ -104,7 +205,7 @@ export function buildStatusSegments(input: StatusSegmentsInput): StatusSegments 
 
   return {
     countsText,
-    workerTexts: fitWorkerRows(workerLabels, workerBudget),
+    workerTexts: fitWorkerRows(workerRows, workerBudget),
     contextText,
     contextColor: contextUsage ? contextUsageColor(contextUsage.ratio) : undefined,
   };
@@ -139,29 +240,22 @@ export function StatusBar({
 
   const { stdout } = useStdout();
 
-  const workerRows = useMemo(() => {
-
-    return activeWorkers.map(w => {
-      const task = runningTasks.find(t => t.id === w.taskId);
-      const elapsed = Math.round((now - w.startedAt) / 1000);
-      const label = task ? ((task.title || task.description).slice(0, 20)) : w.taskId.slice(0, 8);
-      return { workerId: w.workerId, label, elapsed };
-    })
-  },
+  const workerRows = useMemo(
+    () => buildWorkerRows(activeWorkers, runningTasks, now),
     [activeWorkers, runningTasks, now],
   );
 
   const segments = useMemo(() => buildStatusSegments({
     pendingCount: pendingTasks.length,
     activeCount: activeWorkers.length,
-    workerLabels: workerRows,
+    workerRows,
     contextUsage,
     terminalCols: stdout?.columns ?? 80,
   }), [pendingTasks.length, activeWorkers.length, workerRows, contextUsage, stdout?.columns]);
 
   // The row is always rendered — even with no tasks it shows "idle" plus the
   // persistent context segment, so the layout never collapses. The context
-  // segment leads the line: " ctx … │ counts  workers".
+  // segment leads the line: " 227.9k/1M (23%) │ counts  workers".
   return (
     <Box paddingX={1} marginTop={0}>
       {segments.contextText ? (

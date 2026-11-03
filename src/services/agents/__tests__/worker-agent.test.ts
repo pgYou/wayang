@@ -116,7 +116,7 @@ describe('WorkerAgent', () => {
     const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
 
     // Simulate: LLM calls done tool → complete() is invoked during stream
-    vi.mocked(streamText).mockImplementation(((opts: any) => {
+    vi.mocked(streamText).mockImplementation(((_opts: any) => {
       // Simulate the done tool callback being triggered during streaming
       worker.complete('Task finished');
       return {

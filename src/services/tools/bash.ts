@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { execSync } from 'node:child_process';
+import type { ExecException } from 'node:child_process';
 import { defineTool, safeExecute } from './common';
 
 export function bashTool(deps: { cwd?: string }) {
@@ -17,12 +18,15 @@ export function bashTool(deps: { cwd?: string }) {
           encoding: 'utf-8',
         });
         return output || '(no output)';
-      } catch (err: any) {
-        const stderr = err.stderr?.toString() || '';
+      } catch (err) {
+        // execSync failures carry status/stderr beyond the declared
+        // ExecException fields (Node attaches them at runtime).
+        const e = err as Partial<ExecException> & { status?: number | null };
+        const stderr = e.stderr?.toString() || '';
         // Include the thrown message when stderr is empty (e.g. spawn failures,
         // timeout kills) — "Exit code 1" alone is undiagnosable.
-        const detail = stderr || err.message || '';
-        return `Exit code ${err.status ?? 1}\n${detail}`;
+        const detail = stderr || e.message || '';
+        return `Exit code ${e.status ?? 1}\n${detail}`;
       }
     }),
   });

@@ -18,11 +18,22 @@ export function SystemRow({ item }: { item: DisplayItem }) {
   const isError = item.subtype === ESystemSubtype.Error;
   const isCompact = isCompactSystemItem(item);
   const isTaskResult = item.subtype === ESystemSubtype.TaskResult;
+  const isInterrupted = item.subtype === ESystemSubtype.Interrupted;
 
   if (isCompact) {
     return (
       <Box>
         <Text dimColor>≋ Conversation has been compacted</Text>
+      </Box>
+    );
+  }
+
+  // User pressed ESC — a deliberate cut, not an error. Low-key gray.
+  if (isInterrupted) {
+    return (
+      <Box>
+        <Text color={theme.meta.color}>⊘ </Text>
+        <Text dimColor>{item.content}</Text>
       </Box>
     );
   }
