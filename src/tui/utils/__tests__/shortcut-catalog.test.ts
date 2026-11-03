@@ -14,9 +14,9 @@ describe('shortcut catalog', () => {
     expect(SHORTCUT_CATEGORIES).toEqual(['input', 'app', 'session']);
   });
 
-  it('files 16 input-editing, 2 application and 2 session entries', () => {
+  it('files 16 input-editing, 1 application and 2 session entries', () => {
     expect(entriesOf('input')).toHaveLength(16);
-    expect(entriesOf('app')).toHaveLength(2);
+    expect(entriesOf('app')).toHaveLength(1);
     expect(entriesOf('session')).toHaveLength(2);
   });
 
@@ -50,9 +50,11 @@ describe('shortcut catalog', () => {
     // Esc aborts the controller turn (and keeps the draft).
     expect(rendered).toContain('Esc');
     expect(rendered).toContain('abort');
-    // Ctrl+C: busy abort / idle double-press-to-quit hint.
+    // Ctrl+C: one row, quit-only — press twice within 1s, busy or idle.
+    // Aborting a turn belongs to Esc, never to Ctrl+C.
     expect(rendered).toContain('Ctrl+C');
     expect(rendered).toContain('quit');
+    expect(SHORTCUTS.filter(e => e.keys === 'Ctrl+C')).toHaveLength(1);
     // Ctrl+U stays the readline kill-to-line-start.
     expect(rendered).toContain('Ctrl+U');
     expect(rendered).toContain('line start');

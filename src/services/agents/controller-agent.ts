@@ -160,7 +160,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 
   /** Run the controller agent — streams text chunks while updating streamingEntries in state. */
   async run(signals: ControllerSignal[]): Promise<{ text: string }> {
-    // Fresh abort channel per turn: an abort (ESC / Ctrl+C / RPC) applies to
+    // Fresh abort channel per turn: an abort (ESC / RPC) applies to
     // THIS run only. Without the reset, the agent-lifetime controller stays
     // aborted forever and every later turn would silently return empty.
     this.resetAbortController();
@@ -280,7 +280,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
   }
 
   /**
-   * Persist a user interrupt (ESC / Ctrl+C while busy) of the current turn:
+   * Persist a user interrupt (ESC while busy) of the current turn:
    *  - the in-flight partial text, if any, becomes a truncated assistant
    *    entry (`interrupted: true`). Empty/whitespace partials are dropped —
    *    an empty assistant message risks provider rejection on replay and
@@ -470,7 +470,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       sessionId: this.ctx.sessionId,
       timestamp: errTs,
       subtype: ESystemSubtype.Error,
-      content: message,
+      content: `${message}\n详情: ${this.ctx.sessionDir}/wayang.log`,
       // Point-in-time event: startedAt/endedAt share the recording moment.
       startedAt: errTs,
       endedAt: errTs,

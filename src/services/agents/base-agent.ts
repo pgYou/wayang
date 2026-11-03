@@ -1,4 +1,13 @@
-import { streamText, stepCountIs, hasToolCall, type OnStepFinishEvent, type ModelMessage, type ToolSet, type PrepareStepFunction } from 'ai';
+import {
+  streamText,
+  stepCountIs,
+  hasToolCall,
+  NoOutputGeneratedError,
+  type OnStepFinishEvent,
+  type ModelMessage,
+  type ToolSet,
+  type PrepareStepFunction,
+} from 'ai';
 import { createModel } from './model-factory';
 import type { ProviderConfig, ToolChoice } from '@/types/index';
 import { generateId } from '@/utils/id';
@@ -168,6 +177,14 @@ export abstract class BaseAgent {
     );
 
     let stream: Awaited<ReturnType<typeof streamText>>;
+    /**
+     * Last provider error delivered to onError. The AI SDK swallows provider
+     * errors (e.g. HTTP 403 from the gateway) into a generic
+     * NoOutputGeneratedError when the stream produced no output — the real
+     * cause only ever reaches onError. Kept here so the final awaits can
+     * re-throw the actual failure instead of the generic wrapper.
+     */
+    let lastStreamError: unknown;
 
     // Build stop conditions: maxSteps + terminal tools (done/fail)
     const stopConditions: Array<ReturnType<typeof stepCountIs>> = [];
@@ -210,6 +227,7 @@ export abstract class BaseAgent {
         ...(opts.prepareStep && { prepareStep: opts.prepareStep }),
         onStepFinish: onStep,
         onError: ({ error }) => {
+          lastStreamError = error;
           opts.onStreamError?.(error);
         },
         // SignalEntry entries are trusted system-generated notifications emitted
@@ -256,12 +274,39 @@ export abstract class BaseAgent {
       this.abortController.signal.removeEventListener('abort', forwardAbort);
     }
     const duration = Date.now() - startTime;
-    const text = await stream.text;
-    const reasoningText = await stream.reasoningText;
-    const toolResults = await stream.toolResults;
-    const rawUsage = await stream.usage;
-    const finishReason = await stream.finishReason;
-    const steps = await stream.steps;
+    let text: Awaited<typeof stream.text>;
+    let reasoningText: Awaited<typeof stream.reasoningText>;
+    let toolResults: Awaited<typeof stream.toolResults>;
+    let rawUsage: Awaited<typeof stream.usage>;
+    let finishReason: Awaited<typeof stream.finishReason>;
+    let steps: Awaited<typeof stream.steps>;
+    try {
+      text = await stream.text;
+      reasoningText = await stream.reasoningText;
+      toolResults = await stream.toolResults;
+      rawUsage = await stream.usage;
+      finishReason = await stream.finishReason;
+      steps = await stream.steps;
+    } catch (err) {
+      // No output was generated. If a provider error was recorded via onError,
+      // it is the real cause — re-throw it (keeping the generic SDK error as
+      // its cause) so callers and the UI see e.g. "403 model offline" instead
+      // of "No output generated. Check the stream for errors."
+      if (lastStreamError !== undefined && NoOutputGeneratedError.isInstance(err)) {
+        if (
+          lastStreamError instanceof Error &&
+          (lastStreamError as { cause?: unknown }).cause === undefined
+        ) {
+          try {
+            (lastStreamError as { cause?: unknown }).cause = err;
+          } catch {
+            // Non-writable cause — keep the provider error as-is.
+          }
+        }
+        throw lastStreamError;
+      }
+      throw err;
+    }
 
     const usage = rawUsage ? { inputTokens: rawUsage.inputTokens ?? 0, outputTokens: rawUsage.outputTokens ?? 0 } : undefined;
     this.hooks.afterLLM?.({ step, usage, durationMs: duration });

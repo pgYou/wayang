@@ -16,10 +16,15 @@ const CTRL_C = '\x03';
 
 /**
  * Minimal RemoteSupervisor stand-in: just the surface AppContent touches —
- * a busy-flagged Subscribable controllerAgent with abort(), and shutdown().
+ * a Subscribable controllerAgent (busy flag + abort()) and shutdown().
+ *
+ * `busy` is mutable through setBusy(): it flips the snapshot and notifies the
+ * 'dynamicState.busy' subscribers exactly like a real state object, so a test
+ * can prove a key binding does not depend on the flag.
  */
-function makeSupervisor(busy: boolean) {
+function makeSupervisor(initialBusy = false) {
   const listeners = new Map<string, Set<() => void>>();
+  let busy = initialBusy;
   const abort = vi.fn();
   const shutdown = vi.fn(async () => {});
   const controllerAgent = {
@@ -35,12 +40,16 @@ function makeSupervisor(busy: boolean) {
     },
     abort,
   };
+  const setBusy = (value: boolean) => {
+    busy = value;
+    for (const cb of [...(listeners.get('dynamicState.busy') ?? [])]) cb();
+  };
   const supervisor = {
     ctx: { workspaceDir: '/tmp/wayang-test' },
     controllerAgent,
     shutdown,
   } as unknown as RemoteSupervisor;
-  return { supervisor, abort, shutdown };
+  return { supervisor, abort, shutdown, setBusy };
 }
 
 /**
@@ -49,7 +58,7 @@ function makeSupervisor(busy: boolean) {
  * by passing exitOnCtrlC: false — Ctrl+C ownership stays with AppContent.
  */
 function renderApp(options: { busy?: boolean } = {}) {
-  const { supervisor, abort, shutdown } = makeSupervisor(options.busy ?? false);
+  const { supervisor, abort, shutdown, setBusy } = makeSupervisor(options.busy ?? false);
   let rawFrame = '';
   const stdout = {
     columns: 80,
@@ -99,6 +108,7 @@ function renderApp(options: { busy?: boolean } = {}) {
   return {
     abort,
     shutdown,
+    setBusy,
     exited: () => exited,
     frame: () => stripAnsi(rawFrame),
     send(data: string) {
@@ -126,15 +136,86 @@ describe('App Ctrl+C handling', () => {
   // in a React effect, so a send() before the first flush would sit unread
   // in the queue until the NEXT 'readable' event.
 
-  it('aborts the controller turn on Ctrl+C while busy, without shutting down', async () => {
+  // Regression guard for the only semantics Ctrl+C has: quit the app, nothing
+  // else. Busy-ness must not change it — ESC is the abort key.
+
+  it('does not abort the controller turn on Ctrl+C while busy', async () => {
     const r = renderApp({ busy: true });
     try {
       await flush();
       r.send(CTRL_C);
       await flush();
-      expect(r.abort).toHaveBeenCalledTimes(1);
+      expect(r.abort).toHaveBeenCalledTimes(0);
       expect(r.shutdown).not.toHaveBeenCalled();
       expect(r.exited()).toBe(false);
+      // Busy is not a special case: the first press arms the quit window.
+      expect(r.frame()).toContain('Press Ctrl+C again to quit');
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('shuts down and exits on a second Ctrl+C within 1s while busy', async () => {
+    const r = renderApp({ busy: true });
+    try {
+      await flush();
+      r.send(CTRL_C);
+      await flush();
+      r.send(CTRL_C);
+      await flush();
+      await flush();
+      // The core regression: quitting while busy must never go through abort().
+      expect(r.abort).toHaveBeenCalledTimes(0);
+      expect(r.shutdown).toHaveBeenCalledTimes(1);
+      expect(r.exited()).toBe(true);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('re-arms on a second busy Ctrl+C more than 1s later instead of exiting', async () => {
+    const r = renderApp({ busy: true });
+    try {
+      await flush();
+      r.send(CTRL_C);
+      await flush();
+      expect(r.frame()).toContain('Press Ctrl+C again to quit');
+      await sleep(1050); // window (1000ms) has definitely expired
+      r.send(CTRL_C);
+      await flush();
+      expect(r.shutdown).not.toHaveBeenCalled();
+      expect(r.exited()).toBe(false);
+      expect(r.abort).toHaveBeenCalledTimes(0);
+      // The late press refreshed the timestamp and re-showed the notice: a
+      // third press inside the NEW window quits.
+      expect(r.frame()).toContain('Press Ctrl+C again to quit');
+      r.send(CTRL_C);
+      await flush();
+      await flush();
+      expect(r.shutdown).toHaveBeenCalledTimes(1);
+      expect(r.exited()).toBe(true);
+      expect(r.abort).toHaveBeenCalledTimes(0);
+    } finally {
+      r.unmount();
+    }
+  });
+
+  it('exits on the second Ctrl+C even if the controller went idle in between', async () => {
+    const r = renderApp({ busy: true });
+    try {
+      await flush();
+      r.send(CTRL_C);
+      await flush();
+      // A turn finishing between the two presses must not consume the second
+      // press on an abort path.
+      r.setBusy(false);
+      await flush();
+      r.send(CTRL_C);
+      await flush();
+      await flush();
+      expect(r.abort).toHaveBeenCalledTimes(0);
+      expect(r.shutdown).toHaveBeenCalledTimes(1);
+      expect(r.exited()).toBe(true);
     } finally {
       r.unmount();
     }

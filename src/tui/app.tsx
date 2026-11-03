@@ -3,7 +3,6 @@ import { useMemoizedFn } from './hooks/use-memoized-fn';
 import { Box, Text, useApp, useInput } from 'ink';
 import { SupervisorProvider, useSupervisor } from './providers/supervisor-provider';
 import { ControllerPage } from './pages/controller-page';
-import { useWayangState } from './hooks/use-wayang-state';
 
 export function App({ supervisor }: { supervisor: import('@/client/remote-supervisor').RemoteSupervisor }) {
   return (
@@ -16,7 +15,6 @@ export function App({ supervisor }: { supervisor: import('@/client/remote-superv
 function AppContent() {
   const { exit } = useApp();
   const supervisor = useSupervisor();
-  const busy = useWayangState<boolean>(supervisor.controllerAgent, 'dynamicState.busy') ?? false;
   const lastCtrlC = useRef<number>(0);
   // Visible feedback for the armed (first) Ctrl+C — without it the swallowed
   // keypress is indistinguishable from an ignored one.
@@ -42,19 +40,17 @@ function AppContent() {
 
   // Global keybindings
   useInput((_ch, key) => {
-    // Ctrl+C handling
+    // Ctrl+C only ever quits the app — in every state, including while the
+    // controller is busy. A single press arms the 1s window and shows the
+    // notice; a second press inside it shuts the supervisor down and exits.
+    // Aborting a turn is ESC's job alone (controller-page → escape-action).
     if (key.ctrl && _ch === 'c') {
-      if (busy) {
-        // Abort current LLM response
-        supervisor.controllerAgent.abort();
-        return;
-      }
-
       const now = Date.now();
       if (lastCtrlC.current && now - lastCtrlC.current < 1000) {
         // Double Ctrl+C → exit
+        lastCtrlC.current = 0;
         hideCtrlCNotice();
-        supervisor.shutdown().then(() => exit());
+        supervisor.shutdown().then(() => exit()).catch(() => exit());
       } else {
         lastCtrlC.current = now;
         // Show the notice for exactly as long as the double-press window is
