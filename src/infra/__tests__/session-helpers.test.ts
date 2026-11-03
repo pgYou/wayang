@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { getLatestSessionForWorkspace, listSessions, getSession } from '@/infra/session-helpers';
 import type { SessionMeta } from '@/infra/session-helpers';
@@ -18,6 +18,7 @@ function writeSessionMeta(sessionId: string, meta: Partial<SessionMeta> & { work
     firstInput: meta.firstInput ?? null,
     createdAt: meta.createdAt,
     lastActiveAt: meta.lastActiveAt ?? meta.createdAt,
+    ...(meta.workspaces ? { workspaces: meta.workspaces } : {}),
   };
   writeFileSync(join(dir, 'meta.json'), JSON.stringify(full));
 }
@@ -68,5 +69,45 @@ describe('session-helpers — listSessions ordering', () => {
     writeSessionMeta('mid', { workspace: '/r', createdAt: 2000 });
     const ordered = listSessions(homeDir).map(m => m.sessionId);
     expect(ordered).toEqual(['newest', 'mid', 'old']);
+  });
+});
+
+describe('session-helpers — getLatestSessionForWorkspace (multi-workspace)', () => {
+  it('matches a session through either of its workspaces entries', () => {
+    writeSessionMeta('multi', {
+      workspace: '/repo-a',
+      workspaces: [
+        { path: '/repo-a', slug: 'repo-a' },
+        { path: '/repo-b', slug: 'repo-b' },
+      ],
+      createdAt: 1000,
+    });
+    writeSessionMeta('only-c', { workspace: '/repo-c', createdAt: 2000 });
+
+    expect(getLatestSessionForWorkspace(homeDir, '/repo-a')!.sessionId).toBe('multi');
+    expect(getLatestSessionForWorkspace(homeDir, '/repo-b')!.sessionId).toBe('multi');
+    expect(getLatestSessionForWorkspace(homeDir, '/repo-c')!.sessionId).toBe('only-c');
+    expect(getLatestSessionForWorkspace(homeDir, '/repo-d')).toBeNull();
+  });
+
+  it('matches a legacy session via a symlink spelling of its workspace', () => {
+    const real = join(homeDir, 'real-repo');
+    mkdirSync(real, { recursive: true });
+    const alias = join(homeDir, 'alias-repo');
+    symlinkSync(real, alias);
+
+    writeSessionMeta('legacy', { workspace: `${real}/`, createdAt: 1000 });
+
+    // Real path, symlink, and trailing-slash spellings all resolve to one session.
+    expect(getLatestSessionForWorkspace(homeDir, real)!.sessionId).toBe('legacy');
+    expect(getLatestSessionForWorkspace(homeDir, alias)!.sessionId).toBe('legacy');
+    expect(getLatestSessionForWorkspace(homeDir, `${alias}/`)!.sessionId).toBe('legacy');
+    expect(getLatestSessionForWorkspace(homeDir, join(homeDir, 'other'))).toBeNull();
+  });
+
+  it('picks the newest session when several matches exist', () => {
+    writeSessionMeta('older', { workspace: '/repo-a', createdAt: 1000, lastActiveAt: 1000 });
+    writeSessionMeta('newer', { workspace: '/repo-a', createdAt: 3000, lastActiveAt: 3000 });
+    expect(getLatestSessionForWorkspace(homeDir, '/repo-a')!.sessionId).toBe('newer');
   });
 });

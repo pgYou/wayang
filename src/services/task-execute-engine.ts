@@ -45,6 +45,7 @@ import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
 import { resolve } from 'node:path';
 import { normalizeWorkspacePath } from '@/infra/workspace-registry';
+import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 const PUPPET_WORKER_TYPE = 'puppet';
 
@@ -698,8 +699,20 @@ export class TaskExecuteEngine implements Subscribable {
   // Persistence
   // ---------------------------------------------------------------------------
 
-  async restore(): Promise<void> {
+  /**
+   * Restore persisted tasks and recover from a crashed run.
+   *
+   * @param fallbackWorkspace  The resumed session's workspace identity. Tasks
+   *   written before workspace attribution existed have no `workspace`, so it
+   *   is filled in from here (memory only) before dispatch — otherwise
+   *   `taskWorkspaceDir` would fall back to the process workspace, which for a
+   *   resumed session may be an entirely different directory.
+   */
+  async restore(fallbackWorkspace?: WorkspaceRef): Promise<void> {
     await this.taskState.restore();
+    if (fallbackWorkspace) {
+      this.taskState.fillWorkspaceInMemory(fallbackWorkspace);
+    }
     // Crash recovery: mark stale running tasks as failed
     this.recoverCrashedTasks();
   }

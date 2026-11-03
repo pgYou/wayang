@@ -217,3 +217,67 @@ describe('SessionIndex — cache behaviour', () => {
     expect(index.list().map(e => e.sessionId)).toEqual(['s2', 's1']);
   });
 });
+
+describe('SessionIndex — workspace matching (multi-workspace + normalization)', () => {
+  it('matches a session through any of its workspaces entries (A or B hit, C misses)', () => {
+    writeMeta('multi', {
+      workspace: '/repo-a',
+      workspaces: [
+        { path: '/repo-a', slug: 'repo-a' },
+        { path: '/repo-b', slug: 'repo-b' },
+      ],
+      createdAt: 1000,
+    });
+
+    const index = createSessionIndex(homeDir);
+    expect(index.list({ workspace: '/repo-a' }).map(e => e.sessionId)).toEqual(['multi']);
+    expect(index.list({ workspace: '/repo-b' }).map(e => e.sessionId)).toEqual(['multi']);
+    expect(index.list({ workspace: '/repo-c' })).toEqual([]);
+    // latestForWorkspace shares the same matching rule.
+    expect(index.latestForWorkspace('/repo-a')?.sessionId).toBe('multi');
+    expect(index.latestForWorkspace('/repo-b')?.sessionId).toBe('multi');
+    expect(index.latestForWorkspace('/repo-c')).toBeNull();
+  });
+
+  it('falls back to the single workspace field for legacy meta without workspaces', () => {
+    writeMeta('legacy', { workspace: '/repo-a', createdAt: 1000 });
+    const index = createSessionIndex(homeDir);
+    expect(index.list({ workspace: '/repo-a' }).map(e => e.sessionId)).toEqual(['legacy']);
+    expect(index.list({ workspace: '/repo-b' })).toEqual([]);
+  });
+
+  it('normalizes symlink spellings on both sides of the comparison', () => {
+    const real = path.join(homeDir, 'real-repo');
+    fs.mkdirSync(real, { recursive: true });
+    const alias = path.join(homeDir, 'alias-repo');
+    fs.symlinkSync(real, alias);
+
+    // Stored as the real path, queried through the symlink.
+    writeMeta('stored-real', { workspace: real, createdAt: 1000 });
+    // Stored as the symlink, queried through the real path.
+    writeMeta('stored-alias', { workspace: alias, createdAt: 2000 });
+    // Stored with a trailing slash, queried without one.
+    writeMeta('stored-slash', { workspace: `${real}/`, createdAt: 3000 });
+
+    const index = createSessionIndex(homeDir);
+    expect(index.list({ workspace: alias }).map(e => e.sessionId).sort()).toEqual(
+      ['stored-alias', 'stored-real', 'stored-slash'],
+    );
+    expect(index.list({ workspace: real }).map(e => e.sessionId).sort()).toEqual(
+      ['stored-alias', 'stored-real', 'stored-slash'],
+    );
+    expect(index.list({ workspace: `${alias}/` }).map(e => e.sessionId).sort()).toEqual(
+      ['stored-alias', 'stored-real', 'stored-slash'],
+    );
+  });
+
+  it('keeps newest-first ordering when several sessions match one workspace', () => {
+    writeMeta('older', { workspace: '/repo-a', createdAt: 1000, lastActiveAt: 1000 });
+    writeMeta('newer', { workspace: '/repo-a', createdAt: 3000, lastActiveAt: 3000 });
+    writeMeta('middle', { workspace: '/repo-a', createdAt: 2000, lastActiveAt: 2000 });
+
+    const index = createSessionIndex(homeDir);
+    expect(index.list({ workspace: '/repo-a' }).map(e => e.sessionId)).toEqual(['newer', 'middle', 'older']);
+    expect(index.latestForWorkspace('/repo-a')?.sessionId).toBe('newer');
+  });
+});

@@ -79,6 +79,12 @@ export function getSession(homeDir: string, sessionId: string): { sessionId: str
  * Used by the sessionless default: `wayang` (no flags) resumes the latest
  * session belonging to the current workspace, if one exists.
  *
+ * Multi-workspace aware: a session matches when any of its `workspaces`
+ * entries resolves to the same canonical path as `workspaceDir`, falling back
+ * to the single-valued `workspace` for legacy meta. Path spellings
+ * (symlink/relative/trailing slash) are normalized before comparison — see
+ * `SessionIndex.list`.
+ *
  * @param homeDir  Wayang home directory (contains sessions/)
  * @param workspaceDir  Workspace directory to match against
  * @returns The newest matching session, or null if none exists.

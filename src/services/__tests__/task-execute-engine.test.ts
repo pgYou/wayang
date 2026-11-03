@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 // --- Mock the worker implementations ---
@@ -572,5 +572,79 @@ describe('TaskExecuteEngine — dispatch lifecycle signals (issue #30)', () => {
     expect(types).not.toContain('worker_started');
     expect(types).not.toContain('task_queued');
     expect(engine.list('failed')).toHaveLength(1);
+  });
+});
+
+describe('TaskExecuteEngine — restore workspace backfill', () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'wayang-engine-restore-'));
+    constructedWorkers.length = 0;
+    vi.useRealTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  /** Write a tasks.json fixture into the session dir (tempDir == sessionDir). */
+  function writeTasksFile(tasks: { pending?: any[]; running?: any[]; history?: any[] }): void {
+    writeFileSync(
+      join(tempDir, 'tasks.json'),
+      JSON.stringify({ pending: [], running: [], history: [], ...tasks }),
+    );
+  }
+
+  const fallback = { path: '/canonical/ws-a', slug: 'ws-a' };
+
+  it('backfills a workspace onto legacy tasks that have none', async () => {
+    writeTasksFile({
+      pending: [makeTask('legacy-pending')],
+      history: [makeTask('legacy-history', { status: 'completed' })],
+    });
+
+    const { engine } = makeEngine();
+    await engine.restore(fallback);
+
+    expect(engine.list('pending')[0]!.workspace).toEqual(fallback);
+    expect(engine.list('completed').find(t => t.id === 'legacy-history')!.workspace).toEqual(fallback);
+  });
+
+  it('does not overwrite a task that already has a workspace', async () => {
+    const own = { path: '/canonical/ws-b', slug: 'ws-b' };
+    writeTasksFile({
+      pending: [makeTask('stamped', { workspace: own }), makeTask('legacy')],
+    });
+
+    const { engine } = makeEngine();
+    await engine.restore(fallback);
+
+    const byId = new Map(engine.list('pending').map(t => [t.id, t]));
+    expect(byId.get('stamped')!.workspace).toEqual(own);
+    expect(byId.get('legacy')!.workspace).toEqual(fallback);
+  });
+
+  it('is idempotent across repeated restores and never writes the backfill to disk', async () => {
+    writeTasksFile({ pending: [makeTask('legacy')] });
+
+    const { engine } = makeEngine();
+    await engine.restore(fallback);
+    const firstRead = engine.list('pending')[0]!.workspace;
+    await engine.restore(fallback);
+
+    expect(engine.list('pending')[0]!.workspace).toEqual(firstRead);
+    expect(firstRead).toEqual(fallback);
+
+    // The in-memory backfill must not have been persisted.
+    const onDisk = JSON.parse(readFileSync(join(tempDir, 'tasks.json'), 'utf-8'));
+    expect(onDisk.pending[0].workspace).toBeUndefined();
+  });
+
+  it('leaves tasks without a workspace untouched when no fallback is supplied', async () => {
+    writeTasksFile({ pending: [makeTask('legacy')] });
+
+    const { engine } = makeEngine();
+    await engine.restore();
+
+    expect(engine.list('pending')[0]!.workspace).toBeUndefined();
   });
 });

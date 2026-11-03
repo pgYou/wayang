@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { listSessions, getSession } from '@/infra/session-helpers';
@@ -242,6 +242,22 @@ describe('SessionManager — workspace identity', () => {
     // Nothing else was lost.
     expect(persisted.firstInput).toBe('legacy input');
     expect(persisted.createdAt).toBe(1000);
+  });
+
+  it('canonicalizes a symlinked/trailing-slash legacy workspace when synthesizing', async () => {
+    const alias = join(homeDir, 'alias-repo');
+    symlinkSync(workspaceDir, alias);
+    // Legacy meta stores the symlink spelling with a trailing slash.
+    const sessionDir = writeLegacySession(homeDir, 'legacy-symlink', `${alias}/`);
+
+    const mgr = SessionManager.resume('legacy-symlink', sessionDir, homeDir);
+    await mgr.restore();
+
+    expect(mgr.workspaces).toHaveLength(1);
+    // Restore-path normalization: the synthesized ref carries the canonical path.
+    expect(mgr.workspaces[0].path).toBe(normalizeWorkspacePath(workspaceDir));
+    // Legacy single field is preserved verbatim (readers normalize on the fly).
+    expect(mgr.workspace).toBe(`${alias}/`);
   });
 
   it('reads path and slug without throwing when the workspace dir is gone', async () => {

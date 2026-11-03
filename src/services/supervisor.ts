@@ -114,10 +114,16 @@ export class Supervisor {
       previousTasks = readSessionUnfinishedTasks(this.resumeSessionDir);
     }
 
+    // Restore the session first: the task engine needs this session's
+    // workspace identity to backfill tasks that predate workspace attribution
+    // (legacy tasks.json). Session restore is a single synchronous file read,
+    // so serializing it ahead of the rest costs nothing meaningful.
+    await this.sessionManager.restore();
+    const sessionWorkspace = this.sessionManager.workspaces[0];
+
     await Promise.all([
-      this.sessionManager.restore(),
       this.controllerAgent.restore(),
-      this.engine.restore(),
+      this.engine.restore(sessionWorkspace),
       this.signalQueue.restore(),
     ]);
 
