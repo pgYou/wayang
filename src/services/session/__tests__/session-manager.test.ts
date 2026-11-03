@@ -25,6 +25,25 @@ function writeLegacySession(homeDir: string, sessionId: string, workspace: strin
   return sessionDir;
 }
 
+/**
+ * Write a session whose meta already carries an accumulated `workspaces` list,
+ * as a session that ran in more than one directory would.
+ */
+function writeMultiWorkspaceSession(
+  homeDir: string,
+  sessionId: string,
+  workspace: string,
+  workspaces: { path: string; slug: string }[],
+): string {
+  const sessionDir = join(homeDir, 'sessions', sessionId);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(
+    join(sessionDir, 'meta.json'),
+    JSON.stringify({ sessionId, workspace, workspaces, firstInput: 'multi', createdAt: 1000, lastActiveAt: 2000 }),
+  );
+  return sessionDir;
+}
+
 describe('session-helpers', () => {
   let homeDir: string;
 
@@ -273,5 +292,72 @@ describe('SessionManager — workspace identity', () => {
     expect(mgr.workspaces[0].slug).toBe('my-repo');
     // Reading is still a pure read: the legacy file was not rewritten.
     expect(readMeta(sessionDir).workspaces).toBeUndefined();
+  });
+});
+
+describe('SessionManager — startupWorkspace', () => {
+  let homeDir: string;
+  let dirA: string;
+  let dirB: string;
+
+  beforeEach(() => {
+    homeDir = mkdtempSync(join(tmpdir(), 'wayang-startup-ws-'));
+    dirA = mkdtempSync(join(tmpdir(), 'wayang-startup-a-'));
+    dirB = mkdtempSync(join(tmpdir(), 'wayang-startup-b-'));
+  });
+
+  afterEach(() => {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  });
+
+  function ref(dir: string) {
+    const canonical = normalizeWorkspacePath(dir);
+    return { path: canonical, slug: workspaceSlugFromPath(canonical) };
+  }
+
+  it('picks the entry matching meta.workspace, not element 0', async () => {
+    // A accumulated first, but the session was started in B.
+    const sessionDir = writeMultiWorkspaceSession(homeDir, 'multi-b', dirB, [ref(dirA), ref(dirB)]);
+    const mgr = SessionManager.resume('multi-b', sessionDir, homeDir);
+    await mgr.restore();
+
+    expect(mgr.workspaces[0].path).toBe(normalizeWorkspacePath(dirA));
+    expect(mgr.startupWorkspace).toEqual(ref(dirB));
+  });
+
+  it('matches through a non-canonical spelling of meta.workspace', async () => {
+    const alias = join(homeDir, 'alias-startup');
+    symlinkSync(dirB, alias);
+    const sessionDir = writeMultiWorkspaceSession(homeDir, 'multi-alias', `${alias}/`, [ref(dirA), ref(dirB)]);
+    const mgr = SessionManager.resume('multi-alias', sessionDir, homeDir);
+    await mgr.restore();
+
+    expect(mgr.startupWorkspace).toEqual(ref(dirB));
+  });
+
+  it('falls back to workspaces[0] when meta.workspace matches no entry', async () => {
+    // The startup directory was renamed away: nothing in the array matches it.
+    const renamedAway = join(homeDir, 'renamed-away');
+    const sessionDir = writeMultiWorkspaceSession(homeDir, 'multi-gone', renamedAway, [ref(dirA), ref(dirB)]);
+    const mgr = SessionManager.resume('multi-gone', sessionDir, homeDir);
+    await mgr.restore();
+
+    expect(mgr.startupWorkspace).toEqual(ref(dirA));
+  });
+
+  it('returns undefined when the session has no workspace identity', async () => {
+    const sessionDir = join(homeDir, 'sessions', 'no-ws');
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, 'meta.json'),
+      JSON.stringify({ sessionId: 'no-ws', workspace: '', firstInput: null, createdAt: 1000, lastActiveAt: 2000 }),
+    );
+    const mgr = SessionManager.resume('no-ws', sessionDir, homeDir);
+    await mgr.restore();
+
+    expect(mgr.workspaces).toEqual([]);
+    expect(mgr.startupWorkspace).toBeUndefined();
   });
 });

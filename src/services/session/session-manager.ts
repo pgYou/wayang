@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import { formatTimestamp } from '@/utils/id';
 import { sessionDisplayTitle, wayangDirForSessionDir } from '@/infra/session-helpers';
 import type { SessionMeta } from '@/infra/session-helpers';
-import { resolveWorkspaceRef } from '@/infra/workspace-registry';
+import { normalizeWorkspacePath, resolveWorkspaceRef } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import { SessionState } from './session-state';
 
@@ -81,6 +81,35 @@ export class SessionManager {
   get workspaces(): WorkspaceRef[] {
     this.backfillWorkspaces();
     return this.state.get<WorkspaceRef[] | undefined>('meta.workspaces') ?? [];
+  }
+
+  /**
+   * Workspace this session was *started* in — the backfill target for records
+   * that predate workspace attribution (e.g. legacy tasks.json entries).
+   *
+   * Deliberately not `workspaces[0]`: once a session accumulates more than one
+   * workspace, the first array element is merely "the oldest one we happen to
+   * have", not necessarily the startup workspace, and stamping old tasks with
+   * it would point them at the wrong directory. `meta.workspace` stays
+   * authoritative for "where this session was started" (see SessionMeta), so we
+   * look up the entry that matches it after canonicalization — the array's
+   * `path` is canonical, while `meta.workspace` keeps the original spelling
+   * (symlinks, trailing slash).
+   *
+   * Falls back to the first entry when nothing matches (the startup directory
+   * was renamed or removed since), and returns undefined when the session has
+   * no workspace identity at all — callers then simply skip the backfill.
+   */
+  get startupWorkspace(): WorkspaceRef | undefined {
+    const workspaces = this.workspaces;
+    if (workspaces.length === 0) return undefined;
+    const current = this.state.get<string | undefined>('meta.workspace');
+    if (current) {
+      const normalized = normalizeWorkspacePath(current);
+      const match = workspaces.find(ws => normalizeWorkspacePath(ws.path) === normalized);
+      if (match) return match;
+    }
+    return workspaces[0];
   }
 
   /**

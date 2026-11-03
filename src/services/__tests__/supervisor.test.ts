@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Supervisor } from '@/services/supervisor';
+import { normalizeWorkspacePath, workspaceSlugFromPath } from '@/infra/workspace-registry';
 import type { TaskDetail } from '@/types/index';
 import type { WayangConfig } from '@/types/index';
 
@@ -39,6 +40,49 @@ function createSupervisor(tempDir: string, configOverrides?: Partial<WayangConfi
   });
   createdSupervisors.push(sup);
   return sup;
+}
+
+/** Canonical workspace ref for a directory, as stored in meta.json. */
+function workspaceRef(dir: string) {
+  const canonical = normalizeWorkspacePath(dir);
+  return { path: canonical, slug: workspaceSlugFromPath(canonical) };
+}
+
+/** A persisted task from before workspace attribution (no `workspace` field). */
+function makeStoredTask(id: string, overrides?: Partial<TaskDetail>): TaskDetail {
+  return {
+    id,
+    title: `task ${id}`,
+    description: `description ${id}`,
+    priority: 'normal',
+    status: 'pending',
+    createdAt: 1000,
+    ...overrides,
+  };
+}
+
+/**
+ * Write a resumable session on disk: meta.json (workspace identity) plus
+ * tasks.json. Restoring a supervisor over it is what exercises the legacy-task
+ * workspace backfill.
+ */
+function writeSession(
+  homeDir: string,
+  sessionId: string,
+  meta: Record<string, unknown>,
+  tasks: TaskDetail[],
+): { sessionId: string; sessionDir: string } {
+  const sessionDir = join(homeDir, 'sessions', sessionId);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(
+    join(sessionDir, 'meta.json'),
+    JSON.stringify({ sessionId, firstInput: null, createdAt: 1000, lastActiveAt: 2000, ...meta }),
+  );
+  writeFileSync(
+    join(sessionDir, 'tasks.json'),
+    JSON.stringify({ pending: tasks, running: [], history: [] }),
+  );
+  return { sessionId, sessionDir };
 }
 
 // --- Tests ---
@@ -136,8 +180,7 @@ describe('Supervisor', () => {
       // No crash = success
     });
 
-    it('should mark running tasks as failed on restore (crash recovery)', async () => {
-      const sup = createSupervisor(tempDir);
+    it('should mark running tasks as failed on restore (crash recovery)', async () => {      const sup = createSupervisor(tempDir);
       await sup.restore();
 
       // Add a running task, then simulate crash recovery
@@ -164,6 +207,102 @@ describe('Supervisor', () => {
 
       const history = sup2.engine.list('failed');
       expect(history.some((t: any) => t.id === 't1' && t.status === 'failed')).toBe(true);
+    });
+  });
+
+  // Regression coverage for the backfill target: the session's STARTUP
+  // workspace (meta.workspace), not merely workspaces[0].
+  describe('restore — legacy task workspace backfill', () => {
+    let dirA: string;
+    let dirB: string;
+
+    beforeEach(() => {
+      dirA = join(tempDir, 'ws-a');
+      dirB = join(tempDir, 'ws-b');
+      mkdirSync(dirA, { recursive: true });
+      mkdirSync(dirB, { recursive: true });
+    });
+
+    it('backfills legacy tasks with the startup workspace, not workspaces[0]', async () => {
+      // Started in B, but A landed in the array first.
+      const { sessionId, sessionDir } = writeSession(
+        tempDir,
+        'sess-startup-b',
+        { workspace: dirB, workspaces: [workspaceRef(dirA), workspaceRef(dirB)] },
+        [makeStoredTask('legacy-b')],
+      );
+
+      const sup = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
+      await sup.restore();
+
+      const [task] = sup.engine.list('pending');
+      expect(sup.sessionManager.workspaces[0].path).toBe(normalizeWorkspacePath(dirA));
+      expect(task.workspace).toEqual(workspaceRef(dirB));
+    });
+
+    it('falls back to workspaces[0] when meta.workspace matches no entry', async () => {
+      // The startup directory was renamed/removed: no array entry matches.
+      const { sessionId, sessionDir } = writeSession(
+        tempDir,
+        'sess-startup-gone',
+        { workspace: join(tempDir, 'renamed-away'), workspaces: [workspaceRef(dirA), workspaceRef(dirB)] },
+        [makeStoredTask('legacy-gone')],
+      );
+
+      const sup = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
+      await sup.restore();
+
+      const [task] = sup.engine.list('pending');
+      expect(task.workspace).toEqual(workspaceRef(dirA));
+    });
+
+    it('keeps the existing behavior for a legacy single-workspace meta', async () => {
+      // No `workspaces` array at all: synthesized from meta.workspace as before.
+      const { sessionId, sessionDir } = writeSession(
+        tempDir,
+        'sess-legacy-meta',
+        { workspace: dirA },
+        [makeStoredTask('legacy-single')],
+      );
+
+      const sup = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
+      await sup.restore();
+
+      const [task] = sup.engine.list('pending');
+      expect(task.workspace).toEqual(workspaceRef(dirA));
+    });
+
+    it('leaves tasks unattributed when the session has no workspace identity', async () => {
+      const { sessionId, sessionDir } = writeSession(
+        tempDir,
+        'sess-no-workspace',
+        { workspace: '' },
+        [makeStoredTask('no-workspace-task')],
+      );
+
+      const sup = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
+      await sup.restore();
+
+      const [task] = sup.engine.list('pending');
+      expect(sup.sessionManager.startupWorkspace).toBeUndefined();
+      expect(task.workspace).toBeUndefined();
+    });
+
+    it('does not overwrite a task that already carries a workspace', async () => {
+      const dirC = join(tempDir, 'ws-c');
+      mkdirSync(dirC, { recursive: true });
+      const { sessionId, sessionDir } = writeSession(
+        tempDir,
+        'sess-existing-ws',
+        { workspace: dirB, workspaces: [workspaceRef(dirA), workspaceRef(dirB)] },
+        [makeStoredTask('attributed', { workspace: workspaceRef(dirC) })],
+      );
+
+      const sup = createSupervisor(tempDir, undefined, { sessionId, sessionDir });
+      await sup.restore();
+
+      const [task] = sup.engine.list('pending');
+      expect(task.workspace).toEqual(workspaceRef(dirC));
     });
   });
 

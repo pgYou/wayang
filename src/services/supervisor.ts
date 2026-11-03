@@ -119,7 +119,15 @@ export class Supervisor {
     // (legacy tasks.json). Session restore is a single synchronous file read,
     // so serializing it ahead of the rest costs nothing meaningful.
     await this.sessionManager.restore();
-    const sessionWorkspace = this.sessionManager.workspaces[0];
+    // Backfill target is the session's STARTUP workspace (the entry matching
+    // meta.workspace), not an arbitrary first array element: once a session
+    // accumulates several workspaces, element 0 can be a different directory
+    // and legacy tasks would be stamped with the wrong one. `startupWorkspace`
+    // already falls back to element 0 when the startup dir no longer matches,
+    // and yields undefined when the session has no workspace identity — in
+    // which case no fallback is passed and old tasks stay unattributed, as
+    // before.
+    const sessionWorkspace = this.sessionManager.startupWorkspace;
 
     await Promise.all([
       this.controllerAgent.restore(),
