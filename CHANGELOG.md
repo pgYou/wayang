@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.1 (2026-11-03)
+
+### Features
+
+**CLI 短参数与严格参数校验** — Adds -v/--version and -h/--help (-r/--resume was already short), and --verbose is now long-only: its old -v short is reassigned to --version, a deliberate behavior change. Unknown options, missing values, boolean flags given a value, case variants and --no- forms now fail fast — error to stderr, help printed, exit code 1 — instead of being silently ignored and starting anyway
+
+### Fixes
+
+**输入框 ESC 中断 controller 的思考与输出** — ESC in the input area now aborts the controller's current turn. Partial output is kept as one truncated message with an explicit interrupt marker, replayed to the model as [USER INTERRUPT]; a zero-output abort records only the marker; agent-level abort state is reset every turn so the controller no longer goes permanently silent after an abort (pre-existing latent bug)
+
 ## v0.7.0 (2026-11-02)
 
 ### Features
