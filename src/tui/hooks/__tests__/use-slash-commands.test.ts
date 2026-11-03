@@ -4,6 +4,7 @@ import { render } from 'ink';
 import { SLASH_COMMANDS, useSlashCommands } from '@/tui/hooks/use-slash-commands';
 import type { SlashCommandResult } from '@/tui/hooks/use-slash-commands';
 import { renderShortcutList } from '@/tui/utils/shortcut-catalog';
+import { ShortcutOverlay } from '@/tui/components/shortcut-overlay';
 import type { RemoteSupervisor } from '@/client/remote-supervisor';
 
 describe('SLASH_COMMANDS', () => {
@@ -82,6 +83,19 @@ describe('handleCommand /shortcut', () => {
     expect(result.output).toContain('Ctrl+U');
     expect(result.output).toContain('Esc');
     expect(result.output).toContain('Ctrl+C');
+  });
+
+  it('shows the shortcut list through the styled overlay component', async () => {
+    const handleCommand = await captureHandleCommand();
+    const result = await handleCommand('/shortcut');
+
+    // The styled rendering the UI shows: the overlay component, not a
+    // hand-written string.
+    expect(result.overlay?.kind).toBe('component');
+    if (result.overlay?.kind === 'component') {
+      expect((result.overlay.render() as { type: unknown }).type).toBe(ShortcutOverlay);
+    }
+    expect(result.overlay?.hint).toBe('(esc to dismiss)');
   });
 
   it('is case-insensitive like the other commands', async () => {

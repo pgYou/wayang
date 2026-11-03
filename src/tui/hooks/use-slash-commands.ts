@@ -1,8 +1,11 @@
+import { createElement } from 'react';
 import { useMemoizedFn } from './use-memoized-fn';
 import type { RemoteSupervisor } from '@/client/remote-supervisor';
 import type { TaskDetail } from '@/types/index';
 import { formatContextReport } from '@/tui/utils/context-report';
 import { renderShortcutList } from '@/tui/utils/shortcut-catalog';
+import { ShortcutOverlay } from '@/tui/components/shortcut-overlay';
+import type { Overlay } from '@/tui/types/overlay';
 
 /** Slash command definitions for autocomplete suggestions. */
 export const SLASH_COMMANDS = [
@@ -19,6 +22,8 @@ export const SLASH_COMMANDS = [
 export interface SlashCommandResult {
   handled: boolean;
   output?: string;
+  /** Style-aware output — shown instead of the plain `output` when set. */
+  overlay?: Overlay;
   /** Trigger an async action after command handling. */
   action?: 'compact' | 'workers';
 }
@@ -96,8 +101,17 @@ export function useSlashCommands(supervisor: RemoteSupervisor) {
 
       case 'shortcut':
         // Rendered from the shortcut catalog — the single table both this
-        // output and the keybinding survey are generated from.
-        return { handled: true, output: renderShortcutList() };
+        // output and the keybinding survey are generated from. The overlay
+        // carries the styled rendering; `output` stays the plain-text form.
+        return {
+          handled: true,
+          output: renderShortcutList(),
+          overlay: {
+            kind: 'component',
+            render: () => createElement(ShortcutOverlay),
+            hint: '(esc to dismiss)',
+          },
+        };
 
       default:
         return { handled: true, output: `Unknown command: /${cmd}. Type /help for commands.` };
