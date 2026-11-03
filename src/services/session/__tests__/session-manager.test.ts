@@ -295,6 +295,91 @@ describe('SessionManager — workspace identity', () => {
   });
 });
 
+describe('SessionManager — addWorkspace (runtime accumulation)', () => {
+  let homeDir: string;
+  let dirA: string;
+  let dirB: string;
+
+  beforeEach(() => {
+    homeDir = mkdtempSync(join(tmpdir(), 'wayang-accum-unit-'));
+    dirA = mkdtempSync(join(tmpdir(), 'wayang-accum-unit-a-'));
+    dirB = mkdtempSync(join(tmpdir(), 'wayang-accum-unit-b-'));
+  });
+
+  afterEach(() => {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  });
+
+  function refOf(dir: string) {
+    const canonical = normalizeWorkspacePath(dir);
+    return { path: canonical, slug: workspaceSlugFromPath(canonical) };
+  }
+
+  it('persists a new workspace synchronously through the normal meta write', () => {
+    const mgr = SessionManager.create(homeDir, dirA);
+    // Nothing on disk yet beyond the seeded workspaces array.
+    expect(readMeta(mgr.sessionDir).workspaces).toHaveLength(1);
+
+    const appended = mgr.addWorkspace(refOf(dirB));
+
+    expect(appended).toBe(true);
+    // The write happened immediately (whole-meta snapshot), no later flush.
+    const persisted = readMeta(mgr.sessionDir);
+    expect(persisted.workspaces).toHaveLength(2);
+    expect(persisted.workspaces.map((w: { path: string }) => w.path)).toEqual([
+      normalizeWorkspacePath(dirA),
+      normalizeWorkspacePath(dirB),
+    ]);
+    // The startup singleton is untouched.
+    expect(persisted.workspace).toBe(dirA);
+  });
+
+  it('is idempotent by canonical path (no second write, no duplicate)', () => {
+    const mgr = SessionManager.create(homeDir, dirA);
+    expect(mgr.addWorkspace(refOf(dirB))).toBe(true);
+    expect(mgr.addWorkspace(refOf(dirB))).toBe(false);
+    expect(mgr.workspaces.filter((w) => w.path === normalizeWorkspacePath(dirB))).toHaveLength(1);
+    expect(readMeta(mgr.sessionDir).workspaces).toHaveLength(2);
+  });
+
+  it('deduplicates a non-canonical spelling of the same directory', () => {
+    const mgr = SessionManager.create(homeDir, dirA);
+    const alias = join(homeDir, 'alias-b');
+    symlinkSync(dirB, alias);
+    mgr.addWorkspace(refOf(dirB));
+    // Same directory through a symlink: canonicalized away, no duplicate.
+    expect(mgr.addWorkspace({ path: alias, slug: 'alias-b' })).toBe(false);
+    expect(mgr.workspaces).toHaveLength(2);
+  });
+
+  it('keeps an existing slug even when re-declared with a different one', () => {
+    const mgr = SessionManager.create(homeDir, dirA);
+    const canonicalB = normalizeWorkspacePath(dirB);
+    mgr.addWorkspace({ path: canonicalB, slug: 'stable-b' });
+    mgr.addWorkspace({ path: canonicalB, slug: 'changed-b' });
+    const entry = mgr.workspaces.find((w) => w.path === canonicalB);
+    expect(entry?.slug).toBe('stable-b');
+  });
+
+  it('accumulates onto a legacy session, persisting the synthesized startup entry too', async () => {
+    const sessionDir = writeLegacySession(homeDir, 'legacy-accum', dirA);
+    const mgr = SessionManager.resume('legacy-accum', sessionDir, homeDir);
+    await mgr.restore();
+    // Synthesized in memory only so far.
+    expect(readMeta(sessionDir).workspaces).toBeUndefined();
+
+    mgr.addWorkspace(refOf(dirB));
+
+    const persisted = readMeta(sessionDir);
+    expect(persisted.workspaces.map((w: { path: string }) => w.path)).toEqual([
+      normalizeWorkspacePath(dirA),
+      normalizeWorkspacePath(dirB),
+    ]);
+  });
+});
+
 describe('SessionManager — startupWorkspace', () => {
   let homeDir: string;
   let dirA: string;

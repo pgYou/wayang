@@ -20,6 +20,7 @@ import { SystemContext } from '@/infra/system-context';
 import type { SkillRegistry } from '@/services/skills/registry';
 import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { resolveWorkspaceRef } from '@/infra/workspace-registry';
+import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly state: WorkerState;
@@ -33,6 +34,13 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly ctx: SystemContext;
   /** Live tool execution records — merged into entries at step finish. */
   private readonly recorder = new ToolCallRecorder();
+  /**
+   * Registry identity of the workspace this worker executes in. Reused for the
+   * `workspaceSlug` stamped on turn envelopes, so a conversation entry is
+   * attributable to a directory even when the task carried no explicit
+   * workspace stamp.
+   */
+  private readonly workspaceRef?: WorkspaceRef;
 
   constructor(
     provider: ProviderConfig,
@@ -55,12 +63,14 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     this.workspaceDir = workspaceDir ?? ctx.workspaceDir;
     this.toolChoice = toolChoice;
     // Workspace identity is stamped into runtime-state so a worker's records
-    // stay attributable after it finished (registry slug keeps it stable).
+    // stay attributable after it finished (registry slug keeps it stable). The
+    // same ref feeds the turn envelope's `workspaceSlug`.
+    this.workspaceRef = resolveWorkspaceRef(wayangDirForSessionDir(ctx.sessionDir), this.workspaceDir);
     this.state = new WorkerState(
       ctx.sessionDir,
       this.id,
       ctx.logger,
-      resolveWorkspaceRef(wayangDirForSessionDir(ctx.sessionDir), this.workspaceDir),
+      this.workspaceRef,
     );
     // No context window budget: workers never call isFull()/compact today,
     // so passing provider.contextWindowTokens would be a dead setting.
@@ -98,11 +108,18 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     // The engine passes the task's execution turn id; rootTurnId is inherited
     // from the task (tracing back to the user turn that created it) and the
     // task itself is the direct cause of this activation.
+    // `workspaceSlug` attributes every entry of this run to the directory the
+    // task executes in: the task's own stamp (add_task resolves it through the
+    // registry) when present, else the slug of the directory this worker was
+    // built for. It is always available here, so worker entries never leave it
+    // undefined.
+    const workspaceSlug = task.workspace?.slug ?? this.workspaceRef?.slug;
     const turnEnv: TurnEnvelope = {
       turnId: task.executionTurnId ?? generateId('turn'),
       ...((task.rootTurnId ?? task.turnId) !== undefined && { rootTurnId: task.rootTurnId ?? task.turnId }),
       causationId: task.id,
       actor: { kind: 'worker', id: task.workerId, taskId: task.id },
+      ...(workspaceSlug !== undefined && { workspaceSlug }),
     };
     this.recorder.beginTurn();
 

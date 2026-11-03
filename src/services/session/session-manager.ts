@@ -113,6 +113,37 @@ export class SessionManager {
   }
 
   /**
+   * Record a workspace this session has touched at runtime.
+   *
+   * Called when a task is accepted for a workspace other than the one the
+   * session was started in, so the session stays discoverable through every
+   * directory it dispatched work into — `getLatestSessionForWorkspace`, the
+   * interactive session picker and the TUI's "first + N" banner all read
+   * `meta.workspaces`. Without this, dispatching into a second workspace left
+   * the array frozen at creation time and those readers blind to it.
+   *
+   * Idempotent by canonical path: re-declaring an already-recorded directory
+   * is a no-op (no write, slug untouched). The `slug` always comes from the
+   * caller's registry-resolved ref, so one directory keeps one handle for the
+   * lifetime of the session. `meta.workspace` (the startup directory) is never
+   * rewritten here.
+   *
+   * Persists through the normal meta write path — a whole-meta snapshot — so
+   * the array lands together with every other meta field, exactly like an
+   * ordinary input/rename/archive write. Returns true when a new entry was
+   * appended (and the write happened).
+   */
+  addWorkspace(workspace: WorkspaceRef): boolean {
+    const canonical = normalizeWorkspacePath(workspace.path);
+    const existing = this.workspaces;
+    if (existing.some((w) => normalizeWorkspacePath(w.path) === canonical)) {
+      return false;
+    }
+    this.state.set('meta.workspaces', [...existing, { path: canonical, slug: workspace.slug }]);
+    return true;
+  }
+
+  /**
    * Synthesize `meta.workspaces` from the single-valued `meta.workspace` when a
    * session predates the array. Memory only: nothing is written, so neither
    * resume nor `workspaces` ever rewrites a historical meta.json.

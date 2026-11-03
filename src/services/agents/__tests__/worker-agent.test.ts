@@ -169,6 +169,46 @@ describe('WorkerAgent', () => {
     expect(result.summary).toBe('Task finished');
   });
 
+  it('stamps workspaceSlug from the task workspace on every conversation entry', async () => {
+    // Drive a step so a real assistant entry lands alongside the task prompt.
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final'; })(),
+        text: Promise.resolve('final'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+      };
+    }) as any);
+
+    const tempDir = mkdtempSync(join(tmpdir(), 'wayang-wa-ws-'));
+    try {
+      const ctx = createMockCtx({ sessionDir: tempDir });
+      const worker = new WorkerAgent(mockProvider, ctx, skills, undefined, tempDir);
+      await worker.run(
+        {
+          id: 't-ws', title: 'test', description: 'workspace stamp',
+          workerId: 'w-ws', priority: 'normal', status: 'running', createdAt: Date.now(),
+          // The task carries its own registry identity (as add_task stamps it).
+          workspace: { path: tempDir, slug: 'task-workspace-slug' },
+        },
+        {},
+      );
+
+      const conversation = worker.getConversation();
+      expect(conversation.length).toBeGreaterThanOrEqual(2);
+      for (const entry of conversation) {
+        expect(entry.workspaceSlug).toBe('task-workspace-slug');
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('should write the session id (not the worker id) on conversation entries', async () => {
     // Fire onStepFinish so an assistant entry lands in the conversation
     vi.mocked(streamText).mockImplementation(((opts: any) => {

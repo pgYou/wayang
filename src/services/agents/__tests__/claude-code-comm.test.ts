@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
 import type { WorkerConfig, TaskDetail } from '@/types/index';
@@ -357,5 +358,155 @@ describe('ClaudeCodeWorker controller messaging', () => {
     expect(audit).toBeDefined();
     expect((audit as any).content).toContain('ask_controller: which db?');
     expect((audit as any).content).toContain('controller: [Controller] answer-to:which db?');
+  });
+});
+
+/**
+ * canUseTool now routes through the SAME shared permission policy as puppet
+ * workers (`decideToolAccess`): a denylisted path is denied outright with no
+ * approval prompt, a path inside the task workspace runs immediately, and a
+ * path inside home but outside the workspace asks the controller.
+ */
+describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
+  let homeDir: string;
+  let workspace: string;
+
+  beforeEach(() => {
+    homeDir = mkdtempSync(join(tmpdir(), 'wayang-cc-perm-home-'));
+    workspace = mkdtempSync(join(tmpdir(), 'wayang-cc-perm-ws-'));
+    mockQuery.mockReset();
+  });
+  afterEach(() => {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  /** Instantiate a worker wired with an explicit access scope + signal queue. */
+  function makeWiredWorker() {
+    const ctx = createMockCtx({ sessionDir: homeDir, workspaceDir: workspace });
+    const worker = new ClaudeCodeWorker(config, homeDir, workspace, ctx, skills);
+    const signalQueue = new SignalQueue(createMockCtx({ sessionDir: homeDir, workspaceDir: workspace }));
+    worker.setSignalContext({
+      signalQueue,
+      workerId: 'cw-perm',
+      taskId: 't-perm',
+      taskTitle: 'perm',
+      accessScope: { homeDir, workspace },
+    });
+    return { worker, signalQueue };
+  }
+
+  /**
+   * Run a no-op query to capture the wired canUseTool, then hand it back. The
+   * callback stays bound to the worker after run() settles, so tests drive it
+   * directly (the mock SDK never calls it).
+   */
+  async function captureCanUseTool(worker: ClaudeCodeWorker) {
+    let options: Record<string, any> | null = null;
+    const { stream, release } = gatedStream([], 'before-result');
+    mockQuery.mockImplementationOnce((({ options: o }: any) => { options = o; return stream; }) as never);
+    const runP = worker.run(makeTask(), {});
+    await settle();
+    release();
+    await runP;
+    expect(typeof options!.canUseTool).toBe('function');
+    return options!.canUseTool as (t: string, i: Record<string, unknown>) => Promise<any>;
+  }
+
+  const permissionRequests = (sq: SignalQueue) => sq.query({ type: 'permission_request' });
+
+  it('denies a denylisted path outright — no permission request', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const verdict = await canUseTool('Read', { file_path: join(homeDir, '.ssh', 'id_rsa') });
+    expect(verdict.behavior).toBe('deny');
+
+    // A denylist hit never reaches the controller.
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
+  });
+
+  it('denies a denylisted write too, again without asking', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const verdict = await canUseTool('Write', { file_path: join(homeDir, '.aws', 'credentials') });
+    expect(verdict.behavior).toBe('deny');
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
+  });
+
+  it('allows a path inside the task workspace (read and write)', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    expect((await canUseTool('Read', { file_path: join(workspace, 'a.txt') })).behavior).toBe('allow');
+    expect((await canUseTool('Write', { file_path: join(workspace, 'b.txt') })).behavior).toBe('allow');
+    // A path-less search tool defaults to the workspace (its cwd) → allow.
+    expect((await canUseTool('Glob', { pattern: '**/*.ts' })).behavior).toBe('allow');
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
+  });
+
+  it('asks the controller for a read inside home but outside the workspace', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const pending = canUseTool('Read', { file_path: join(homeDir, 'notes', 'other-project.txt') });
+    await settle();
+
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    const payload = requests[0].payload as any;
+    expect(payload.toolName).toBe('Read');
+    expect(payload.description).toContain('other-project.txt');
+
+    // Approved by the controller → allow.
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe(true);
+    expect((await pending).behavior).toBe('allow');
+  });
+
+  it('denies a bash command that touches a denylisted path', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const verdict = await canUseTool('Bash', { command: `cat ${join(homeDir, '.ssh', 'id_rsa')}` });
+    expect(verdict.behavior).toBe('deny');
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
+  });
+
+  it('asks for a dangerous bash command even with no path candidate', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const pending = canUseTool('Bash', { command: 'sudo systemctl restart nginx' });
+    await settle();
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    const payload = requests[0].payload as any;
+    expect(payload.toolName).toBe('Bash');
+    worker.permissionHandler.resolvePermission(payload.requestId, false, 'no');
+    expect((await pending).behavior).toBe('deny');
+  });
+
+  it('stays conservative: an unknown tool asks instead of silently allowing', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const pending = canUseTool('SomeFutureTool', { secret: true });
+    await settle();
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    const payload = requests[0].payload as any;
+    expect(payload.toolName).toBe('SomeFutureTool');
+    worker.permissionHandler.resolvePermission(payload.requestId, true);
+    expect((await pending).behavior).toBe('allow');
+  });
+
+  it('allows a known non-path tool without asking (todo list, web, mcp resources)', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    expect((await canUseTool('TodoWrite', { todos: [] })).behavior).toBe('allow');
+    expect((await canUseTool('WebSearch', { query: 'x' })).behavior).toBe('allow');
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
   });
 });

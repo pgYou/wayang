@@ -6,6 +6,7 @@
  * in this (client) process; the logic process never prompts.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { connectRemoteServer } from './client/connect';
 import type { ConnectOptions, RemoteConnection } from './client/connect';
@@ -102,6 +103,24 @@ async function resolveStartupWorkspace(
 }
 
 /**
+ * Guard a resumed session's startup directory.
+ *
+ * `startupWorkspace` can resolve to a directory that has since been moved or
+ * deleted (the session was started there, then the folder was removed or
+ * renamed). Adopting that path as the process workspace would point every
+ * dispatched task's cwd — and the permission gate's boundary — at a nonexistent
+ * directory, so the first restore-dispatch fails with an opaque error. Fail
+ * fast instead, telling the user how to recover.
+ */
+function assertRecoverableWorkspace(resolved: WorkspaceRef, sessionId: string): void {
+  if (fs.existsSync(resolved.path)) return;
+  die(
+    `Cannot resume session "${sessionId}": its startup workspace ${resolved.path} no longer exists ` +
+      `(the directory was moved or deleted). Resume a different session with --resume (or --fresh to start a new one).`,
+  );
+}
+
+/**
  * Canonicalize and de-duplicate a session's workspace list for display.
  *
  * A resumed session's meta can name the same directory through different
@@ -161,6 +180,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     // Interactive session select (--resume without ID)
     const result = await selectSessionInteractive(wayangHome, options.workspaceDir, options.showAll ?? false);
     const startup = await resolveStartupWorkspace(result.sessionId, result.sessionDir, wayangHome);
+    // A resumed session whose startup directory is gone cannot be dispatched
+    // into — fail with an actionable message instead of an invalid cwd.
+    if (startup) assertRecoverableWorkspace(startup, result.sessionId);
     // Fall back to the raw recorded workspace, then to the CLI value, for
     // sessions whose meta carries no usable workspace identity.
     workspaceDir = startup?.path ?? (result.meta.workspace || workspaceDir);
@@ -174,6 +196,8 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
       die(`Session "${options.resume}" not found.`);
     }
     const startup = await resolveStartupWorkspace(existing.sessionId, existing.sessionDir, wayangHome);
+    // Same guard as the interactive path: refuse a deleted startup directory.
+    if (startup) assertRecoverableWorkspace(startup, existing.sessionId);
     workspaceDir = startup?.path ?? (existing.meta.workspace || workspaceDir);
     session = { resume: existing.sessionId };
     sessionWorkspaces = existing.meta.workspaces ?? [];

@@ -71,6 +71,19 @@ function connectCall(index = 0): Record<string, unknown> {
   return call![0] as unknown as Record<string, unknown>;
 }
 
+/**
+ * Create a real directory under the temp root.
+ *
+ * Resume paths now refuse a startup workspace that no longer exists (failing
+ * fast beats dispatching tasks into an invalid cwd), so tests that resume a
+ * session must point its workspace at a directory that actually exists.
+ */
+function mkWorkspace(name: string): string {
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 // --- Tests ---
 
 describe('bootstrap — homeDir root semantics', () => {
@@ -121,7 +134,8 @@ describe('bootstrap — homeDir root semantics', () => {
   });
 
   it('--resume <id>: resolves the session under <root>/.wayang and uses its workspace', async () => {
-    writeSessionMeta('20260102-000000', { workspace: '/repo-b', createdAt: 2000 });
+    const repoB = mkWorkspace('repo-b');
+    writeSessionMeta('20260102-000000', { workspace: repoB, createdAt: 2000 });
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
@@ -132,21 +146,23 @@ describe('bootstrap — homeDir root semantics', () => {
 
     const call = connectCall();
     expect(call.session).toEqual({ resume: '20260102-000000' });
-    expect(call.workspaceDir).toBe('/repo-b');
+    expect(call.workspaceDir).toBe(realpathSync(repoB));
     // Explicit resume does not surface unfinished tasks as a signal.
     expect(call.injectPreviousTasks).toBe(false);
   });
 
   it('--resume <id>: uses the startup workspace, not the first workspaces entry', async () => {
-    // The session was started in /repo-b, then touched /repo-a. The startup
-    // workspace is the entry matching meta.workspace (/repo-b), even though
-    // the array's first element is /repo-a.
+    // The session was started in repo-b, then touched repo-a. The startup
+    // workspace is the entry matching meta.workspace (repo-b), even though
+    // the array's first element is repo-a.
+    const repoA = mkWorkspace('repo-a');
+    const repoB = mkWorkspace('repo-b');
     writeSessionMeta('20260102-100000', {
-      workspace: '/repo-b',
+      workspace: repoB,
       createdAt: 2500,
       workspaces: [
-        { path: '/repo-a', slug: 'repo-a' },
-        { path: '/repo-b', slug: 'repo-b' },
+        { path: realpathSync(repoA), slug: 'repo-a' },
+        { path: realpathSync(repoB), slug: 'repo-b' },
       ],
     });
 
@@ -157,7 +173,7 @@ describe('bootstrap — homeDir root semantics', () => {
       resume: '20260102-100000',
     });
 
-    expect(connectCall().workspaceDir).toBe('/repo-b');
+    expect(connectCall().workspaceDir).toBe(realpathSync(repoB));
   });
 
   it('--resume <id>: falls back to the CLI workspace when the session records none', async () => {
@@ -175,27 +191,27 @@ describe('bootstrap — homeDir root semantics', () => {
 
   it('--resume (interactive): resolves the picked session startup workspace', async () => {
     const sessionId = '20260102-120000';
+    const repoA = mkWorkspace('repo-a');
+    const repoB = mkWorkspace('repo-b');
+    const workspaces = [
+      { path: realpathSync(repoA), slug: 'repo-a' },
+      { path: realpathSync(repoB), slug: 'repo-b' },
+    ];
     writeSessionMeta(sessionId, {
-      workspace: '/repo-b',
+      workspace: repoB,
       createdAt: 2700,
-      workspaces: [
-        { path: '/repo-a', slug: 'repo-a' },
-        { path: '/repo-b', slug: 'repo-b' },
-      ],
+      workspaces,
     });
     vi.mocked(selectSessionInteractive).mockResolvedValue({
       sessionId,
       sessionDir: join(root, '.wayang', 'sessions', sessionId),
       meta: {
         sessionId,
-        workspace: '/repo-b',
+        workspace: repoB,
         firstInput: null,
         createdAt: 2700,
         lastActiveAt: 2700,
-        workspaces: [
-          { path: '/repo-a', slug: 'repo-a' },
-          { path: '/repo-b', slug: 'repo-b' },
-        ],
+        workspaces,
       },
     });
 
@@ -208,7 +224,29 @@ describe('bootstrap — homeDir root semantics', () => {
 
     const call = connectCall();
     expect(call.session).toEqual({ resume: sessionId });
-    expect(call.workspaceDir).toBe('/repo-b');
+    expect(call.workspaceDir).toBe(realpathSync(repoB));
+  });
+
+  it('--resume <id>: dies with a clear message when the startup directory was deleted', async () => {
+    // The session was started in a directory that no longer exists. Adopting it
+    // as the process workspace would point task cwd (and the permission gate)
+    // at a nonexistent path, so bootstrap must refuse instead.
+    const gone = join(root, 'moved-away-repo');
+    writeSessionMeta('20260105-000000', { workspace: gone, createdAt: 5000 });
+
+    await expect(bootstrap({
+      configPath: join(root, 'wayang.config.json'),
+      homeDir: root,
+      workspaceDir: '/repo-fallback',
+      resume: '20260105-000000',
+    })).rejects.toThrow('process.exit called');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('no longer exists'));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(gone));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('--fresh'));
+    // No server spawn with an invalid cwd.
+    expect(connectRemoteServer).not.toHaveBeenCalled();
   });
 
   it('--resume <unknown-id>: dies with exit code 1', async () => {

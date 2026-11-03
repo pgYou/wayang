@@ -24,6 +24,7 @@ import {
 import { createControllerTools } from '@/services/tools/index';
 import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
 import { wayangDirForSessionDir } from '@/infra/session-helpers';
+import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import { basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { SystemContext } from '@/infra/system-context';
@@ -47,6 +48,13 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
   private readonly recorder: ToolCallRecorder;
   /** Turn id of the most recent run — used to stamp late error entries. */
   private lastTurnId: string | null = null;
+  /**
+   * Registry slug of the workspace this controller executes in (the process
+   * workspace). Stamped on every controller turn envelope so its entries are
+   * attributable to a directory, matching worker entries. Resolved once at
+   * construction; undefined only when the context carries no workspace dir.
+   */
+  private readonly workspaceSlug?: string;
   /**
    * True once THIS turn's interrupt record has been persisted
    * (recordUserAbort). Step finishes landing after that point would append
@@ -76,6 +84,12 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     this.recorder = recorder;
     this.tools = recordToolCalls(tools, recorder);
     this.logger = ctx.logger;
+    // The controller runs in the process workspace; resolve its registry slug
+    // once (read-only once the session's startup workspace is registered) so
+    // each turn envelope can carry it.
+    this.workspaceSlug = ctx.workspaceDir
+      ? resolveWorkspaceRef(wayangDirForSessionDir(ctx.sessionDir), ctx.workspaceDir).slug
+      : undefined;
 
     this.contextManager = new ContextManager(
       state,
@@ -212,6 +226,10 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       ...(rootTurnId !== undefined && { rootTurnId }),
       ...(causationId !== undefined && { causationId }),
       actor: { kind: 'controller', id: this.id },
+      // Controller entries carry the process workspace's slug so they are
+      // attributable to a directory just like worker entries. Undefined only
+      // when the context carries no workspace directory.
+      ...(this.workspaceSlug !== undefined && { workspaceSlug: this.workspaceSlug }),
     };
     this.state.set('dynamicState.currentTurn', turnEnv);
     this.lastTurnId = turnId;

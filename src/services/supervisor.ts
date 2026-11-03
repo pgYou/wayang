@@ -103,7 +103,16 @@ export class Supervisor {
       this.ctx.logger,
     );
 
-    this.engine = new TaskExecuteEngine(this.ctx, this.signalQueue, this.skills);
+    // Workspace accumulation: a task accepted for a workspace the session has
+    // not touched yet is appended to `meta.workspaces` (idempotent by canonical
+    // path). Without this, only SessionManager.create ever wrote the list, so a
+    // session that dispatched into a second directory could not be found by
+    // `getLatestSessionForWorkspace` and the picker showed a single workspace.
+    this.engine = new TaskExecuteEngine(this.ctx, this.signalQueue, this.skills, {
+      onTaskWorkspace: (workspace) => {
+        this.sessionManager.addWorkspace(workspace);
+      },
+    });
     this.controllerAgent = ControllerAgent.create({
       ctx: this.ctx,
       provider: this.ctx.controllerProvider,

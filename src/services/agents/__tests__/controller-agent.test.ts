@@ -7,6 +7,10 @@ import { SkillRegistry } from '@/services/skills/registry';
 import { ToolCallRecorder } from '../utils/tool-call-recorder';
 import { ConversationIndexBuilder } from '@/services/conversation/conversation-index';
 import { mockProvider, createMockCtx, createMockLogger } from '@/__tests__/helpers';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { normalizeWorkspacePath, workspaceSlugFromPath } from '@/infra/workspace-registry';
 
 // Empty registry — controller needs it for prompt building.
 const skills = new SkillRegistry([]);
@@ -299,6 +303,55 @@ describe('ControllerAgent', () => {
       (call: any[]) => call[1]?.type === 'user',
     );
     expect(userCall[1].message.content).toBe('custom data');
+  });
+
+  it('stamps workspaceSlug (of the process workspace) on controller entries', async () => {
+    const wsDir = mkdtempSync(join(tmpdir(), 'wayang-ctrl-ws-'));
+    const sessDir = mkdtempSync(join(tmpdir(), 'wayang-ctrl-sess-'));
+    try {
+      // fire a step finish so an assistant entry is produced too.
+      vi.mocked(streamText).mockImplementation(((opts: any) => {
+        opts.onStepFinish?.({
+          text: 'reply',
+          usage: { inputTokens: 1, outputTokens: 1 },
+          finishReason: 'stop',
+        });
+        return {
+          textStream: (async function* () { yield 'reply'; })(),
+          text: Promise.resolve('reply'),
+          toolResults: Promise.resolve([]),
+          usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+        };
+      }) as any);
+
+      const localState = createMockState();
+      const localAgent = new ControllerAgent(
+        createMockCtx({ workspaceDir: wsDir, sessionDir: sessDir }),
+        localState as ControllerAgentState,
+        mockProvider,
+        {},
+        skills,
+      );
+      await localAgent.run([
+        {
+          id: 'sig-ws', source: 'user', type: 'input',
+          payload: { text: 'hello' }, timestamp: Date.now(), status: 'unread',
+        } as ControllerSignal,
+      ]);
+
+      const appended = localState.append.mock.calls
+        .map((c: any[]) => c[1])
+        .filter((e: any) => e && typeof e === 'object');
+      expect(appended.length).toBeGreaterThan(0);
+      // sessionDir is an ad-hoc temp dir (no registry) → rule-based slug.
+      const expected = workspaceSlugFromPath(normalizeWorkspacePath(wsDir));
+      for (const entry of appended) {
+        expect(entry.workspaceSlug).toBe(expected);
+      }
+    } finally {
+      rmSync(wsDir, { recursive: true, force: true });
+      rmSync(sessDir, { recursive: true, force: true });
+    }
   });
 
   it('should write the same sessionId on user, signal, and assistant entries', async () => {

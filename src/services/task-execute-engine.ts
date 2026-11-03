@@ -83,6 +83,15 @@ export interface TaskExecuteEngineOptions {
    * enforce instead of relying on ambient config.
    */
   permission?: PermissionConfig;
+  /**
+   * Notified when a task is accepted for a workspace, so the owning session
+   * can accumulate every workspace it dispatches work into. The engine stays
+   * unaware of session persistence — Supervisor supplies an implementation
+   * that appends to the session's `meta.workspaces` (idempotent by canonical
+   * path). Optional: without it, workspace accumulation simply does not
+   * happen (used by tests and by direct engine construction).
+   */
+  onTaskWorkspace?: (workspace: WorkspaceRef) => void;
 }
 
 /** Default idle timeout: idle workers are reaped after 30 minutes if not reused. */
@@ -157,6 +166,8 @@ export class TaskExecuteEngine implements Subscribable {
   private readonly homeDir: string;
   /** User-config permission section applied to this run's worker tools. */
   private readonly permission?: PermissionConfig;
+  /** Session-side hook: remember every workspace a task is accepted for. */
+  private readonly onTaskWorkspace?: (workspace: WorkspaceRef) => void;
 
   constructor(
     private readonly ctx: SystemContext,
@@ -167,6 +178,7 @@ export class TaskExecuteEngine implements Subscribable {
     this.logger = ctx.logger;
     this.homeDir = options.homeDir ?? resolveUserHomeDir(ctx.sessionDir);
     this.permission = options.permission ?? ctx.config.permission;
+    this.onTaskWorkspace = options.onTaskWorkspace;
     this.maxConcurrency = ctx.maxConcurrency;
     this.workerProvider = ctx.workerProvider;
     this.workerConfigs = ctx.config.workers;
@@ -209,6 +221,7 @@ export class TaskExecuteEngine implements Subscribable {
    */
   add(task: TaskDetail): string | undefined {
     this.taskState.append('tasks.pending', task);
+    this.recordTaskWorkspace(task);
     this.logger.info({ taskId: task.id }, 'Task added');
     this.ctx.hooks.emit('task:added', task);
     this.scheduleNext();
@@ -955,6 +968,23 @@ export class TaskExecuteEngine implements Subscribable {
     return task.workspace?.path ?? this.ctx.workspaceDir;
   }
 
+  /**
+   * Tell the session a task was accepted for `task.workspace`, so a session
+   * accumulates every workspace it dispatches work into. Best-effort: recording
+   * the identity is bookkeeping, never a precondition for running the task, so
+   * a failure (e.g. an unreadable registry) is logged and swallowed rather than
+   * failing an accepted task. Tasks without a workspace stamp run in the
+   * process workspace, which the session already records — nothing to add.
+   */
+  private recordTaskWorkspace(task: TaskDetail): void {
+    if (!this.onTaskWorkspace || !task.workspace) return;
+    try {
+      this.onTaskWorkspace(task.workspace);
+    } catch (err) {
+      this.logger.warn({ taskId: task.id, err }, 'Failed to record task workspace on the session');
+    }
+  }
+
   private createWorker(workerType: string, task: TaskDetail): IWorkerInstance {
     const type = workerType ?? PUPPET_WORKER_TYPE;
     const workspaceDir = this.taskWorkspaceDir(task);
@@ -1059,6 +1089,7 @@ export class TaskExecuteEngine implements Subscribable {
       workerTranscriptId: worker.id,
     };
     this.taskState.append('tasks.running', taskWithOrigin);
+    this.recordTaskWorkspace(taskWithOrigin);
     this.workerTaskMap.set(workerId, task.id);
     // New stage, new execution turn (the worker's conversation accumulates,
     // but each run is its own agent activation).
@@ -1248,7 +1279,9 @@ export class TaskExecuteEngine implements Subscribable {
       this.permissionResolvers.set(workerId, middleware);
     }
 
-    // Wire signal context for ClaudeCodeWorker (canUseTool + acceptMessage)
+    // Wire signal context for ClaudeCodeWorker (canUseTool + acceptMessage).
+    // The SAME access scope used for puppet workers is handed over, so
+    // canUseTool reaches identical allow/ask/deny verdicts.
     if (worker instanceof ClaudeCodeWorker) {
       worker.setSignalContext({
         signalQueue: this.signalQueue,
@@ -1258,6 +1291,7 @@ export class TaskExecuteEngine implements Subscribable {
         workerType,
         emoji: workerMeta.emoji,
         turnLineage: this.workerLineage(workerId),
+        accessScope,
       });
       this.permissionResolvers.set(workerId, worker.permissionHandler);
     }
