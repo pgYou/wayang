@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { TaskDetail } from '@/types/index';
+import type { PermissionConfig } from '@/types/config';
 import { normalizeWorkspacePath, resolveWorkspaceRef } from '@/infra/workspace-registry';
+import { defaultDeniedPaths, isDenied, isPathWithin, normalizePath } from '@/infra/permission/policy';
 import { generateId } from '@/utils/id';
 import { defineTool, safeExecute } from './common';
 
@@ -41,6 +43,18 @@ export interface AddTaskToolDeps {
    * from the workspace registry. Null/undefined degrades to the rule-based slug.
    */
   wayangDir?: string | null;
+  /**
+   * The user's home directory — the boundary an `allowedDirs` entry must stay
+   * inside, and the anchor of the built-in denylist. Injected (never read
+   * globally); when absent, a call that declares `allowedDirs` is rejected
+   * because the boundary cannot be checked.
+   */
+  homeDir?: string;
+  /**
+   * User-config permission section. Its `deniedDirs` extend the built-in
+   * denylist for `allowedDirs` validation. Injected (never read globally).
+   */
+  permissionConfig?: PermissionConfig;
 }
 
 /**
@@ -84,6 +98,76 @@ function resolveTaskWorkspace(
   return { workspace: { path: ref.path, slug: ref.slug } };
 }
 
+/**
+ * Validate and canonicalize an `allowedDirs` declaration for one task.
+ *
+ * Every entry is normalized through the shared policy (relative entries resolve
+ * against the target workspace), must sit inside the user's home directory, and
+ * must not match the denied-path list (built-in denylist plus configured
+ * `deniedDirs`). A single bad entry fails the WHOLE call — the returned error
+ * names the offending entry and the reason — so a task is never created with a
+ * partial grant. Valid entries are deduped while preserving declaration order.
+ *
+ * Absent/empty input means "no extra directories": the task field stays unset
+ * (never an empty array).
+ */
+function resolveTaskAllowedDirs(
+  requested: string[] | undefined,
+  workspacePath: string | undefined,
+  deps: AddTaskToolDeps,
+): { allowedDirs?: string[] } | { error: string } {
+  if (requested === undefined || requested.length === 0) return {};
+
+  const homeDir = deps.homeDir;
+  if (!homeDir) {
+    return {
+      error: 'Cannot validate allowedDirs: the home directory is unknown in this context, so the task was NOT created.',
+    };
+  }
+
+  const home = normalizePath(homeDir);
+  // Relative entries resolve against the task workspace (the same base the
+  // policy uses), falling back to home when the workspace is unknown.
+  const base = workspacePath !== undefined ? normalizePath(workspacePath, { base: home }) : home;
+  const deniedPaths = [
+    ...defaultDeniedPaths(home),
+    ...(deps.permissionConfig?.deniedDirs ?? [])
+      .filter((d): d is string => typeof d === 'string' && d.length > 0)
+      .map((d) => normalizePath(d, { base: home })),
+  ].map((d) => normalizePath(d));
+
+  const seen = new Set<string>();
+  const allowedDirs: string[] = [];
+  for (const raw of requested) {
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      return {
+        error: `Invalid allowedDirs entry ${JSON.stringify(raw)}: expected a non-empty directory path. The task was NOT created.`,
+      };
+    }
+
+    const resolved = normalizePath(raw, { base });
+
+    if (!isPathWithin(home, resolved)) {
+      return {
+        error: `Invalid allowedDirs entry "${raw}" (resolved to ${resolved}): it is outside the home directory (${home}). Only directories under home can be granted to a task. The task was NOT created.`,
+      };
+    }
+
+    if (isDenied(resolved, deniedPaths)) {
+      return {
+        error: `Invalid allowedDirs entry "${raw}" (resolved to ${resolved}): it matches the denied-path list (a sensitive location such as credentials or tool config). The task was NOT created.`,
+      };
+    }
+
+    if (!seen.has(resolved)) {
+      seen.add(resolved);
+      allowedDirs.push(resolved);
+    }
+  }
+
+  return allowedDirs.length > 0 ? { allowedDirs } : {};
+}
+
 export function addTaskTool(deps: AddTaskToolDeps) {
   return defineTool({
     description: 'Add a new task to the queue. A Worker will execute it automatically.',
@@ -101,9 +185,12 @@ export function addTaskTool(deps: AddTaskToolDeps) {
       workspace: z.string().optional().describe(
         'Target workspace path; defaults to the current workspace. A different path runs this task there — the worker, its tools and its permission checks use it as their root.',
       ),
+      allowedDirs: z.array(z.string()).optional().describe(
+        'Extra directories this task may access, in addition to its workspace. Only this task is affected — the grant is NOT inherited by other tasks. Each entry must be inside the user home and off the denied-path list (credentials, tool config); an invalid entry fails the whole call and no task is created. Paths are normalized; relative entries resolve against the task workspace.',
+      ),
     }),
     execute: safeExecute('add_task', async (
-      { title, description, priority, workerType, multiStage, assignToWorker, workspace },
+      { title, description, priority, workerType, multiStage, assignToWorker, workspace, allowedDirs },
       options,
     ) => {
       const resolvedType = workerType || 'puppet';
@@ -112,6 +199,15 @@ export function addTaskTool(deps: AddTaskToolDeps) {
       // none is given. Only an unresolvable declaration (unknown context) fails.
       const workspaceResolution = resolveTaskWorkspace(workspace, deps);
       if ('error' in workspaceResolution) return workspaceResolution.error;
+
+      // Extra directories for this task only. Validated before anything else
+      // happens so an invalid entry can never yield a half-created task.
+      const allowedDirsResolution = resolveTaskAllowedDirs(
+        allowedDirs,
+        workspaceResolution.workspace?.path ?? deps.workspaceDir,
+        deps,
+      );
+      if ('error' in allowedDirsResolution) return allowedDirsResolution.error;
 
       // Pre-validate workerType before adding task
       if (deps.validateWorkerType) {
@@ -156,6 +252,7 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         multiStage,
         assignToWorker,
         ...(workspaceResolution.workspace !== undefined && { workspace: workspaceResolution.workspace }),
+        ...(allowedDirsResolution.allowedDirs !== undefined && { taskAllowedDirs: allowedDirsResolution.allowedDirs }),
         ...(turnCtx?.turnId !== undefined && { turnId: turnCtx.turnId }),
         ...(turnCtx?.rootTurnId !== undefined && { rootTurnId: turnCtx.rootTurnId }),
         ...((toolCallId ?? turnCtx?.causationId) !== undefined && { causationId: toolCallId ?? turnCtx?.causationId }),

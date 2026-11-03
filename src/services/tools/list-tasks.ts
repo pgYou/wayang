@@ -16,7 +16,11 @@ export function listTasksTool(deps: { listTasks: (status?: TaskDetail['status'])
         // Workspace slug is additive: older tasks have no identity, so the
         // parenthetical stays exactly as before for them.
         const scope = t.workspace ? `, ws: ${t.workspace.slug}` : '';
-        return `[${t.status}] ${t.id} (worker: ${t.workerSessionId ?? 'none'}${scope}): ${t.description}${t.result ? ` → ${t.result}` : ''}${t.error ? ` ✗ ${t.error}` : ''}`;
+        // Task-scoped extra directories, shown only when the task has any.
+        const dirs = t.taskAllowedDirs && t.taskAllowedDirs.length > 0
+          ? `, dirs: ${t.taskAllowedDirs.join(', ')}`
+          : '';
+        return `[${t.status}] ${t.id} (worker: ${t.workerSessionId ?? 'none'}${scope}${dirs}): ${t.description}${t.result ? ` → ${t.result}` : ''}${t.error ? ` ✗ ${t.error}` : ''}`;
       }).join('\n');
     }),
   });

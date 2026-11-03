@@ -52,4 +52,12 @@ export interface TaskDetail {
    * back to the session's own workspace.
    */
   workspace?: { path: string; slug: string };
+  /**
+   * Extra directories this ONE task may access, in addition to its workspace.
+   * Declared at add_task time (allowedDirs), validated against the home
+   * boundary and the denied-path list, and stored normalized + deduped.
+   * Scoped to this task only — never inherited by other tasks. Optional:
+   * absent means no extra directories were granted.
+   */
+  taskAllowedDirs?: string[];
 }

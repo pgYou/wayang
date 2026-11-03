@@ -150,6 +150,9 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       queryMessages: (filter) => signalQueue.query(filter),
       cwd: ctx.workspaceDir,
       homeDir,
+      // User-config permission section: add_task validates a task's allowedDirs
+      // against the built-in denylist plus these configured deniedDirs.
+      permissionConfig: opts.config.permission,
       getNotebook: () => state.get<string>('runtimeState.notebook') ?? '',
       setNotebook: (content, mode) => {
         const current = state.get<string>('runtimeState.notebook') ?? '';

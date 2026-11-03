@@ -75,6 +75,10 @@ export function getTaskDetailTool(deps: GetTaskDetailDeps) {
       if (task.workerSessionId) lines.push(`Worker: ${task.workerSessionId}`);
       // Workspace identity (path + slug); legacy tasks simply have none.
       if (task.workspace) lines.push(`Workspace: ${task.workspace.path} (slug: ${task.workspace.slug})`);
+      // Extra directories granted to this task only (absent unless declared).
+      if (task.taskAllowedDirs && task.taskAllowedDirs.length > 0) {
+        lines.push(`Allowed dirs: ${task.taskAllowedDirs.join(', ')}`);
+      }
 
       const isFull = full === true;
       const requestedLimit = limit ?? DEFAULT_LIMIT;

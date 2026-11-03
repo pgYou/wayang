@@ -1,4 +1,5 @@
 import type { TaskDetail, ControllerSignal, InquireQuestion, ActiveWorkerInfo, WorkerLiveStatus } from '@/types/index';
+import type { PermissionConfig } from '@/types/config';
 import type { ConversationEntry } from '@/types/conversation';
 import { addTaskTool } from './add-task';
 import { listTasksTool } from './list-tasks';
@@ -59,11 +60,17 @@ export interface ControllerToolDeps {
   /** Workspace directory for file search. */
   cwd?: string;
   /**
-   * The user's home directory — the read scope for search_files. Denylisted
-   * subpaths (credentials, tool config, ~/.wayang) stay unreadable. This is
-   * NOT ~/.wayang; it is the home that contains it.
+   * The user's home directory — the read scope for search_files, and the
+   * boundary add_task's `allowedDirs` must stay inside. Denylisted subpaths
+   * (credentials, tool config, ~/.wayang) stay unreadable. This is NOT
+   * ~/.wayang; it is the home that contains it.
    */
   homeDir?: string;
+  /**
+   * User-config permission section, injected into add_task so its `deniedDirs`
+   * extend the built-in denylist when validating `allowedDirs`.
+   */
+  permissionConfig?: PermissionConfig;
   /** Get worker conversation entries for a task. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors TaskExecuteEngine.getWorkerConversation's defensive any[]
   getWorkerConversation?: (taskId: string) => any[];
@@ -137,6 +144,8 @@ export function createControllerTools(deps: ControllerToolDeps) {
       onTaskDispatched: deps.onTaskDispatched,
       workspaceDir: deps.workspaceDir,
       wayangDir: deps.wayangDir,
+      homeDir: deps.homeDir,
+      permissionConfig: deps.permissionConfig,
     }),
     list_tasks: listTasksTool({ listTasks: deps.listTasks }),
     cancel_task: cancelTaskTool({
