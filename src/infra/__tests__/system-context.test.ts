@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import type { WayangConfig } from '@/types/index';
 
 // Mock logger to avoid real filesystem writes
-vi.mock('../logger.js', () => ({
-  createLogger: () => ({
+vi.mock('../logger.js', () => {
+  const logger = {
     info: vi.fn(),
     debug: vi.fn(),
     error: vi.fn(),
@@ -14,8 +14,12 @@ vi.mock('../logger.js', () => ({
       error: vi.fn(),
       warn: vi.fn(),
     }),
-  }),
-}));
+  };
+  return {
+    createLogger: () => logger,
+    createFileLogger: () => ({ logger, close: () => Promise.resolve() }),
+  };
+});
 
 import { SystemContext } from '@/infra/system-context';
 
