@@ -164,10 +164,11 @@ read_worker_conversation(workerId, limit?, offset?, maxChars?, full?, type?) rea
 ## Checking whether a worker is alive (get_worker_status)
 
 get_worker_status(workerId?) — with an id returns that worker's status object, without one returns all current workers.
-Fields: workerId, type, taskId, status, runningForMs, lastActivityAt (epoch ms of the newest transcript entry) with lastActivityAgoMs (how long ago that was), currentTool, streamEnded, resultReceived, idleSince.
+Fields: workerId, type, taskId, status, runningForMs, activitySource (memory = the worker's live in-memory conversation, disk = its on-disk transcript, none = nothing written yet), lastActivityAt (epoch ms of the newest transcript entry) with lastActivityAgoMs (how long ago that was), currentTool, streamEnded, resultReceived, idleSince.
 Use it to tell "still working" from "stuck / already finished but not released":
 - Many minutes without a new transcript entry and no current tool → likely stuck: inspect with read_worker_conversation, then cancel_task.
 - resultReceived=true but streamEnded=false / status still running → the worker is in its wrap-up; wait or inspect instead of cancelling.
+- Null activity fields mean "no transcript entries at all" (activitySource=none); null streamEnded/resultReceived mean the worker type does not track that fact. Do not read either as the other.
 - Unknown worker ids return a not-found message (never an exception).
 
 ## Sending messages to workers (chat_worker)

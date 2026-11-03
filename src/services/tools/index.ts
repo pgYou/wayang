@@ -136,6 +136,12 @@ export function createControllerTools(deps: ControllerToolDeps) {
       listWorkers: () => deps.getActiveWorkers?.() ?? [],
       listTasks: () => deps.listTasks(),
       readTranscript: deps.readTranscript,
+      // Same layered activity source read_worker_conversation uses: live
+      // memory while tracked, on-disk jsonl (under the instance's OWN id)
+      // otherwise. Without these the tool reads workers/<engine-id>/ which
+      // never exists and reports null activity for busy workers.
+      getWorkerConversationByWorkerId: deps.getWorkerConversationByWorkerId,
+      getWorkerTranscriptId: deps.getWorkerTranscriptId,
       getLiveStatus: deps.getWorkerLiveStatus,
     }),
     update_task: updateTaskTool({ updateTask: deps.updateTask }),
