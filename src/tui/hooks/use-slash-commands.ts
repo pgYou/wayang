@@ -2,6 +2,7 @@ import { useMemoizedFn } from './use-memoized-fn';
 import type { RemoteSupervisor } from '@/client/remote-supervisor';
 import type { TaskDetail } from '@/types/index';
 import { formatContextReport } from '@/tui/utils/context-report';
+import { renderShortcutList } from '@/tui/utils/shortcut-catalog';
 
 /** Slash command definitions for autocomplete suggestions. */
 export const SLASH_COMMANDS = [
@@ -12,6 +13,7 @@ export const SLASH_COMMANDS = [
   { name: 'compact', description: 'Compact context' },
   { name: 'exit', description: 'Quit' },
   { name: 'help', description: 'Show help' },
+  { name: 'shortcut', description: 'Show keyboard shortcuts' },
 ] as const;
 
 export interface SlashCommandResult {
@@ -88,8 +90,14 @@ export function useSlashCommands(supervisor: RemoteSupervisor) {
             '  /compact          — Compact conversation context',
             '  /exit             — Quit',
             '  /help             — Show this help',
+            '  /shortcut         — Show keyboard shortcuts',
           ].join('\n'),
         };
+
+      case 'shortcut':
+        // Rendered from the shortcut catalog — the single table both this
+        // output and the keybinding survey are generated from.
+        return { handled: true, output: renderShortcutList() };
 
       default:
         return { handled: true, output: `Unknown command: /${cmd}. Type /help for commands.` };
