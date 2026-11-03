@@ -1,7 +1,8 @@
 /**
- * add_task workspace declaration — the task carries a workspace identity, but
- * execution stays single-workspace: a declared workspace that resolves to
- * anything other than the current one is rejected before a task is created.
+ * add_task workspace declaration — a task carries the workspace identity it
+ * will execute in. A declared workspace may differ from the current one: the
+ * task is created and the engine runs it there. Only an unresolvable
+ * declaration (no known current workspace) is rejected.
  */
 
 import * as fs from 'node:fs';
@@ -108,7 +109,7 @@ describe('addTaskTool — workspace declaration', () => {
     }
   });
 
-  it('rejects a different workspace and creates no task', async () => {
+  it('accepts a different workspace and stamps it onto the created task', async () => {
     // Minimal in-memory task store standing in for the engine.
     const tasks: TaskDetail[] = [];
     const addTask = vi.fn((t: TaskDetail) => { tasks.push(t); return 'w-1'; });
@@ -117,9 +118,7 @@ describe('addTaskTool — workspace declaration', () => {
 
     // One task already exists, created in the current workspace.
     await exec(tool, { title: 'baseline', description: 'D' });
-    const countOpen = () => tasks.filter(t => t.status === 'pending' || t.status === 'running').length;
-    const before = countOpen();
-    expect(before).toBe(1);
+    expect(tasks).toHaveLength(1);
 
     const result = await exec(tool, {
       title: 'T',
@@ -127,18 +126,82 @@ describe('addTaskTool — workspace declaration', () => {
       workspace: otherDir,
     });
 
-    expect(addTask).toHaveBeenCalledTimes(1);
-    expect(countOpen()).toBe(before);
-    expect(tasks).toHaveLength(1);
-    // The rejection must name the limitation instead of failing silently.
-    expect(result).toContain('not supported in the current version');
+    // The task IS created — the engine executes it in the declared workspace.
+    expect(result).toContain('added');
+    expect(addTask).toHaveBeenCalledTimes(2);
+    expect(tasks).toHaveLength(2);
+
+    // The stamped identity is the canonical form of the DECLARED workspace,
+    // not of the process workspace.
+    expect(tasks[0].workspace).toEqual({
+      path: normalizeWorkspacePath(workspaceDir),
+      slug: 'wayang',
+    });
+    expect(tasks[1].workspace).toEqual({
+      path: normalizeWorkspacePath(otherDir),
+      slug: 'other-repo',
+    });
+
+    // The listing surfaces the target workspace of each task.
+    const listed = await exec(listTool, {});
+    expect(listed.split('\n')).toHaveLength(2);
+    expect(listed).toContain('ws: wayang');
+    expect(listed).toContain('ws: other-repo');
+  });
+
+  it('canonicalizes a different workspace given in an equivalent spelling', async () => {
+    const linkPath = path.join(scratchRoot, 'other-link');
+    fs.symlinkSync(otherDir, linkPath, 'dir');
+
+    const added: TaskDetail[] = [];
+    const tool = addTaskTool({
+      addTask: (t) => { added.push(t); return 'w-1'; },
+      workspaceDir,
+      wayangDir,
+    });
+
+    for (const workspace of [`${otherDir}/`, linkPath, path.join(otherDir, '.')]) {
+      const result = await exec(tool, { title: 'T', description: 'D', workspace });
+      expect(result).toContain('added');
+    }
+
+    expect(added).toHaveLength(3);
+    for (const task of added) {
+      expect(task.workspace?.path).toBe(normalizeWorkspacePath(otherDir));
+    }
+  });
+
+  it('treats an empty or whitespace-only workspace as undeclared (default)', async () => {
+    const added: TaskDetail[] = [];
+    const tool = addTaskTool({
+      addTask: (t) => { added.push(t); return 'w-1'; },
+      workspaceDir,
+      wayangDir,
+    });
+
+    for (const workspace of ['', '   ', '\t\n']) {
+      const result = await exec(tool, { title: 'T', description: 'D', workspace });
+      expect(result).toContain('added');
+    }
+
+    expect(added).toHaveLength(3);
+    for (const task of added) {
+      expect(task.workspace).toEqual({
+        path: normalizeWorkspacePath(workspaceDir),
+        slug: 'wayang',
+      });
+    }
+  });
+
+  it('rejects a declared workspace when the current workspace is unknown', async () => {
+    const addTask = vi.fn((_t: TaskDetail) => 'w-1');
+    const tool = addTaskTool({ addTask, wayangDir }); // no workspaceDir injected
+
+    const result = await exec(tool, { title: 'T', description: 'D', workspace: otherDir });
+
+    expect(addTask).not.toHaveBeenCalled();
     expect(result).toContain('NOT created');
     expect(result).toContain(normalizeWorkspacePath(otherDir));
-    expect(result).toContain(normalizeWorkspacePath(workspaceDir));
-
-    // And the list still shows exactly the one baseline task.
-    const listed = await exec(listTool, {});
-    expect(listed.split('\n')).toHaveLength(1);
   });
 });
 

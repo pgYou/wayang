@@ -154,9 +154,8 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       onTaskDispatched: ({ toolCallId, taskId }) => {
         if (toolCallId) recorder.attachTask(toolCallId, taskId);
       },
-      // Workspace identity stamped onto tasks by add_task. The engine still
-      // executes everything in ctx.workspaceDir, so add_task rejects any other
-      // workspace instead of accepting it.
+      // Default workspace for tasks created by add_task; a declared workspace
+      // is stamped instead and the engine executes the task there.
       workspaceDir: ctx.workspaceDir,
       wayangDir: wayangDirForSessionDir(ctx.sessionDir),
     });

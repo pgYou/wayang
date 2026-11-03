@@ -91,8 +91,9 @@ export interface ControllerToolDeps {
   /** Notify the agent that an add_task call dispatched a task (toolCall→task link). */
   onTaskDispatched?: (info: { toolCallId?: string; taskId: string }) => void;
   /**
-   * Workspace this process executes tasks in (ctx.workspaceDir). add_task only
-   * accepts a declared workspace that normalizes to this path.
+   * Workspace this process runs in (ctx.workspaceDir). add_task uses it as the
+   * default target; a declared workspace may point elsewhere and the engine
+   * executes the task there.
    */
   workspaceDir?: string;
   /** Wayang home dir for workspace-registry lookups (path + stable slug). */

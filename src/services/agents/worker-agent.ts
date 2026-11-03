@@ -42,12 +42,16 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
      *  HTTP 400, so the safe default lets the model decide; the system prompt
      *  still instructs workers to finish via done/fail. */
     toolChoice?: ToolChoice,
+    /** Workspace the worker's task executes in — `task.workspace.path` as
+     *  resolved by the engine (canonical). Falls back to `ctx.workspaceDir`
+     *  for callers without a task context (legacy tasks, direct construction). */
+    workspaceDir?: string,
   ) {
     super(provider);
     this.provider = provider;
     this.ctx = ctx;
     this.logger = ctx.logger;
-    this.workspaceDir = ctx.workspaceDir;
+    this.workspaceDir = workspaceDir ?? ctx.workspaceDir;
     this.toolChoice = toolChoice;
     // Workspace identity is stamped into runtime-state so a worker's records
     // stay attributable after it finished (registry slug keeps it stable).
@@ -55,7 +59,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       ctx.sessionDir,
       this.id,
       ctx.logger,
-      resolveWorkspaceRef(wayangDirForSessionDir(ctx.sessionDir), ctx.workspaceDir),
+      resolveWorkspaceRef(wayangDirForSessionDir(ctx.sessionDir), this.workspaceDir),
     );
     // No context window budget: workers never call isFull()/compact today,
     // so passing provider.contextWindowTokens would be a dead setting.

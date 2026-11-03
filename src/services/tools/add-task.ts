@@ -23,10 +23,10 @@ export interface AddTaskToolDeps {
   /** Notify the agent that this call dispatched a task (toolCall→task audit link). */
   onTaskDispatched?: (info: { toolCallId?: string; taskId: string }) => void;
   /**
-   * The workspace this process executes in (ctx.workspaceDir). Task creation is
-   * single-workspace for now: a `workspace` argument is only accepted when it
-   * normalizes to this path. Undefined means "unknown context" — then no
-   * workspace identity is stamped and a declared workspace is rejected.
+   * The workspace this process runs in (ctx.workspaceDir), used as the default
+   * when the call declares none. Undefined means "unknown context" — then no
+   * default can be derived, so a declared workspace is rejected (nothing to
+   * resolve it against) and no identity is stamped.
    */
   workspaceDir?: string;
   /**
@@ -39,13 +39,14 @@ export interface AddTaskToolDeps {
 /**
  * Decide which workspace a new task belongs to.
  *
- * Three states:
- * - no `workspace` argument       → the current workspace (default).
- * - `workspace` == current (after canonicalization) → the current workspace.
- * - `workspace` != current        → error; the task must NOT be created, since
- *   the engine still builds workers, tool cwd and permission gates from the
- *   process-level workspace, so "accepted but executed elsewhere" would be a
- *   silent inconsistency.
+ * - no `workspace` argument (or an empty/whitespace one) → the current
+ *   workspace (default).
+ * - a declared `workspace` → that workspace, canonicalized. A different path
+ *   is a legitimate target: the engine builds the worker, the tool cwd and the
+ *   permission-gate boundary from `task.workspace.path`, so the task really
+ *   executes where it says it does.
+ * - unknown current workspace + declared one → error; there is nothing to
+ *   resolve the request against, so no task is created.
  */
 function resolveTaskWorkspace(
   requested: string | undefined,
@@ -65,19 +66,14 @@ function resolveTaskWorkspace(
     return {};
   }
 
-  const currentPath = normalizeWorkspacePath(current);
-  if (requestedPath !== undefined && requestedPath !== currentPath) {
-    return {
-      error: `Workspace ${requestedPath} is not the current workspace (${currentPath}). ` +
-        `Cross-workspace execution is not supported in the current version — the task was NOT created. ` +
-        `Omit "workspace" (or pass the current workspace path) to run the task here.`,
-    };
-  }
+  // Declared workspace wins; the process workspace is only the default.
+  // Canonicalization keeps `task.workspace.path` the single value the engine
+  // later uses for cwd and permission checks (no raw-spelling drift).
+  const targetPath = requestedPath ?? normalizeWorkspacePath(current);
 
-  // Same workspace (explicitly declared in any equivalent spelling, or the
-  // default): stamp its canonical identity. resolveWorkspaceRef never throws —
-  // without a readable registry it degrades to the rule-based slug.
-  const ref = resolveWorkspaceRef(deps.wayangDir ?? null, currentPath);
+  // resolveWorkspaceRef never throws — without a readable registry it degrades
+  // to the rule-based slug.
+  const ref = resolveWorkspaceRef(deps.wayangDir ?? null, targetPath);
   return { workspace: { path: ref.path, slug: ref.slug } };
 }
 
@@ -96,7 +92,7 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         'Dispatch this task to an existing idle worker (the workerId returned from a prior multiStage task). The worker resumes with its accumulated context. Omit for a fresh worker.',
       ),
       workspace: z.string().optional().describe(
-        'Target workspace path; defaults to the current workspace. The current version only accepts a path that resolves to the same workspace as the current one — cross-workspace execution is not supported yet.',
+        'Target workspace path; defaults to the current workspace. A different path runs this task there — the worker, its tools and its permission checks use it as their root.',
       ),
     }),
     execute: safeExecute('add_task', async (
@@ -105,8 +101,8 @@ export function addTaskTool(deps: AddTaskToolDeps) {
     ) => {
       const resolvedType = workerType || 'puppet';
 
-      // Workspace gate: declared workspace must be the one this process runs
-      // in. A mismatch fails the call before anything is created.
+      // Workspace stamp: the declared workspace, or the process workspace when
+      // none is given. Only an unresolvable declaration (unknown context) fails.
       const workspaceResolution = resolveTaskWorkspace(workspace, deps);
       if ('error' in workspaceResolution) return workspaceResolution.error;
 

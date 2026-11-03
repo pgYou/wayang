@@ -848,11 +848,26 @@ export class TaskExecuteEngine implements Subscribable {
   // Private: worker spawn + lifecycle
   // ---------------------------------------------------------------------------
 
-  private createWorker(workerType: string): IWorkerInstance {
+  /**
+   * Workspace a task executes in.
+   *
+   * `task.workspace.path` is canonical (add_task canonicalizes through
+   * realpath), so it is used verbatim — worker construction, tool cwd and the
+   * permission-gate boundary all read this single value, never a path
+   * re-assembled from the process workspace. Tasks without a workspace stamp
+   * (written before workspaces existed, restored from an older session, or
+   * dispatched internally) fall back to the process workspace.
+   */
+  private taskWorkspaceDir(task: TaskDetail): string {
+    return task.workspace?.path ?? this.ctx.workspaceDir;
+  }
+
+  private createWorker(workerType: string, task: TaskDetail): IWorkerInstance {
     const type = workerType ?? PUPPET_WORKER_TYPE;
+    const workspaceDir = this.taskWorkspaceDir(task);
 
     if (type === PUPPET_WORKER_TYPE) {
-      return new WorkerAgent(this.workerProvider, this.ctx, this.skills, this.ctx.config.worker.toolChoice);
+      return new WorkerAgent(this.workerProvider, this.ctx, this.skills, this.ctx.config.worker.toolChoice, workspaceDir);
     }
 
     const config = this.workerConfigs?.[type];
@@ -865,7 +880,7 @@ export class TaskExecuteEngine implements Subscribable {
 
     switch (config.type) {
       case 'claude-code':
-        return new ClaudeCodeWorker(config, this.ctx.sessionDir, this.ctx.workspaceDir, this.ctx, this.skills);
+        return new ClaudeCodeWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
       default:
         throw new Error(`Unsupported worker type: "${config.type}"`);
     }
@@ -873,7 +888,7 @@ export class TaskExecuteEngine implements Subscribable {
 
   private async spawnWorker(task: TaskDetail, workerId: string): Promise<WorkerResult> {
     const workerType = task.workerType ?? PUPPET_WORKER_TYPE;
-    const worker = this.createWorker(workerType);
+    const worker = this.createWorker(workerType, task);
 
     this.workers.set(workerId, worker);
     this.workerTaskMap.set(workerId, task.id);
@@ -1008,6 +1023,11 @@ export class TaskExecuteEngine implements Subscribable {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous zod-inferred tool set feeding IWorkerInstance.run (see common.ts relaxation boundary)
   ): Record<string, any> {
     const workerMeta = getWorkerMeta(workerType, this.workerConfigs);
+    // Single source of truth for this run's filesystem boundary: the task's
+    // own workspace (canonical), falling back to the process workspace only
+    // for tasks without an identity. Derived once so the tool cwd, the
+    // permission gate and the call descriptions cannot drift apart.
+    const workspace = this.taskWorkspaceDir(task);
 
     // Blocking-request registry for this worker run's ask_controller calls.
     const inquiryRegistry = new BlockingRequestMap<WorkerInquiryResolution>();
@@ -1046,7 +1066,7 @@ export class TaskExecuteEngine implements Subscribable {
       ? {
           ...createWorkerTools({
           listTasks: (status?: TaskDetail['status']) => this.list(status),
-          cwd: this.ctx.workspaceDir,
+          cwd: workspace,
           tavilyApiKey: this.ctx.config.tavilyApiKey,
           registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {
@@ -1082,7 +1102,6 @@ export class TaskExecuteEngine implements Subscribable {
 
     // Apply permission middleware for puppet workers
     if (workerType === PUPPET_WORKER_TYPE) {
-      const workspace = this.ctx.workspaceDir;
       const middleware = wrapWithPermissionMiddleware(tools, {
         gatedTools: ['bash', ...FILE_TOOL_NAMES],
         needsPermission: (toolName, args) => {
