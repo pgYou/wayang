@@ -25,7 +25,7 @@
  */
 
 import { realpathSync } from 'node:fs';
-import { isAbsolute, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 /** What the caller wants to do with the path. */
 export type AccessMode = 'read' | 'write';
@@ -101,9 +101,32 @@ const DEFAULT_DENIED_RELATIVE_PATHS = [
 ] as const;
 
 /**
+ * Upper bound on how many parents we walk up while looking for the deepest
+ * existing ancestor of a path. Keeps canonicalization O(1)-ish in the worst
+ * case instead of walking to the root for pathological inputs.
+ */
+const MAX_ANCESTOR_DEPTH = 32;
+
+/**
  * Canonicalize a path: `realpath` first (resolves `..`, trailing slashes and
- * symlinks), falling back to the lexical `path.resolve` result when the path
- * does not exist (or is otherwise unreadable). Never throws.
+ * symlinks). When the full path cannot be resolved because it does not exist
+ * (or a component is unreadable), resolve the deepest ancestor that DOES exist
+ * and re-append the missing tail:
+ *
+ *   /tmp/link/.ssh/new_key   (/tmp/link -> /home/u, new_key missing)
+ *     => /home/u/.ssh/new_key
+ *
+ * The tail must be re-appended to the *resolved* ancestor, not to the lexical
+ * one: a purely lexical fallback would keep the `link` spelling and let a
+ * symlinked ancestor smuggle a path past the denylist (a lexical prefix test
+ * against `/home/u/.ssh` would not match `/tmp/link/.ssh/new_key`).
+ *
+ * If not even the filesystem root can be resolved, fall back to the lexical
+ * `path.resolve` result. Never throws.
+ *
+ * Complexity: one `realpath` syscall per path segment attempted, bounded by
+ * `MAX_ANCESTOR_DEPTH + 1` (33) lookups for a single call; successful lookups
+ * exit immediately, so the common case is a single `realpath`.
  */
 export function normalizePath(p: string, opts: NormalizePathOptions = {}): string {
   const base = opts.base ?? process.cwd();
@@ -111,10 +134,36 @@ export function normalizePath(p: string, opts: NormalizePathOptions = {}): strin
   try {
     return realpathSync(lexical);
   } catch {
-    // Path does not exist (or a component is unreadable): keep the lexical
-    // resolution so callers still get a stable absolute path.
-    return lexical;
+    return resolveDeepestExistingAncestor(lexical);
   }
+}
+
+/**
+ * Resolve `lexical` by peeling off trailing segments until one of the prefixes
+ * is `realpath`-able, then gluing the peeled segments back onto that realpath.
+ * `lexical` is expected to be absolute and already lexically normalized, so the
+ * peeled segments never contain `..`.
+ */
+function resolveDeepestExistingAncestor(lexical: string): string {
+  const peeled: string[] = [];
+  let candidate = lexical;
+
+  for (let depth = 0; depth <= MAX_ANCESTOR_DEPTH; depth += 1) {
+    try {
+      const resolved = realpathSync(candidate);
+      return peeled.length === 0 ? resolved : resolve(join(resolved, ...peeled));
+    } catch {
+      // Not resolvable (missing or unreadable) — try the parent.
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) break; // hit the filesystem root
+    peeled.unshift(basename(candidate));
+    candidate = parent;
+  }
+
+  // Nothing along the chain was resolvable (or the walk limit was reached):
+  // keep the previous lexical behaviour rather than inventing a path.
+  return lexical;
 }
 
 /** Built-in denylist for a given home directory, as absolute paths. */

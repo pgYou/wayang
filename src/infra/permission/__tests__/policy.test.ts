@@ -311,3 +311,54 @@ describe('decideAccess: canonicalization inputs', () => {
     expect(result.matchedRule).toBe('denylist');
   });
 });
+
+/**
+ * Regression suite for the lexical-fallback bypass: a non-existent path whose
+ * ancestor chain contains a symlink used to normalize to its *lexical* spelling,
+ * which no longer matched the denylist's canonical prefix.
+ */
+describe('normalizePath: deepest existing ancestor through symlinked parents', () => {
+  let homeLink: string;
+  let realHome: string;
+
+  beforeAll(() => {
+    homeLink = join(root, 'link-to-home-anchor');
+    symlinkSync(home, homeLink);
+    realHome = realpathSync(home);
+  });
+
+  it('denies a missing file under .ssh reached through a symlinked directory', () => {
+    // <link>/.ssh/new_key — /tmp/link -> home, new_key does not exist.
+    const target = join(homeLink, '.ssh', 'new_key');
+    const normalized = normalizePath(target);
+    expect(normalized).toBe(join(realHome, '.ssh', 'new_key'));
+    expect(isDenied(normalized, defaultDeniedPaths(home))).toBe(true);
+    expect(decideAccess({ path: target, access: 'write', homeDir: home }).decision).toBe('deny');
+    expect(decideAccess({ path: target, access: 'read', homeDir: home }).decision).toBe('deny');
+  });
+
+  it('denies an existing file under .ssh reached through a symlinked directory', () => {
+    const target = join(homeLink, '.ssh', 'existing_key');
+    writeFileSync(join(home, '.ssh', 'existing_key'), 'secret');
+    expect(realpathSync(target)).toBe(join(realHome, '.ssh', 'existing_key'));
+    expect(normalizePath(target)).toBe(join(realHome, '.ssh', 'existing_key'));
+    expect(decideAccess({ path: target, access: 'write', homeDir: home }).matchedRule).toBe('denylist');
+  });
+
+  it('keeps the lexical result for missing paths with no symlinked ancestor', () => {
+    const ghost = join(home, 'no-such-dir', 'no-such-file.txt');
+    expect(normalizePath(ghost)).toBe(resolve(ghost));
+    expect(normalizePath('no-such-dir/no-such-file.txt', { base: home })).toBe(join(home, 'no-such-dir', 'no-such-file.txt'));
+    // And it must not be mistaken for something inside the denylist.
+    expect(isDenied(normalizePath(ghost), defaultDeniedPaths(home))).toBe(false);
+    expect(decideAccess({ path: ghost, access: 'read', homeDir: home }).decision).toBe('allow');
+  });
+
+  it('re-appends a deep missing tail onto the resolved ancestor', () => {
+    // <link>/a/b/c — neither a, b nor c exist.
+    const target = join(homeLink, 'a', 'b', 'c');
+    expect(normalizePath(target)).toBe(join(realHome, 'a', 'b', 'c'));
+    expect(normalizePath(`${target}/`)).toBe(join(realHome, 'a', 'b', 'c'));
+    expect(normalizePath(join(homeLink, 'documents', '..', 'a', 'b', 'c'))).toBe(join(realHome, 'a', 'b', 'c'));
+  });
+});
