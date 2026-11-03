@@ -46,6 +46,18 @@ export interface WorkerLiveStatus {
 /** Unified interface for all worker types (puppet, third-party). */
 export interface IWorkerInstance extends Subscribable {
   readonly id: string;
+  /**
+   * Workspace this worker was CREATED in — the root its identity was stamped
+   * with and the one its cwd / permission boundary / prompt were built for.
+   *
+   * A worker's workspace is fixed at construction: reusing the instance for a
+   * task pinned to another workspace would only re-point the run (tools, gate,
+   * cwd) while the worker keeps the old workspace's identity and the
+   * relative-path assumptions baked into its accumulated context. Callers
+   * therefore compare this value before reusing (see the engine's
+   * `validateWorkerWorkspace`).
+   */
+  readonly workspaceDir: string;
   /** Execute the task. Returns the final result. */
   run(
     task: import('./task').TaskDetail & { workerId: string },

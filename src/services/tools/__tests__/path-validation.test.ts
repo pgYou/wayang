@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writeFileTool } from '@/services/tools/write-file';
 import { readFileTool } from '@/services/tools/read-file';
-import { isInsideWorkspace } from '@/services/tools/common';
+import { isPathWithin, normalizePath } from '@/infra/permission/policy';
 
 /** Helper to call a defineTool's execute function. */
 async function exec(toolLike: any, args: Record<string, unknown>): Promise<string> {
@@ -12,19 +12,26 @@ async function exec(toolLike: any, args: Record<string, unknown>): Promise<strin
   return execute(args);
 }
 
-describe('isInsideWorkspace', () => {
+// The tool-level `isInsideWorkspace` helper was removed: containment is now
+// decided by the shared policy. These cases keep the same coverage against the
+// ONE remaining boundary primitive (canonicalize, then segment-boundary test).
+describe('isPathWithin (the single boundary check used by the policy)', () => {
   it('should return true for paths inside workspace', () => {
-    expect(isInsideWorkspace('/project/src/file.ts', '/project')).toBe(true);
-    expect(isInsideWorkspace('/project/a/b/c.txt', '/project')).toBe(true);
+    expect(isPathWithin('/project', normalizePath('/project/src/file.ts'))).toBe(true);
+    expect(isPathWithin('/project', normalizePath('/project/a/b/c.txt'))).toBe(true);
   });
 
   it('should return false for paths outside workspace', () => {
-    expect(isInsideWorkspace('/etc/passwd', '/project')).toBe(false);
-    expect(isInsideWorkspace('/project/../etc/passwd', '/project')).toBe(false);
+    expect(isPathWithin('/project', normalizePath('/etc/passwd'))).toBe(false);
+    expect(isPathWithin('/project', normalizePath('/project/../etc/passwd'))).toBe(false);
   });
 
   it('should return false for absolute paths unrelated to workspace', () => {
-    expect(isInsideWorkspace('/tmp/file.txt', '/project')).toBe(false);
+    expect(isPathWithin('/project', normalizePath('/tmp/file.txt'))).toBe(false);
+  });
+
+  it('should not treat a sibling prefix as containment', () => {
+    expect(isPathWithin('/project', '/project-other/file.ts')).toBe(false);
   });
 });
 

@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import type { ConversationEntry } from '@/types/index';
 import { isCompactMarker } from '@/types/index';
 import type { Logger } from '@/infra/logger';
+import type { WorkspaceRef } from '@/infra/workspace-registry';
 import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
@@ -11,6 +12,11 @@ import { estimateEntryTokens } from './utils/estimate-tokens';
 interface WorkerRuntimeState {
   session: { id: string; startedAt: number };
   task: { id: string; description: string };
+  /**
+   * Workspace this worker runs in. Optional: runtime-state.json files written
+   * before workspaces existed have no entry, and are read as-is.
+   */
+  workspace?: WorkspaceRef;
 }
 
 export interface InboxMessage {
@@ -37,11 +43,19 @@ interface WorkerStateData {
 export class WorkerState extends BaseWayangState {
   private jsonFile: JSONFileHelper;
   private jsonlFile: JSONLFileHelper;
+  /** Identity stamped on construction, re-applied if a restored file lacks it. */
+  private readonly workspace: WorkspaceRef | undefined;
 
+  /**
+   * @param workspace  Workspace identity for this worker, resolved by the
+   *   caller (see `resolveWorkspaceRef`). Stamped into runtime-state on the
+   *   first write, so a worker records where it ran for later inspection.
+   */
   constructor(
     sessionDir: string,
     workerId: string,
     private logger: Logger,
+    workspace?: WorkspaceRef,
   ) {
     const dir = workerDir(sessionDir, workerId);
     const jsonFile = new JSONFileHelper(join(dir, 'runtime-state.json'));
@@ -51,6 +65,7 @@ export class WorkerState extends BaseWayangState {
       runtimeState: {
         session: { id: workerId, startedAt: Date.now() },
         task: { id: '', description: '' },
+        ...(workspace ? { workspace } : {}),
       },
       conversation: [],
       inbox: [],
@@ -63,12 +78,18 @@ export class WorkerState extends BaseWayangState {
 
     this.jsonFile = jsonFile;
     this.jsonlFile = jsonlFile;
+    this.workspace = workspace;
   }
 
   async restore(): Promise<void> {
     const runtimeState = this.jsonFile.read() as WorkerRuntimeState | null;
     if (runtimeState) {
-      this.data.runtimeState = runtimeState;
+      // A pre-workspace runtime-state.json has no `workspace`; keep the one
+      // resolved for this run instead of dropping the identity on restore.
+      this.data.runtimeState =
+        runtimeState.workspace || !this.workspace
+          ? runtimeState
+          : { ...runtimeState, workspace: this.workspace };
     }
     const allEntries = this.jsonlFile.read() as ConversationEntry[];
 

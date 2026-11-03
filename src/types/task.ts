@@ -45,4 +45,19 @@ export interface TaskDetail {
    * engine on the per-run task copy handed to the worker, never persisted.
    */
   executionTurnId?: string;
+  /**
+   * Workspace identity this task belongs to, as resolved by the workspace
+   * registry (`path` is canonical, `slug` is stable). Optional: tasks written
+   * before workspaces existed simply have no identity, and readers must fall
+   * back to the session's own workspace.
+   */
+  workspace?: { path: string; slug: string };
+  /**
+   * Extra directories this ONE task may access, in addition to its workspace.
+   * Declared at add_task time (allowedDirs), validated against the home
+   * boundary and the denied-path list, and stored normalized + deduped.
+   * Scoped to this task only — never inherited by other tasks. Optional:
+   * absent means no extra directories were granted.
+   */
+  taskAllowedDirs?: string[];
 }

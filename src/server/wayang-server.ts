@@ -222,13 +222,17 @@ export async function runWayangServer(
     workspaceDir: supervisor.ctx.workspaceDir,
   });
 
-  // SIGTERM (external kill): graceful shutdown like the old bootstrap path.
-  process.on('SIGTERM', () => {
+  // SIGTERM (external kill) and SIGINT (Ctrl+C in a foreground server):
+  // graceful shutdown like the old bootstrap path. shutdown() releases the
+  // session lock, so a signalled server never leaves it to expire.
+  const onSignal = (): void => {
     void supervisor
       .shutdown()
       .catch(() => { /* best effort */ })
       .finally(() => process.exit(0));
-  });
+  };
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
 }
 
 function requiredString(params: Record<string, unknown>, key: string): string {

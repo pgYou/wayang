@@ -164,6 +164,19 @@ describe('ClaudeCodeWorker', () => {
     expect(result.summary).toBe('Done! Created hello.py');
   });
 
+  it('stamps workspaceSlug from the task workspace on conversation entries', async () => {
+    mockQuery.mockReturnValue(asyncYield([makeSuccessResult('done')]) as any);
+
+    const worker = createWorker();
+    await worker.run(makeTask({ workspace: { path: tempDir, slug: 'cc-task-ws' } }), {});
+
+    const conversation = worker.getConversation();
+    expect(conversation.length).toBeGreaterThan(0);
+    for (const entry of conversation) {
+      expect(entry.workspaceSlug).toBe('cc-task-ws');
+    }
+  });
+
   it('should return failed result on error result', async () => {
     const messages = [makeErrorResult('Command not found')];
     mockQuery.mockReturnValue(asyncYield(messages) as any);

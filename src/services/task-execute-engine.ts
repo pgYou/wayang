@@ -18,7 +18,7 @@
 import type { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { Logger } from '@/infra/logger';
-import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo, WorkerLiveStatus, NewSignalInput, SignalTurnLineage, TaskCancelledSignalPayload, ConversationEntry } from '@/types/index';
+import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo, WorkerLiveStatus, NewSignalInput, SignalTurnLineage, TaskCancelledSignalPayload, TaskQueuedSignalPayload, WorkerStartedSignalPayload, ConversationEntry } from '@/types/index';
 import { summarizeTranscript } from '@/services/worker-transcript';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import { BaseWayangState } from '@/infra/state/base-state';
@@ -26,6 +26,7 @@ import type { Subscribable } from '@/infra/state/subscribable';
 import type { StateEvent } from '@/infra/state/base-state';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import type { SkillRegistry } from '@/services/skills/registry';
+import type { PermissionConfig } from '@/types/config';
 
 /** Runtime-only observable state — no file persistence, no restore needed. */
 class RuntimeState extends BaseWayangState {
@@ -39,13 +40,59 @@ import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { createWorkerTools } from '@/services/tools/index';
 import { askControllerTool } from '@/services/tools/ask-controller';
 import { wrapWithPermissionMiddleware, type PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
-import { FILE_TOOL_NAMES, needsBashPermission, needsFilePermission } from '@/services/tools/permission-rules';
+import { FILE_TOOL_NAMES, decideToolAccess, type WorkerAccessScope } from '@/services/tools/permission-rules';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
-import { resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { wayangDirForSessionDir } from '@/infra/session-helpers';
+import { normalizeWorkspacePath } from '@/infra/workspace-registry';
+import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 const PUPPET_WORKER_TYPE = 'puppet';
+
+/**
+ * The user's home directory a session belongs to — the anchor of the path
+ * permission policy (denylist + read scope).
+ *
+ * The wayang data dir lives at `<userHome>/.wayang`, so its parent is the home
+ * the policy anchors on. Ad-hoc session dirs (hand-built temp dirs in tests)
+ * don't follow the `<wayangDir>/sessions/<id>` layout, so fall back to the OS
+ * home rather than guessing a parent. Derived ONCE at construction and injected
+ * into every policy call — the decision code never reads it globally.
+ */
+function resolveUserHomeDir(sessionDir: string): string {
+  const wayangDir = wayangDirForSessionDir(sessionDir);
+  return wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
+}
+
+/** Construction options for TaskExecuteEngine. */
+export interface TaskExecuteEngineOptions {
+  /**
+   * The user's home directory the path permission policy anchors on (denylist
+   * and read scope). Derived from `ctx.sessionDir` when omitted; inject it
+   * explicitly in tests (which use temp home dirs) or whenever the session
+   * layout does not follow `<userHome>/.wayang/sessions/<id>`.
+   */
+  homeDir?: string;
+  /**
+   * User-config permission section (`allowedDirs` / `autoAllowRoots` /
+   * `deniedDirs`) the policy consults. Defaults to `ctx.config.permission`;
+   * injectable so a caller can hand the engine the exact policy it should
+   * enforce instead of relying on ambient config.
+   */
+  permission?: PermissionConfig;
+  /**
+   * Notified when a task is accepted for a workspace, so the owning session
+   * can accumulate every workspace it dispatches work into. The engine stays
+   * unaware of session persistence — Supervisor supplies an implementation
+   * that appends to the session's `meta.workspaces` (idempotent by canonical
+   * path). Optional: without it, workspace accumulation simply does not
+   * happen (used by tests and by direct engine construction).
+   */
+  onTaskWorkspace?: (workspace: WorkspaceRef) => void;
+}
 
 /** Default idle timeout: idle workers are reaped after 30 minutes if not reused. */
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -115,13 +162,23 @@ export class TaskExecuteEngine implements Subscribable {
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Idle TTL (ms). Idle workers are disposed after this if not reused. */
   private readonly idleTimeoutMs: number;
+  /** The user's home directory the path permission policy anchors on. */
+  private readonly homeDir: string;
+  /** User-config permission section applied to this run's worker tools. */
+  private readonly permission?: PermissionConfig;
+  /** Session-side hook: remember every workspace a task is accepted for. */
+  private readonly onTaskWorkspace?: (workspace: WorkspaceRef) => void;
 
   constructor(
     private readonly ctx: SystemContext,
     private readonly signalQueue: SignalQueue,
     skills: SkillRegistry,
+    options: TaskExecuteEngineOptions = {},
   ) {
     this.logger = ctx.logger;
+    this.homeDir = options.homeDir ?? resolveUserHomeDir(ctx.sessionDir);
+    this.permission = options.permission ?? ctx.config.permission;
+    this.onTaskWorkspace = options.onTaskWorkspace;
     this.maxConcurrency = ctx.maxConcurrency;
     this.workerProvider = ctx.workerProvider;
     this.workerConfigs = ctx.config.workers;
@@ -153,12 +210,31 @@ export class TaskExecuteEngine implements Subscribable {
   // Task management
   // ---------------------------------------------------------------------------
 
-  /** Add a task and immediately attempt to schedule it. */
-  add(task: TaskDetail): void {
+  /**
+   * Add a task and immediately attempt to schedule it.
+   *
+   * Returns the engine worker id when the task was scheduled right away (a
+   * worker_started signal follows), or undefined when every concurrency slot
+   * is busy — in that case a task_queued signal is emitted exactly once so the
+   * controller can tell "waiting for a slot" from "running" (issue #30). The
+   * task starts automatically when a slot frees.
+   */
+  add(task: TaskDetail): string | undefined {
     this.taskState.append('tasks.pending', task);
+    this.recordTaskWorkspace(task);
     this.logger.info({ taskId: task.id }, 'Task added');
     this.ctx.hooks.emit('task:added', task);
     this.scheduleNext();
+
+    // Synchronous scheduling: the task either moved to running (spawn is
+    // fire-and-forget, so the running entry exists already) or is still
+    // pending because all slots are occupied.
+    const running = this.taskState.get<TaskDetail[]>('tasks.running');
+    const started = running.find(t => t.id === task.id);
+    if (started?.workerSessionId) return started.workerSessionId;
+
+    this.emitTaskQueued(task);
+    return undefined;
   }
 
   get(id: string): TaskDetail | undefined {
@@ -254,6 +330,64 @@ export class TaskExecuteEngine implements Subscribable {
     } as NewSignalInput);
   }
 
+  /**
+   * Announce that a task is stuck in the pending queue — every concurrency
+   * slot is busy (issue #30). Emitted at most once per task (from add(), the
+   * only entry point into the pending queue). No worker exists yet, so the
+   * payload carries task identity only; a later worker_started signal names
+   * the worker that eventually picks the task up.
+   */
+  private emitTaskQueued(task: TaskDetail): void {
+    const workerType = task.workerType ?? PUPPET_WORKER_TYPE;
+    const meta = getWorkerMeta(workerType, this.workerConfigs);
+    const payload: TaskQueuedSignalPayload = {
+      taskId: task.id,
+      taskTitle: task.title,
+      workerType,
+      emoji: meta.emoji,
+      message: `All concurrency slots are busy — the task is queued and will start automatically when a slot frees.`,
+    };
+    this.signalQueue.enqueue({
+      source: 'system',
+      type: 'task_queued',
+      payload,
+      ...((task.rootTurnId ?? task.turnId) !== undefined && { rootTurnId: task.rootTurnId ?? task.turnId }),
+      causationId: task.id,
+    } as NewSignalInput);
+  }
+
+  /**
+   * Announce that a worker actually began a task (issue #30): fresh spawn or
+   * idle-worker reuse (`reused`). Called after the worker is registered and
+   * its execution turn recorded, so the signal carries the worker's lineage.
+   * If creating the worker instance throws, no started signal is emitted —
+   * the existing failed signal (handleFail) is the only outcome.
+   */
+  private emitWorkerStarted(
+    task: TaskDetail,
+    workerId: string,
+    workerType: string,
+    reused: boolean,
+  ): void {
+    const meta = getWorkerMeta(workerType, this.workerConfigs);
+    const payload: WorkerStartedSignalPayload = {
+      taskId: task.id,
+      workerId,
+      taskTitle: task.title,
+      workerType,
+      emoji: meta.emoji,
+      message: reused
+        ? 'Idle multi-stage worker reused for this stage (it kept its context).'
+        : 'Worker spawned and started the task.',
+      reused,
+    };
+    this.enqueueWorkerSignal(workerId, {
+      source: 'worker',
+      type: 'worker_started',
+      payload,
+    });
+  }
+
   updatePending(id: string, updates: Partial<Pick<TaskDetail, 'description' | 'priority'>>): boolean {
     const pending = [...this.taskState.get<TaskDetail[]>('tasks.pending')];
     const idx = pending.findIndex(t => t.id === id);
@@ -294,6 +428,42 @@ export class TaskExecuteEngine implements Subscribable {
     const info = this.getActiveWorkers().find(w => w.workerId === workerId);
     if (!info) return `Worker "${workerId}" not found.`;
     if (info.status !== 'idle') return `Worker "${workerId}" is not idle (status: ${info.status}).`;
+    return null;
+  }
+
+  /**
+   * Validate that an idle worker may take a task executing in `workspacePath`.
+   * Returns an error message or null.
+   *
+   * A worker's workspace is fixed at construction: its state identity, the
+   * relative-path assumptions in its accumulated conversation, and the identity
+   * stamped on its records all belong to the workspace it was born in. Reuse
+   * across workspaces would silently re-point only the RUN (cwd, tools,
+   * permission gate) at the new workspace while the worker keeps the old
+   * identity — so both sides are canonicalized (realpath, resolve fallback)
+   * and compared before any reuse. A mismatch is never resolved by re-stamping
+   * the worker; the caller must create a new one.
+   *
+   * Two consumers: `assignToExistingWorker` (the single reuse choke point, so
+   * no caller can bypass it) and the add_task tool's pre-check (which turns the
+   * rejection into an explicit instruction instead of a generic failure).
+   * `workspacePath` falls back to the process workspace, mirroring
+   * `taskWorkspaceDir` for tasks without a workspace stamp.
+   */
+  validateWorkerWorkspace(workerId: string, workspacePath?: string): string | null {
+    const worker = this.workers.get(workerId);
+    if (!worker) return `Worker "${workerId}" not found.`;
+
+    const workerWorkspace = worker.workspaceDir;
+    if (!workerWorkspace) {
+      return `Worker "${workerId}" does not report the workspace it was created in, so reuse cannot be verified across workspaces. Create a new worker instead (drop assignToWorker).`;
+    }
+
+    const createdIn = normalizeWorkspacePath(workerWorkspace);
+    const target = normalizeWorkspacePath(workspacePath ?? this.ctx.workspaceDir);
+    if (createdIn !== target) {
+      return `Worker "${workerId}" was created in workspace ${createdIn} and cannot take a task in ${target}. Create a new worker for that workspace instead (drop assignToWorker).`;
+    }
     return null;
   }
 
@@ -585,8 +755,20 @@ export class TaskExecuteEngine implements Subscribable {
   // Persistence
   // ---------------------------------------------------------------------------
 
-  async restore(): Promise<void> {
+  /**
+   * Restore persisted tasks and recover from a crashed run.
+   *
+   * @param fallbackWorkspace  The resumed session's workspace identity. Tasks
+   *   written before workspace attribution existed have no `workspace`, so it
+   *   is filled in from here (memory only) before dispatch — otherwise
+   *   `taskWorkspaceDir` would fall back to the process workspace, which for a
+   *   resumed session may be an entirely different directory.
+   */
+  async restore(fallbackWorkspace?: WorkspaceRef): Promise<void> {
     await this.taskState.restore();
+    if (fallbackWorkspace) {
+      this.taskState.fillWorkspaceInMemory(fallbackWorkspace);
+    }
     // Crash recovery: mark stale running tasks as failed
     this.recoverCrashedTasks();
   }
@@ -772,11 +954,43 @@ export class TaskExecuteEngine implements Subscribable {
   // Private: worker spawn + lifecycle
   // ---------------------------------------------------------------------------
 
-  private createWorker(workerType: string): IWorkerInstance {
+  /**
+   * Workspace a task executes in.
+   *
+   * `task.workspace.path` is canonical (add_task canonicalizes through
+   * realpath), so it is used verbatim — worker construction, tool cwd and the
+   * permission-gate boundary all read this single value, never a path
+   * re-assembled from the process workspace. Tasks without a workspace stamp
+   * (written before workspaces existed, restored from an older session, or
+   * dispatched internally) fall back to the process workspace.
+   */
+  private taskWorkspaceDir(task: TaskDetail): string {
+    return task.workspace?.path ?? this.ctx.workspaceDir;
+  }
+
+  /**
+   * Tell the session a task was accepted for `task.workspace`, so a session
+   * accumulates every workspace it dispatches work into. Best-effort: recording
+   * the identity is bookkeeping, never a precondition for running the task, so
+   * a failure (e.g. an unreadable registry) is logged and swallowed rather than
+   * failing an accepted task. Tasks without a workspace stamp run in the
+   * process workspace, which the session already records — nothing to add.
+   */
+  private recordTaskWorkspace(task: TaskDetail): void {
+    if (!this.onTaskWorkspace || !task.workspace) return;
+    try {
+      this.onTaskWorkspace(task.workspace);
+    } catch (err) {
+      this.logger.warn({ taskId: task.id, err }, 'Failed to record task workspace on the session');
+    }
+  }
+
+  private createWorker(workerType: string, task: TaskDetail): IWorkerInstance {
     const type = workerType ?? PUPPET_WORKER_TYPE;
+    const workspaceDir = this.taskWorkspaceDir(task);
 
     if (type === PUPPET_WORKER_TYPE) {
-      return new WorkerAgent(this.workerProvider, this.ctx, this.skills, this.ctx.config.worker.toolChoice);
+      return new WorkerAgent(this.workerProvider, this.ctx, this.skills, this.ctx.config.worker.toolChoice, workspaceDir);
     }
 
     const config = this.workerConfigs?.[type];
@@ -789,7 +1003,7 @@ export class TaskExecuteEngine implements Subscribable {
 
     switch (config.type) {
       case 'claude-code':
-        return new ClaudeCodeWorker(config, this.ctx.sessionDir, this.ctx.workspaceDir, this.ctx, this.skills);
+        return new ClaudeCodeWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
       default:
         throw new Error(`Unsupported worker type: "${config.type}"`);
     }
@@ -797,7 +1011,7 @@ export class TaskExecuteEngine implements Subscribable {
 
   private async spawnWorker(task: TaskDetail, workerId: string): Promise<WorkerResult> {
     const workerType = task.workerType ?? PUPPET_WORKER_TYPE;
-    const worker = this.createWorker(workerType);
+    const worker = this.createWorker(workerType, task);
 
     this.workers.set(workerId, worker);
     this.workerTaskMap.set(workerId, task.id);
@@ -811,6 +1025,11 @@ export class TaskExecuteEngine implements Subscribable {
     // and on every signal the engine emits for it.
     const executionTurnId = this.registerWorkerTurn(workerId, task);
 
+    // Announce the start (issue #30) — after registration so the signal
+    // carries the worker's lineage. A createWorker failure above throws
+    // before this point and lands in handleFail (failed signal) instead.
+    this.emitWorkerStarted(task, workerId, workerType, false);
+
     const onProgress = this.buildProgressEmitter(workerId, task, workerType);
     const tools = this.wireWorker(worker, task, workerId, workerType);
     this.logger.info({ workerId, taskId: task.id, workerType, executionTurnId }, 'Worker starting');
@@ -821,7 +1040,8 @@ export class TaskExecuteEngine implements Subscribable {
   /**
    * Dispatch a follow-up task to an existing idle (multi-stage) worker.
    * Reuses the worker instance + its accumulated conversation context.
-   * Returns false if the worker is missing or not idle.
+   * Returns false if the worker is missing, not idle, or was created in a
+   * different workspace than the task executes in.
    */
   assignToExistingWorker(workerId: string, task: TaskDetail): boolean {
     const err = this.validateIdleWorker(workerId);
@@ -833,6 +1053,19 @@ export class TaskExecuteEngine implements Subscribable {
     const worker = this.workers.get(workerId);
     if (!worker) {
       this.logger.warn({ workerId }, 'Idle worker instance missing');
+      return false;
+    }
+
+    // Reuse is workspace-bound — enforced here, the single choke point every
+    // reuse goes through, so a caller that skipped the add_task pre-check
+    // (direct engine call, future dispatch path) cannot cross workspaces.
+    const taskWorkspace = this.taskWorkspaceDir(task);
+    const workspaceErr = this.validateWorkerWorkspace(workerId, taskWorkspace);
+    if (workspaceErr) {
+      this.logger.warn(
+        { workerId, taskId: task.id, taskWorkspace, err: workspaceErr },
+        'Refusing to reuse a worker across workspaces',
+      );
       return false;
     }
 
@@ -856,10 +1089,16 @@ export class TaskExecuteEngine implements Subscribable {
       workerTranscriptId: worker.id,
     };
     this.taskState.append('tasks.running', taskWithOrigin);
+    this.recordTaskWorkspace(taskWithOrigin);
     this.workerTaskMap.set(workerId, task.id);
     // New stage, new execution turn (the worker's conversation accumulates,
     // but each run is its own agent activation).
     const executionTurnId = this.registerWorkerTurn(workerId, taskWithOrigin);
+
+    // Announce the reuse as a start event (issue #30) — same lifecycle
+    // signal as a fresh spawn, marked reused.
+    this.emitWorkerStarted(task, workerId, workerType, true);
+
     this.updateActiveWorker(workerId, {
       status: 'running',
       taskId: task.id,
@@ -922,6 +1161,22 @@ export class TaskExecuteEngine implements Subscribable {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous zod-inferred tool set feeding IWorkerInstance.run (see common.ts relaxation boundary)
   ): Record<string, any> {
     const workerMeta = getWorkerMeta(workerType, this.workerConfigs);
+    // Single source of truth for this run's filesystem boundary: the task's
+    // own workspace (canonical), falling back to the process workspace only
+    // for tasks without an identity. Derived once so the tool cwd, the
+    // permission gate and the call descriptions cannot drift apart.
+    const workspace = this.taskWorkspaceDir(task);
+
+    // Everything the shared access policy needs for this run, assembled once:
+    // the task's workspace is the cwd and the writable boundary, the user's
+    // home anchors the denylist / read scope, the task's allowedDirs are the
+    // per-task grant and the config section supplies user allow/deny roots.
+    const accessScope: WorkerAccessScope = {
+      homeDir: this.homeDir,
+      workspace,
+      taskAllowedDirs: task.taskAllowedDirs,
+      permission: this.permission,
+    };
 
     // Blocking-request registry for this worker run's ask_controller calls.
     const inquiryRegistry = new BlockingRequestMap<WorkerInquiryResolution>();
@@ -960,7 +1215,7 @@ export class TaskExecuteEngine implements Subscribable {
       ? {
           ...createWorkerTools({
           listTasks: (status?: TaskDetail['status']) => this.list(status),
-          cwd: this.ctx.workspaceDir,
+          cwd: workspace,
           tavilyApiKey: this.ctx.config.tavilyApiKey,
           registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {
@@ -996,18 +1251,12 @@ export class TaskExecuteEngine implements Subscribable {
 
     // Apply permission middleware for puppet workers
     if (workerType === PUPPET_WORKER_TYPE) {
-      const workspace = this.ctx.workspaceDir;
       const middleware = wrapWithPermissionMiddleware(tools, {
         gatedTools: ['bash', ...FILE_TOOL_NAMES],
-        needsPermission: (toolName, args) => {
-          if (toolName === 'bash') {
-            return needsBashPermission(workspace, args.command ?? '');
-          }
-          if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
-            return needsFilePermission(workspace, args);
-          }
-          return false;
-        },
+        // Single decision source: the shared access policy (denylist →
+        // config roots → task allowedDirs → task workspace → read-in-home →
+        // ask). `deny` refuses here without ever emitting a permission_request.
+        decide: (toolName, args) => decideToolAccess(accessScope, toolName, args),
         describeCall: (toolName, args) => {
           if (toolName === 'bash') return `Execute shell command: ${args.command}`;
           if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
@@ -1030,7 +1279,9 @@ export class TaskExecuteEngine implements Subscribable {
       this.permissionResolvers.set(workerId, middleware);
     }
 
-    // Wire signal context for ClaudeCodeWorker (canUseTool + acceptMessage)
+    // Wire signal context for ClaudeCodeWorker (canUseTool + acceptMessage).
+    // The SAME access scope used for puppet workers is handed over, so
+    // canUseTool reaches identical allow/ask/deny verdicts.
     if (worker instanceof ClaudeCodeWorker) {
       worker.setSignalContext({
         signalQueue: this.signalQueue,
@@ -1040,6 +1291,7 @@ export class TaskExecuteEngine implements Subscribable {
         workerType,
         emoji: workerMeta.emoji,
         turnLineage: this.workerLineage(workerId),
+        accessScope,
       });
       this.permissionResolvers.set(workerId, worker.permissionHandler);
     }

@@ -8,12 +8,18 @@ import { createStreamTransport } from '@/rpc/transport';
 import { RpcClient, RemoteStateStore } from '@/rpc/rpc-client';
 import { METHOD, NOTIFY } from '@/rpc/protocol';
 import { RemoteSupervisor } from './remote-supervisor';
+import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 export interface ConnectOptions {
   configPath: string;
   /** Root dir for the `--home-dir` flag (the server joins `.wayang` itself). */
   homeDir: string;
   workspaceDir: string;
+  /**
+   * Workspace identities the session has touched, resolved by the caller
+   * (bootstrap) before connecting. Display-only: the server owns execution.
+   */
+  workspaces?: ReadonlyArray<WorkspaceRef>;
   session: 'new' | { resume: string };
   injectPreviousTasks?: boolean;
   logLevel?: string;
@@ -98,7 +104,7 @@ export async function connectRemoteServer(options: ConnectOptions): Promise<Remo
     }
   });
 
-  const remote = new RemoteSupervisor(rpc, store, options.workspaceDir, { stop });
+  const remote = new RemoteSupervisor(rpc, store, options.workspaceDir, { stop }, options.workspaces);
   return { remote, stop };
 }
 

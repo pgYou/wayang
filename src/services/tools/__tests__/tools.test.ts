@@ -21,29 +21,43 @@ async function exec(toolObj: any, args: any): Promise<string> {
 // --- add_task ---
 
 describe('addTaskTool', () => {
-  it('should add task and return confirmation', async () => {
+  it('should add task and return confirmation with the started worker id', async () => {
     const added: TaskDetail[] = [];
-    const tool = addTaskTool({ addTask: (t) => added.push(t) });
+    const tool = addTaskTool({ addTask: (t) => { added.push(t); return 'w-100'; } });
     const result = await exec(tool, { title: 'Test', description: 'Do something', priority: 'normal' });
 
     expect(result).toContain('added');
     expect(result).toContain('priority: normal');
+    expect(result).toContain('workerId: w-100');
+    expect(result).toContain('worker has started');
     expect(added).toHaveLength(1);
     expect(added[0].title).toBe('Test');
     expect(added[0].status).toBe('pending');
     expect(added[0].workerType).toBe('puppet');
   });
 
+  it('should report the task as queued when addTask returns no worker id', async () => {
+    const added: TaskDetail[] = [];
+    const tool = addTaskTool({ addTask: (t) => { added.push(t); return undefined; } });
+    const result = await exec(tool, { title: 'Test', description: 'Do something', priority: 'normal' });
+
+    expect(result).toContain('added');
+    expect(result).toContain('queued');
+    expect(result).toContain('STARTED signal');
+    expect(result).not.toContain('workerId:');
+    expect(added).toHaveLength(1);
+  });
+
   it('should default to puppet workerType', async () => {
     const added: TaskDetail[] = [];
-    const tool = addTaskTool({ addTask: (t) => added.push(t) });
+    const tool = addTaskTool({ addTask: (t) => { added.push(t); return undefined; } });
     await exec(tool, { title: 'T', description: 'D' });
     expect(added[0].workerType).toBe('puppet');
   });
 
   it('should use specified workerType', async () => {
     const added: TaskDetail[] = [];
-    const tool = addTaskTool({ addTask: (t) => added.push(t) });
+    const tool = addTaskTool({ addTask: (t) => { added.push(t); return undefined; } });
     await exec(tool, { title: 'T', description: 'D', workerType: 'claude-code' });
     expect(added[0].workerType).toBe('claude-code');
   });
@@ -59,7 +73,7 @@ describe('addTaskTool', () => {
 
   it('should generate unique task IDs', async () => {
     const added: TaskDetail[] = [];
-    const tool = addTaskTool({ addTask: (t) => added.push(t) });
+    const tool = addTaskTool({ addTask: (t) => { added.push(t); return undefined; } });
     await exec(tool, { title: 'T1', description: 'D1' });
     await exec(tool, { title: 'T2', description: 'D2' });
     expect(added[0].id).not.toBe(added[1].id);
@@ -80,6 +94,20 @@ describe('listTasksTool', () => {
     expect(result).toContain('→ ok');
     expect(result).toContain('[failed] t2');
     expect(result).toContain('✗ boom');
+  });
+
+  it('should include each task\'s worker id, marking tasks without one (issue #30)', async () => {
+    const tasks = [
+      makeTask('t1', { status: 'running', workerSessionId: 'w-91' }),
+      makeTask('t2', { status: 'pending' }),
+      makeTask('t3', { status: 'completed', workerSessionId: 'w-93', result: 'ok' }),
+    ];
+    const tool = listTasksTool({ listTasks: () => tasks });
+    const result = await exec(tool, {});
+    expect(result).toContain('[running] t1 (worker: w-91)');
+    // Queued task — no worker assigned yet, explicitly marked.
+    expect(result).toContain('[pending] t2 (worker: none)');
+    expect(result).toContain('[completed] t3 (worker: w-93)');
   });
 
   it('should return empty message when no tasks', async () => {

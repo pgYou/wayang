@@ -124,10 +124,15 @@ export function conversationToSdkMessages(entries: ConversationEntry[]): ModelMe
       case EEntryType.Signal: {
         const sig = entry as SignalEntry;
         const label = sig.subtype.replace('worker_', '').toUpperCase();
+        // Identity segments (issue #30): task= when the signal concerns a
+        // dispatched task, worker= when a worker is assigned. The worker id
+        // lives ONLY here — body text describes what happened without
+        // repeating the id in per-type templates.
         const taskTag = sig.taskId ? ` task=${sig.taskId}` : '';
+        const workerTag = sig.workerId ? ` worker=${sig.workerId}` : '';
         messages.push({
           role: 'system' as const,
-          content: `[WORKER PROGRESS SIGNAL: ${label}${taskTag}] ${sig.content}`,
+          content: `[WORKER PROGRESS SIGNAL: ${label}${taskTag}${workerTag}] ${sig.content}`,
         });
         break;
       }

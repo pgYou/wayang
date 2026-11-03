@@ -36,10 +36,16 @@ import {
 } from './utils/claude-tool-records';
 import { buildThirdPartyPrompt } from './prompts/index';
 import { SystemContext } from '@/infra/system-context';
+import { wayangDirForSessionDir } from '@/infra/session-helpers';
+import { resolveWorkspaceRef } from '@/infra/workspace-registry';
+import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
+import { decideToolAccess, type WorkerAccessScope } from '@/services/tools/permission-rules';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import type { SkillRegistry } from '@/services/skills/registry';
+import { basename, dirname } from 'node:path';
+import { homedir } from 'node:os';
 
 /** Stream-close timeout for SDK MCP calls — must exceed the 5-min inquiry timeout. */
 const INQUIRY_STREAM_CLOSE_TIMEOUT_MS = 360_000;
@@ -48,7 +54,8 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   readonly id: string;
   private readonly config: WorkerConfig;
   private readonly state: WorkerState;
-  private readonly workspaceDir: string;
+  /** Workspace this worker executes in — fixed at construction (IWorkerInstance). */
+  readonly workspaceDir: string;
   private readonly logger: Logger;
   private readonly abortController = new AbortController();
   private _terminalResult: WorkerResult | null = null;
@@ -110,6 +117,16 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   // Signal context set during run()
   private _signalQueue: SignalQueue | null = null;
   private _runContext: { workerId: string; taskId: string; taskTitle: string; workerType?: string; emoji?: string } | null = null;
+  /**
+   * Shared permission policy scope for this run (workspace, task allowedDirs,
+   * homeDir, config). Provided by the engine via setSignalContext so the
+   * canUseTool callback judges access exactly like a puppet worker's
+   * permission middleware does. Null until wired; a fallback scope derived
+   * from the worker's own directory is used when absent.
+   */
+  private _accessScope: WorkerAccessScope | null = null;
+  /** Session directory this worker belongs to (fallback homeDir derivation). */
+  private readonly sessionDir: string;
   /** Turn lineage for permission-request signals emitted by this worker. */
   private _turnLineage: SignalTurnLineage = {};
   /** Turn lineage stamped on entries written by the run in flight. */
@@ -121,11 +138,16 @@ export class ClaudeCodeWorker implements IWorkerInstance {
    * the direct cause of this activation.
    */
   private buildTurnEnv(task: TaskDetail & { workerId: string }): TurnEnvelope {
+    // The task's own workspace stamp wins (add_task resolves it through the
+    // registry); otherwise fall back to the directory this worker was built
+    // for. Both are known here, so entries never leave `workspaceSlug` unset.
+    const workspaceSlug = task.workspace?.slug ?? this.workspaceRef?.slug;
     return {
       turnId: task.executionTurnId ?? generateId('turn'),
       ...((task.rootTurnId ?? task.turnId) !== undefined && { rootTurnId: task.rootTurnId ?? task.turnId }),
       causationId: task.id,
       actor: { kind: 'worker', id: task.workerId, taskId: task.id },
+      ...(workspaceSlug !== undefined && { workspaceSlug }),
     };
   }
 
@@ -144,6 +166,12 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private _pendingProgress: string | null = null;
   private readonly ctx: SystemContext;
   private readonly skills: SkillRegistry;
+  /**
+   * Registry identity of the workspace this worker executes in, resolved once
+   * at construction. Feeds the `workspaceSlug` on turn envelopes (and the
+   * runtime-state stamp) so entries stay attributable to a directory.
+   */
+  private readonly workspaceRef?: WorkspaceRef;
   constructor(
     config: WorkerConfig,
     sessionDir: string,
@@ -155,9 +183,18 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     this.ctx = ctx;
     this.config = config;
     this.workspaceDir = workspaceDir;
+    this.sessionDir = sessionDir;
     this.logger = ctx.logger;
     this.skills = skills;
-    this.state = new WorkerState(sessionDir, this.id, ctx.logger);
+    // Workspace identity is stamped into runtime-state (see WorkerState) and
+    // reused for the turn envelope's `workspaceSlug`.
+    this.workspaceRef = resolveWorkspaceRef(wayangDirForSessionDir(sessionDir), workspaceDir);
+    this.state = new WorkerState(
+      sessionDir,
+      this.id,
+      ctx.logger,
+      this.workspaceRef,
+    );
   }
 
   async run(
@@ -352,10 +389,19 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     emoji?: string;
     /** Turn lineage attached to signals emitted by this worker. */
     turnLineage?: SignalTurnLineage;
+    /**
+     * Shared permission policy scope (workspace / taskAllowedDirs / homeDir /
+     * config). The engine supplies the exact scope it uses for puppet workers,
+     * so canUseTool reaches the same allow/ask/deny verdicts. Omitted only by
+     * direct construction (tests) — a scope derived from this worker's own
+     * directory is then used.
+     */
+    accessScope?: WorkerAccessScope;
   }): void {
     this._signalQueue = deps.signalQueue;
     this._runContext = deps;
     this._turnLineage = deps.turnLineage ?? {};
+    this._accessScope = deps.accessScope ?? null;
   }
 
   abort(): void {
@@ -439,22 +485,133 @@ export class ClaudeCodeWorker implements IWorkerInstance {
 
   // --- Permission control via canUseTool ---
 
-  /** Dangerous command patterns that require controller approval. */
-  private static readonly DANGEROUS_COMMAND_PATTERN = /\b(rm\s|sudo\b|chmod\b|chown\b|mkfs\b|dd\s|shutdown\b|reboot\b|kill\s+-9)/;
+  /**
+   * SDK tool name → the canonical tool the shared permission policy judges.
+   * Claude Code's file tools carry their target in a tool-specific field; this
+   * maps each to one of the policy's file tool names plus the path key to read.
+   * `Bash` is handled separately (its command string goes through the bash rule).
+   */
+  private static readonly SDK_FILE_TOOL_MAP: Record<
+    string,
+    { policyTool: string; pathKey: string; pathRequired: boolean }
+  > = {
+    Read: { policyTool: 'read_file', pathKey: 'file_path', pathRequired: true },
+    Write: { policyTool: 'write_file', pathKey: 'file_path', pathRequired: true },
+    Edit: { policyTool: 'edit_file', pathKey: 'file_path', pathRequired: true },
+    NotebookEdit: { policyTool: 'edit_file', pathKey: 'notebook_path', pathRequired: true },
+    // Search tools default to the workspace when no path is given.
+    Glob: { policyTool: 'search_files', pathKey: 'path', pathRequired: false },
+    Grep: { policyTool: 'search_content', pathKey: 'path', pathRequired: false },
+  };
 
+  /**
+   * SDK tools that touch no filesystem path the policy could judge (todo list,
+   * web access, sub-agents, MCP resources, worktrees). Their puppet counterparts
+   * are not gated either, so they are allowed without an approval.
+   */
+  private static readonly SDK_NON_PATH_TOOLS = new Set([
+    'Agent',
+    'Task',
+    'TaskOutput',
+    'TaskStop',
+    'KillShell',
+    'KillTask',
+    'ExitPlanMode',
+    'TodoWrite',
+    'WebFetch',
+    'WebSearch',
+    'AskUserQuestion',
+    'ListMcpResources',
+    'ReadMcpResource',
+    'Mcp',
+    'Config',
+    'EnterWorktree',
+    'ExitWorktree',
+  ]);
+
+  /**
+   * Shared policy scope for this run. The engine injects the exact scope it
+   * applies to puppet workers; when a worker is driven directly (tests), derive
+   * a minimal scope from its own directory (no task allowedDirs / config — the
+   * conservative reading).
+   */
+  private effectiveAccessScope(): WorkerAccessScope {
+    if (this._accessScope) return this._accessScope;
+    const wayangDir = wayangDirForSessionDir(this.sessionDir);
+    const homeDir = wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
+    return { homeDir, workspace: this.workspaceDir };
+  }
+
+  /**
+   * Route a Claude Code tool call through the SAME access policy a puppet
+   * worker uses (`decideToolAccess`). A denylisted path is denied outright
+   * (no approval prompt); an ambiguous target asks the controller; a path
+   * inside the allowed scope runs immediately. This closes the parity gap where
+   * the old regex-only gate let denylisted paths through silently.
+   */
   private async handleCanUseTool(toolName: string, input: Record<string, unknown>): Promise<PermissionResult> {
-    // Only gate Bash with dangerous commands
-    if (toolName !== 'Bash' || !this._signalQueue || !this._runContext) {
+    // Without signal context there is nowhere to route an approval, and the run
+    // uses bypassPermissions — canUseTool is never consulted in that mode.
+    if (!this._signalQueue || !this._runContext) {
       return { behavior: 'allow' };
     }
 
-    const command = String(input.command ?? '');
-    if (!ClaudeCodeWorker.DANGEROUS_COMMAND_PATTERN.test(command)) {
+    const scope = this.effectiveAccessScope();
+
+    if (toolName === 'Bash') {
+      const verdict = decideToolAccess(scope, 'bash', { command: String(input.command ?? '') });
+      if (verdict.decision === 'deny') {
+        return { behavior: 'deny', message: verdict.message ?? 'Denied by the permission policy' };
+      }
+      if (verdict.decision === 'ask') return this.requestPermission(toolName, input, verdict.reason);
       return { behavior: 'allow' };
     }
+
+    const fileTool = ClaudeCodeWorker.SDK_FILE_TOOL_MAP[toolName];
+    if (fileTool) {
+      const rawPath = input[fileTool.pathKey];
+      if (typeof rawPath !== 'string' || rawPath.length === 0) {
+        if (fileTool.pathRequired) {
+          // A read/write tool with no usable target: the policy cannot judge
+          // what it would touch — stay conservative and ask rather than allow.
+          return this.requestPermission(toolName, input, 'the target path could not be determined');
+        }
+        // An optional-path search tool defaults to the workspace (its cwd),
+        // which is inside the allowed scope.
+        return { behavior: 'allow' };
+      }
+      const verdict = decideToolAccess(scope, fileTool.policyTool, { path: rawPath });
+      if (verdict.decision === 'deny') {
+        return { behavior: 'deny', message: verdict.message ?? 'Denied by the permission policy' };
+      }
+      if (verdict.decision === 'ask') return this.requestPermission(toolName, input, verdict.reason);
+      return { behavior: 'allow' };
+    }
+
+    if (ClaudeCodeWorker.SDK_NON_PATH_TOOLS.has(toolName)) {
+      // Nothing filesystem-related to judge — parity with the ungated puppet tools.
+      return { behavior: 'allow' };
+    }
+
+    // Unrecognized tool: we cannot prove it stays inside the allowed scope, so
+    // do not silently allow — escalate to the controller.
+    return this.requestPermission(toolName, input, 'the tool is not recognized by the permission policy');
+  }
+
+  /**
+   * Emit a permission_request and block until the controller answers (or it
+   * times out → deny). Shared by every `ask` verdict so the request flow stays
+   * identical to the puppet worker's.
+   */
+  private async requestPermission(
+    toolName: string,
+    input: Record<string, unknown>,
+    reason?: string,
+  ): Promise<PermissionResult> {
+    if (!this._signalQueue || !this._runContext) return { behavior: 'allow' };
 
     const requestId = generateId('perm');
-    const description = `Execute shell command: ${command}`;
+    const description = this.describePermissionRequest(toolName, input, reason);
 
     this._signalQueue.enqueue({
       source: 'worker',
@@ -476,6 +633,27 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     return this._pendingPermissions.wait(requestId, ClaudeCodeWorker.PERMISSION_TIMEOUT_MS, () => {
       return { behavior: 'deny', message: 'Permission request timed out' } as PermissionResult;
     });
+  }
+
+  /** Human-readable summary of a gated call for the approval prompt. */
+  private describePermissionRequest(
+    toolName: string,
+    input: Record<string, unknown>,
+    reason?: string,
+  ): string {
+    let detail: string;
+    if (toolName === 'Bash') {
+      detail = `Execute shell command: ${String(input.command ?? '')}`;
+    } else if (typeof input.file_path === 'string') {
+      detail = `${toolName}: ${input.file_path}`;
+    } else if (typeof input.notebook_path === 'string') {
+      detail = `${toolName}: ${input.notebook_path}`;
+    } else if (typeof input.path === 'string') {
+      detail = `${toolName}: ${input.path}`;
+    } else {
+      detail = `${toolName}: ${JSON.stringify(input)}`;
+    }
+    return reason ? `${detail} (${reason})` : detail;
   }
 
   // --- Prompt as AsyncIterable (supports follow-up messages) ---

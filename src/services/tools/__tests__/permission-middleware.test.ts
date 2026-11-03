@@ -20,15 +20,17 @@ function mockTool(name: string, returnValue: string) {
   };
 }
 
-/** Config that always requires permission (for tests that need blocking behavior). */
-const alwaysBlock = () => true;
-/** Config that never requires permission (for passthrough tests). */
-const neverBlock = () => false;
-/** Config that checks for dangerous bash keywords. */
-const dangerousBashCheck = (toolName: string, args: any) => {
-  if (toolName === 'bash') return /\b(rm\s|sudo\b|chmod\b|chown\b)/.test(args.command ?? '');
-  return false;
-};
+/** Verdict that always asks the controller (for tests that need blocking behavior). */
+const alwaysBlock = () => ({ decision: 'ask' as const });
+/** Verdict that never asks (for passthrough tests). */
+const neverBlock = () => ({ decision: 'allow' as const });
+/** Verdict that refuses without asking (denylist semantics). */
+const policyDeny = () => ({ decision: 'deny' as const, message: '[ERROR] bash: refused by the path permission policy' });
+/** Verdict that asks only for dangerous bash keywords. */
+const dangerousBashCheck = (toolName: string, args: any) =>
+  toolName === 'bash' && /\b(rm\s|sudo\b|chmod\b|chown\b)/.test(args.command ?? '')
+    ? { decision: 'ask' as const }
+    : { decision: 'allow' as const };
 
 describe('wrapWithPermissionMiddleware', () => {
   let queue: ReturnType<typeof mockSignalQueue>;
@@ -41,7 +43,7 @@ describe('wrapWithPermissionMiddleware', () => {
     const tools = mockTool('read_file', 'file content');
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash'],
-      needsPermission: alwaysBlock,
+      decide: alwaysBlock,
       describeCall: (name, args) => `${name}: ${JSON.stringify(args)}`,
     }, {
       workerId: 'w1',
@@ -54,11 +56,11 @@ describe('wrapWithPermissionMiddleware', () => {
     expect(output).toBe('file content');
   });
 
-  it('should pass through gated tool when needsPermission returns false', async () => {
+  it('should pass through gated tool when the verdict is allow', async () => {
     const tools = mockTool('bash', 'output');
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash'],
-      needsPermission: neverBlock,
+      decide: neverBlock,
       describeCall: () => '',
     }, {
       workerId: 'w1',
@@ -77,7 +79,7 @@ describe('wrapWithPermissionMiddleware', () => {
     const tools = mockTool('bash', 'command output');
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash'],
-      needsPermission: alwaysBlock,
+      decide: alwaysBlock,
       describeCall: (name, args) => `Execute: ${args.command}`,
     }, {
       workerId: 'w1',
@@ -102,7 +104,7 @@ describe('wrapWithPermissionMiddleware', () => {
     const tools = mockTool('bash', 'should not run');
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash'],
-      needsPermission: alwaysBlock,
+      decide: alwaysBlock,
       describeCall: (name, args) => `Execute: ${args.command}`,
     }, {
       workerId: 'w1',
@@ -122,11 +124,11 @@ describe('wrapWithPermissionMiddleware', () => {
     expect(tools.bash.execute).not.toHaveBeenCalled();
   });
 
-  it('should selectively block based on needsPermission', async () => {
+  it('should selectively block based on the decide callback', async () => {
     const tools = mockTool('bash', 'ls output');
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash'],
-      needsPermission: dangerousBashCheck,
+      decide: dangerousBashCheck,
       describeCall: (name, args) => `Shell: ${args.command}`,
     }, {
       workerId: 'w1',
@@ -152,7 +154,7 @@ describe('wrapWithPermissionMiddleware', () => {
     const tools = mockTool('bash', 'output');
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash'],
-      needsPermission: alwaysBlock,
+      decide: alwaysBlock,
       describeCall: () => '',
     }, {
       workerId: 'w1',
@@ -171,7 +173,7 @@ describe('wrapWithPermissionMiddleware', () => {
     };
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash', 'write_file'],
-      needsPermission: alwaysBlock,
+      decide: alwaysBlock,
       describeCall: (name) => `${name}`,
     }, {
       workerId: 'w1',
@@ -199,7 +201,7 @@ describe('wrapWithPermissionMiddleware', () => {
     const tools = mockTool('bash', 'output');
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash'],
-      needsPermission: alwaysBlock,
+      decide: alwaysBlock,
       describeCall: () => '',
     }, {
       workerId: 'w1',
@@ -222,7 +224,7 @@ describe('wrapWithPermissionMiddleware', () => {
     const tools = mockTool('bash', 'output');
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash'],
-      needsPermission: alwaysBlock,
+      decide: alwaysBlock,
       describeCall: () => '',
     }, {
       workerId: 'w1',
@@ -245,7 +247,7 @@ describe('wrapWithPermissionMiddleware', () => {
     const tools = mockTool('bash', 'output');
     const result = wrapWithPermissionMiddleware(tools, {
       gatedTools: ['bash'],
-      needsPermission: alwaysBlock,
+      decide: alwaysBlock,
       describeCall: (name, args) => `Shell: ${args.command}`,
     }, {
       workerId: 'w1',
@@ -267,5 +269,48 @@ describe('wrapWithPermissionMiddleware', () => {
     expect(signal.payload.toolName).toBe('bash');
     expect(signal.payload.description).toBe('Shell: rm file');
     expect(signal.payload.requestId).toMatch(/^perm-/);
+  });
+
+  it('should surface an ask reason in the permission request description', async () => {
+    const tools = mockTool('bash', 'output');
+    const result = wrapWithPermissionMiddleware(tools, {
+      gatedTools: ['bash'],
+      decide: () => ({ decision: 'ask' as const, reason: 'output redirection' }),
+      describeCall: (name, args) => `Execute shell command: ${args.command}`,
+    }, {
+      workerId: 'w1',
+      taskId: 't1',
+      taskTitle: 'Test',
+      signalQueue: queue as unknown as SignalQueue,
+    });
+
+    const pending = result.wrappedTools.bash.execute({ command: 'echo x > f.txt' });
+    const payload = queue.enqueue.mock.calls[0][0].payload;
+    expect(payload.description).toContain('output redirection');
+    result.resolvePermission(payload.requestId, true);
+    await pending;
+  });
+
+  it('should refuse a denied call without asking or executing', async () => {
+    const tools = mockTool('bash', 'should not run');
+    const result = wrapWithPermissionMiddleware(tools, {
+      gatedTools: ['bash'],
+      decide: policyDeny,
+      describeCall: () => 'Shell',
+    }, {
+      workerId: 'w1',
+      taskId: 't1',
+      taskTitle: 'Test',
+      signalQueue: queue as unknown as SignalQueue,
+    });
+
+    const output = await result.wrappedTools.bash.execute({ command: 'cat ~/.ssh/id_rsa' });
+
+    // The policy message is returned verbatim (it controls disclosure) ...
+    expect(output).toBe('[ERROR] bash: refused by the path permission policy');
+    // ... no approval is requested ...
+    expect(queue.enqueue).not.toHaveBeenCalled();
+    // ... and the tool never runs.
+    expect(tools.bash.execute).not.toHaveBeenCalled();
   });
 });

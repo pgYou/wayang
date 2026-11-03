@@ -6,7 +6,7 @@ import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from './util
 import { ToolCallRecorder, recordToolCalls } from './utils/tool-call-recorder';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload, WorkerInquirySignalPayload, InquiryTimeoutSignalPayload, MessageUndeliveredSignalPayload, ContextUsage, ContextLastUsage } from '@/types/index';
+import type { ControllerSignal, ProviderConfig, TaskDetail, WayangConfig, InputSignalPayload, CompletedSignalPayload, FailedSignalPayload, ProgressSignalPayload, HeartbeatSignalPayload, PermissionRequestSignalPayload, PreviousSessionTasksSignalPayload, CancelledSignalPayload, TaskCancelledSignalPayload, TaskQueuedSignalPayload, WorkerStartedSignalPayload, WorkerInquirySignalPayload, InquiryTimeoutSignalPayload, MessageUndeliveredSignalPayload, ContextUsage, ContextLastUsage } from '@/types/index';
 import type { ConversationEntry, ConversationIndex, SignalEntry, TurnView } from '@/types/conversation';
 import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -23,6 +23,10 @@ import {
 } from './prompts/index';
 import { createControllerTools } from '@/services/tools/index';
 import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
+import { wayangDirForSessionDir } from '@/infra/session-helpers';
+import { resolveWorkspaceRef } from '@/infra/workspace-registry';
+import { basename, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { SystemContext } from '@/infra/system-context';
 import type { TaskExecuteEngine } from '@/services/task-execute-engine';
 import type { SignalQueue } from '@/services/signal/signal-queue';
@@ -44,6 +48,13 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
   private readonly recorder: ToolCallRecorder;
   /** Turn id of the most recent run — used to stamp late error entries. */
   private lastTurnId: string | null = null;
+  /**
+   * Registry slug of the workspace this controller executes in (the process
+   * workspace). Stamped on every controller turn envelope so its entries are
+   * attributable to a directory, matching worker entries. Resolved once at
+   * construction; undefined only when the context carries no workspace dir.
+   */
+  private readonly workspaceSlug?: string;
   /**
    * True once THIS turn's interrupt record has been persisted
    * (recordUserAbort). Step finishes landing after that point would append
@@ -73,6 +84,12 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     this.recorder = recorder;
     this.tools = recordToolCalls(tools, recorder);
     this.logger = ctx.logger;
+    // The controller runs in the process workspace; resolve its registry slug
+    // once (read-only once the session's startup workspace is registered) so
+    // each turn envelope can carry it.
+    this.workspaceSlug = ctx.workspaceDir
+      ? resolveWorkspaceRef(wayangDirForSessionDir(ctx.sessionDir), ctx.workspaceDir).slug
+      : undefined;
 
     this.contextManager = new ContextManager(
       state,
@@ -109,11 +126,22 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     // record) surface as debug logs instead of silent no-ops.
     const recorder = new ToolCallRecorder(ctx.logger);
 
+    // Derive the read scope for controller file access. The wayang data dir
+    // lives at <userHome>/.wayang, so its parent is the user's home — the home
+    // the read policy anchors on (denylisting ~/.wayang inside it in turn).
+    // Ad-hoc session dirs (hand-built temp dirs in tests) don't follow the
+    // `<wayangDir>/sessions/<id>` layout, so fall back to the OS home rather
+    // than guessing a parent.
+    const wayangDir = wayangDirForSessionDir(ctx.sessionDir);
+    const homeDir =
+      wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
+
     const tools = createControllerTools({
       addTask: (task: TaskDetail) => engine.add(task),
       validateWorkerType: (type: string) => engine.validateWorkerType(type),
       assignToWorker: (workerId: string, task: TaskDetail) => engine.assignToExistingWorker(workerId, task),
       validateIdleWorker: (workerId: string) => engine.validateIdleWorker(workerId),
+      validateWorkerWorkspace: (workerId: string, workspacePath: string) => engine.validateWorkerWorkspace(workerId, workspacePath),
       listTasks: (status?: TaskDetail['status']) => engine.list(status),
       getTask: (taskId: string) => engine.get(taskId),
       getWorkerConversation: (taskId: string) => engine.getWorkerConversation(taskId),
@@ -135,6 +163,10 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       updateTask: (taskId, updates) => engine.updatePending(taskId, updates),
       queryMessages: (filter) => signalQueue.query(filter),
       cwd: ctx.workspaceDir,
+      homeDir,
+      // User-config permission section: add_task validates a task's allowedDirs
+      // against the built-in denylist plus these configured deniedDirs.
+      permissionConfig: opts.config.permission,
       getNotebook: () => state.get<string>('runtimeState.notebook') ?? '',
       setNotebook: (content, mode) => {
         const current = state.get<string>('runtimeState.notebook') ?? '';
@@ -153,6 +185,10 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       onTaskDispatched: ({ toolCallId, taskId }) => {
         if (toolCallId) recorder.attachTask(toolCallId, taskId);
       },
+      // Default workspace for tasks created by add_task; a declared workspace
+      // is stamped instead and the engine executes the task there.
+      workspaceDir: ctx.workspaceDir,
+      wayangDir,
     });
 
     return new ControllerAgent(ctx, state, provider, tools, skills, recorder);
@@ -190,6 +226,10 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       ...(rootTurnId !== undefined && { rootTurnId }),
       ...(causationId !== undefined && { causationId }),
       actor: { kind: 'controller', id: this.id },
+      // Controller entries carry the process workspace's slug so they are
+      // attributable to a directory just like worker entries. Undefined only
+      // when the context carries no workspace directory.
+      ...(this.workspaceSlug !== undefined && { workspaceSlug: this.workspaceSlug }),
     };
     this.state.set('dynamicState.currentTurn', turnEnv);
     this.lastTurnId = turnId;
@@ -687,7 +727,7 @@ const signalConverters: Record<string, SignalConverter> = {
       subtype: ESignalSubtype.PermissionRequest,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
-      content: `[PERMISSION REQUEST] Worker ${p.workerId} (task: ${p.taskTitle}) wants to run ${p.toolName}.\nDescription: ${p.description}\nRequest ID: ${p.requestId}\nUse respond_permission to approve or deny.`,
+      content: `[PERMISSION REQUEST] The worker running task "${p.taskTitle}" wants to run ${p.toolName}.\nDescription: ${p.description}\nRequest ID: ${p.requestId}\nUse respond_permission to approve or deny.`,
       // Structured copy for per-tool summary rendering (content stays as the
       // LLM-facing flattened text — do not remove).
       permissionMeta: {
@@ -706,7 +746,7 @@ const signalConverters: Record<string, SignalConverter> = {
       subtype: ESignalSubtype.WorkerInquiry,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
-      content: `[WORKER INQUIRY] Worker ${p.workerId} (task: ${p.taskTitle}) is blocked and asks:${'\n'}${p.question}` +
+      content: `[WORKER INQUIRY] The worker running task "${p.taskTitle}" is blocked and asks:${'\n'}${p.question}` +
         `${p.context ? `\nContext: ${p.context}` : ''}\nInquiry ID: ${p.inquiryId}\nUse respond_inquiry to answer; the worker is waiting and will continue on its own after a 5-minute timeout.`,
       inquiryMeta: {
         inquiryId: p.inquiryId,
@@ -723,7 +763,7 @@ const signalConverters: Record<string, SignalConverter> = {
       subtype: ESignalSubtype.InquiryTimeout,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle,
-      content: `[INQUIRY TIMEOUT] Worker ${p.workerId} (task: ${p.taskTitle}) got no answer within 5 minutes and continued on its own judgment. Question was: ${p.question}`,
+      content: `[INQUIRY TIMEOUT] The worker running task "${p.taskTitle}" got no answer within 5 minutes and continued on its own judgment. Question was: ${p.question}`,
     };
   },
 
@@ -735,7 +775,7 @@ const signalConverters: Record<string, SignalConverter> = {
       subtype: ESignalSubtype.MessageUndelivered,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle ?? 'message_undelivered',
-      content: `[MESSAGES NOT DELIVERED] Worker ${p.workerId} ${p.reason === 'worker_disposed' ? 'was disposed (idle)' : 'finished its task'} before reading your message(s):${'\n'}${lines.join('\n')}\nThey were never seen by the worker. If still relevant, re-dispatch as a follow-up task.`,
+      content: `[MESSAGES NOT DELIVERED] The worker ${p.reason === 'worker_disposed' ? 'was disposed (idle)' : 'finished its task'} before reading your message(s):${'\n'}${lines.join('\n')}\nThey were never seen by the worker. If still relevant, re-dispatch as a follow-up task.`,
     };
   },
 
@@ -746,7 +786,7 @@ const signalConverters: Record<string, SignalConverter> = {
       subtype: ESignalSubtype.WorkerDisposed,
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: 'worker_disposed',
-      content: `[WORKER DISPOSED] Idle (multi-stage) worker ${p.workerId} was disposed (reaped by timeout or manually). No task failed — its last stage already completed. If you still need this worker's context, create a fresh multi-stage task instead.`,
+      content: `[WORKER DISPOSED] An idle (multi-stage) worker was disposed (reaped by timeout or manually). No task failed — its last stage already completed. If you still need this worker's context, create a fresh multi-stage task instead.`,
     };
   },
 
@@ -758,6 +798,28 @@ const signalConverters: Record<string, SignalConverter> = {
       workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
       taskId: p.taskId, taskTitle: p.taskTitle ?? 'task_cancelled',
       content: `[TASK CANCELLED] Task ${p.taskId}${p.taskTitle ? ` (${p.taskTitle})` : ''} was cancelled by the user/controller. This is not a failure — the task terminated as cancelled.`,
+    };
+  },
+
+  task_queued: (sig, ts, sessionId) => {
+    const p = sig.payload as TaskQueuedSignalPayload;
+    return {
+      ...signalBase(ts, sessionId),
+      subtype: ESignalSubtype.TaskQueued,
+      workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle,
+      content: `[TASK QUEUED] ${p.message}`,
+    };
+  },
+
+  worker_started: (sig, ts, sessionId) => {
+    const p = sig.payload as WorkerStartedSignalPayload;
+    return {
+      ...signalBase(ts, sessionId),
+      subtype: ESignalSubtype.WorkerStarted,
+      workerId: p.workerId, workerType: p.workerType, emoji: p.emoji,
+      taskId: p.taskId, taskTitle: p.taskTitle,
+      content: `[WORKER STARTED${p.reused ? ' (reused idle worker)' : ''}] ${p.message}`,
     };
   },
 

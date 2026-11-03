@@ -1,13 +1,12 @@
 import { tool } from 'ai';
-import { resolve, relative } from 'node:path';
 
 const MAX_RESULT_CHARS = 8000;
 
-/** Check whether a resolved path is inside the workspace directory. */
-export function isInsideWorkspace(resolved: string, workspace: string): boolean {
-  const rel = relative(workspace, resolved);
-  return !rel.startsWith('..') && resolve(workspace, rel) === resolved;
-}
+// NOTE: there is deliberately no `isInsideWorkspace` helper here any more. Path
+// containment is decided by the shared policy (`@/infra/permission/policy`:
+// `normalizePath` + `isPathWithin`), which also resolves symlinks and applies
+// the denylist — keeping a second, lexical boundary implementation around is
+// exactly how the two definitions drift apart.
 
 export function truncate(result: string, maxChars: number = MAX_RESULT_CHARS): string {
   if (result.length <= maxChars) return result;

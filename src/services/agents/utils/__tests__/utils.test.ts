@@ -222,6 +222,102 @@ describe('conversationToSdkMessages', () => {
     expect((msgs[0] as any).content).toContain('PROGRESS SIGNAL');
   });
 
+  // --- Signal header identity segments (issue #30) ---
+  // Header template: [WORKER PROGRESS SIGNAL: TYPE task=TASK_ID worker=WORKER_ID]
+  // Each segment appears only when the corresponding id is known.
+
+  it('should render signal header with both task and worker segments', () => {
+    const entries = [{
+      type: EEntryType.Signal,
+      uuid: 'sig-hw-1',
+      parentUuid: null,
+      sessionId: 's1',
+      timestamp: new Date().toISOString(),
+      subtype: ESignalSubtype.WorkerProgress,
+      content: 'Working on it',
+      taskId: 't-101',
+      workerId: 'w-201',
+    }];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    expect(msgs).toHaveLength(1);
+    expect((msgs[0] as any).content).toBe(
+      '[WORKER PROGRESS SIGNAL: PROGRESS task=t-101 worker=w-201] Working on it',
+    );
+  });
+
+  it('should render signal header with worker segment only (no task id)', () => {
+    const entries = [{
+      type: EEntryType.Signal,
+      uuid: 'sig-hw-2',
+      parentUuid: null,
+      sessionId: 's1',
+      timestamp: new Date().toISOString(),
+      subtype: ESignalSubtype.MessageUndelivered,
+      content: '[MESSAGES NOT DELIVERED] The worker was disposed (idle) before reading your message(s):',
+      workerId: 'w-202',
+    }];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    expect((msgs[0] as any).content).toBe(
+      '[WORKER PROGRESS SIGNAL: MESSAGE_UNDELIVERED worker=w-202] [MESSAGES NOT DELIVERED] The worker was disposed (idle) before reading your message(s):',
+    );
+  });
+
+  it('should render signal header with neither task nor worker segment', () => {
+    const entries = [{
+      type: EEntryType.Signal,
+      uuid: 'sig-hw-3',
+      parentUuid: null,
+      sessionId: 's1',
+      timestamp: new Date().toISOString(),
+      subtype: ESignalSubtype.Heartbeat,
+      taskTitle: 'heartbeat',
+      content: '[HEARTBEAT] periodic check-in',
+    }];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    expect((msgs[0] as any).content).toBe(
+      '[WORKER PROGRESS SIGNAL: HEARTBEAT] [HEARTBEAT] periodic check-in',
+    );
+  });
+
+  it('should render the new lifecycle signal headers (task_queued / worker_started)', () => {
+    const entries = [
+      {
+        type: EEntryType.Signal,
+        uuid: 'sig-lc-1',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: new Date().toISOString(),
+        subtype: ESignalSubtype.TaskQueued,
+        taskId: 't-301',
+        taskTitle: 'Task t-301',
+        content: '[TASK QUEUED] All concurrency slots are busy — the task is queued and will start automatically when a slot frees.',
+      },
+      {
+        type: EEntryType.Signal,
+        uuid: 'sig-lc-2',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: new Date().toISOString(),
+        subtype: ESignalSubtype.WorkerStarted,
+        taskId: 't-301',
+        workerId: 'w-302',
+        taskTitle: 'Task t-301',
+        content: '[WORKER STARTED] Worker spawned and started the task.',
+      },
+    ];
+
+    const msgs = conversationToSdkMessages(entries as any);
+    expect((msgs[0] as any).content).toBe(
+      '[WORKER PROGRESS SIGNAL: TASK_QUEUED task=t-301] [TASK QUEUED] All concurrency slots are busy — the task is queued and will start automatically when a slot frees.',
+    );
+    expect((msgs[1] as any).content).toBe(
+      '[WORKER PROGRESS SIGNAL: STARTED task=t-301 worker=w-302] [WORKER STARTED] Worker spawned and started the task.',
+    );
+  });
+
   it('should strip content for skip_reply tool calls', () => {
     const entries = [{
       type: EEntryType.Assistant,

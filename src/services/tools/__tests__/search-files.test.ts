@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { searchFilesTool } from '@/services/tools/search-files';
@@ -55,4 +55,82 @@ describe('searchFilesTool', () => {
     expect(result).toBe('No files matched the pattern');
   });
 
+});
+
+/**
+ * The read gate. These cases pass `homeDir`, which switches on
+ * `decideAccess({ access: 'read', ... })`: reads must stay inside home, and
+ * the denylist (~/.ssh, ~/.wayang, …) wins over "inside home".
+ */
+describe('searchFilesTool read boundary', () => {
+  let home: string;
+  let workspace: string;
+
+  beforeEach(() => {
+    // Layout: home/{project/src,a.ts ; documents/note.md ; .ssh/id_rsa ; .wayang/}
+    home = realpathSync(mkdtempSync(join(tmpdir(), 'wayang-search-home-')));
+    workspace = join(home, 'project');
+    mkdirSync(join(workspace, 'src'), { recursive: true });
+    writeFileSync(join(workspace, 'src', 'a.ts'), 'export {}', 'utf-8');
+    mkdirSync(join(home, 'documents'), { recursive: true });
+    writeFileSync(join(home, 'documents', 'note.md'), '# hi', 'utf-8');
+    mkdirSync(join(home, '.ssh'), { recursive: true });
+    writeFileSync(join(home, '.ssh', 'id_rsa'), 'secret', 'utf-8');
+    mkdirSync(join(home, '.wayang'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('allows an ordinary directory inside home', async () => {
+    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const result = await exec(tool, { pattern: '**/*.ts' });
+    expect(result).toContain('src/a.ts');
+  });
+
+  it('allows reading a sibling directory inside home (outside the workspace)', async () => {
+    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const result = await exec(tool, { pattern: '**/*.md', path: join(home, 'documents') });
+    expect(result).toContain('note.md');
+  });
+
+  it('denies a denylisted path (~/.ssh) without reading any files', async () => {
+    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const result = await exec(tool, { pattern: '**/*', path: join(home, '.ssh') });
+    // Denylist wording, and no leaked file listing from the protected dir.
+    expect(result).toContain('denylist');
+    expect(result).not.toContain('id_rsa');
+  });
+
+  it('denies the wayang data dir (~/.wayang) via the denylist', async () => {
+    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const result = await exec(tool, { pattern: '**/*', path: join(home, '.wayang') });
+    expect(result).toContain('denylist');
+  });
+
+  it('denies a path outside home with a message distinct from the denylist', async () => {
+    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const result = await exec(tool, { pattern: '**/*', path: '/etc' });
+    expect(result).toContain('outside the home boundary');
+    expect(result).not.toContain('denylist');
+  });
+
+  it('denies a symlink whose ancestor resolves into ~/.ssh (target leaf may not exist)', async () => {
+    // home/innocent -> home/.ssh ; requesting home/innocent/<missing> must
+    // canonicalize via the existing ancestor and still hit the denylist.
+    symlinkSync(join(home, '.ssh'), join(home, 'innocent'));
+    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const result = await exec(tool, {
+      pattern: '**/*',
+      path: join(home, 'innocent', 'nonexistent_key'),
+    });
+    expect(result).toContain('denylist');
+  });
+
+  it('resolves a relative path against the workspace and allows it inside home', async () => {
+    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const result = await exec(tool, { pattern: '**/*.ts', path: 'src' });
+    expect(result).toContain('a.ts');
+  });
 });

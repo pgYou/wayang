@@ -40,6 +40,10 @@ export enum ESignalSubtype {
   WorkerDisposed = 'worker_disposed',
   /** A dispatched task was cancelled (user/controller-initiated). Not a failure. */
   TaskCancelled = 'task_cancelled',
+  /** A dispatched task is waiting in the pending queue — no free concurrency slot yet (issue #30). */
+  TaskQueued = 'task_queued',
+  /** A worker actually began a task — fresh spawn or idle-worker reuse (issue #30). */
+  WorkerStarted = 'worker_started',
   /** System heartbeat — periodic check-in while workers are running. */
   Heartbeat = 'heartbeat',
   /** Worker requesting permission for a sensitive operation. */
@@ -125,6 +129,13 @@ export interface ConversationEntryEnvelope {
   actor?: EntryActor;
   /** What triggered this entry: a signal id, tool call id, or task id. */
   causationId?: string;
+  /**
+   * Workspace this entry's turn ran in, by registry slug (see
+   * `infra/workspace-registry`). Optional and additive: entries written before
+   * workspaces existed — and turns whose producer had no workspace identity to
+   * stamp — leave it absent, and readers must treat that as "unknown".
+   */
+  workspaceSlug?: string;
   /** ISO timestamp — when the recorded activity started. */
   startedAt?: string;
   /** ISO timestamp — when the recorded activity ended. */

@@ -152,8 +152,23 @@ Good: "Failed: npm install timed out after 30s, network may be unreachable"`);
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Build the full Worker system prompt (static + dynamic). */
-export function buildWorkerSystemPrompt(ctx: SystemContext, skills: SkillRegistry): string {
+/**
+ * Build the full Worker system prompt (static + dynamic).
+ *
+ * @param workspaceDir Workspace the worker actually executes in (the task's
+ *   workspace, as resolved by the engine). Project rules are discovered from
+ *   this root and the Environment section reports it, so a worker running a
+ *   task pinned to another workspace is never told about — nor loaded with the
+ *   AGENTS.md of — the process workspace. Omitted when the caller has no task
+ *   context (direct construction, legacy paths): falls back to the process
+ *   workspace.
+ */
+export function buildWorkerSystemPrompt(
+  ctx: SystemContext,
+  skills: SkillRegistry,
+  workspaceDir?: string,
+): string {
+  const workspaceRoot = workspaceDir ?? ctx.workspaceDir ?? process.cwd();
   return assemble(
     IDENTITY,
     LANGUAGE_RULES,
@@ -163,12 +178,12 @@ export function buildWorkerSystemPrompt(ctx: SystemContext, skills: SkillRegistr
     // Project rules discovered near the task workspace (AGENTS.md, falling
     // back to CLAUDE.md). Empty when no rules file exists — assemble() drops
     // the section, so no empty paragraph leaks into the prompt.
-    buildProjectRulesSection(findProjectRules(ctx.workspaceDir ?? process.cwd())),
+    buildProjectRulesSection(findProjectRules(workspaceRoot)),
     QUALITY_RULES,
     HARD_CONSTRAINTS,
     CONTROLLER_COMMUNICATION,
     PROGRESS_REPORTING,
     buildSkillCatalog(skills),
-    buildEnvironment(ctx)
+    buildEnvironment(ctx, { workspaceDir: workspaceRoot })
   );
 }

@@ -137,7 +137,7 @@ describe('parseCliArgs — valid long forms keep working', () => {
     if (result.status !== 'ok') return;
     expect(result.flags.homeDir).toBeUndefined();
     expect(result.flags.workspaceDir).toBeUndefined();
-    expect(result.flags.fresh).toBe(false);
+    expect(result.flags.new).toBe(false);
     expect(result.flags.verbose).toBe(false);
     expect(result.flags.version).toBe(false);
     expect(result.input).toEqual([]);
@@ -166,7 +166,7 @@ describe('parseCliArgs — valid long forms keep working', () => {
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
     expect(result.flags.resume).toBe(true);
-    expect(result.flags.fresh).toBe(true);
+    expect(result.flags.new).toBe(true);
     expect(result.flags.all).toBe(true);
   });
 
@@ -319,5 +319,69 @@ describe('parseCliArgs — duplicate flags', () => {
     if (result.status !== 'error') return;
     expect(result.problems.some((p) => p.includes('only be set once'))).toBe(true);
     expect(result.help).toContain('Usage');
+  });
+});
+
+describe('parseCliArgs — --workspace alias and resume semantics', () => {
+  it('--workspace parses as the canonical workspaceDir flag', () => {
+    const result = parseCliArgs(['--workspace', '/w']);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.flags.workspaceDir).toBe('/w');
+  });
+
+  it('--workspace=/w (equals form) parses', () => {
+    const result = parseCliArgs(['--workspace=/w']);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.flags.workspaceDir).toBe('/w');
+  });
+
+  it('--workspace combines with --resume <id>', () => {
+    const result = parseCliArgs(['--workspace', '/w', '--resume', 'abc']);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.flags.workspaceDir).toBe('/w');
+    expect(result.flags.resume).toBe(true);
+    expect(result.input).toEqual(['abc']);
+  });
+
+  it('--workspace without a value errors with "requires a value"', () => {
+    const result = parseCliArgs(['--workspace']);
+    expect(result.status).toBe('error');
+    if (result.status !== 'error') return;
+    expect(result.problems.some((p) => p.includes('requires a value'))).toBe(true);
+  });
+
+  it('--workspace together with -w errors as a duplicate', () => {
+    const result = parseCliArgs(['-w', '/x', '--workspace', '/y']);
+    expect(result.status).toBe('error');
+    if (result.status !== 'error') return;
+    expect(result.problems.some((p) => p.includes('only be set once'))).toBe(true);
+  });
+
+  it('--Workspace (case variant of the alias) is still rejected', () => {
+    const result = parseCliArgs(['--Workspace', '/w']);
+    expect(result.status).toBe('error');
+    if (result.status !== 'error') return;
+    expect(result.problems.some((p) => p.includes('--Workspace'))).toBe(true);
+  });
+});
+
+describe('parseCliArgs — help documents --workspace semantics', () => {
+  const help = (() => {
+    const result = parseCliArgs(['--help']);
+    return result.status === 'help' ? result.help : '';
+  })();
+
+  it('lists the flag with its alias', () => {
+    expect(help).toContain('--workspace-dir, -w');
+    expect(help).toContain('Alias: --workspace.');
+  });
+
+  it('explains the new-session and resume meanings separately', () => {
+    expect(help).toContain('New session: recorded as its initial workspace.');
+    expect(help).toContain("--resume: never rewrites the session's recorded");
+    expect(help).toContain('it only filters the picker');
   });
 });

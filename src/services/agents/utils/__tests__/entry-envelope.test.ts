@@ -45,6 +45,31 @@ describe('applyTurnEnvelope', () => {
     const entry = applyTurnEnvelope(makeUser('u1'), undefined);
     expect(entry.turnId).toBeUndefined();
   });
+
+  it('stamps workspaceSlug from the envelope', () => {
+    const entry = applyTurnEnvelope(makeUser('u1'), { turnId: 'T1', workspaceSlug: 'my-repo' });
+    expect(entry.workspaceSlug).toBe('my-repo');
+  });
+
+  it('never overwrites a workspaceSlug the producer already set', () => {
+    const base = makeUser('u1');
+    base.workspaceSlug = 'own-repo';
+    const entry = applyTurnEnvelope(base, { turnId: 'T1', workspaceSlug: 'other-repo' });
+    expect(entry.workspaceSlug).toBe('own-repo');
+  });
+
+  it('leaves workspaceSlug absent when the envelope carries none', () => {
+    const entry = applyTurnEnvelope(makeUser('u1'), { turnId: 'T1' });
+    expect(entry.workspaceSlug).toBeUndefined();
+    expect('workspaceSlug' in entry).toBe(false);
+  });
+
+  it('round-trips workspaceSlug through JSON', () => {
+    const entry = applyTurnEnvelope(makeUser('u1'), { turnId: 'T1', workspaceSlug: 'my-repo' });
+    const parsed = JSON.parse(JSON.stringify(entry)) as UserEntry;
+    expect(parsed.workspaceSlug).toBe('my-repo');
+    expect(parsed.turnId).toBe('T1');
+  });
 });
 
 describe('syncStepTimestamps', () => {

@@ -32,7 +32,7 @@ Always respond to user input — never leave the user without a reply.
 
 ## Responding to worker signals
 Worker signals are NOT user messages. Do NOT respond to them the same way.
-See the "Handling signals" section for detailed rules. In short: stay silent on PROGRESS, speak only on COMPLETED or FAILED.
+See the "Handling signals" section for detailed rules. In short: stay silent on TASK_QUEUED, STARTED and PROGRESS, speak only on COMPLETED or FAILED.
 
 Examples of ideal responses to user messages:
 
@@ -94,7 +94,7 @@ Give the user a brief one-line acknowledgement, then STOP. Do not speculate abou
 
 Some work proceeds in stages with a checkpoint in between (e.g. draft a design → user/you review → implement). For these, create the first task with \`multiStage: true\`. When that task completes, its worker parks in **idle** instead of being destroyed, keeping its accumulated context.
 
-To continue the work on the SAME worker, create the follow-up task with \`assignToWorker: "<workerId>"\` (the workerId from the completion). The worker resumes with full context — no need to re-explain what was already done.
+To continue the work on the SAME worker, create the follow-up task with \`assignToWorker: "<workerId>"\` (the worker id from the completed task — the \`worker=…\` segment of its completion signal header, or the workerId returned by add_task). The worker resumes with full context — no need to re-explain what was already done.
 
 When to use multiStage:
 - The next stage genuinely depends on the worker's prior context (explored files, partial artifacts, decisions made).
@@ -186,7 +186,7 @@ Use sparingly — only when you need to:
 ## Handling permission requests (respond_permission)
 
 Workers may request permission for sensitive operations (shell commands, file writes, file edits).
-You will see a [PERMISSION REQUEST] message with the worker ID, tool name, arguments, and a request ID.
+You will see a [WORKER PROGRESS SIGNAL: PERMISSION_REQUEST …] message whose header carries the worker id (worker=…), with the tool name, a description, and a request ID.
 Use respond_permission(requestId, approved, reason) to approve or deny.
 - If the operation seems safe and aligned with the task, approve it.
 - If it seems risky or unnecessary, deny it with a reason explaining what the worker should do differently.
@@ -221,9 +221,19 @@ Guidelines:
 const SIGNAL_HANDLING = section('Handling signals',
   `Worker signals are delivered as messages with a special prefix. They are NOT from the user.
 
-Format: [WORKER SIGNAL: TYPE task=TASK_ID] content
+Format: [WORKER PROGRESS SIGNAL: TYPE task=TASK_ID worker=WORKER_ID] content
+- task=TASK_ID — present when the signal concerns a dispatched task.
+- worker=WORKER_ID — present once a worker is assigned. This is the worker id you use for chat_worker / get_worker_status / read_worker_conversation / dispose_worker, and as the assignToWorker of a follow-up multi-stage task. It is absent while the task is still queued (TASK_QUEUED) and on signals that are not about one specific worker (e.g. HEARTBEAT).
 
-## [WORKER SIGNAL: PROGRESS ...] — task is still running
+## [WORKER PROGRESS SIGNAL: TASK_QUEUED ...] — task is waiting for a slot
+
+All concurrency slots are busy, so the task has not started yet. It will start automatically when a slot frees — a STARTED signal follows. Informational: call \`skip_reply()\` and do NOT re-dispatch or poll.
+
+## [WORKER PROGRESS SIGNAL: STARTED ...] — worker began the task
+
+The task is now running on the identified worker. Informational: call \`skip_reply()\`. Only speak up if you must tell the user something right now (e.g. you changed your mind and want to cancel).
+
+## [WORKER PROGRESS SIGNAL: PROGRESS ...] — task is still running
 
 Call \`skip_reply()\` as your ONLY action. Do NOT output any text in the same response.
 
@@ -239,16 +249,16 @@ WHY: skip_reply terminates the turn immediately. Any text you generate in the sa
 
 The ONLY exception: speak up if the progress indicates an unexpected error or problem.
 
-## [WORKER SIGNAL: COMPLETED ...] — task is finished
+## [WORKER PROGRESS SIGNAL: COMPLETED ...] — task is finished
 
 NOW report the result to the user. Summarize concisely.
 If the result says "(max steps reached)" or is empty, be honest — the task did not fully complete.
 
-## [WORKER SIGNAL: FAILED ...] — task failed
+## [WORKER PROGRESS SIGNAL: FAILED ...] — task failed
 
 Explain the error. Suggest a retry or alternative.
 
-## [HEARTBEAT] — periodic check-in while workers are running
+## [WORKER PROGRESS SIGNAL: HEARTBEAT] — periodic check-in while workers are running
 
 You were woken up because workers are running but no events arrived for a while.
 Review the worker status in the heartbeat message (runningForMs, last activity, current tool):
@@ -256,18 +266,18 @@ Review the worker status in the heartbeat message (runningForMs, last activity, 
 - A worker has been running unusually long but activity is recent → inform the user proactively
 - Everything looks normal → call skip_reply()
 
-## [PERMISSION REQUEST ...] — worker needs approval
+## [WORKER PROGRESS SIGNAL: PERMISSION_REQUEST ...] — worker needs approval
 
 A worker wants to execute a sensitive operation (shell command, file write/edit).
 Review the requested operation carefully. Use respond_permission(requestId, approved, reason) to decide.
 Do NOT call skip_reply for permission requests — you MUST respond with respond_permission.
 
 CRITICAL RULES:
-- PROGRESS ≠ COMPLETED. Even if the progress text says "完成" or "done", it is still just a progress update. Only [WORKER SIGNAL: COMPLETED] means the task actually finished.
+- PROGRESS ≠ COMPLETED. Even if the progress text says "完成" or "done", it is still just a progress update. Only [WORKER PROGRESS SIGNAL: COMPLETED] means the task actually finished.
 - Do NOT call list_tasks or get_task_detail after receiving a signal. The signal already contains the information.
 - skip_reply is a TERMINAL action — it ends the turn. You MUST NOT generate any text content in the same response. Your response must contain ONLY the skip_reply tool call and nothing else.
 
-## [PREVIOUS SESSION ...] — unfinished tasks from the last run
+## [WORKER PROGRESS SIGNAL: PREVIOUS_SESSION_TASKS] — unfinished tasks from the last run
 
 You resumed a previous session that had unfinished tasks. Workers were NOT automatically resumed — these tasks are informational only. Decide for each:
 - Still relevant → re-dispatch with add_task (you can reuse the description).
