@@ -6,13 +6,14 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   findWorkspace,
   getOrCreateWorkspace,
   listWorkspaces,
   normalizeWorkspacePath,
   registryFilePath,
+  resolveWorkspaceRef,
   workspaceSlugFromPath,
 } from '@/infra/workspace-registry';
 import type { WorkspaceRegistryFile } from '@/infra/workspace-registry';
@@ -218,5 +219,83 @@ describe('findWorkspace / listWorkspaces', () => {
     expect(listed.map(entry => entry.slug).sort()).toEqual(['alpha', 'beta']);
     expect(listed.map(entry => entry.path).sort()).toEqual([a, b].sort());
     expect(listed.every(entry => entry.reserved === false)).toBe(true);
+  });
+});
+
+describe('resolveWorkspaceRef — degrade, never silent, never mutate on read', () => {
+  it('returns a rule-based degraded slug when wayangDir is null and writes nothing', () => {
+    const dir = makeDir('alpha');
+
+    const ref = resolveWorkspaceRef(null, dir);
+
+    expect(ref).toEqual({ path: dir, slug: 'alpha', degraded: true });
+    // No wayangDir to write to, and no stray files in the scratch tree.
+    expect(fs.readdirSync(scratchDir)).toEqual(['alpha']);
+  });
+
+  it('degrades on a corrupt registry without renaming it or reassigning a slug', () => {
+    const dir = makeDir('alpha');
+    const registryPath = registryFilePath(wayangDir);
+    const corruptBytes = '{"version": 1, "workspaces": {';
+    fs.writeFileSync(registryPath, corruptBytes);
+    // Simulate an earlier quarantine: the read path must leave this evidence.
+    const priorBackup = `${registryPath}.corrupt`;
+    fs.writeFileSync(priorBackup, 'PREVIOUS-EVIDENCE');
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // Must not throw, and must not fall through to getOrCreateWorkspace's
+      // write path (which would rename and reallocate a fresh slug).
+      const ref = resolveWorkspaceRef(wayangDir, dir);
+
+      expect(ref).toEqual({ path: dir, slug: 'alpha', degraded: true });
+      // The corrupt document was not renamed and not overwritten.
+      expect(fs.readFileSync(registryPath, 'utf-8')).toBe(corruptBytes);
+      expect(fs.existsSync(priorBackup)).toBe(true);
+      expect(fs.readFileSync(priorBackup, 'utf-8')).toBe('PREVIOUS-EVIDENCE');
+
+      // The failure was logged once with an explicit backup/evidence path.
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const logged = String(errorSpy.mock.calls[0][0]);
+      expect(logged).toContain('corrupt');
+      expect(logged).toContain(registryPath);
+      expect(logged).toContain('backup path');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('does not rename or alter a registry with an unsupported version', () => {
+    const dir = makeDir('alpha');
+    const registryPath = registryFilePath(wayangDir);
+    const v2Bytes = `${JSON.stringify({ version: 2, workspaces: { [dir]: { slug: 'alpha', path: dir } } }, null, 2)}\n`;
+    fs.writeFileSync(registryPath, v2Bytes);
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const ref = resolveWorkspaceRef(wayangDir, dir);
+
+      // Degrades rather than adopts the future document's entry.
+      expect(ref).toEqual({ path: dir, slug: 'alpha', degraded: true });
+      // In-place rejection: bytes untouched, no .corrupt side effect.
+      expect(fs.readFileSync(registryPath, 'utf-8')).toBe(v2Bytes);
+      expect(fs.existsSync(`${registryPath}.corrupt`)).toBe(false);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('returns the registry slug (not the rule slug) for a registered path', () => {
+    const first = makeDir('group-a', 'repo');
+    const second = makeDir('group-b', 'repo');
+    // Collision forces the registry slug away from the pure rule ("repo").
+    expect(getOrCreateWorkspace(wayangDir, first).slug).toBe('repo');
+    expect(getOrCreateWorkspace(wayangDir, second).slug).toBe('repo-2');
+
+    const ref = resolveWorkspaceRef(wayangDir, second);
+
+    expect(ref).toEqual({ path: second, slug: 'repo-2' });
+    expect(ref.degraded).toBeUndefined();
+    expect(workspaceSlugFromPath(second)).toBe('repo'); // proves registry won
   });
 });
