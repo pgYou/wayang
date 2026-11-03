@@ -2,17 +2,29 @@ import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { SignalTurnLineage } from '@/types/index';
 import { generateId } from '@/utils/id';
 
+/** What a gated tool call needs before it may run. */
+export interface PermissionVerdict {
+  /** `allow` runs immediately, `ask` requests controller approval, `deny` refuses outright. */
+  decision: 'allow' | 'ask' | 'deny';
+  /**
+   * Present on `deny`: the message returned to the caller instead of running
+   * the tool. The policy layer builds it so it can control disclosure.
+   */
+  message?: string;
+}
+
 export interface PermissionMiddlewareConfig {
   /** Tool names that may require permission before execution. */
   gatedTools: string[];
   /**
-   * Determine whether a specific tool call needs permission.
-   * Return true to block and request approval; false to pass through immediately.
+   * Decide what a specific tool call needs.
+   * `allow` passes through, `ask` blocks until the controller answers,
+   * `deny` fails the call without ever emitting a permission_request.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- args shape is tool-specific (public config surface; policy callbacks read fields defensively)
-  needsPermission: (toolName: string, args: any) => boolean;
+  decide: (toolName: string, args: any) => PermissionVerdict;
   /** Generate a human-readable description of the tool call. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- same as needsPermission: tool-specific arg shape
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- same as decide: tool-specific arg shape
   describeCall: (toolName: string, args: any) => string;
 }
 
@@ -61,9 +73,16 @@ export function wrapWithPermissionMiddleware(
     wrappedTools[toolName] = {
       ...tools[toolName],
       execute: async (args: Record<string, unknown>, options?: unknown) => {
-        // Fast path: this specific call doesn't need permission
-        if (!config.needsPermission(toolName, args)) {
+        const verdict = config.decide(toolName, args);
+
+        // Fast path: the policy allows this specific call outright.
+        if (verdict.decision === 'allow') {
           return originalExecute(args, options);
+        }
+
+        // Hard refusal (e.g. a denylisted path): never ask, never execute.
+        if (verdict.decision === 'deny') {
+          return verdict.message ?? `[ERROR] ${toolName}: refused by the path permission policy`;
         }
 
         const requestId = generateId('perm');

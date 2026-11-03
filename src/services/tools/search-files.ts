@@ -7,7 +7,8 @@ export function searchFilesTool(deps: { cwd?: string; homeDir?: string }) {
   const workspace = deps.cwd ?? process.cwd();
   // When set, reads are gated by the shared access policy: the controller may
   // only read inside the user's home (denylist wins). Left undefined for the
-  // worker tools, which keep their existing out-of-workspace permission path.
+  // worker tool set, where the permission middleware applies the same policy
+  // with the worker's own scope (task workspace / task allowedDirs / config).
   const homeDir = deps.homeDir;
 
   return defineTool({

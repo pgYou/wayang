@@ -26,6 +26,7 @@ import type { Subscribable } from '@/infra/state/subscribable';
 import type { StateEvent } from '@/infra/state/base-state';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import type { SkillRegistry } from '@/services/skills/registry';
+import type { PermissionConfig } from '@/types/config';
 
 /** Runtime-only observable state — no file persistence, no restore needed. */
 class RuntimeState extends BaseWayangState {
@@ -39,15 +40,50 @@ import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { createWorkerTools } from '@/services/tools/index';
 import { askControllerTool } from '@/services/tools/ask-controller';
 import { wrapWithPermissionMiddleware, type PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
-import { FILE_TOOL_NAMES, needsBashPermission, needsFilePermission } from '@/services/tools/permission-rules';
+import { FILE_TOOL_NAMES, decideToolAccess, type WorkerAccessScope } from '@/services/tools/permission-rules';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
-import { resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { normalizeWorkspacePath } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 const PUPPET_WORKER_TYPE = 'puppet';
+
+/**
+ * The user's home directory a session belongs to — the anchor of the path
+ * permission policy (denylist + read scope).
+ *
+ * The wayang data dir lives at `<userHome>/.wayang`, so its parent is the home
+ * the policy anchors on. Ad-hoc session dirs (hand-built temp dirs in tests)
+ * don't follow the `<wayangDir>/sessions/<id>` layout, so fall back to the OS
+ * home rather than guessing a parent. Derived ONCE at construction and injected
+ * into every policy call — the decision code never reads it globally.
+ */
+function resolveUserHomeDir(sessionDir: string): string {
+  const wayangDir = wayangDirForSessionDir(sessionDir);
+  return wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
+}
+
+/** Construction options for TaskExecuteEngine. */
+export interface TaskExecuteEngineOptions {
+  /**
+   * The user's home directory the path permission policy anchors on (denylist
+   * and read scope). Derived from `ctx.sessionDir` when omitted; inject it
+   * explicitly in tests (which use temp home dirs) or whenever the session
+   * layout does not follow `<userHome>/.wayang/sessions/<id>`.
+   */
+  homeDir?: string;
+  /**
+   * User-config permission section (`allowedDirs` / `autoAllowRoots` /
+   * `deniedDirs`) the policy consults. Defaults to `ctx.config.permission`;
+   * injectable so a caller can hand the engine the exact policy it should
+   * enforce instead of relying on ambient config.
+   */
+  permission?: PermissionConfig;
+}
 
 /** Default idle timeout: idle workers are reaped after 30 minutes if not reused. */
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -117,13 +153,20 @@ export class TaskExecuteEngine implements Subscribable {
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Idle TTL (ms). Idle workers are disposed after this if not reused. */
   private readonly idleTimeoutMs: number;
+  /** The user's home directory the path permission policy anchors on. */
+  private readonly homeDir: string;
+  /** User-config permission section applied to this run's worker tools. */
+  private readonly permission?: PermissionConfig;
 
   constructor(
     private readonly ctx: SystemContext,
     private readonly signalQueue: SignalQueue,
     skills: SkillRegistry,
+    options: TaskExecuteEngineOptions = {},
   ) {
     this.logger = ctx.logger;
+    this.homeDir = options.homeDir ?? resolveUserHomeDir(ctx.sessionDir);
+    this.permission = options.permission ?? ctx.config.permission;
     this.maxConcurrency = ctx.maxConcurrency;
     this.workerProvider = ctx.workerProvider;
     this.workerConfigs = ctx.config.workers;
@@ -1093,6 +1136,17 @@ export class TaskExecuteEngine implements Subscribable {
     // permission gate and the call descriptions cannot drift apart.
     const workspace = this.taskWorkspaceDir(task);
 
+    // Everything the shared access policy needs for this run, assembled once:
+    // the task's workspace is the cwd and the writable boundary, the user's
+    // home anchors the denylist / read scope, the task's allowedDirs are the
+    // per-task grant and the config section supplies user allow/deny roots.
+    const accessScope: WorkerAccessScope = {
+      homeDir: this.homeDir,
+      workspace,
+      taskAllowedDirs: task.taskAllowedDirs,
+      permission: this.permission,
+    };
+
     // Blocking-request registry for this worker run's ask_controller calls.
     const inquiryRegistry = new BlockingRequestMap<WorkerInquiryResolution>();
     this.inquiryRegistries.set(workerId, inquiryRegistry);
@@ -1168,15 +1222,10 @@ export class TaskExecuteEngine implements Subscribable {
     if (workerType === PUPPET_WORKER_TYPE) {
       const middleware = wrapWithPermissionMiddleware(tools, {
         gatedTools: ['bash', ...FILE_TOOL_NAMES],
-        needsPermission: (toolName, args) => {
-          if (toolName === 'bash') {
-            return needsBashPermission(workspace, args.command ?? '');
-          }
-          if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
-            return needsFilePermission(workspace, args);
-          }
-          return false;
-        },
+        // Single decision source: the shared access policy (denylist →
+        // config roots → task allowedDirs → task workspace → read-in-home →
+        // ask). `deny` refuses here without ever emitting a permission_request.
+        decide: (toolName, args) => decideToolAccess(accessScope, toolName, args),
         describeCall: (toolName, args) => {
           if (toolName === 'bash') return `Execute shell command: ${args.command}`;
           if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
