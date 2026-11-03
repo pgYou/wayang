@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.0 (未发布)
+
+### Features
+
+**controller 信号驻留与上下文治理（#21）** — Every signal class (heartbeat / progress / permission / completed and the rest) gets an explicit lifecycle in the controller context: delivery stays immediate, full and individually readable, and what is governed is only the historical retention of already-read signals. Entries that later signals structurally supersede are folded with a trace — a referencable anchor is kept, and the information can be pulled on demand from the transcript / signal records. For multi-project parallel supervision, retention and budget structures partitioned by project are reserved
+
+### Refactoring
+
+**工作区作用域重构（#14）** — The workspace is promoted from a process-level configuration to a task-level scope, so one resident controller can dispatch workers to multiple projects. A worker is bound to its scope at birth; the scope decides its cwd, git context, which rules files and skills are loaded, and where its logs and state directories land. Cross-project operations are made explicit and leave a trace
+
 ## v0.7.2 (2026-11-03)
 
 ### Fixes
