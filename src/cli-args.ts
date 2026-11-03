@@ -41,6 +41,11 @@ export const CLI_HELP_TEXT = `
   Options
     --home-dir <path>       Root directory for sessions and config (default: $HOME)
     --workspace-dir, -w     Working directory for tools (default: pwd)
+                            Alias: --workspace.
+                            New session: recorded as its initial workspace.
+                            --resume: never rewrites the session's recorded
+                            workspaces; it only filters the picker (and picks
+                            the default when resuming without an id).
     --config, -c            Config file path
     --fresh, -n             Start a new session (do not inherit prior context)
     --resume, -r            Pick a session to resume (interactive, or <id>)
@@ -55,7 +60,9 @@ export const CLI_HELP_TEXT = `
 
 const CLI_FLAGS = {
   homeDir: { type: 'string' },
-  workspaceDir: { type: 'string', shortFlag: 'w' },
+  // `aliases` is asserted mutable because meow types it as `string[]`; the
+  // surrounding `as const` would otherwise make the array readonly.
+  workspaceDir: { type: 'string', shortFlag: 'w', aliases: ['workspace'] as string[] },
   config: { type: 'string', shortFlag: 'c' },
   fresh: { type: 'boolean', shortFlag: 'n', default: false },
   resume: { type: 'boolean', shortFlag: 'r', default: false },
@@ -93,7 +100,9 @@ export type CliParseResult =
 
 // --- Derived flag metadata (drives the validation passes) ---
 
-const FLAG_ENTRIES = Object.entries(CLI_FLAGS) as Array<[string, { type: 'string' | 'boolean'; shortFlag?: string }]>;
+const FLAG_ENTRIES = Object.entries(CLI_FLAGS) as Array<
+  [string, { type: 'string' | 'boolean'; shortFlag?: string; aliases?: readonly string[] }]
+>;
 
 /** Canonical camelCase keys, e.g. `homeDir`. */
 const CANONICAL_KEYS = new Set(FLAG_ENTRIES.map(([key]) => key));
@@ -103,6 +112,23 @@ const SHORT_KEYS = new Set(FLAG_ENTRIES.flatMap(([, flag]) => (flag.shortFlag ? 
 
 /** Long names as typed on the command line, e.g. `home-dir`. */
 const LONG_NAMES = new Set(FLAG_ENTRIES.map(([key]) => decamelizeKey(key)));
+
+/** Extra long spellings registered through meow `aliases`, e.g. `workspace`. */
+const ALIAS_LONG_NAMES = new Set(
+  FLAG_ENTRIES.flatMap(([, flag]) => (flag.aliases ?? []).map(decamelizeKey)),
+);
+
+/**
+ * Parsed keys an alias produces in `unnormalizedFlags` — yargs-parser fills in
+ * both the raw spelling and its camelCase form regardless of which flag the
+ * user actually typed (e.g. `-w /x` still yields a `workspace` key).
+ */
+const ALIAS_KEYS = new Set(
+  FLAG_ENTRIES.flatMap(([, flag]) => (flag.aliases ?? []).flatMap(name => [name, camelizeKey(name)])),
+);
+
+/** Every accepted long spelling: canonical names plus aliases. */
+const KNOWN_LONG_NAMES = new Set([...LONG_NAMES, ...ALIAS_LONG_NAMES]);
 
 const BOOLEAN_LONG_NAMES = new Set(
   FLAG_ENTRIES.filter(([, flag]) => flag.type === 'boolean').map(([key]) => decamelizeKey(key)),
@@ -120,10 +146,15 @@ function fold(name: string): string {
   return name.toLowerCase().replace(/[-_]/g, '');
 }
 
-const FOLDED_LONG_NAMES = new Set([...LONG_NAMES].map(fold));
+const FOLDED_LONG_NAMES = new Set([...KNOWN_LONG_NAMES].map(fold));
 
 function decamelizeKey(key: string): string {
   return key.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+}
+
+/** Inverse of `decamelizeKey`, for alias keys that contain dashes. */
+function camelizeKey(name: string): string {
+  return name.replace(/-([a-z0-9])/g, (_match, char: string) => char.toUpperCase());
 }
 
 /**
@@ -171,13 +202,13 @@ function scanArgvForSwallowedFlags(argv: readonly string[], problems: Set<string
     if (token.startsWith('--')) {
       const long = (eqIndex === -1 ? token : token.slice(0, eqIndex)).slice(2);
       if (!long) continue;
-      if (LONG_NAMES.has(long)) {
+      if (KNOWN_LONG_NAMES.has(long)) {
         if (eqIndex !== -1 && BOOLEAN_LONG_NAMES.has(long)) {
           problems.add(`Option --${long} does not accept a value`);
         }
         continue;
       }
-      if (FOLDED_LONG_NAMES.has(fold(long)) || (long.startsWith('no-') && LONG_NAMES.has(long.slice(3)))) {
+      if (FOLDED_LONG_NAMES.has(fold(long)) || (long.startsWith('no-') && KNOWN_LONG_NAMES.has(long.slice(3)))) {
         problems.add(`Unknown option: --${long}`);
       }
       continue;
@@ -218,7 +249,7 @@ export function parseCliArgs(argv: readonly string[]): CliParseResult {
   //    unknown longs; yargs-parser splits short groups into single keys).
   const unnormalized = cli.unnormalizedFlags as Record<string, unknown>;
   for (const key of Object.keys(unnormalized)) {
-    if (!CANONICAL_KEYS.has(key) && !SHORT_KEYS.has(key)) {
+    if (!CANONICAL_KEYS.has(key) && !SHORT_KEYS.has(key) && !ALIAS_KEYS.has(key)) {
       problems.add(`Unknown option: ${renderUnknownKey(argv, key)}`);
     }
   }

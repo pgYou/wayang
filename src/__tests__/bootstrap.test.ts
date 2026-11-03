@@ -20,6 +20,7 @@ vi.mock('@/session-select');
 
 import { bootstrap } from '@/bootstrap';
 import { connectRemoteServer } from '@/client/connect';
+import { selectSessionInteractive } from '@/session-select';
 import type { SessionMeta } from '@/infra/session-helpers';
 
 // --- Helpers ---
@@ -39,6 +40,7 @@ function writeSessionMeta(sessionId: string, meta: Partial<SessionMeta> & { work
     firstInput: meta.firstInput ?? null,
     createdAt: meta.createdAt,
     lastActiveAt: meta.lastActiveAt ?? meta.createdAt,
+    ...(meta.workspaces ? { workspaces: meta.workspaces } : {}),
   };
   writeFileSync(join(dir, 'meta.json'), JSON.stringify(full));
 }
@@ -47,6 +49,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'wayang-bootstrap-test-'));
   vi.mocked(connectRemoteServer).mockReset();
   vi.mocked(connectRemoteServer).mockResolvedValue({ remote: {} as never, stop: vi.fn() });
+  vi.mocked(selectSessionInteractive).mockReset();
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -132,6 +135,80 @@ describe('bootstrap — homeDir root semantics', () => {
     expect(call.workspaceDir).toBe('/repo-b');
     // Explicit resume does not surface unfinished tasks as a signal.
     expect(call.injectPreviousTasks).toBe(false);
+  });
+
+  it('--resume <id>: uses the startup workspace, not the first workspaces entry', async () => {
+    // The session was started in /repo-b, then touched /repo-a. The startup
+    // workspace is the entry matching meta.workspace (/repo-b), even though
+    // the array's first element is /repo-a.
+    writeSessionMeta('20260102-100000', {
+      workspace: '/repo-b',
+      createdAt: 2500,
+      workspaces: [
+        { path: '/repo-a', slug: 'repo-a' },
+        { path: '/repo-b', slug: 'repo-b' },
+      ],
+    });
+
+    await bootstrap({
+      configPath: join(root, 'wayang.config.json'),
+      homeDir: root,
+      workspaceDir: '/repo-c',
+      resume: '20260102-100000',
+    });
+
+    expect(connectCall().workspaceDir).toBe('/repo-b');
+  });
+
+  it('--resume <id>: falls back to the CLI workspace when the session records none', async () => {
+    writeSessionMeta('20260102-110000', { workspace: '', createdAt: 2600 });
+
+    await bootstrap({
+      configPath: join(root, 'wayang.config.json'),
+      homeDir: root,
+      workspaceDir: '/repo-c',
+      resume: '20260102-110000',
+    });
+
+    expect(connectCall().workspaceDir).toBe('/repo-c');
+  });
+
+  it('--resume (interactive): resolves the picked session startup workspace', async () => {
+    const sessionId = '20260102-120000';
+    writeSessionMeta(sessionId, {
+      workspace: '/repo-b',
+      createdAt: 2700,
+      workspaces: [
+        { path: '/repo-a', slug: 'repo-a' },
+        { path: '/repo-b', slug: 'repo-b' },
+      ],
+    });
+    vi.mocked(selectSessionInteractive).mockResolvedValue({
+      sessionId,
+      sessionDir: join(root, '.wayang', 'sessions', sessionId),
+      meta: {
+        sessionId,
+        workspace: '/repo-b',
+        firstInput: null,
+        createdAt: 2700,
+        lastActiveAt: 2700,
+        workspaces: [
+          { path: '/repo-a', slug: 'repo-a' },
+          { path: '/repo-b', slug: 'repo-b' },
+        ],
+      },
+    });
+
+    await bootstrap({
+      configPath: join(root, 'wayang.config.json'),
+      homeDir: root,
+      workspaceDir: '/repo-c',
+      resume: '',
+    });
+
+    const call = connectCall();
+    expect(call.session).toEqual({ resume: sessionId });
+    expect(call.workspaceDir).toBe('/repo-b');
   });
 
   it('--resume <unknown-id>: dies with exit code 1', async () => {

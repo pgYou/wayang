@@ -70,8 +70,11 @@ function sortNewestFirst(entries: SessionEntry[]): SessionEntry[] {
  * `workspaces` is the multi-workspace view and wins when present. Legacy meta
  * (written before the array existed) carries only the single `workspace`
  * field, so it is used as the fallback source.
+ *
+ * Exported so the CLI session picker applies exactly the same membership rule
+ * when it decides whether to warn about a workspace mismatch.
  */
-function sessionWorkspacePaths(meta: SessionMeta): string[] {
+export function sessionWorkspacePaths(meta: SessionMeta): string[] {
   if (meta.workspaces && meta.workspaces.length > 0) {
     return meta.workspaces.map(w => w.path).filter(p => typeof p === 'string' && p.length > 0);
   }

@@ -11,7 +11,9 @@ import { connectRemoteServer } from './client/connect';
 import type { ConnectOptions, RemoteConnection } from './client/connect';
 import { getSession, getLatestSessionForWorkspace } from './infra/session-helpers';
 import { normalizeWorkspacePath } from './infra/workspace-registry';
+import type { WorkspaceRef } from './infra/workspace-registry';
 import { SESSION_LOCKED_MARKER } from './infra/session-lock';
+import { SessionManager } from './services/session/session-manager';
 import { renderInkUI } from './tui/render';
 import { loadConfig } from './onboard';
 import { selectSessionInteractive } from './session-select';
@@ -26,6 +28,12 @@ export interface BootstrapOptions {
    * forwarded to the server process.
    */
   homeDir: string;
+  /**
+   * Workspace for this invocation: the initial workspace of a new session.
+   * On resume it never rewrites the session's recorded workspaces — it only
+   * filters the interactive picker and serves as the fallback for a session
+   * that records no workspace at all.
+   */
   workspaceDir: string;
   logLevel?: string;
   /**
@@ -70,6 +78,29 @@ async function connectToServer(options: ConnectOptions): Promise<RemoteConnectio
   }
 }
 
+/**
+ * Workspace a session should run in when it is resumed.
+ *
+ * `meta.workspace` keeps the original spelling of the directory the session
+ * was *started* in, and a session may have touched several workspaces since.
+ * `SessionManager.startupWorkspace` resolves the canonical entry matching
+ * `meta.workspace`, which is the right process workspace for a resume.
+ *
+ * A session with more than one workspace keeps the remaining entries in its
+ * meta, where the server-side controller can still see them
+ * (`session.workspaces`) — this helper deliberately does not switch to or
+ * expose those others. Only the startup workspace becomes `workspaceDir`.
+ */
+async function resolveStartupWorkspace(
+  sessionId: string,
+  sessionDir: string,
+  wayangHome: string,
+): Promise<WorkspaceRef | undefined> {
+  const manager = SessionManager.resume(sessionId, sessionDir, wayangHome);
+  await manager.restore();
+  return manager.startupWorkspace;
+}
+
 // --- Bootstrap ---
 
 export async function bootstrap(options: BootstrapOptions): Promise<void> {
@@ -101,7 +132,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   } else if (options.resume === '') {
     // Interactive session select (--resume without ID)
     const result = await selectSessionInteractive(wayangHome, options.workspaceDir, options.showAll ?? false);
-    workspaceDir = result.meta.workspace;
+    const startup = await resolveStartupWorkspace(result.sessionId, result.sessionDir, wayangHome);
+    // Fall back to the raw recorded workspace, then to the CLI value, for
+    // sessions whose meta carries no usable workspace identity.
+    workspaceDir = startup?.path ?? (result.meta.workspace || workspaceDir);
     session = { resume: result.sessionId };
     console.log(`  Resuming session ${result.sessionId}`);
   } else {
@@ -110,16 +144,17 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     if (!existing) {
       die(`Session "${options.resume}" not found.`);
     }
-    workspaceDir = existing.meta.workspace;
+    const startup = await resolveStartupWorkspace(existing.sessionId, existing.sessionDir, wayangHome);
+    workspaceDir = startup?.path ?? (existing.meta.workspace || workspaceDir);
     session = { resume: existing.sessionId };
     console.log(`  Resuming session ${existing.sessionId}`);
   }
 
-  // Resume paths replace the CLI workspace with the session's recorded one,
-  // which may predate canonicalization (or have been written by another tool).
-  // Canonicalize it the same way the CLI does — realpath when it exists, plain
-  // resolve otherwise — so the process workspace always matches the
-  // normalization used for task workspaces and the permission gate. The
+  // Resume paths replace the CLI workspace with the session's startup
+  // workspace, which may predate canonicalization (or have been written by
+  // another tool). Canonicalize it the same way the CLI does — realpath when it
+  // exists, plain resolve otherwise — so the process workspace always matches
+  // the normalization used for task workspaces and the permission gate. The
   // session meta itself is read, never rewritten.
   workspaceDir = normalizeWorkspacePath(workspaceDir);
 

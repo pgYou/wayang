@@ -11,7 +11,12 @@
  *
  * Options (short forms in parentheses):
  *   --home-dir <path>            Root for sessions & config (default: $HOME)
- *   --workspace-dir, -w <path>   Working directory for tools (default: pwd)
+ *   --workspace-dir, -w <path>   Working directory for tools (default: pwd);
+ *                                alias: --workspace. For a new session it is
+ *                                recorded as the initial workspace. With
+ *                                --resume it does not rewrite the session's
+ *                                recorded workspaces: it only filters the
+ *                                picker and supplies the default workspace.
  *   --config, -c <path>          Config file path
  *   --fresh, -n                  Start a new session (do not inherit prior context)
  *   --resume, -r                 Resume a previous session
