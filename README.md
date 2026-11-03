@@ -126,8 +126,10 @@ wayang --resume --all             # list all sessions to pick
 | `--home-dir`          | Data storage directory  | `~/.wayang`             |
 | `-w, --workspace-dir` | Agent working directory | cwd                     |
 | `-c, --config`        | Config file path        | `~/.wayang.config.json` |
-| `--resume [id]`       | Resume a session        | —                       |
+| `-r, --resume [id]`   | Resume a session        | —                       |
 | `--verbose`           | Enable verbose logging  | —                       |
+| `-h, --help`          | Show help               | —                       |
+| `-v, --version`       | Show version            | —                       |
 
 ## Skills
 
