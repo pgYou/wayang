@@ -15,7 +15,8 @@
  *                 entry, a consumed worker_failed signal, or a dispatched
  *                 task that terminated as failed.
  *  - 'cancelled' — a dispatched task terminated as cancelled (task_cancelled
- *                 signal) and nothing in the turn failed.
+ *                 signal), or the turn was interrupted by the user (ESC), and
+ *                 nothing in the turn failed.
  *  - 'completed' — otherwise.
  */
 
@@ -287,6 +288,12 @@ export class ConversationIndexBuilder {
     // mark the turn failed. Compact markers are chain boundaries, not failures.
     if (!isCompactMarker(entry) && (entry as { subtype?: string }).subtype === ESystemSubtype.Error) {
       acc.hasFailure = true;
+    }
+    // A user interrupt (ESC) terminated the turn early — a non-failure
+    // terminal outcome, same bucket as a cancelled dispatched task. Unfinished
+    // tasks still win (running) — workers keep going after an interrupt.
+    if (!isCompactMarker(entry) && (entry as { subtype?: string }).subtype === ESystemSubtype.Interrupted) {
+      acc.hasCancelled = true;
     }
   }
 

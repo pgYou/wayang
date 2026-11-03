@@ -147,6 +147,10 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 
   /** Run the controller agent — streams text chunks while updating streamingEntries in state. */
   async run(signals: ControllerSignal[]): Promise<{ text: string }> {
+    // Fresh abort channel per turn: an abort (ESC / Ctrl+C / RPC) applies to
+    // THIS run only. Without the reset, the agent-lifetime controller stays
+    // aborted forever and every later turn would silently return empty.
+    this.resetAbortController();
     this.state.set('dynamicState.busy', true);
     try {
       return await this._run(signals);
@@ -203,6 +207,9 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
         this.logger.error({ agent: 'controller', err }, 'LLM stream error');
       },
       onStep: (event, meta) => {
+        // A late step-finish that lands after the user aborted would append a
+        // complete step BEHIND the interrupt marker — the turn is over, drop it.
+        if (this.abortController.signal.aborted) return;
         const streamingEntries = this.state.get<ConversationEntry[]>('dynamicState.streamingEntries');
         const streamingUuid = streamingEntries?.[0]?.uuid;
         const entry = buildAssistantEntry(event, this.ctx.sessionId, streamingUuid, {
@@ -236,9 +243,70 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       }
     }
 
+    // streamLoop returns cleanly on abort (base-agent catch checks the agent
+    // signal), so an aborted turn lands here: record the interrupt before the
+    // run unwinds.
+    if (this.abortController.signal.aborted) {
+      this.recordUserAbort(turnEnv);
+    }
+
     // Don't clear streamingEntries here — let the next run clear them
     // to avoid a blank frame between streaming disappearing and conversation appearing
     return { text: fullText };
+  }
+
+  /**
+   * Persist a user interrupt (ESC / Ctrl+C while busy) of the current turn:
+   *  - the in-flight partial text, if any, becomes a truncated assistant
+   *    entry (`interrupted: true`). Empty/whitespace partials are dropped —
+   *    an empty assistant message risks provider rejection on replay and
+   *    carries no information;
+   *  - an `interrupted` system marker is always appended (the zero-output
+   *    case leaves only this marker), replayed to the next turn as an
+   *    explicit [USER INTERRUPT] system message;
+   *  - streaming entries are cleared so the live region stops rendering.
+   *
+   * Dedup guard: a partial whose uuid is already in the conversation was
+   * recorded by onStep (abort landed just after step finish) — never append
+   * it twice.
+   */
+  private recordUserAbort(turnEnv: TurnEnvelope): void {
+    const ts = nowISO();
+    const streaming = this.state.get<ConversationEntry[]>('dynamicState.streamingEntries') ?? [];
+    const inFlight = streaming[0];
+    const partialText = inFlight?.type === EEntryType.Assistant ? inFlight.message.content : '';
+    const recordedUuids = new Set(
+      (this.state.get<ConversationEntry[]>('conversation') ?? []).map(e => e.uuid),
+    );
+
+    if (inFlight && inFlight.type === EEntryType.Assistant && partialText.trim() && !recordedUuids.has(inFlight.uuid)) {
+      const truncated: ConversationEntry = {
+        ...inFlight,
+        interrupted: true,
+        timing: { startedAt: inFlight.timestamp, endedAt: ts },
+        startedAt: inFlight.timestamp,
+        endedAt: ts,
+      };
+      applyTurnEnvelope(truncated, turnEnv);
+      this.state.append('conversation', truncated);
+    }
+
+    const marker: ConversationEntry = {
+      type: EEntryType.System,
+      uuid: generateId('sys-abort'),
+      parentUuid: null,
+      sessionId: this.ctx.sessionId,
+      timestamp: ts,
+      subtype: ESystemSubtype.Interrupted,
+      content: 'Response interrupted by user.',
+      startedAt: ts,
+      endedAt: ts,
+      actor: { kind: 'user', id: 'user' },
+    };
+    applyTurnEnvelope(marker, turnEnv);
+    this.state.append('conversation', marker);
+
+    this.state.set('dynamicState.streamingEntries', []);
   }
 
   /** Create a fresh streaming entry placeholder. */

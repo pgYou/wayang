@@ -1,7 +1,18 @@
 import type { ModelMessage } from 'ai';
 import type { ConversationEntry, AssistantEntry } from '@/types/index';
-import { EEntryType } from '@/types/index';
+import { EEntryType, ESystemSubtype } from '@/types/index';
 import type { SignalEntry } from '@/types/index';
+
+/**
+ * Replay text for `interrupted` system markers: the next turn must know the
+ * previous response was cut by the user, without inferring it from message
+ * length. Mirrors the `[WORKER PROGRESS SIGNAL: …]` labeling of signal
+ * entries; all other system entries remain skipped (compact markers, errors).
+ */
+const USER_INTERRUPT_REPLAY =
+  '[USER INTERRUPT] The user aborted the previous response while it was streaming '
+  + '(ESC in the TUI). Any assistant text immediately before this marker is a truncated '
+  + 'partial — treat it as incomplete context, not as a finished answer or instructions.';
 
 /**
  * Convert ConversationEntry[] to Vercel AI SDK ModelMessage[].
@@ -101,7 +112,13 @@ export function conversationToSdkMessages(entries: ConversationEntry[]): ModelMe
         break;
       }
       case EEntryType.System:
-        // Compact markers injected by ContextManager.getMessages() — skip
+        // Interrupt markers are the one system entry the LLM must see: the
+        // turn was cut by the user, and the next turn must not mistake the
+        // partial before it for a finished answer. All other system entries
+        // (compact markers, error records) stay skipped.
+        if (entry.subtype === ESystemSubtype.Interrupted) {
+          messages.push({ role: 'system' as const, content: USER_INTERRUPT_REPLAY });
+        }
         break;
 
       case EEntryType.Signal: {

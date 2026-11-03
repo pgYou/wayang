@@ -81,7 +81,13 @@ export interface AgentHooks {
 
 export abstract class BaseAgent {
   readonly id: string;
-  readonly abortController: AbortController;
+  /**
+   * Agent-lifetime abort channel. Once aborted it stays aborted (an
+   * AbortSignal cannot be reset) — long-lived agents that must survive an
+   * abort (the controller) call resetAbortController() at the start of each
+   * run; one-shot agents (workers) never reset, so abort means dispose.
+   */
+  abortController: AbortController;
   protected readonly model: ReturnType<typeof createModel>;
 
   protected hooks: AgentHooks = {};
@@ -90,6 +96,15 @@ export abstract class BaseAgent {
     this.id = generateId('agent');
     this.abortController = new AbortController();
     this.model = createModel(provider);
+  }
+
+  /**
+   * Swap in a fresh AbortController, clearing any aborted state from a
+   * previous run. Called by agents whose runs are independently abortable
+   * (ControllerAgent.run); one-shot workers never call it.
+   */
+  protected resetAbortController(): void {
+    this.abortController = new AbortController();
   }
 
   /** Set lifecycle hooks. */

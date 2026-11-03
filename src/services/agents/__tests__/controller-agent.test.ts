@@ -778,3 +778,192 @@ describe('ControllerAgent', () => {
     expect(usage.breakdown.total).toBeGreaterThan(0);
   });
 });
+
+describe('ControllerAgent: user abort (ESC)', () => {
+  let state: any;
+  let agent: ControllerAgent;
+
+  beforeEach(() => {
+    state = createMockState();
+    vi.mocked(streamText).mockReset();
+    vi.mocked(generateText).mockReset();
+    agent = new ControllerAgent(
+      createMockCtx(),
+      state as ControllerAgentState,
+      mockProvider,
+      {}, // tools
+      skills,
+    );
+  });
+
+  const inputSignal = (id: string): ControllerSignal => ({
+    id,
+    source: 'user',
+    type: 'input',
+    payload: { text: 'long question' },
+    timestamp: Date.now(),
+    status: 'unread',
+  });
+
+  /** Mock stream that mimics the SDK on abort: chunks, then abort + AbortError. */
+  const mockAbortingStream = (chunksBeforeAbort: string[], onStepFinish?: (opts: any) => void) => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        for (const chunk of chunksBeforeAbort) {
+          yield chunk;
+        }
+        onStepFinish?.(opts);
+        agent.abort(); // user presses ESC mid-stream
+        throw new Error('AbortError'); // what the real SDK does once the signal fires
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+  };
+
+  const appendedEntries = () =>
+    state.append.mock.calls
+      .filter((call: any[]) => call[0] === 'conversation')
+      .map((call: any[]) => call[1]);
+
+  it('appends a truncated assistant entry and an interrupted marker when aborted mid-stream', async () => {
+    // Realistic interleaving: step one completes (onStepFinish records it),
+    // step two streams a partial, THEN the user aborts.
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'step one full';
+        opts.onStepFinish?.({
+          text: 'step one full',
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        yield 'partial two';
+        agent.abort(); // user presses ESC mid-stream
+        throw new Error('AbortError'); // what the real SDK does once the signal fires
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    const result = await agent.run([inputSignal('sig-abort-1')]);
+
+    // Partial text of the interrupted step is returned, not lost.
+    expect(result.text).toBe('step one fullpartial two');
+
+    const entries = appendedEntries();
+
+    // Step one completed normally — recorded without the interrupted flag.
+    const complete = entries.find((e: any) => e?.type === 'assistant' && e.interrupted !== true);
+    expect(complete).toBeDefined();
+    expect(complete.message.content).toBe('step one full');
+
+    // Step two's partial survives as a truncated entry.
+    const truncated = entries.find((e: any) => e?.type === 'assistant' && e.interrupted === true);
+    expect(truncated).toBeDefined();
+    expect(truncated.message.content).toBe('partial two');
+    expect(truncated.turnId).toEqual(expect.any(String));
+    expect(truncated.finishReason).toBeUndefined();
+
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+    expect(marker.content).toContain('interrupted');
+    expect(marker.actor).toEqual({ kind: 'user', id: 'user' });
+    expect(marker.turnId).toBe(truncated.turnId);
+
+    // Marker sits directly behind the truncated entry.
+    expect(entries.indexOf(truncated)).toBe(entries.indexOf(marker) - 1);
+
+    // Live streaming region is cleared.
+    expect(state.get('dynamicState.streamingEntries')).toEqual([]);
+  });
+
+  it('writes only the interrupt marker when aborted before any output', async () => {
+    mockAbortingStream([]);
+
+    await agent.run([inputSignal('sig-abort-2')]);
+
+    const entries = appendedEntries();
+    // User entry + marker — and crucially NO assistant entry at all.
+    expect(entries.some((e: any) => e?.type === 'assistant')).toBe(false);
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+  });
+
+  it('does not duplicate the step entry when abort lands after step finish', async () => {
+    // Step one completes via onStepFinish; abort arrives with NO further
+    // chunks, so the recorded step must not be appended a second time.
+    mockAbortingStream(['step one full'], opts => {
+      opts.onStepFinish?.({
+        text: 'step one full',
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: 'stop',
+      });
+    });
+
+    await agent.run([inputSignal('sig-abort-3')]);
+
+    const entries = appendedEntries();
+    const stepEntries = entries.filter((e: any) => e?.type === 'assistant');
+    // One complete step entry, no truncated duplicate of it.
+    expect(stepEntries).toHaveLength(1);
+    expect(stepEntries[0].interrupted).toBeUndefined();
+    expect(stepEntries[0].message.content).toBe('step one full');
+    const markers = entries.filter((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(markers).toHaveLength(1);
+  });
+
+  it('drops a late step finish that lands after the abort', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'partial';
+        agent.abort();
+        // Late step finish after the abort — must not append behind the marker.
+        opts.onStepFinish?.({
+          text: 'partial',
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        throw new Error('AbortError');
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    await agent.run([inputSignal('sig-abort-4')]);
+
+    const entries = appendedEntries();
+    const assistantEntries = entries.filter((e: any) => e?.type === 'assistant');
+    // Only the truncated partial, no complete late step.
+    expect(assistantEntries).toHaveLength(1);
+    expect(assistantEntries[0].interrupted).toBe(true);
+  });
+
+  it('recovers and runs normally after an aborted turn', async () => {
+    mockAbortingStream(['partial']);
+    await agent.run([inputSignal('sig-abort-5a')]);
+
+    // Second turn on the SAME agent — the abort must not poison it.
+    mockStreamResponse('fresh full answer');
+    const result = await agent.run([inputSignal('sig-abort-5b')]);
+
+    expect(result.text).toBe('fresh full answer');
+    // Only the first turn left an interrupt marker.
+    const markers = appendedEntries().filter((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(markers).toHaveLength(1);
+    // And no busy flag is left behind.
+    expect(state.get('dynamicState.busy')).toBe(false);
+  });
+
+  it('writes no interrupt records on normal completion', async () => {
+    mockStreamResponse('ok');
+
+    await agent.run([inputSignal('sig-abort-6')]);
+
+    const entries = appendedEntries();
+    expect(entries.some((e: any) => e?.type === 'system' && e.subtype === 'interrupted')).toBe(false);
+    expect(entries.some((e: any) => e?.type === 'assistant' && e.interrupted === true)).toBe(false);
+  });
+});

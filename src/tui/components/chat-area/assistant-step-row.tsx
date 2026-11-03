@@ -37,6 +37,7 @@ export function AssistantStepRow({ item, lookups = EMPTY_CHAT_LOOKUPS }: { item:
           {theme.assistant.prefix}{' '}
         </Text>
         <Text>{item.content}</Text>
+        {item.interrupted && <Text dimColor> ⏹ interrupted</Text>}
       </Box>
     );
   }
@@ -79,6 +80,8 @@ export function AssistantStepRow({ item, lookups = EMPTY_CHAT_LOOKUPS }: { item:
             return summarizedCallIds.has(sec.id) ? null : <ToolResultRow key={key} section={sec} />;
         }
       })}
+      {/* User interrupt (ESC) cut this step mid-stream — mark the truncation. */}
+      {item.interrupted && <Text dimColor>⏹ interrupted</Text>}
     </Box>
   );
 }

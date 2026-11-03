@@ -68,6 +68,14 @@ describe('entryToDisplayItem', () => {
     expect(item.sections).toHaveLength(3); // content + tool_call + tool_result
   });
 
+  it('should pass the interrupted flag through for truncated assistant entries', () => {
+    const item = entryToDisplayItem(makeAssistantEntry('partial answer', { interrupted: true }))!;
+    expect(item.role).toBe('assistant');
+    expect(item.interrupted).toBe(true);
+    // Absent on normal entries — not fabricated.
+    expect(entryToDisplayItem(makeAssistantEntry('full answer'))!.interrupted).toBeUndefined();
+  });
+
   it('should return null for skip_reply entries', () => {
     const entry = makeAssistantEntry('', {
       toolCalls: [{ toolCallId: 'tc-1', toolName: 'skip_reply', arguments: '{}' }],
