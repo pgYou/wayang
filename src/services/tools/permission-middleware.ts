@@ -11,6 +11,12 @@ export interface PermissionVerdict {
    * the tool. The policy layer builds it so it can control disclosure.
    */
   message?: string;
+  /**
+   * Present on `ask` when the policy escalated for a non-obvious reason (e.g.
+   * "command substitution", "output redirection"). Appended to the approval
+   * description so the controller understands why it is being asked.
+   */
+  reason?: string;
 }
 
 export interface PermissionMiddlewareConfig {
@@ -86,7 +92,12 @@ export function wrapWithPermissionMiddleware(
         }
 
         const requestId = generateId('perm');
-        const description = config.describeCall(toolName, args);
+        const baseDescription = config.describeCall(toolName, args);
+        // Surface a non-obvious escalation reason (command substitution,
+        // output redirection, …) in the request so the controller can judge it.
+        const description = verdict.reason
+          ? `${baseDescription} [reason: ${verdict.reason}]`
+          : baseDescription;
 
         deps.signalQueue.enqueue({
           source: 'worker',

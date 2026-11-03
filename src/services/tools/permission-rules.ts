@@ -17,15 +17,24 @@
  * This module only adds what is tool-specific:
  *
  *   - which access mode a tool implies (read vs write),
- *   - how a bash command string is reduced to path candidates,
+ *   - how a bash command string is reduced to path candidates (expanding
+ *     `$HOME` / `${HOME}` first),
  *   - the destructive-command heuristic, which stays a "ask the controller"
- *     tier on top of the policy (the policy only judges paths).
+ *     tier on top of the policy (the policy only judges paths),
+ *   - escalation to `ask` when a target cannot be determined statically:
+ *     `~user` (another user's home), command substitution, output redirection.
  *
  * Verdicts: `allow` → run immediately, `ask` → controller approval,
  * `deny` → refuse without asking (denylist hit).
  */
 import { resolve } from 'node:path';
-import { decideAccess, type AccessDecision, type AccessMode, type MatchedRule } from '@/infra/permission/policy';
+import {
+  decideAccess,
+  type AccessDecision,
+  type AccessMode,
+  type DecideAccessResult,
+  type MatchedRule,
+} from '@/infra/permission/policy';
 import type { PermissionConfig } from '@/types/config';
 
 /** File tools gated by the permission middleware for path access. */
@@ -48,7 +57,12 @@ const URL_RE = /[a-zA-Z][a-zA-Z0-9+.-]*:\/\/\S+/g;
  * Matched rules beyond the policy's own set: the destructive-command tier and
  * the "nothing to judge" case live in this module, not in the policy.
  */
-export type WorkerMatchedRule = MatchedRule | 'dangerous-bash' | 'no-path';
+export type WorkerMatchedRule =
+  | MatchedRule
+  | 'dangerous-bash'
+  | 'no-path'
+  | 'home-other-user'
+  | 'dynamic-shell';
 
 /** Everything the shared policy needs to know about ONE worker run's boundary. */
 export interface WorkerAccessScope {
@@ -74,13 +88,77 @@ export interface ToolAccessDecision {
    * symlink target), so a refusal discloses nothing the worker didn't know.
    */
   message?: string;
+  /**
+   * Present on `ask` when the reason is not obvious from the call itself — e.g.
+   * a command substitution or output redirection whose target cannot be
+   * determined statically. Surfaces in the approval request so the controller
+   * understands WHY it is being asked.
+   */
+  reason?: string;
 }
 
-/** Expand a leading `~` / `~/` against the given home directory. */
-function expandHome(p: string, homeDir: string): string {
-  if (p === '~') return homeDir;
-  if (p.startsWith('~/')) return resolve(homeDir, p.slice(2));
-  return p;
+/**
+ * Result of expanding a leading `~` in a shell word.
+ *
+ * `~` and `~/...` expand against the injected home directory. `~<name>` (tilde
+ * followed by anything other than `/` or end-of-word) names ANOTHER user's
+ * home. We deliberately do NOT resolve it — that would mean reading /etc/passwd
+ * or guessing the layout — so it is reported as unresolvable and the caller
+ * forces an approval. Treating it as a relative path would be wrong: a shell
+ * reads `cat ~root/.ssh/x` as `/root/.ssh/x`, not as workspace-relative.
+ */
+interface HomeExpansion {
+  /** Path after `~` / `~/` expansion; unchanged for `~<name>`. */
+  path: string;
+  /** True for `~<name>` — another user's home, which cannot be resolved safely. */
+  unresolvable: boolean;
+}
+
+/** Expand a leading `~` / `~/` against `homeDir`; flag `~<name>` as unresolvable. */
+function expandHome(p: string, homeDir: string): HomeExpansion {
+  if (p === '~') return { path: homeDir, unresolvable: false };
+  if (p.startsWith('~/')) return { path: resolve(homeDir, p.slice(2)), unresolvable: false };
+  if (p.startsWith('~')) return { path: p, unresolvable: true };
+  return { path: p, unresolvable: false };
+}
+
+/**
+ * Replace `$HOME` / `${HOME}` with the injected home directory BEFORE path
+ * candidate extraction, so `cat $HOME/.ssh/id_rsa` is judged against the same
+ * concrete path a shell would open (and the denylist can see it). Only these
+ * two spellings are rewritten: positional/special parameters (`$1`, `$@`, …)
+ * and every other variable are left untouched, so common `awk '{print $1}'`
+ * commands never trip the gates.
+ */
+function expandHomeVars(command: string, homeDir: string): string {
+  // `${HOME}` first, then a bare `$HOME` not followed by an identifier char
+  // (so `$HOMEDIR` is not partially rewritten).
+  return command.replace(/\$\{HOME\}/g, homeDir).replace(/\$HOME(?![A-Za-z0-9_])/g, homeDir);
+}
+
+/**
+ * Shell constructs whose real target cannot be determined statically: command
+ * substitution (backticks / `$(`) and output redirection (`>` / `>>`) to a
+ * file. A command containing any of them is escalated to `ask` so the
+ * controller can inspect it instead of the gate silently allowing a target it
+ * never saw. Ordinary parameters such as `$1` / `${1}` are NOT command
+ * substitution and do not trigger this.
+ */
+function detectUnsafeDynamicTarget(command: string): string | undefined {
+  if (command.includes('`')) return 'command substitution (backticks)';
+  if (/\$\(/.test(command)) return 'command substitution ($(...))';
+  if (hasOutputRedirection(command)) return 'output redirection';
+  return undefined;
+}
+
+/**
+ * Detect a `>` / `>>` writing to a file. File-descriptor duplication
+ * (`2>&1`, `>&2`) targets another fd, not a path, and is ignored.
+ */
+function hasOutputRedirection(command: string): boolean {
+  // `>` / `>>` not immediately followed by `&` (fd duplication), with an actual
+  // target word after optional spaces.
+  return /(?:^|[^<>])>>?\s*(?!&)\S/.test(command);
 }
 
 /**
@@ -108,7 +186,7 @@ function decidePath(
   scope: WorkerAccessScope,
   path: string,
   access: AccessMode,
-): { decision: AccessDecision; matchedRule: MatchedRule } {
+): DecideAccessResult {
   return decideAccess({
     path,
     access,
@@ -143,9 +221,25 @@ export function evaluateFileAccess(
   if (typeof rawPath !== 'string' || !rawPath) return { decision: 'allow', matchedRule: 'no-path' };
 
   const access: AccessMode = READ_ONLY_FILE_TOOLS.has(toolName) ? 'read' : 'write';
-  const verdict = decidePath(scope, expandHome(rawPath, scope.homeDir), access);
-  if (verdict.matchedRule === 'read-within-home') return { decision: 'ask', matchedRule: 'read-within-home' };
-  return verdict;
+  const expanded = expandHome(rawPath, scope.homeDir);
+  if (expanded.unresolvable) {
+    // `~user`: another user's home. We do not guess it, so we cannot prove it
+    // is inside any allowed scope — ask rather than silently allow.
+    return {
+      decision: 'ask',
+      matchedRule: 'home-other-user',
+      reason: "`~user` names another user's home directory, which cannot be resolved safely",
+    };
+  }
+
+  const verdict = decidePath(scope, expanded.path, access);
+  // Downgrade when — and only when — the allow rests SOLELY on the policy's
+  // "read inside home" rule. Structured check (withinReadScope), not the
+  // matchedRule string literal, so renaming the rule cannot widen access.
+  if (verdict.decision === 'allow' && verdict.withinReadScope) {
+    return { decision: 'ask', matchedRule: 'read-within-home' };
+  }
+  return { decision: verdict.decision, matchedRule: verdict.matchedRule };
 }
 
 /**
@@ -168,7 +262,20 @@ export function evaluateFileAccess(
  * they are confined by the task workspace (the shell's cwd), exactly as before.
  */
 export function evaluateBashAccess(scope: WorkerAccessScope, command: string): ToolAccessDecision {
-  const candidates = extractPathCandidates(command).map((p) => expandHome(p, scope.homeDir));
+  // `$HOME` / `${HOME}` are expanded BEFORE extraction so the concrete path the
+  // shell would open is what gets judged (and the denylist can see it).
+  const expandedCommand = expandHomeVars(command, scope.homeDir);
+
+  const candidates: string[] = [];
+  let hasUnresolvableHome = false;
+  for (const raw of extractPathCandidates(expandedCommand)) {
+    const expanded = expandHome(raw, scope.homeDir);
+    if (expanded.unresolvable) {
+      hasUnresolvableHome = true;
+      continue;
+    }
+    candidates.push(expanded.path);
+  }
 
   let firstAsk: ToolAccessDecision | undefined;
   let firstAllow: ToolAccessDecision | undefined;
@@ -179,7 +286,24 @@ export function evaluateBashAccess(scope: WorkerAccessScope, command: string): T
     else firstAllow ??= verdict;
   }
 
-  if (DANGEROUS_BASH_PATTERN.test(command)) return { decision: 'ask', matchedRule: 'dangerous-bash' };
+  // A denylist hit (above) outranks everything. Then the destructive tier.
+  if (DANGEROUS_BASH_PATTERN.test(expandedCommand)) {
+    return { decision: 'ask', matchedRule: 'dangerous-bash' };
+  }
+
+  // Targets that cannot be determined statically — and another user's home —
+  // escalate to ask, never a silent allow. The reason is surfaced in the
+  // approval request so the controller knows WHY.
+  const dynamic = detectUnsafeDynamicTarget(expandedCommand);
+  if (dynamic) return { decision: 'ask', matchedRule: 'dynamic-shell', reason: dynamic };
+  if (hasUnresolvableHome) {
+    return {
+      decision: 'ask',
+      matchedRule: 'home-other-user',
+      reason: "`~user` names another user's home directory, which cannot be resolved safely",
+    };
+  }
+
   if (firstAsk) return firstAsk;
   return firstAllow ?? { decision: 'allow', matchedRule: 'no-path' };
 }

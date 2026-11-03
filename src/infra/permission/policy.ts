@@ -76,6 +76,15 @@ export interface DecideAccessResult {
   matchedRule: MatchedRule;
   /** Canonical path the decision was made about. */
   resolvedPath: string;
+  /**
+   * True exactly when the decision is an `allow` whose ONLY justification is
+   * rule 6 ("read inside home"). Consumers that deliberately narrow home-wide
+   * reads (e.g. the worker file tools) key off this boolean instead of the
+   * `matchedRule` string literal, so a future rename of the rule cannot
+   * silently widen access. Optional for backward compatibility: it is only set
+   * on the read-within-home result, absent (undefined/falsy) everywhere else.
+   */
+  withinReadScope?: boolean;
 }
 
 /**
@@ -249,7 +258,7 @@ export function decideAccess(input: DecideAccessInput): DecideAccessResult {
   // 6. Reads inside home are fine (minus the denylist). Writes are not:
   //    "inside home" must never be sufficient to justify a write.
   if (input.access === 'read' && isPathWithin(homeDir, resolvedPath)) {
-    return { decision: 'allow', matchedRule: 'read-within-home', resolvedPath };
+    return { decision: 'allow', matchedRule: 'read-within-home', resolvedPath, withinReadScope: true };
   }
 
   // 7. Nothing matched — ask the user.

@@ -271,6 +271,26 @@ describe('wrapWithPermissionMiddleware', () => {
     expect(signal.payload.requestId).toMatch(/^perm-/);
   });
 
+  it('should surface an ask reason in the permission request description', async () => {
+    const tools = mockTool('bash', 'output');
+    const result = wrapWithPermissionMiddleware(tools, {
+      gatedTools: ['bash'],
+      decide: () => ({ decision: 'ask' as const, reason: 'output redirection' }),
+      describeCall: (name, args) => `Execute shell command: ${args.command}`,
+    }, {
+      workerId: 'w1',
+      taskId: 't1',
+      taskTitle: 'Test',
+      signalQueue: queue as unknown as SignalQueue,
+    });
+
+    const pending = result.wrappedTools.bash.execute({ command: 'echo x > f.txt' });
+    const payload = queue.enqueue.mock.calls[0][0].payload;
+    expect(payload.description).toContain('output redirection');
+    result.resolvePermission(payload.requestId, true);
+    await pending;
+  });
+
   it('should refuse a denied call without asking or executing', async () => {
     const tools = mockTool('bash', 'should not run');
     const result = wrapWithPermissionMiddleware(tools, {

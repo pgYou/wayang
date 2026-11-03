@@ -156,6 +156,58 @@ describe('evaluateBashAccess', () => {
     const command = `cat ${ws}/README.md; cat ~/.ssh/id_rsa`;
     expect(evaluateBashAccess(scope(), command).decision).toBe('deny');
   });
+
+  describe('~user and shell constructs that cannot be resolved statically', () => {
+    it("cat ~root/.ssh/x → ask (another user's home is not resolved or allowed)", () => {
+      const verdict = evaluateBashAccess(scope(), 'cat ~root/.ssh/x');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('home-other-user');
+    });
+
+    it('cat $HOME/.ssh/id_rsa → deny (expanded, then denied)', () => {
+      const verdict = evaluateBashAccess(scope(), 'cat $HOME/.ssh/id_rsa');
+      expect(verdict.decision).toBe('deny');
+      expect(verdict.matchedRule).toBe('denylist');
+    });
+
+    it('cat ${HOME}/.ssh/id_rsa → deny', () => {
+      expect(evaluateBashAccess(scope(), 'cat ${HOME}/.ssh/id_rsa').decision).toBe('deny');
+    });
+
+    it('echo x > $HOME/notes.txt → ask (output redirection)', () => {
+      const verdict = evaluateBashAccess(scope(), 'echo x > $HOME/notes.txt');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.reason).toContain('output redirection');
+    });
+
+    it('cat $(echo /etc/passwd) → ask (command substitution)', () => {
+      const verdict = evaluateBashAccess(scope(), 'cat $(echo /etc/passwd)');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.reason).toContain('command substitution');
+    });
+
+    it('backtick command substitution → ask', () => {
+      const verdict = evaluateBashAccess(scope(), 'cat `echo /etc/passwd`');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.reason).toContain('command substitution');
+    });
+
+    it("awk '{print $1}' file is NOT command substitution and does not force an ask", () => {
+      const verdict = evaluateBashAccess(scope(), "awk '{print $1}' file");
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('no-path');
+    });
+
+    it('a write into the workspace via redirection still asks (target is not statically trusted)', () => {
+      const verdict = evaluateBashAccess(scope(), 'echo hi > notes.txt');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.reason).toContain('output redirection');
+    });
+
+    it('fd duplication (2>&1) is not mistaken for a file redirection', () => {
+      expect(evaluateBashAccess(scope(), 'ls -la 2>&1').decision).toBe('allow');
+    });
+  });
 });
 
 describe('evaluateFileAccess', () => {
@@ -220,6 +272,13 @@ describe('evaluateFileAccess', () => {
     expect(evaluateFileAccess(scope(), 'read_file', { path: '~/.ssh/id_rsa' }).decision).toBe('deny');
     // Not denylisted, but still outside the worker's scopes → asks.
     expect(evaluateFileAccess(scope(), 'read_file', { path: '~/.zshrc' }).decision).toBe('ask');
+  });
+
+  it("~user paths are not resolved and ask instead of allow", () => {
+    const read = evaluateFileAccess(scope(), 'read_file', { path: '~root/.ssh/id_rsa' });
+    expect(read.decision).toBe('ask');
+    expect(read.matchedRule).toBe('home-other-user');
+    expect(evaluateFileAccess(scope(), 'write_file', { path: '~someone/x' }).decision).toBe('ask');
   });
 
   it('a symlink inside the workspace cannot smuggle a denylisted path', () => {

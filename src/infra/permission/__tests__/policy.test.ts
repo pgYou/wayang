@@ -187,6 +187,25 @@ describe('decideAccess: read vs write scope', () => {
     const result = decideAccess({ path: join(home, 'documents'), access: 'read', homeDir: home });
     expect(result.decision).toBe('allow');
     expect(result.matchedRule).toBe('read-within-home');
+    // The structured narrowing signal — consumers key off this, not the string.
+    expect(result.withinReadScope).toBe(true);
+  });
+
+  it('sets withinReadScope only for the read-inside-home allow', () => {
+    // Explicit allow roots are NOT read-scope-only narrowing targets.
+    expect(
+      decideAccess({ path: join(home, 'documents'), access: 'read', homeDir: home, configAllowedDirs: [join(home, 'documents')] })
+        .withinReadScope,
+    ).toBeFalsy();
+    expect(
+      decideAccess({ path: join(home, 'documents'), access: 'read', homeDir: home, taskWorkspace: join(home, 'documents') })
+        .withinReadScope,
+    ).toBeFalsy();
+    // Writes are never allowed by the read-inside-home rule.
+    expect(decideAccess({ path: join(home, 'documents', 'n.md'), access: 'write', homeDir: home }).withinReadScope).toBeFalsy();
+    // Deny / ask results carry the flag as falsy too.
+    expect(decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'read', homeDir: home }).withinReadScope).toBeFalsy();
+    expect(decideAccess({ path: outside, access: 'read', homeDir: home }).withinReadScope).toBeFalsy();
   });
 
   it('does not allow writing inside home outside any workspace', () => {
