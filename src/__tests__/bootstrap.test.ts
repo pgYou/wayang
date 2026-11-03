@@ -104,14 +104,14 @@ describe('bootstrap — homeDir root semantics', () => {
     expect(call.injectPreviousTasks).toBe(false);
   });
 
-  it('--fresh: ignores an existing latest session', async () => {
+  it('--new (alias --fresh): ignores an existing latest session', async () => {
     writeSessionMeta('20260101-000000', { workspace: '/repo-a', createdAt: 1000 });
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
       homeDir: root,
       workspaceDir: '/repo-a',
-      fresh: true,
+      new: true,
     });
 
     expect(connectCall().session).toBe('new');

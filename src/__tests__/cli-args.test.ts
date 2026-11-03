@@ -137,7 +137,7 @@ describe('parseCliArgs — valid long forms keep working', () => {
     if (result.status !== 'ok') return;
     expect(result.flags.homeDir).toBeUndefined();
     expect(result.flags.workspaceDir).toBeUndefined();
-    expect(result.flags.fresh).toBe(false);
+    expect(result.flags.new).toBe(false);
     expect(result.flags.verbose).toBe(false);
     expect(result.flags.version).toBe(false);
     expect(result.input).toEqual([]);
@@ -166,7 +166,7 @@ describe('parseCliArgs — valid long forms keep working', () => {
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
     expect(result.flags.resume).toBe(true);
-    expect(result.flags.fresh).toBe(true);
+    expect(result.flags.new).toBe(true);
     expect(result.flags.all).toBe(true);
   });
 

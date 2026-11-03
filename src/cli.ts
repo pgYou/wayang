@@ -13,7 +13,8 @@
  *   --home-dir <path>            Root for sessions & config (default: $HOME)
  *   --workspace-dir, -w <path>   Working directory for tools (default: pwd)
  *   --config, -c <path>          Config file path
- *   --fresh, -n                  Start a new session (do not inherit prior context)
+ *   --new, -n                    Start a new session (do not inherit prior context)
+ *   --fresh                      Deprecated alias of --new
  *   --resume, -r                 Resume a previous session
  *   --all                        Show all sessions (with --resume)
  *   --verbose                    Enable debug logging (long-only)
@@ -86,7 +87,7 @@ if (input[0] === 'server') {
     homeDir,
     workspaceDir,
     logLevel: flags.verbose ? 'debug' : 'info',
-    fresh: flags.fresh,
+    new: flags.new,
     resume: resumeFlag ? (resumeId ?? '') : undefined,
     showAll: flags.all,
   }).catch(fatal);

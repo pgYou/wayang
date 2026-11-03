@@ -26,10 +26,10 @@ export interface BootstrapOptions {
   workspaceDir: string;
   logLevel?: string;
   /**
-   * Start a brand-new session, ignoring any prior context for this workspace.
-   * Mutually exclusive with `resume`.
+   * Start a brand-new session, ignoring any prior context for this workspace
+   * (`--new`, deprecated alias `--fresh`). Mutually exclusive with `resume`.
    */
-  fresh?: boolean;
+  new?: boolean;
   /**
    * Resume mode:
    * - undefined → sessionless default: inherit latest session for this workspace
@@ -61,7 +61,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   let injectPreviousTasks = false;
   let workspaceDir = options.workspaceDir;
 
-  if (options.fresh) {
+  if (options.new) {
     // Explicit new session — do not inherit prior context.
   } else if (options.resume === undefined) {
     // Sessionless default: inherit the latest session for this workspace.

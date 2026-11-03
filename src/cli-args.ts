@@ -1,8 +1,11 @@
 /**
  * CLI argument definitions + parsing/validation for the wayang entry point.
  *
- * Short flags: -v = --version, -h = --help, -r = --resume (plus the
- * pre-existing -w/-c/-n). `--verbose` is long-only by design: meow's
+ * Short flags: -v = --version, -h = --help, -r = --resume, -n = --new (plus
+ * the pre-existing -w/-c). `--fresh` is the deprecated alias of `--new`: it
+ * still parses and still means the same thing, but it is not advertised in
+ * the help text's Options block (a "Deprecated" footer lists it instead).
+ * `--verbose` is long-only by design: meow's
  * underlying parser (yargs-parser) splits any multi-character single-dash
  * token into single-character flags, so no multi-letter short can be
  * expressed for it (e.g. `-vb` would parse as `-v -b` and print the version).
@@ -21,6 +24,9 @@
  *   · string flags missing a value (`--config` at end / before another flag)
  *                                              → error
  *   · duplicate flags (meow throws)           → error
+ *   · duplicate `--new` in any spelling       → error, same wording as the
+ *     (`--new`, `--fresh`, `-n`)                 duplicates meow rejects (see
+ *                                                countNewFlagOccurrences)
  *
  * Priority: usage errors beat `--version`, which beats `--help` (matching
  * meow's internal ordering). Valid parses return `{ status: 'ok' }` with the
@@ -32,7 +38,7 @@ import meow from 'meow';
 export const CLI_HELP_TEXT = `
   Usage
     $ wayang                       Resume latest session for this workspace (or new)
-    $ wayang --fresh               Start a brand-new session (ignore prior context)
+    $ wayang --new                 Start a brand-new session (ignore prior context)
     $ wayang --resume              Interactive session select
     $ wayang --resume <id>         Resume specific session
     $ wayang --resume --all        Show all workspaces
@@ -42,7 +48,7 @@ export const CLI_HELP_TEXT = `
     --home-dir <path>       Root directory for sessions and config (default: $HOME)
     --workspace-dir, -w     Working directory for tools (default: pwd)
     --config, -c            Config file path
-    --fresh, -n             Start a new session (do not inherit prior context)
+    --new, -n               Start a new session (do not inherit prior context)
     --resume, -r            Pick a session to resume (interactive, or <id>)
     --all                   List sessions across all workspaces (with --resume)
     --verbose               Enable debug logging
@@ -51,13 +57,20 @@ export const CLI_HELP_TEXT = `
     --session <mode>        (server) "new" or "resume:<id>"
     --inject-previous-tasks (server) surface unfinished tasks on resume
     --log-level <level>     (server) log level
+
+  Deprecated
+    --fresh                 Alias of --new (same behavior); use --new instead
 `;
 
 const CLI_FLAGS = {
   homeDir: { type: 'string' },
   workspaceDir: { type: 'string', shortFlag: 'w' },
   config: { type: 'string', shortFlag: 'c' },
-  fresh: { type: 'boolean', shortFlag: 'n', default: false },
+  new: { type: 'boolean', shortFlag: 'n', default: false },
+  // Deprecated alias of `--new` (the pre-0.8 spelling). Registered as its own
+  // key so the parser accepts it and the unknown-flag/negation passes cover
+  // it; the result is folded back into `new` (see parseCliArgs).
+  fresh: { type: 'boolean', default: false },
   resume: { type: 'boolean', shortFlag: 'r', default: false },
   all: { type: 'boolean', default: false },
   verbose: { type: 'boolean', default: false },
@@ -74,7 +87,8 @@ export interface CliFlags {
   /** Working directory for tools; undefined → caller falls back to cwd. */
   workspaceDir?: string;
   config?: string;
-  fresh: boolean;
+  /** `--new` / `-n` (alias `--fresh`): start a new session, no inherit. */
+  new: boolean;
   resume: boolean;
   all: boolean;
   verbose: boolean;
@@ -195,6 +209,41 @@ function scanArgvForSwallowedFlags(argv: readonly string[], problems: Set<string
   }
 }
 
+/** Long names that all mean `--new`: the flag itself plus its legacy alias. */
+const NEW_FLAG_LONG_NAMES = new Set(['new', 'fresh']);
+
+/**
+ * Count how many times the `--new` flag is given in any accepted spelling
+ * (`--new`, `--fresh`, `-n`, also inside a short group like `-rn`).
+ *
+ * meow only rejects duplicates of value flags (a second string value becomes
+ * an array, which validate.js refuses); booleans collapse to `true`, so a
+ * repeated `--new` is invisible by the time the parse result exists. Since
+ * `--fresh` is a separate key that folds onto the same logical flag, the
+ * duplication has to be counted from raw argv — this keeps the alias honest
+ * with the `-w`-style "can only be set once" rule instead of silently
+ * letting one spelling win.
+ */
+function countNewFlagOccurrences(argv: readonly string[]): number {
+  let count = 0;
+  for (const token of argv) {
+    if (token === '--') break; // everything after `--` is positional
+    if (!token.startsWith('-') || token === '-') continue;
+
+    const isLong = token.startsWith('--');
+    const name = (isLong ? token.slice(2) : token.slice(1)).split('=')[0];
+    if (!name) continue;
+
+    if (isLong) {
+      if (NEW_FLAG_LONG_NAMES.has(name)) count += 1;
+    } else {
+      // Short groups: every `n` is one occurrence (`-nn` is two).
+      count += [...name].filter((ch) => ch === 'n').length;
+    }
+  }
+  return count;
+}
+
 /**
  * Parse and validate CLI arguments. Pure: never reads process.argv and never
  * exits — the caller (cli.ts) turns the result into output + exit codes.
@@ -214,7 +263,13 @@ export function parseCliArgs(argv: readonly string[]): CliParseResult {
 
   const problems = new Set<string>();
 
-  // 1. Unexpected parsed keys = unknown flags (includes unknown shorts and
+  // 1. Duplicate `--new`, in any spelling (`--new`, `--fresh`, `-n`). Wording
+  //    matches what meow throws for repeated value flags.
+  if (countNewFlagOccurrences(argv) > 1) {
+    problems.add('The flag --new can only be set once.');
+  }
+
+  // 2. Unexpected parsed keys = unknown flags (includes unknown shorts and
   //    unknown longs; yargs-parser splits short groups into single keys).
   const unnormalized = cli.unnormalizedFlags as Record<string, unknown>;
   for (const key of Object.keys(unnormalized)) {
@@ -223,11 +278,11 @@ export function parseCliArgs(argv: readonly string[]): CliParseResult {
     }
   }
 
-  // 2. Flags swallowed by the parser (case variants, negations) and boolean
+  // 3. Flags swallowed by the parser (case variants, negations) and boolean
   //    flags given an inline value.
   scanArgvForSwallowedFlags(argv, problems);
 
-  // 3. String flags missing their value. meow yields '' for these because the
+  // 4. String flags missing their value. meow yields '' for these because the
   //    homeDir/workspaceDir defaults live in cli.ts, not in the flag defs.
   const flags = cli.flags as Record<string, unknown>;
   for (const key of STRING_FLAG_KEYS) {
@@ -255,7 +310,9 @@ export function parseCliArgs(argv: readonly string[]): CliParseResult {
       homeDir: readString(flags.homeDir),
       workspaceDir: readString(flags.workspaceDir),
       config: readString(flags.config),
-      fresh: flags.fresh === true,
+      // `--fresh` is the deprecated alias, so either key means the same flag.
+      // A double set is already rejected above, never reaching this point.
+      new: flags.new === true || flags.fresh === true,
       resume: flags.resume === true,
       all: flags.all === true,
       verbose: flags.verbose === true,
