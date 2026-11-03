@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import { connectRemoteServer } from './client/connect';
 import type { ConnectOptions, RemoteConnection } from './client/connect';
 import { getSession, getLatestSessionForWorkspace } from './infra/session-helpers';
-import { normalizeWorkspacePath } from './infra/workspace-registry';
+import { normalizeWorkspacePath, resolveWorkspaceRef } from './infra/workspace-registry';
 import type { WorkspaceRef } from './infra/workspace-registry';
 import { SESSION_LOCKED_MARKER } from './infra/session-lock';
 import { SessionManager } from './services/session/session-manager';
@@ -101,6 +101,29 @@ async function resolveStartupWorkspace(
   return manager.startupWorkspace;
 }
 
+/**
+ * Canonicalize and de-duplicate a session's workspace list for display.
+ *
+ * A resumed session's meta can name the same directory through different
+ * spellings (symlink vs. realpath) or repeat an entry. The TUI's "first + N"
+ * banner counts list length, so leaving variants un-collapsed would overstate
+ * the workspace count. Freshly-resolved refs (`resolveWorkspaceRef`) are already
+ * canonical, but `workspaces` read back from disk is forwarded verbatim here —
+ * normalize each path the same way the process workspace is, and keep only the
+ * first occurrence of each canonical path.
+ */
+function dedupeDisplayWorkspaces(refs: ReadonlyArray<WorkspaceRef>): WorkspaceRef[] {
+  const seen = new Set<string>();
+  const result: WorkspaceRef[] = [];
+  for (const ref of refs) {
+    const normalized = normalizeWorkspacePath(ref.path);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push({ ...ref, path: normalized });
+  }
+  return result;
+}
+
 // --- Bootstrap ---
 
 export async function bootstrap(options: BootstrapOptions): Promise<void> {
@@ -115,6 +138,10 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   let session: 'new' | { resume: string } = 'new';
   let injectPreviousTasks = false;
   let workspaceDir = options.workspaceDir;
+  // Workspace identities this session has touched — display-only, forwarded to
+  // the TUI so the session banner can render "first + N" for multi-workspace
+  // sessions. Resolved from the resumed session's meta when available.
+  let sessionWorkspaces: WorkspaceRef[] = [];
 
   if (options.fresh) {
     // Explicit new session — do not inherit prior context.
@@ -127,6 +154,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
       // Only the sessionless path surfaces unfinished tasks as a signal — an
       // explicit --resume means "continue this exact session as-is".
       injectPreviousTasks = true;
+      sessionWorkspaces = latest.meta.workspaces ?? [];
       console.log(`  Resuming session ${latest.sessionId}`);
     }
   } else if (options.resume === '') {
@@ -137,6 +165,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     // sessions whose meta carries no usable workspace identity.
     workspaceDir = startup?.path ?? (result.meta.workspace || workspaceDir);
     session = { resume: result.sessionId };
+    sessionWorkspaces = result.meta.workspaces ?? [];
     console.log(`  Resuming session ${result.sessionId}`);
   } else {
     // Resume specific session (--resume <id>)
@@ -147,6 +176,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     const startup = await resolveStartupWorkspace(existing.sessionId, existing.sessionDir, wayangHome);
     workspaceDir = startup?.path ?? (existing.meta.workspace || workspaceDir);
     session = { resume: existing.sessionId };
+    sessionWorkspaces = existing.meta.workspaces ?? [];
     console.log(`  Resuming session ${existing.sessionId}`);
   }
 
@@ -158,12 +188,25 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   // session meta itself is read, never rewritten.
   workspaceDir = normalizeWorkspacePath(workspaceDir);
 
+  // Display-only workspace list: mirror the same canonicalization and drop
+  // duplicates so the banner's "first + N" counts distinct workspaces, not
+  // spelling variants or repeated entries.
+  sessionWorkspaces = dedupeDisplayWorkspaces(sessionWorkspaces);
+
+  // A brand-new session (or legacy meta without `workspaces`) still has one
+  // workspace: the directory it runs in. Resolve it through the registry so the
+  // banner's slug matches the one stamped on tasks.
+  if (sessionWorkspaces.length === 0) {
+    sessionWorkspaces = [resolveWorkspaceRef(wayangHome, workspaceDir)];
+  }
+
   const { remote, stop } = await connectToServer({
     configPath: options.configPath,
     // Pass the ROOT dir: the server's `--home-dir` flag expects it and joins
     // `.wayang` itself. Passing the pre-joined dir caused a double join.
     homeDir: options.homeDir,
     workspaceDir,
+    workspaces: sessionWorkspaces,
     session,
     injectPreviousTasks,
     logLevel: options.logLevel,

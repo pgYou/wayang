@@ -10,6 +10,7 @@
 import { RemoteSubscribable, type RpcClient, type RemoteStateStore } from '@/rpc/rpc-client';
 import { METHOD } from '@/rpc/protocol';
 import type { ActiveWorkerInfo, ContextUsage, NewSignalInput, TaskDetail } from '@/types/index';
+import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 /**
  * State path of the controller's context usage snapshot. Single shared literal
@@ -23,7 +24,16 @@ export interface RemoteSupervisorHooks {
 }
 
 export class RemoteSupervisor {
-  readonly ctx: { workspaceDir: string };
+  readonly ctx: {
+    workspaceDir: string;
+    /**
+     * Workspace identities this session has touched. Empty until the client
+     * resolves them (bootstrap reads them from session meta before connecting);
+     * the TUI renders a single-workspace session from `workspaceDir`, so an
+     * empty array is a benign "no summary" state.
+     */
+    workspaces: ReadonlyArray<WorkspaceRef>;
+  };
   readonly controllerAgent: RemoteSubscribable & {
     abort(): void;
     performCompaction(): Promise<void>;
@@ -43,8 +53,9 @@ export class RemoteSupervisor {
     store: RemoteStateStore,
     workspaceDir: string,
     private readonly hooks: RemoteSupervisorHooks,
+    workspaces: ReadonlyArray<WorkspaceRef> = [],
   ) {
-    this.ctx = { workspaceDir };
+    this.ctx = { workspaceDir, workspaces };
 
     this.controllerAgent = Object.assign(new RemoteSubscribable(store, 'controllerAgent'), {
       abort: () => {

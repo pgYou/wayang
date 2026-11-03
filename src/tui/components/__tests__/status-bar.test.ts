@@ -300,3 +300,72 @@ describe('buildStatusSegments', () => {
     expect(seg.workerTexts).toEqual(['build project (1m41s)', 'x (1h01m)']);
   });
 });
+
+describe('workspace attribution in worker rows', () => {
+  /** A running task for the worker, with or without workspace identity. */
+  function runningTask(workspace?: { path: string; slug: string }): TaskDetail[] {
+    return [{
+      id: 't-1793670000002-aa02',
+      title: 'Research the branch',
+      description: 'long description',
+      priority: 'normal',
+      status: 'running',
+      createdAt: NOW - 120_000,
+      startedAt: NOW - 100_000,
+      ...(workspace ? { workspace } : {}),
+    }];
+  }
+
+  it('shows the task workspace slug in the row when the task carries one', () => {
+    const rows = buildWorkerRows(
+      [activeWorker()],
+      runningTask({ path: '/repo/wayang', slug: 'wayang' }),
+      NOW,
+    );
+    expect(rows[0].workspaceSlug).toBe('wayang');
+
+    const seg = buildStatusSegments({
+      pendingCount: 0,
+      activeCount: 1,
+      workerRows: rows,
+      contextUsage: null,
+      terminalCols: 120,
+    });
+    expect(seg.workerTexts).toEqual(['Research the branch [wayang] (1m40s)']);
+  });
+
+  it('adds nothing (and never "undefined") when the task has no workspace identity', () => {
+    const rows = buildWorkerRows([activeWorker()], runningTask(), NOW);
+    expect(rows[0].workspaceSlug).toBeUndefined();
+
+    const seg = buildStatusSegments({
+      pendingCount: 0,
+      activeCount: 1,
+      workerRows: rows,
+      contextUsage: null,
+      terminalCols: 120,
+    });
+    expect(seg.workerTexts).toEqual(['Research the branch (1m40s)']);
+    expect(seg.workerTexts.join(' ')).not.toContain('undefined');
+    expect(seg.workerTexts.join(' ')).not.toContain('[');
+  });
+
+  it('omits the slug first when space is tight, keeping the title and elapsed', () => {
+    const rows = buildWorkerRows(
+      [activeWorker()],
+      runningTask({ path: '/repo/wayang', slug: 'wayang' }),
+      NOW,
+    );
+
+    // Budget fits the compact row (27 chars) but not the full one (36 chars).
+    const seg = buildStatusSegments({
+      pendingCount: 0,
+      activeCount: 1,
+      workerRows: rows,
+      contextUsage: null,
+      terminalCols: 50,
+    });
+    expect(seg.workerTexts).toEqual(['Research the branch (1m40s)']);
+    expect(seg.workerTexts.join(' ')).not.toContain('[wayang]');
+  });
+});

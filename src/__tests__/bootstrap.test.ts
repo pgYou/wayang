@@ -246,6 +246,45 @@ describe('bootstrap — homeDir root semantics', () => {
     expect(call.workspaceDir).not.toBe(linkDir);
   });
 
+  it('normalizes and de-duplicates session workspaces forwarded to the display layer', async () => {
+    const realA = join(root, 'ws-a');
+    const realB = join(root, 'ws-b');
+    mkdirSync(realA, { recursive: true });
+    mkdirSync(realB, { recursive: true });
+    const linkA = join(root, 'ws-a-link');
+    symlinkSync(realA, linkA, 'dir');
+
+    const sessionId = '20260104-000000';
+    const dir = join(root, '.wayang', 'sessions', sessionId);
+    mkdirSync(dir, { recursive: true });
+    // `workspaces` carries a symlink spelling of ws-a and a duplicate ws-b;
+    // the display layer must see one entry per distinct canonical path.
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify({
+      sessionId,
+      workspace: realA,
+      firstInput: null,
+      createdAt: 4000,
+      lastActiveAt: 4000,
+      workspaces: [
+        { path: realA, slug: 'ws-a' },
+        { path: linkA, slug: 'ws-a' },
+        { path: realB, slug: 'ws-b' },
+        { path: realB, slug: 'ws-b' },
+      ],
+    }));
+
+    await bootstrap({
+      configPath: join(root, 'wayang.config.json'),
+      homeDir: root,
+      workspaceDir: '/repo-a',
+      resume: sessionId,
+    });
+
+    const workspaces = connectCall().workspaces as Array<{ path: string; slug: string }>;
+    expect(workspaces.map((w) => w.path)).toEqual([realpathSync(realA), realpathSync(realB)]);
+    expect(workspaces.map((w) => w.slug)).toEqual(['ws-a', 'ws-b']);
+  });
+
   it('forwards logLevel to the server spawn', async () => {
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),

@@ -7,6 +7,7 @@ import { CONTEXT_USAGE_STATE_PATH } from '@/client/remote-supervisor';
 import { theme } from '@/tui/theme';
 import { formatTokenCount } from '@/tui/utils/format-tokens';
 import { truncateToWidth } from '@/tui/utils/text-width';
+import { formatWorkspaceSlug } from '@/tui/utils/workspace-display';
 
 /** Hard cap for the context segment — the rest of the line yields to it. */
 export const CONTEXT_SEGMENT_MAX_WIDTH = 22;
@@ -67,6 +68,12 @@ export interface WorkerRow {
   elapsed: number;
   /** True for a parked multi-stage worker — rendered with an "idle" marker. */
   idle: boolean;
+  /**
+   * The task's workspace slug, shown after the label. Absent when the task
+   * carries no workspace identity (legacy task, or the task already moved to
+   * history so it is not in runningTasks) — the row then shows nothing extra.
+   */
+  workspaceSlug?: string;
 }
 
 /**
@@ -129,6 +136,7 @@ export function buildWorkerRows(
       label: text ? text.slice(0, 20) : `${w.workerType || 'worker'} ${idTail(w.taskId)}`,
       elapsed,
       idle,
+      workspaceSlug: formatWorkspaceSlug(task?.workspace) ?? undefined,
     };
   });
   disambiguateRowLabels(rows);
@@ -155,26 +163,42 @@ export interface StatusSegments {
   contextColor: string | undefined;
 }
 
+/** Full row text. `withSlug` toggles the optional workspace segment. */
+function workerRowText(row: WorkerRow, withSlug: boolean): string {
+  const slug = withSlug && row.workspaceSlug ? ` [${row.workspaceSlug}]` : '';
+  return `${row.label}${slug} (${row.idle ? 'idle ' : ''}${formatElapsedSeconds(row.elapsed)})`;
+}
+
 /**
  * Fit worker rows into `budget` chars: keep whole rows while they fit,
  * hard-truncate only the row that overflows, drop the rest. Idle rows carry
  * an "idle" marker so a parked multi-stage worker cannot be misread as a
  * running task.
+ *
+ * The workspace slug is the first thing to go under pressure: a row that does
+ * not fit in full is retried without it, so the task title and the worker
+ * status/elapsed survive at the expense of the workspace attribution.
  */
 function fitWorkerRows(rows: WorkerRow[], budget: number): string[] {
   if (budget <= 0) return [];
   const fitted: string[] = [];
   let used = 0;
   for (const row of rows) {
-    const text = `${row.label} (${row.idle ? 'idle ' : ''}${formatElapsedSeconds(row.elapsed)})`;
     const sep = fitted.length > 0 ? 3 : 0; // ' · '
-    if (used + sep + text.length <= budget) {
-      fitted.push(text);
-      used += sep + text.length;
+    const full = workerRowText(row, true);
+    if (used + sep + full.length <= budget) {
+      fitted.push(full);
+      used += sep + full.length;
+      continue;
+    }
+    const compact = workerRowText(row, false);
+    if (used + sep + compact.length <= budget) {
+      fitted.push(compact);
+      used += sep + compact.length;
       continue;
     }
     const remaining = budget - used - sep;
-    if (remaining > 0) fitted.push(text.slice(0, remaining));
+    if (remaining > 0) fitted.push(compact.slice(0, remaining));
     break;
   }
   return fitted;
