@@ -19,20 +19,34 @@ const makeUsage = (usedTokens: number, contextWindowTokens = 100_000): ContextUs
 });
 
 describe('formatContextUsage', () => {
-  it('should render a bare percentage, no prefix', () => {
-    expect(formatContextUsage(12_300, 100_000)).toBe('12%');
-    expect(formatContextUsage(999, 100_000)).toBe('1%');
-    expect(formatContextUsage(0, 100_000)).toBe('0%');
+  it('should render used/limit token counts with a percent, no prefix label', () => {
+    expect(formatContextUsage(12_300, 100_000)).toBe('12.3k/100k (12%)');
+    expect(formatContextUsage(999, 100_000)).toBe('999/100k (1%)');
+    expect(formatContextUsage(227_900, 1_000_000)).toBe('227.9k/1M (23%)');
+  });
+
+  it('should keep the token counts on a 0% reading', () => {
+    expect(formatContextUsage(0, 100_000)).toBe('0/100k (0%)');
   });
 
   it('should round to integer without clamping to 100', () => {
-    expect(formatContextUsage(100_000, 100_000)).toBe('100%');
-    expect(formatContextUsage(125_000, 100_000)).toBe('125%');
-    expect(formatContextUsage(1_234_567, 2_000_000)).toBe('62%');
+    expect(formatContextUsage(100_000, 100_000)).toBe('100k/100k (100%)');
+    expect(formatContextUsage(125_000, 100_000)).toBe('125k/100k (125%)');
+    expect(formatContextUsage(1_234_567, 2_000_000)).toBe('1.2M/2M (62%)');
   });
 
-  it('should render 0% when the window is zero', () => {
-    expect(formatContextUsage(0, 0)).toBe('0%');
+  it('should render near the limit, rounding half up', () => {
+    expect(formatContextUsage(99_900, 100_000)).toBe('99.9k/100k (100%)');
+    expect(formatContextUsage(97_500, 100_000)).toBe('97.5k/100k (98%)');
+  });
+
+  it('should render values above 1M with the M unit, over 100 included', () => {
+    expect(formatContextUsage(1_500_000, 1_000_000)).toBe('1.5M/1M (150%)');
+    expect(formatContextUsage(2_400_000, 2_000_000)).toBe('2.4M/2M (120%)');
+  });
+
+  it('should render 0/0 (0%) when the window is zero', () => {
+    expect(formatContextUsage(0, 0)).toBe('0/0 (0%)');
   });
 
   it('should cap the segment at CONTEXT_SEGMENT_MAX_WIDTH', () => {
@@ -204,7 +218,7 @@ describe('buildStatusSegments', () => {
       contextUsage: makeUsage(12_300),
     });
     expect(seg.countsText).toBe('idle');
-    expect(seg.contextText).toBe('12%');
+    expect(seg.contextText).toBe('12.3k/100k (12%)');
     expect(seg.workerTexts).toEqual([]);
   });
 
@@ -241,7 +255,7 @@ describe('buildStatusSegments', () => {
       contextUsage: makeUsage(95_000),
       terminalCols: 60,
     });
-    expect(seg.contextText).toBe('95%');
+    expect(seg.contextText).toBe('95k/100k (95%)');
     expect(seg.contextColor).toBe(theme.baseToken.color.error);
     // Whole line fits: padding(2) + ' counts ' + workers + ' │ context'
     const total = 4 + seg.countsText.length
@@ -261,7 +275,7 @@ describe('buildStatusSegments', () => {
       terminalCols: 120,
     });
     expect(seg.workerTexts).toEqual(['build project (7s)']);
-    expect(seg.contextText).toBe('12%');
+    expect(seg.contextText).toBe('12.3k/100k (12%)');
   });
 
   it('should mark idle rows so a parked worker cannot be misread as running', () => {

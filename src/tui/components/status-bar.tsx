@@ -5,18 +5,21 @@ import type { Subscribable } from '@/infra/state/subscribable';
 import { useWayangState } from '@/tui/hooks/use-wayang-state';
 import { CONTEXT_USAGE_STATE_PATH } from '@/client/remote-supervisor';
 import { theme } from '@/tui/theme';
+import { formatTokenCount } from '@/tui/utils/format-tokens';
+import { truncateToWidth } from '@/tui/utils/text-width';
 
 /** Hard cap for the context segment — the rest of the line yields to it. */
 export const CONTEXT_SEGMENT_MAX_WIDTH = 22;
 
 /**
- * Format the persistent context segment as a bare percentage, e.g. "13%".
- * Percent is rounded to integer and not clamped to 100. Output is capped
- * at CONTEXT_SEGMENT_MAX_WIDTH.
+ * Format the persistent context segment, e.g. "12.3k/100k (12%)" — the token
+ * counts and the percent, with no prefix label. Percent is rounded to integer
+ * and not clamped to 100. Output is capped at CONTEXT_SEGMENT_MAX_WIDTH.
  */
 export function formatContextUsage(usedTokens: number, contextWindowTokens: number): string {
   const percent = contextWindowTokens > 0 ? Math.round((usedTokens / contextWindowTokens) * 100) : 0;
-  return `${percent}%`;
+  const text = `${formatTokenCount(usedTokens)}/${formatTokenCount(contextWindowTokens)} (${percent}%)`;
+  return truncateToWidth(text, CONTEXT_SEGMENT_MAX_WIDTH);
 }
 
 /**
@@ -252,7 +255,7 @@ export function StatusBar({
 
   // The row is always rendered — even with no tasks it shows "idle" plus the
   // persistent context segment, so the layout never collapses. The context
-  // segment leads the line: " 13% │ counts  workers".
+  // segment leads the line: " 227.9k/1M (23%) │ counts  workers".
   return (
     <Box paddingX={1} marginTop={0}>
       {segments.contextText ? (

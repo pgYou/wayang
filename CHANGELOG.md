@@ -22,7 +22,7 @@
 
 **TUI 活动 worker 条目** — A finished worker could linger on screen with a truncated task id and an ever-growing timer. Rows now prefer the task title with a documented fallback chain, disambiguate colliding labels, mark idle entries and count them from idleSince, and render elapsed time as 42s / 1m41s / 1h05m
 
-**状态栏上下文占用去掉 ctx 前缀** — The context usage segment shows a bare percentage instead of the ctx abbreviation
+**状态栏上下文占用去掉 ctx 前缀** — The context usage segment keeps the token counts and the percentage (e.g. `227.9k/1M (23%)`) and only drops the "ctx" label
 
 ### Refactoring
 
