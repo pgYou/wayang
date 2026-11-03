@@ -2,7 +2,7 @@
 
 export type SignalStatus = 'unread' | 'read' | 'discarded';
 export type SignalSource = 'user' | 'worker' | 'system';
-export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'task_cancelled' | 'heartbeat' | 'permission_request' | 'worker_inquiry' | 'inquiry_timeout' | 'message_undelivered' | 'previous_session_tasks';
+export type SignalType = 'input' | 'completed' | 'failed' | 'progress' | 'cancelled' | 'task_cancelled' | 'task_queued' | 'worker_started' | 'heartbeat' | 'permission_request' | 'worker_inquiry' | 'inquiry_timeout' | 'message_undelivered' | 'previous_session_tasks';
 
 /** User input signal payload. */
 export interface InputSignalPayload {
@@ -85,6 +85,44 @@ export interface TaskCancelledSignalPayload {
   workerType?: string;
   /** Display emoji for the worker type. */
   emoji?: string;
+}
+
+/**
+ * Dispatched task could not start yet — every concurrency slot is busy, so the
+ * task waits in the pending queue (issue #30). Emitted exactly once per task,
+ * at add() time, when the task is not scheduled immediately. No worker exists
+ * yet, hence no workerId. A later worker_started signal announces the start.
+ */
+export interface TaskQueuedSignalPayload {
+  taskId: string;
+  /** Task title for display context. */
+  taskTitle: string;
+  /** Worker type the task will run on (e.g. 'puppet', 'claude-code'). */
+  workerType?: string;
+  /** Display emoji for the worker type. */
+  emoji?: string;
+  /** Human-readable reason for display. */
+  message: string;
+}
+
+/**
+ * A worker actually began executing a task (issue #30): either a fresh worker
+ * was spawned, or an idle multi-stage worker was reused for a follow-up stage.
+ * Emitted exactly once per task start.
+ */
+export interface WorkerStartedSignalPayload {
+  taskId: string;
+  workerId: string;
+  /** Task title for display context. */
+  taskTitle: string;
+  /** Worker type label (e.g. 'puppet', 'claude-code'). */
+  workerType?: string;
+  /** Display emoji for the worker type. */
+  emoji?: string;
+  /** Human-readable start description for display. */
+  message: string;
+  /** True when an idle multi-stage worker was reused instead of a fresh spawn. */
+  reused: boolean;
 }
 
 /** System heartbeat signal payload — periodic check-in while workers are running. */
@@ -208,6 +246,8 @@ export type SignalPayloadMap = {
   progress: ProgressSignalPayload;
   cancelled: CancelledSignalPayload;
   task_cancelled: TaskCancelledSignalPayload;
+  task_queued: TaskQueuedSignalPayload;
+  worker_started: WorkerStartedSignalPayload;
   heartbeat: HeartbeatSignalPayload;
   permission_request: PermissionRequestSignalPayload;
   worker_inquiry: WorkerInquirySignalPayload;

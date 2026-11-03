@@ -13,7 +13,7 @@ export function listTasksTool(deps: { listTasks: (status?: TaskDetail['status'])
       const tasks = deps.listTasks(status);
       if (tasks.length === 0) return status ? `No ${status} tasks` : 'No tasks';
       return tasks.map(t =>
-        `[${t.status}] ${t.id}: ${t.description}${t.result ? ` → ${t.result}` : ''}${t.error ? ` ✗ ${t.error}` : ''}`,
+        `[${t.status}] ${t.id} (worker: ${t.workerSessionId ?? 'none'}): ${t.description}${t.result ? ` → ${t.result}` : ''}${t.error ? ` ✗ ${t.error}` : ''}`,
       ).join('\n');
     }),
   });

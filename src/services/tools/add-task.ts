@@ -4,7 +4,13 @@ import { generateId } from '@/utils/id';
 import { defineTool, safeExecute } from './common';
 
 export interface AddTaskToolDeps {
-  addTask: (task: TaskDetail) => void;
+  /**
+   * Add a task and attempt to schedule it. Returns the engine worker id when
+   * the task was scheduled immediately (a worker_started signal follows), or
+   * undefined when every concurrency slot is busy (a task_queued signal is
+   * emitted; the task starts automatically when a slot frees).
+   */
+  addTask: (task: TaskDetail) => string | undefined;
   /** Validate workerType. Returns null if valid, error message if invalid. */
   validateWorkerType?: (workerType: string) => string | null;
   /** Assign a task to an existing idle worker. Returns true if assigned. */
@@ -78,10 +84,13 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         return `Task ${task.id} assigned to worker ${assignToWorker} (reusing its context, priority: ${priority}, worker: ${resolvedType}). You will be notified when the task completes.`;
       }
 
-      deps.addTask(task);
+      const workerId = deps.addTask(task);
       deps.onTaskDispatched?.({ toolCallId, taskId: task.id });
       const stageNote = multiStage ? ' [multi-stage: worker will idle after completion]' : '';
-      return `Task ${task.id} added (priority: ${priority}, worker: ${task.workerType})${stageNote}. You will be notified when the task completes.`;
+      if (workerId !== undefined) {
+        return `Task ${task.id} added (priority: ${priority}, workerType: ${task.workerType}, workerId: ${workerId})${stageNote}. The worker has started; you will be notified of progress and completion.`;
+      }
+      return `Task ${task.id} added (priority: ${priority}, workerType: ${task.workerType})${stageNote}. All concurrency slots are busy — the task is queued and will start automatically when a slot frees (a STARTED signal will name its worker). You will be notified when the task completes.`;
     }),
   });
 }

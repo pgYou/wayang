@@ -18,7 +18,7 @@
 import type { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { Logger } from '@/infra/logger';
-import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo, WorkerLiveStatus, NewSignalInput, SignalTurnLineage, TaskCancelledSignalPayload, ConversationEntry } from '@/types/index';
+import type { TaskDetail, WorkerResult, WorkerConfig, ProviderConfig, IWorkerInstance, ActiveWorkerInfo, WorkerLiveStatus, NewSignalInput, SignalTurnLineage, TaskCancelledSignalPayload, TaskQueuedSignalPayload, WorkerStartedSignalPayload, ConversationEntry } from '@/types/index';
 import { summarizeTranscript } from '@/services/worker-transcript';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import { BaseWayangState } from '@/infra/state/base-state';
@@ -153,12 +153,30 @@ export class TaskExecuteEngine implements Subscribable {
   // Task management
   // ---------------------------------------------------------------------------
 
-  /** Add a task and immediately attempt to schedule it. */
-  add(task: TaskDetail): void {
+  /**
+   * Add a task and immediately attempt to schedule it.
+   *
+   * Returns the engine worker id when the task was scheduled right away (a
+   * worker_started signal follows), or undefined when every concurrency slot
+   * is busy — in that case a task_queued signal is emitted exactly once so the
+   * controller can tell "waiting for a slot" from "running" (issue #30). The
+   * task starts automatically when a slot frees.
+   */
+  add(task: TaskDetail): string | undefined {
     this.taskState.append('tasks.pending', task);
     this.logger.info({ taskId: task.id }, 'Task added');
     this.ctx.hooks.emit('task:added', task);
     this.scheduleNext();
+
+    // Synchronous scheduling: the task either moved to running (spawn is
+    // fire-and-forget, so the running entry exists already) or is still
+    // pending because all slots are occupied.
+    const running = this.taskState.get<TaskDetail[]>('tasks.running');
+    const started = running.find(t => t.id === task.id);
+    if (started?.workerSessionId) return started.workerSessionId;
+
+    this.emitTaskQueued(task);
+    return undefined;
   }
 
   get(id: string): TaskDetail | undefined {
@@ -252,6 +270,64 @@ export class TaskExecuteEngine implements Subscribable {
       ...((task.rootTurnId ?? task.turnId) !== undefined && { rootTurnId: task.rootTurnId ?? task.turnId }),
       causationId: task.id,
     } as NewSignalInput);
+  }
+
+  /**
+   * Announce that a task is stuck in the pending queue — every concurrency
+   * slot is busy (issue #30). Emitted at most once per task (from add(), the
+   * only entry point into the pending queue). No worker exists yet, so the
+   * payload carries task identity only; a later worker_started signal names
+   * the worker that eventually picks the task up.
+   */
+  private emitTaskQueued(task: TaskDetail): void {
+    const workerType = task.workerType ?? PUPPET_WORKER_TYPE;
+    const meta = getWorkerMeta(workerType, this.workerConfigs);
+    const payload: TaskQueuedSignalPayload = {
+      taskId: task.id,
+      taskTitle: task.title,
+      workerType,
+      emoji: meta.emoji,
+      message: `All concurrency slots are busy — the task is queued and will start automatically when a slot frees.`,
+    };
+    this.signalQueue.enqueue({
+      source: 'system',
+      type: 'task_queued',
+      payload,
+      ...((task.rootTurnId ?? task.turnId) !== undefined && { rootTurnId: task.rootTurnId ?? task.turnId }),
+      causationId: task.id,
+    } as NewSignalInput);
+  }
+
+  /**
+   * Announce that a worker actually began a task (issue #30): fresh spawn or
+   * idle-worker reuse (`reused`). Called after the worker is registered and
+   * its execution turn recorded, so the signal carries the worker's lineage.
+   * If creating the worker instance throws, no started signal is emitted —
+   * the existing failed signal (handleFail) is the only outcome.
+   */
+  private emitWorkerStarted(
+    task: TaskDetail,
+    workerId: string,
+    workerType: string,
+    reused: boolean,
+  ): void {
+    const meta = getWorkerMeta(workerType, this.workerConfigs);
+    const payload: WorkerStartedSignalPayload = {
+      taskId: task.id,
+      workerId,
+      taskTitle: task.title,
+      workerType,
+      emoji: meta.emoji,
+      message: reused
+        ? 'Idle multi-stage worker reused for this stage (it kept its context).'
+        : 'Worker spawned and started the task.',
+      reused,
+    };
+    this.enqueueWorkerSignal(workerId, {
+      source: 'worker',
+      type: 'worker_started',
+      payload,
+    });
   }
 
   updatePending(id: string, updates: Partial<Pick<TaskDetail, 'description' | 'priority'>>): boolean {
@@ -811,6 +887,11 @@ export class TaskExecuteEngine implements Subscribable {
     // and on every signal the engine emits for it.
     const executionTurnId = this.registerWorkerTurn(workerId, task);
 
+    // Announce the start (issue #30) — after registration so the signal
+    // carries the worker's lineage. A createWorker failure above throws
+    // before this point and lands in handleFail (failed signal) instead.
+    this.emitWorkerStarted(task, workerId, workerType, false);
+
     const onProgress = this.buildProgressEmitter(workerId, task, workerType);
     const tools = this.wireWorker(worker, task, workerId, workerType);
     this.logger.info({ workerId, taskId: task.id, workerType, executionTurnId }, 'Worker starting');
@@ -860,6 +941,11 @@ export class TaskExecuteEngine implements Subscribable {
     // New stage, new execution turn (the worker's conversation accumulates,
     // but each run is its own agent activation).
     const executionTurnId = this.registerWorkerTurn(workerId, taskWithOrigin);
+
+    // Announce the reuse as a start event (issue #30) — same lifecycle
+    // signal as a fresh spawn, marked reused.
+    this.emitWorkerStarted(task, workerId, workerType, true);
+
     this.updateActiveWorker(workerId, {
       status: 'running',
       taskId: task.id,

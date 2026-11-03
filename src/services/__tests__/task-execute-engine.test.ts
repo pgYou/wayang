@@ -42,6 +42,7 @@ import { TaskExecuteEngine } from '@/services/task-execute-engine';
 import { SignalQueue } from '@/services/signal/signal-queue';
 import { createMockCtx, makeTask } from '@/__tests__/helpers';
 import { SkillRegistry } from '@/services/skills/registry';
+import type { ControllerSignal } from '@/types/index';
 
 // --- Setup ---
 
@@ -441,5 +442,132 @@ describe('TaskExecuteEngine — worker transcript id', () => {
     expect(t2?.workerTranscriptId).toBe(worker.id);
     // Same instance keeps the same transcript directory across stages.
     expect(engine.getWorkerTranscriptId(engineId)).toBe(worker.id);
+  });
+});
+
+describe('TaskExecuteEngine — dispatch lifecycle signals (issue #30)', () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'wayang-engine-test-'));
+    constructedWorkers.length = 0;
+    vi.useRealTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  /** All enqueued signals so far, oldest first. */
+  function allSignals(signalQueue: SignalQueue) {
+    return signalQueue.getSnapshot<ControllerSignal[]>('signals');
+  }
+
+  it('immediate schedule: worker_started (reused=false) emitted, no task_queued, add() returns the worker id', async () => {
+    const { engine, signalQueue } = makeEngine();
+    await engine.restore();
+
+    const workerId = engine.add(makeTask('t1', { title: 'Solo task' }));
+
+    // The returned id is the engine worker id now stamped on the task.
+    expect(workerId).toMatch(/^w-/);
+    expect(engine.get('t1')?.workerSessionId).toBe(workerId);
+
+    const sigs = allSignals(signalQueue);
+    const started = sigs.filter(s => s.type === 'worker_started');
+    expect(started).toHaveLength(1);
+    expect(started[0]!.source).toBe('worker');
+    expect(started[0]!.payload).toMatchObject({
+      taskId: 't1',
+      workerId,
+      taskTitle: 'Solo task',
+      workerType: 'puppet',
+      reused: false,
+    });
+    // Scheduled right away — no queued signal.
+    expect(sigs.filter(s => s.type === 'task_queued')).toHaveLength(0);
+  });
+
+  it('concurrency full: task_queued emitted exactly once with task-only payload, add() returns undefined', async () => {
+    const { engine, signalQueue } = makeEngine(1);
+    await engine.restore();
+
+    engine.add(makeTask('t1'));
+    expect(allSignals(signalQueue).filter(s => s.type === 'worker_started')).toHaveLength(1);
+
+    const second = engine.add(makeTask('t2', { title: 'Queued task' }));
+    expect(second).toBeUndefined();
+
+    const queued = allSignals(signalQueue).filter(s => s.type === 'task_queued');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.source).toBe('system');
+    expect(queued[0]!.payload).toMatchObject({
+      taskId: 't2',
+      taskTitle: 'Queued task',
+      workerType: 'puppet',
+    });
+    // No worker exists yet — the payload must not claim one.
+    expect(queued[0]!.payload).not.toHaveProperty('workerId');
+
+    // The queued task stays pending and no worker was constructed for it.
+    expect(engine.list('pending').map(t => t.id)).toEqual(['t2']);
+    expect(constructedWorkers).toHaveLength(1);
+  });
+
+  it('queued task emits worker_started (not another task_queued) once a slot frees', async () => {
+    const { engine, signalQueue } = makeEngine(1);
+    await engine.restore();
+
+    engine.add(makeTask('t1'));
+    const firstWorker = lastWorker();
+    expect(engine.add(makeTask('t2'))).toBeUndefined();
+
+    // Finish t1 → slot frees → t2 starts automatically.
+    await resolveAndSettle(firstWorker, { status: 'completed', summary: 'done' });
+
+    const sigs = allSignals(signalQueue);
+    const started = sigs.filter(s => s.type === 'worker_started');
+    expect(started).toHaveLength(2);
+    expect(started[1]!.payload).toMatchObject({ taskId: 't2', reused: false });
+    expect(started[1]!.payload).toHaveProperty('workerId');
+    // Still exactly one queued signal — scheduling does not re-announce it.
+    expect(sigs.filter(s => s.type === 'task_queued')).toHaveLength(1);
+    expect(engine.get('t2')?.status).toBe('running');
+  });
+
+  it('idle worker reuse: worker_started carries reused=true and the reused worker id', async () => {
+    const { engine, signalQueue } = makeEngine();
+    await engine.restore();
+
+    engine.add(makeTask('t1', { multiStage: true }));
+    const worker = lastWorker();
+    await resolveAndSettle(worker, { status: 'completed', summary: 'stage 1' });
+
+    const engineId = engine.getActiveWorkers()[0]!.workerId;
+    expect(engine.assignToExistingWorker(engineId, makeTask('t2'))).toBe(true);
+
+    const started = allSignals(signalQueue).filter(s => s.type === 'worker_started');
+    expect(started).toHaveLength(2);
+    expect(started[1]!.payload).toMatchObject({
+      taskId: 't2',
+      workerId: engineId,
+      reused: true,
+    });
+  });
+
+  it('spawn failure: existing failed signal only — no worker_started, no task_queued', async () => {
+    const { engine, signalQueue } = makeEngine();
+    await engine.restore();
+
+    // Unknown worker type slips past validation → createWorker throws inside
+    // spawnWorker, before the started signal would be emitted.
+    engine.add(makeTask('t1', { workerType: 'no-such-worker' }));
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    const types = allSignals(signalQueue).map(s => s.type);
+    expect(types).toContain('failed');
+    expect(types).not.toContain('worker_started');
+    expect(types).not.toContain('task_queued');
+    expect(engine.list('failed')).toHaveLength(1);
   });
 });

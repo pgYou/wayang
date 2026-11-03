@@ -29,7 +29,12 @@ import { useSkillTool } from './use-skill';
 import type { SkillRegistry } from '@/services/skills/registry';
 
 export interface ControllerToolDeps {
-  addTask: (task: TaskDetail) => void;
+  /**
+   * Add a task and attempt to schedule it. Returns the engine worker id when
+   * scheduled immediately, or undefined when the task is queued (all
+   * concurrency slots busy). See AddTaskToolDeps.addTask.
+   */
+  addTask: (task: TaskDetail) => string | undefined;
   /** Validate workerType. Returns null if valid, error message if invalid. */
   validateWorkerType?: (workerType: string) => string | null;
   /** Assign a task to an existing idle worker. Returns true if assigned. */

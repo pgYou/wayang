@@ -127,6 +127,54 @@ describe('SignalQueue', () => {
     expect(unread).toHaveLength(2);
   });
 
+  // Regression (issue #30): the progress merge discards only older unread
+  // progress signals of the SAME worker. The new lifecycle signals
+  // (task_queued / worker_started) must survive a later progress arriving for
+  // that worker — otherwise dispatch state would silently vanish before the
+  // controller ever reads it.
+  it('should not discard task_queued / worker_started when the progress merge runs', () => {
+    sq.enqueue({
+      source: 'system',
+      type: 'task_queued',
+      payload: {
+        taskId: 't1',
+        taskTitle: 'Task 1',
+        message: 'All concurrency slots are busy — the task is queued and will start automatically when a slot frees.',
+      },
+    });
+    sq.enqueue({
+      source: 'worker',
+      type: 'worker_started',
+      payload: {
+        taskId: 't1',
+        workerId: 'w1',
+        taskTitle: 'Task 1',
+        message: 'Worker spawned and started the task.',
+        reused: false,
+      },
+    });
+    sq.enqueue({
+      source: 'worker',
+      type: 'progress',
+      payload: { workerId: 'w1', taskId: 't1', taskTitle: 'Task 1', message: 'step 1' },
+    });
+    // Newer progress for the same worker: merges the OLDER progress away, but
+    // must not touch the lifecycle signals.
+    sq.enqueue({
+      source: 'worker',
+      type: 'progress',
+      payload: { workerId: 'w1', taskId: 't1', taskTitle: 'Task 1', message: 'step 2' },
+    });
+
+    const unread = sq.dequeueUnread();
+    expect(unread.map(s => s.type)).toEqual(['task_queued', 'worker_started', 'progress']);
+
+    const all = sq.getSnapshot<ControllerSignal[]>('signals');
+    const discarded = all.filter(s => s.status === 'discarded');
+    expect(discarded).toHaveLength(1);
+    expect(discarded[0]!.type).toBe('progress');
+  });
+
   it('should resolve waitForSignal immediately if signals exist', async () => {
     sq.enqueue({
       source: 'user',

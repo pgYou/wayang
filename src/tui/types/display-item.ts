@@ -125,6 +125,8 @@ const signalSubtypeMap: Record<string, ESignalSubtype> = {
   completed: ESignalSubtype.WorkerCompleted,
   failed: ESignalSubtype.WorkerFailed,
   progress: ESignalSubtype.WorkerProgress,
+  task_queued: ESignalSubtype.TaskQueued,
+  worker_started: ESignalSubtype.WorkerStarted,
   heartbeat: ESignalSubtype.Heartbeat,
   cancelled: ESignalSubtype.WorkerFailed,
   task_cancelled: ESignalSubtype.TaskCancelled,

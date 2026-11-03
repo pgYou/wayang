@@ -44,6 +44,8 @@ export type {
   ProgressSignalPayload,
   CancelledSignalPayload,
   TaskCancelledSignalPayload,
+  TaskQueuedSignalPayload,
+  WorkerStartedSignalPayload,
   HeartbeatSignalPayload,
   PermissionRequestSignalPayload,
   WorkerInquirySignalPayload,

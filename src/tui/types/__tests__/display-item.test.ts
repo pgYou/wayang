@@ -389,4 +389,67 @@ describe('signalToDisplayItem', () => {
     expect(item.emoji).toBeUndefined();
     expect(item.content).toBe('working');
   });
+
+  // --- New lifecycle signals (issue #30) ---
+
+  it('should convert worker_started signal with message content and worker id', () => {
+    const signal: ControllerSignal = {
+      id: 'sig-ws',
+      source: 'worker',
+      type: 'worker_started',
+      payload: {
+        taskId: 't-5',
+        workerId: 'w-5',
+        taskTitle: 'Refactor module',
+        workerType: 'puppet',
+        emoji: '\u{1F9F8}',
+        message: 'Worker spawned and started the task.',
+        reused: false,
+      },
+      timestamp: Date.now(),
+      status: 'unread',
+    };
+
+    const item = signalToDisplayItem(signal);
+    expect(item).toMatchObject({
+      role: 'signal',
+      subtype: 'worker_started',
+      content: 'Worker spawned and started the task.',
+      taskId: 't-5',
+      workerId: 'w-5',
+      taskTitle: 'Refactor module',
+      workerType: 'puppet',
+      emoji: '\u{1F9F8}',
+      read: false,
+    });
+  });
+
+  it('should convert task_queued signal without fabricating a worker id', () => {
+    const signal: ControllerSignal = {
+      id: 'sig-tq',
+      source: 'system',
+      type: 'task_queued',
+      payload: {
+        taskId: 't-6',
+        taskTitle: 'Queued module',
+        workerType: 'puppet',
+        emoji: '\u{1F9F8}',
+        message: 'All concurrency slots are busy — the task is queued and will start automatically when a slot frees.',
+      },
+      timestamp: Date.now(),
+      status: 'unread',
+    };
+
+    const item = signalToDisplayItem(signal);
+    expect(item).toMatchObject({
+      role: 'signal',
+      subtype: 'task_queued',
+      content: 'All concurrency slots are busy — the task is queued and will start automatically when a slot frees.',
+      taskId: 't-6',
+      taskTitle: 'Queued module',
+      read: false,
+    });
+    // No worker exists while queued — must stay undefined, not 'undefined'.
+    expect(item.workerId).toBeUndefined();
+  });
 });
