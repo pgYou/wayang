@@ -86,6 +86,13 @@ describe('e2e: turn index across server restarts', () => {
     await s1.waitFor('task completed in history', (s) =>
       s.history.length === 1 && s.history[0].status === 'completed');
 
+    // Snapshot the turn index BEFORE shutdown. Resuming a session whose tasks
+    // all finished must not append turns or lifecycle signals for them.
+    const listBeforeResume = await s1.client.request<{
+      total: number;
+      turns: Array<{ turnId: string; status: string; signalCount: number }>;
+    }>(METHOD.CONVERSATION_LIST_TURNS, {});
+
     const { sessionId, root, provider } = s1;
     leftoverRoot = root;
     await s1.dispose({ root: true, provider: true });
@@ -118,13 +125,29 @@ describe('e2e: turn index across server restarts', () => {
     }>(METHOD.CONVERSATION_LIST_TURNS, {});
     expect(list.total).toBeGreaterThanOrEqual(2);
 
+    // Resume replays nothing: the index read from the restored session is
+    // identical to the one captured before shutdown. In particular no
+    // worker_started / task_queued is re-emitted for already-finished tasks
+    // (restore only rebuilds state; it never schedules), and no
+    // previous_session_tasks signal exists for an explicit `resume:<id>`
+    // (that injection is exclusive to the sessionless-resume default and
+    // only covers pending/running tasks).
+    expect(list.turns.map(t => ({ turnId: t.turnId, status: t.status, signalCount: t.signalCount })))
+      .toEqual(listBeforeResume.turns.map(t => ({ turnId: t.turnId, status: t.status, signalCount: t.signalCount })));
+
     const [dispatchTurn, replyTurn] = list.turns;
     expect(dispatchTurn.userPreview).toContain('run the resume turn task');
     // Lineage: the dispatching user turn is its own root; the reply turn
-    // (woken by the worker-completed signal) inherits that root.
+    // (woken by the worker lifecycle signals) inherits that root.
     expect(dispatchTurn.rootTurnId).toBe(dispatchTurn.turnId);
     expect(replyTurn.rootTurnId).toBe(dispatchTurn.turnId);
-    expect(replyTurn.signalCount).toBe(1);
+    // Two signals, one per lifecycle phase of issue #30: the worker was
+    // announced as worker_started when it actually spawned, then the next
+    // controller activation (this turn) is woken by BOTH that still-unread
+    // started signal and the terminal worker_completed. Before #30 only the
+    // completed signal existed, hence the old expectation of 1.
+    expect(dispatchTurn.signalCount).toBe(0);
+    expect(replyTurn.signalCount).toBe(2);
     // Status sanity: task completed → both turns completed (not failed).
     expect(dispatchTurn.status).toBe('completed');
     expect(replyTurn.status).toBe('completed');
@@ -147,10 +170,14 @@ describe('e2e: turn index across server restarts', () => {
       signals: Array<{ subtype: string; taskId?: string }>;
       steps: Array<{ content: string }>;
     }>(METHOD.CONVERSATION_GET_TURN, { turnId: replyTurn.turnId });
-    expect(reply.signals[0].subtype).toBe('worker_completed');
-    // The completing signal resolves exactly the task the dispatch turn created.
+    // Exact lifecycle set, in emission order, for one task that started and
+    // completed once: worker_started then worker_completed. Anything else here
+    // (a replayed started/queued at resume, a stray restored signal) is drift.
+    expect(reply.signals.map(s => s.subtype)).toEqual(['worker_started', 'worker_completed']);
+    // Both signals resolve exactly the task the dispatch turn created.
     const addTaskCall = full.toolCalls.find(tc => tc.toolName === 'add_task');
-    expect(reply.signals[0].taskId).toBe(addTaskCall?.taskId);
+    expect(addTaskCall?.taskId).toBeTruthy();
+    expect(reply.signals.every(s => s.taskId === addTaskCall?.taskId)).toBe(true);
     expect(reply.steps.some(st => st.content.includes('Task finished successfully.'))).toBe(true);
 
     // --- Compact after resume: the marker must never surface as turn content ---
