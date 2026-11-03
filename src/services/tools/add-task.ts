@@ -5,6 +5,7 @@ import { normalizeWorkspacePath, resolveWorkspaceRef } from '@/infra/workspace-r
 import { defaultDeniedPaths, isDenied, isPathWithin, normalizePath } from '@/infra/permission/policy';
 import { generateId } from '@/utils/id';
 import { defineTool, safeExecute } from './common';
+import { buildWorkspaceRulesSummary } from './workspace-rules';
 
 export interface AddTaskToolDeps {
   /**
@@ -168,6 +169,30 @@ function resolveTaskAllowedDirs(
   return allowedDirs.length > 0 ? { allowedDirs } : {};
 }
 
+/**
+ * Append the target workspace's rules summary to a successful result.
+ *
+ * The controller's system prompt is shared by every task, so it cannot carry a
+ * project's rules: they would leak across workspaces. Instead the summary
+ * rides along with the dispatch, read fresh from the workspace this task will
+ * execute in — never cached, never stored on the controller.
+ *
+ * A workspace with no rules file appends nothing (no "no rules" noise); a
+ * rules file that exists but may not be read appends an "unavailable" note.
+ */
+function withWorkspaceRules(
+  resultText: string,
+  workspacePath: string | undefined,
+  deps: AddTaskToolDeps,
+): string {
+  const summary = buildWorkspaceRulesSummary({
+    workspacePath,
+    homeDir: deps.homeDir,
+    permissionConfig: deps.permissionConfig,
+  });
+  return summary === '' ? resultText : `${resultText}\n\n${summary}`;
+}
+
 export function addTaskTool(deps: AddTaskToolDeps) {
   return defineTool({
     description: 'Add a new task to the queue. A Worker will execute it automatically.',
@@ -209,6 +234,11 @@ export function addTaskTool(deps: AddTaskToolDeps) {
       );
       if ('error' in allowedDirsResolution) return allowedDirsResolution.error;
 
+      // The workspace this task will really run in: the declared one, or the
+      // process workspace. Used for worker-reuse validation, the rules summary
+      // and (via task.workspace) the engine's cwd/permission boundary.
+      const targetWorkspacePath = workspaceResolution.workspace?.path ?? deps.workspaceDir;
+
       // Pre-validate workerType before adding task
       if (deps.validateWorkerType) {
         const err = deps.validateWorkerType(resolvedType);
@@ -228,7 +258,6 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         // accept" — this check tells the controller WHY and what to do instead
         // (create a fresh worker). Skipped when the target workspace is unknown
         // here; the engine then falls back to its process workspace.
-        const targetWorkspacePath = workspaceResolution.workspace?.path ?? deps.workspaceDir;
         if (targetWorkspacePath !== undefined && deps.validateWorkerWorkspace) {
           const wsErr = deps.validateWorkerWorkspace(assignToWorker, targetWorkspacePath);
           if (wsErr) return wsErr;
@@ -262,16 +291,28 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         const ok = deps.assignToWorker(assignToWorker, task);
         if (ok) deps.onTaskDispatched?.({ toolCallId, taskId: task.id });
         else return `Worker ${assignToWorker} could not accept the task (no longer idle?).`;
-        return `Task ${task.id} assigned to worker ${assignToWorker} (reusing its context, priority: ${priority}, worker: ${resolvedType}). You will be notified when the task completes.`;
+        return withWorkspaceRules(
+          `Task ${task.id} assigned to worker ${assignToWorker} (reusing its context, priority: ${priority}, worker: ${resolvedType}). You will be notified when the task completes.`,
+          targetWorkspacePath,
+          deps,
+        );
       }
 
       const workerId = deps.addTask(task);
       deps.onTaskDispatched?.({ toolCallId, taskId: task.id });
       const stageNote = multiStage ? ' [multi-stage: worker will idle after completion]' : '';
       if (workerId !== undefined) {
-        return `Task ${task.id} added (priority: ${priority}, workerType: ${task.workerType}, workerId: ${workerId})${stageNote}. The worker has started; you will be notified of progress and completion.`;
+        return withWorkspaceRules(
+          `Task ${task.id} added (priority: ${priority}, workerType: ${task.workerType}, workerId: ${workerId})${stageNote}. The worker has started; you will be notified of progress and completion.`,
+          targetWorkspacePath,
+          deps,
+        );
       }
-      return `Task ${task.id} added (priority: ${priority}, workerType: ${task.workerType})${stageNote}. All concurrency slots are busy — the task is queued and will start automatically when a slot frees (a STARTED signal will name its worker). You will be notified when the task completes.`;
+      return withWorkspaceRules(
+        `Task ${task.id} added (priority: ${priority}, workerType: ${task.workerType})${stageNote}. All concurrency slots are busy — the task is queued and will start automatically when a slot frees (a STARTED signal will name its worker). You will be notified when the task completes.`,
+        targetWorkspacePath,
+        deps,
+      );
     }),
   });
 }
