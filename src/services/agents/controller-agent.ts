@@ -470,7 +470,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       sessionId: this.ctx.sessionId,
       timestamp: errTs,
       subtype: ESystemSubtype.Error,
-      content: message,
+      content: `${message}\n详情: ${this.ctx.sessionDir}/wayang.log`,
       // Point-in-time event: startedAt/endedAt share the recording moment.
       startedAt: errTs,
       endedAt: errTs,

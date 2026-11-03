@@ -8,6 +8,8 @@
 
 **注释与快捷键目录同步** — The Ctrl+C comment in render.ts, its render test, the controller-agent abort comments and the /shortcut catalog all still described the old busy→abort semantics. They now match the quit-only behavior: Esc is listed as the abort key and Ctrl+C is a single quit-only row in the session category
 
+**LLM 失败不再只显示泛化错误** — When the provider rejected a request (e.g. gateway 403 "模型已下线"), the AI SDK swallowed the real error and the UI only showed the generic "No output generated. Check the stream for errors.", with the cause buried in wayang.log. The streaming loop now records the last provider error delivered via onError and, when the final awaits reject with the SDK's NoOutputGeneratedError, re-throws the recorded provider error instead (the generic one kept as its cause). Controller error entries in the TUI now show the formatted cause (e.g. `LLM API error: [403] 当前应用组 5203, 模型 … 已下线，请切换模型使用`) plus a `详情: <sessionDir>/wayang.log` pointer for full details; worker failed signals get the same treatment
+
 ## v0.7.1 (2026-11-03)
 
 ### Features

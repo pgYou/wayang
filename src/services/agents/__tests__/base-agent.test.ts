@@ -4,16 +4,28 @@ import type { ProviderConfig } from '@/types/index';
 import { mockProvider } from '@/__tests__/helpers';
 
 // Mock streamText and model-factory
-vi.mock('ai', () => ({
-  streamText: vi.fn(),
-  stepCountIs: vi.fn((n: number) => n),
-  hasToolCall: vi.fn((name: string) => name),
-}));
+vi.mock('ai', () => {
+  class NoOutputGeneratedError extends Error {
+    constructor({ message = 'No output generated.', cause }: { message?: string; cause?: Error } = {}) {
+      super(message, { cause });
+      this.name = 'AI_NoOutputGeneratedError';
+    }
+    static isInstance(error: unknown): boolean {
+      return error instanceof NoOutputGeneratedError;
+    }
+  }
+  return {
+    streamText: vi.fn(),
+    stepCountIs: vi.fn((n: number) => n),
+    hasToolCall: vi.fn((name: string) => name),
+    NoOutputGeneratedError,
+  };
+});
 vi.mock('../model-factory.js', () => ({
   createModel: () => ({}),
 }));
 
-import { streamText } from 'ai';
+import { streamText, NoOutputGeneratedError } from 'ai';
 import type { StepMeta, StreamLoopOptions } from '@/services/agents/base-agent';
 
 // Concrete subclass for testing
@@ -354,5 +366,114 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
     agent.abort(); // external abort (done/fail tool or Ctrl+C)
     const result = await pending;
     expect(result).toEqual({ text: '', toolResults: [], usage: undefined });
+  });
+});
+
+// --- streamLoop: surfacing the provider error behind NoOutputGeneratedError ---
+
+describe('BaseAgent.streamLoop: provider-error surfacing', () => {
+  beforeEach(() => {
+    vi.mocked(streamText).mockReset();
+  });
+
+  /** Drain a runLoop generator to completion, returning the final result. */
+  async function drain(gen: AsyncGenerator<string, any>) {
+    let result: any;
+    while (true) {
+      const { done, value } = await gen.next();
+      if (done) { result = value; break; }
+    }
+    return result;
+  }
+
+  /**
+   * A rejected promise that will not surface as an unhandled rejection when
+   * the loop throws before awaiting the sibling fields.
+   */
+  function rejectAll<T>(err: unknown): Promise<T> {
+    const p = Promise.reject(err) as Promise<T>;
+    p.catch(() => {});
+    return p;
+  }
+
+  it('re-throws the recorded provider error when no output was generated', async () => {
+    const providerError = Object.assign(
+      new Error('当前应用组 5203, 模型 glm-5.3-flash 已下线，请切换模型使用'),
+      { name: 'AI_APICallError', statusCode: 403 },
+    );
+    const generic = new NoOutputGeneratedError({ message: 'No output generated. Check the stream for errors.' });
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // The SDK delivers the provider failure ONLY via onError.
+        opts.onError?.({ error: providerError });
+        yield ''; // unreachable; satisfies require-yield
+      })();
+      return {
+        textStream,
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+        toolResults: Promise.resolve([]),
+        usage: rejectAll(generic),
+        finishReason: rejectAll(generic),
+        steps: rejectAll(generic),
+      };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    let caught: unknown;
+    try {
+      await drain(agent.runLoop({ system: 'sys', messages: [], tools: {} }));
+    } catch (err) {
+      caught = err;
+    }
+    // The real provider error surfaces, with the generic SDK error as cause.
+    expect(caught).toBe(providerError);
+    expect((caught as Error).cause).toBe(generic);
+  });
+
+  it('propagates the generic error unchanged when no provider error was recorded', async () => {
+    const generic = new NoOutputGeneratedError({ message: 'No output generated. Check the stream for errors.' });
+    vi.mocked(streamText).mockImplementation((() => {
+      const textStream = (async function* () {})();
+      return {
+        textStream,
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+        toolResults: Promise.resolve([]),
+        usage: rejectAll(generic),
+        finishReason: rejectAll(generic),
+        steps: rejectAll(generic),
+      };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    await expect(
+      drain(agent.runLoop({ system: 'sys', messages: [], tools: {} })),
+    ).rejects.toBe(generic);
+  });
+
+  it('keeps a non-generic final error as-is even when a provider error was recorded', async () => {
+    const providerError = new Error('recorded on the stream, but not the cause here');
+    const other = new Error('network reset');
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        opts.onError?.({ error: providerError });
+        yield ''; // unreachable; satisfies require-yield
+      })();
+      return {
+        textStream,
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+        toolResults: Promise.resolve([]),
+        usage: rejectAll(other),
+        finishReason: Promise.resolve('stop'),
+        steps: Promise.resolve([]),
+      };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    await expect(
+      drain(agent.runLoop({ system: 'sys', messages: [], tools: {} })),
+    ).rejects.toBe(other);
   });
 });
