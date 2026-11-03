@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { entryToDisplayItem, signalToDisplayItem } from '@/tui/types/display-item';
 import { EEntryType, ESignalSubtype, ESystemSubtype } from '@/types/conversation';
-import type { ConversationEntry, UserEntry, AssistantEntry, SignalEntry, SystemEntry } from '@/types/conversation';
+import type { UserEntry, AssistantEntry, SignalEntry, SystemEntry } from '@/types/conversation';
 import type { ControllerSignal } from '@/types/signal';
 
 // --- entryToDisplayItem ---

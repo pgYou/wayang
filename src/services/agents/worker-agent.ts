@@ -66,6 +66,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
    */
   async run(
     task: TaskDetail & { workerId: string },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- implements IWorkerInstance.run's tools param; heterogeneous zod-inferred tool set (see common.ts)
     tools: Record<string, any>,
     onProgress?: (msg: string) => void,
   ): Promise<WorkerResult> {

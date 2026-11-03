@@ -90,7 +90,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     signalQueue: SignalQueue;
     skills: import('@/services/skills/registry').SkillRegistry;
   }): ControllerAgent {
-    const { ctx, provider, config, engine, signalQueue, skills } = opts;
+    const { ctx, provider, engine, signalQueue, skills } = opts;
     const state = new ControllerAgentState(ctx);
     // Recorder gets the logger so attachTask misses (no live tool-call
     // record) surface as debug logs instead of silent no-ops.
@@ -509,7 +509,8 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
           for (let attempt = 0; attempt <= COMPACT_MAX_RETRIES; attempt++) {
             try {
               const { text } = await generateText({
-                model: this.model as any, // WayangModel opaque boundary
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- WayangModel (custom provider wrapper) deliberately crossing into the SDK's LanguageModel type here; opaque boundary
+                model: this.model as any,
                 system: SUMMARIZER_SYSTEM_PROMPT,
                 prompt: buildSummarizerPrompt(entryTexts),
               });

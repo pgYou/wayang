@@ -127,6 +127,7 @@ export interface PermissionRequestSignalPayload {
   /** Tool name that triggered the permission check. */
   toolName: string;
   /** Arguments passed to the tool. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- payload crosses the worker→controller JSON boundary; arg shapes are tool-specific and read defensively on the controller side
   toolArgs: Record<string, any>;
   /** Human-readable description of what the tool will do. */
   description: string;
@@ -260,5 +261,7 @@ export function getSignalField<K extends keyof (InputSignalPayload & CompletedSi
   sig: ControllerSignal,
   field: K,
 ): string | undefined {
-  return (sig.payload as Record<string, any>)[field] as string | undefined;
+  // Payload interfaces carry no index signature; route through unknown for the
+  // defensive field read.
+  return (sig.payload as unknown as Record<string, unknown>)[field] as string | undefined;
 }

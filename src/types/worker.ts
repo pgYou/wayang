@@ -49,6 +49,7 @@ export interface IWorkerInstance extends Subscribable {
   /** Execute the task. Returns the final result. */
   run(
     task: import('./task').TaskDetail & { workerId: string },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- public interface param: heterogeneous zod-inferred tool set (see src/services/tools/common.ts relaxation boundary)
     tools: Record<string, any>,
     onProgress?: (msg: string) => void,
   ): Promise<WorkerResult>;

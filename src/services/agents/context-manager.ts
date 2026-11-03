@@ -2,7 +2,7 @@ import type { BaseWayangState } from '@/infra/state/base-state';
 import { conversationToSdkMessages } from './utils/conversation-to-sdk-messages';
 import { estimateTokens, estimateConversationTokens, extractContentText } from './utils/estimate-tokens';
 import { EEntryType, ESystemSubtype } from '@/types/index';
-import type { ContextBreakdown } from '@/types/index';
+import type { ContextBreakdown, ConversationEntry } from '@/types/index';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 
@@ -102,7 +102,7 @@ export class ContextManager {
    * the system prompt. No backward scanning — uses the cached compactStartIdx.
    */
   getMessages() {
-    const conversation = this.state.get<any[]>('conversation');
+    const conversation = this.state.get<ConversationEntry[]>('conversation');
 
     if (!this.compactSummary) {
       return conversationToSdkMessages(conversation);
@@ -131,7 +131,7 @@ export class ContextManager {
    * Returns the number of entries removed (0 when nothing was cut).
    */
   truncateHistory(keep: number): number {
-    const conversation = this.state.get<any[]>('conversation') ?? [];
+    const conversation = this.state.get<ConversationEntry[]>('conversation') ?? [];
     const keepCount = Math.max(0, Math.floor(keep));
     const removed = conversation.length - keepCount;
     if (removed <= 0) return 0;
@@ -270,10 +270,11 @@ export class ContextManager {
    * @param meta Optional provenance recorded on the marker (model name).
    */
   async compact(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- public callback surface: summarizer implementations read heterogeneous entries defensively
     summarizer: (entries: any[]) => Promise<string>,
     meta?: { model?: string },
   ): Promise<void> {
-    const conversation = this.state.get<any[]>('conversation');
+    const conversation = this.state.get<ConversationEntry[]>('conversation');
     if (conversation.length < 4) return;
 
     // Range of entries covered by the summary — the in-memory conversation at

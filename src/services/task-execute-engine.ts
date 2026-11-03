@@ -405,6 +405,7 @@ export class TaskExecuteEngine implements Subscribable {
     return { lastActivityAt: summary.lastActivityAt, currentTool: summary.currentTool };
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- controller-side formatters (get-task-detail) read these mixed-vintage entries defensively; changing the return type would cascade into those formatters
   getWorkerConversation(taskId: string): any[] {
     for (const [workerId, tId] of this.workerTaskMap) {
       if (tId === taskId) {
@@ -918,6 +919,7 @@ export class TaskExecuteEngine implements Subscribable {
     task: TaskDetail,
     workerId: string,
     workerType: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous zod-inferred tool set feeding IWorkerInstance.run (see common.ts relaxation boundary)
   ): Record<string, any> {
     const workerMeta = getWorkerMeta(workerType, this.workerConfigs);
 
@@ -974,9 +976,11 @@ export class TaskExecuteEngine implements Subscribable {
             });
           },
           onComplete: (summary: string) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- WorkerAgent's terminal methods are not on the IWorkerInstance interface; dispatch by concrete worker type
             (worker as any).complete(summary);
           },
           onFail: (error: string) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see onComplete above
             (worker as any).fail(error);
           },
         }),

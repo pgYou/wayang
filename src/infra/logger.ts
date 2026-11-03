@@ -1,5 +1,4 @@
 import pino from 'pino';
-import { join } from 'node:path';
 
 export type Logger = pino.Logger;
 

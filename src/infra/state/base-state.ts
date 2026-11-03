@@ -17,11 +17,13 @@ export interface PersistMapping {
 // --- BaseWayangState ---
 
 export abstract class BaseWayangState {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- state-tree root is intentionally untyped at this layer; typed reads happen via get<T>() at call sites (changing the default cascades across every bare get() in the repo)
   protected data: Record<string, any>;
   private persistMappings: PersistMapping[];
   private subscriptions = new Map<string, Set<(event: StateEvent) => void>>();
 
   constructor(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors `data`'s untyped state-tree root
     initialData: Record<string, any>,
     persistMappings: PersistMapping[] = [],
   ) {
@@ -31,6 +33,7 @@ export abstract class BaseWayangState {
 
   // --- Read ---
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- public default generic: bare get() callers across the repo rely on it; per-call sites pass an explicit T
   get<T = any>(path: string): T {
     return get(this.data, path);
   }
@@ -44,6 +47,7 @@ export abstract class BaseWayangState {
     this.notify(path, 'set', prev);
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial update merges an untyped object into the state tree root (see `data`)
   update(path: string, partial: Record<string, any>): void {
     const prev = cloneDeep(get(this.data, path));
     const target = get(this.data, path);

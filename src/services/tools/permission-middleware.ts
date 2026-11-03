@@ -9,8 +9,10 @@ export interface PermissionMiddlewareConfig {
    * Determine whether a specific tool call needs permission.
    * Return true to block and request approval; false to pass through immediately.
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- args shape is tool-specific (public config surface; policy callbacks read fields defensively)
   needsPermission: (toolName: string, args: any) => boolean;
   /** Generate a human-readable description of the tool call. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- same as needsPermission: tool-specific arg shape
   describeCall: (toolName: string, args: any) => string;
 }
 
@@ -32,6 +34,7 @@ interface PendingPermission {
 }
 
 export interface PermissionMiddlewareResult {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors wrapWithPermissionMiddleware's tools param (heterogeneous tool set)
   wrappedTools: Record<string, any>;
   resolvePermission: (requestId: string, approved: boolean, reason?: string) => boolean;
   cleanup: () => void;
@@ -40,6 +43,7 @@ export interface PermissionMiddlewareResult {
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 
 export function wrapWithPermissionMiddleware(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous tool set (zod-inferred per tool); see common.ts relaxation boundary
   tools: Record<string, any>,
   config: PermissionMiddlewareConfig,
   deps: PermissionMiddlewareDeps,
@@ -56,7 +60,7 @@ export function wrapWithPermissionMiddleware(
     const originalExecute = tools[toolName].execute;
     wrappedTools[toolName] = {
       ...tools[toolName],
-      execute: async (args: any, options?: any) => {
+      execute: async (args: Record<string, unknown>, options?: unknown) => {
         // Fast path: this specific call doesn't need permission
         if (!config.needsPermission(toolName, args)) {
           return originalExecute(args, options);

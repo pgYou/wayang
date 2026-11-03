@@ -15,7 +15,7 @@
  */
 
 import { query, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage, SDKUserMessage, PermissionResult, SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage, SDKUserMessage, PermissionResult, SdkMcpToolDefinition, Options } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { WorkerResult, TaskDetail, WorkerConfig, PermissionRequestSignalPayload } from '@/types/index';
 import type { IWorkerInstance, WorkerLiveStatus } from '@/types/worker';
@@ -162,6 +162,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
 
   async run(
     task: TaskDetail & { workerId: string },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- IWorkerInstance.run's tools param (public interface); heterogeneous zod-inferred tool set, see common.ts
     _tools: Record<string, any>,
     onProgress?: (msg: string) => void,
   ): Promise<WorkerResult> {
@@ -214,7 +215,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       // from the workspace, so injecting rules here would be duplication,
       // not coverage. Do not add settingSources without removing the puppet
       // worker's injection (or deduplicating both paths).
-      const options: Record<string, any> = {
+      const options: Options = {
         cwd: this.workspaceDir,
         maxTurns: this.config.maxTurns ?? 1000,
         permissionMode: (wirePermissions ? 'default' : 'bypassPermissions') as 'default' | 'bypassPermissions',
@@ -291,7 +292,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         // write them, marking tool calls that never got a result 'cancelled'.
         this.flushAllToolSteps();
       }
-    } catch (err: any) {
+    } catch (err) {
       this.logger.error({ err, taskId: task.id }, 'ClaudeCodeWorker query error');
       // The run is dead (query setup or stream failure) — no input can be
       // delivered anymore.
@@ -299,7 +300,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       if (!this._terminalResult) {
         this._terminalResult = {
           status: 'failed',
-          error: err.message ?? String(err),
+          error: (err as { message?: string }).message ?? String(err),
         };
       }
     }
@@ -563,7 +564,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
    * real tool catalog (no prompt-convention virtual tools); the handler runs
    * host-side and blocks on the engine's blocking-request registry.
    */
-  private buildAskControllerMcpTool(): SdkMcpToolDefinition<any> {
+  private buildAskControllerMcpTool(): SdkMcpToolDefinition {
     return {
       name: 'ask_controller',
       description:
@@ -844,7 +845,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     }
 
     // Record usage in runtime state
-    const prev = this.state.get<any>('runtimeState');
+    const prev = this.state.get<Record<string, unknown>>('runtimeState');
     this.state.set('runtimeState', {
       ...prev,
       usage: {

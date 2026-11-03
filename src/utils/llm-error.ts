@@ -14,7 +14,7 @@ export function formatLlmError(err: unknown): string {
 
   // AI_RetryError wraps multiple API call attempts
   if (name === 'AI_RetryError' || name === 'RetryError') {
-    const retryErr = err as any;
+    const retryErr = err as { lastError?: unknown; errors?: unknown[] };
     const lastError = retryErr.lastError;
     if (lastError) {
       const inner = formatApiCallError(lastError);
@@ -34,15 +34,20 @@ export function formatLlmError(err: unknown): string {
 }
 
 /** Format a single API call error (typically AI_APICallError). */
-function formatApiCallError(err: any): string {
-  const status = err.statusCode;
-  const body = err.responseBody;
+function formatApiCallError(err: unknown): string {
+  // AI_APICallError carries the HTTP status and raw response body on optional
+  // fields beyond the Error base type.
+  const { statusCode: status, responseBody: body, message } = err as {
+    statusCode?: number;
+    responseBody?: unknown;
+    message?: string;
+  };
 
   // Try to parse JSON response body for provider message
   let providerMsg = '';
   if (typeof body === 'string' && body) {
     try {
-      const parsed = JSON.parse(body);
+      const parsed = JSON.parse(body) as { error?: { message?: string }; message?: string };
       providerMsg = parsed?.error?.message ?? parsed?.message ?? '';
     } catch {
       providerMsg = body.slice(0, 200);
@@ -53,9 +58,9 @@ function formatApiCallError(err: any): string {
     return `[${status}] ${providerMsg}`;
   }
   if (status) {
-    return `[${status}] ${err.message ?? 'Unknown error'}`;
+    return `[${status}] ${message ?? 'Unknown error'}`;
   }
-  return providerMsg || err.message || String(err);
+  return providerMsg || message || String(err);
 }
 
 /** Log an LLM error with structured fields + concise message. */
@@ -64,7 +69,11 @@ export function logLlmError(logger: Logger, err: unknown, context?: string): str
   const logFields: Record<string, unknown> = { error: friendly };
 
   if (err instanceof Error) {
-    const e = err as any;
+    const e = err as {
+      statusCode?: number;
+      lastError?: { statusCode?: number };
+      errors?: unknown[];
+    };
     if (e.statusCode) logFields.statusCode = e.statusCode;
     if (e.lastError?.statusCode) logFields.statusCode = e.lastError.statusCode;
     if (e.errors?.length) logFields.attempts = e.errors.length;

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -111,7 +111,6 @@ describe('Supervisor', () => {
 
       // Manually move to running to simulate a task in progress
       // (scheduleNext would try to spawn a real worker, so we inject via internal state)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const engineState = (sup.engine as any).taskState;
       const pending: TaskDetail[] = engineState.get('tasks.pending');
       if (pending.length > 0) {

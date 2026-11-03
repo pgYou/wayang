@@ -217,7 +217,7 @@ export abstract class BaseAgent {
         // on any system message inside `messages` unless this is opted in.
         allowSystemInMessages: true,
       });
-    } catch (err: any) {
+    } catch (err) {
       finished = true;
       clearWatchdog();
       this.abortController.signal.removeEventListener('abort', forwardAbort);
@@ -233,7 +233,7 @@ export abstract class BaseAgent {
         if (chunk && firstChunkAt === undefined) firstChunkAt = nowISO();
         yield chunk;
       }
-    } catch (err: any) {
+    } catch (err) {
       // Intentional abort (done/fail tool or external cancel) wins over a
       // watchdog that fired at the same moment — report a clean stop.
       if (this.abortController.signal.aborted) {

@@ -317,7 +317,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
   });
 
   it('is disabled when idleTimeoutMs is 0', async () => {
-    vi.mocked(streamText).mockImplementation(((opts: any) => {
+    vi.mocked(streamText).mockImplementation(((_opts: any) => {
       const textStream = (async function* () {
         // A long silent stretch, then normal completion — with the watchdog
         // disabled this must not throw.

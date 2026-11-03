@@ -26,6 +26,7 @@ export interface GetTaskDetailDeps {
   /** Get a single task by id. */
   getTask: (taskId: string) => TaskDetail | undefined;
   /** Get worker conversation entries for a running/completed task (in-memory). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors TaskExecuteEngine.getWorkerConversation's defensive any[] (mixed-vintage entries read defensively below)
   getWorkerConversation?: (taskId: string) => any[];
   /**
    * Windowed read of a worker's on-disk transcript (by the worker's own
