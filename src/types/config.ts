@@ -56,6 +56,21 @@ export interface WorkerConfig {
   cliPath?: string;
 }
 
+/**
+ * Path permission policy (consumed by `src/infra/permission/policy.ts`).
+ * All fields are optional and additive: omitting the section keeps the
+ * previous behaviour exactly. Relative entries resolve against the user's
+ * home directory.
+ */
+export interface PermissionConfig {
+  /** Directories always allowed, for both reads and writes. */
+  allowedDirs?: string[];
+  /** Extra roots auto-allowed (no approval prompt). */
+  autoAllowRoots?: string[];
+  /** Extra denied directories, appended to the built-in denylist (which cannot be removed). */
+  deniedDirs?: string[];
+}
+
 export interface WayangConfig {
   providers: Record<string, ProviderConfig>;
   controller: { provider: string };
@@ -83,6 +98,8 @@ export interface WayangConfig {
    * Unread signals are always kept. Defaults to 2000.
    */
   signalWindowSize?: number;
+  /** Path permission policy. Optional — the defaults apply when omitted. */
+  permission?: PermissionConfig;
 }
 
 /** Validate required fields, return error message or null */
@@ -100,5 +117,16 @@ export function validateConfig(config: WayangConfig): string | null {
   if (!config.providers[cp]) return `controller.provider "${cp}" not found`;
   const wp = config.worker.provider;
   if (!config.providers[wp]) return `worker.provider "${wp}" not found`;
+  const permission = config.permission;
+  if (permission !== undefined && permission !== null) {
+    const keys = ['allowedDirs', 'autoAllowRoots', 'deniedDirs'] as const;
+    for (const key of keys) {
+      const value = permission[key];
+      if (value === undefined) continue;
+      if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+        return `permission.${key} must be an array of strings (got ${JSON.stringify(value)})`;
+      }
+    }
+  }
   return null;
 }

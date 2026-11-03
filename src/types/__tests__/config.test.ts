@@ -28,3 +28,42 @@ describe('validateConfig: contextWindowTokens', () => {
     expect(err).toContain('providers.p.contextWindowTokens must be a positive integer');
   });
 });
+
+/** Same minimal valid config, plus a deliberately loosely-typed permission section. */
+function makeConfigWithPermission(permission: unknown): WayangConfig {
+  return { ...makeConfig(), permission: permission as WayangConfig['permission'] };
+}
+
+describe('validateConfig: permission', () => {
+  it('accepts an omitted permission section (existing configs unaffected)', () => {
+    expect(validateConfig(makeConfig())).toBeNull();
+  });
+
+  it('accepts each field as an array of strings', () => {
+    expect(
+      validateConfig(
+        makeConfigWithPermission({
+          allowedDirs: ['/data/shared'],
+          autoAllowRoots: ['/tmp'],
+          deniedDirs: ['/data/secrets'],
+        }),
+      ),
+    ).toBeNull();
+    expect(validateConfig(makeConfigWithPermission({}))).toBeNull();
+  });
+
+  it.each([
+    ['allowedDirs', '/data/shared'],
+    ['autoAllowRoots', 42],
+    ['deniedDirs', { path: '/data/secrets' }],
+  ])('rejects %s when it is not an array', (key, value) => {
+    const err = validateConfig(makeConfigWithPermission({ [key]: value }));
+    expect(err).toContain(`permission.${key} must be an array of strings`);
+  });
+
+  it.each(['allowedDirs', 'autoAllowRoots', 'deniedDirs'])('rejects %s containing a non-string', (key) => {
+    const err = validateConfig(makeConfigWithPermission({ [key]: ['/data/shared', 7] }));
+    expect(err).toContain(`permission.${key} must be an array of strings`);
+    expect(err).toContain('7');
+  });
+});
