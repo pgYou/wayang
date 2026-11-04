@@ -3,7 +3,7 @@ import type { RemoteSupervisor } from '@/client/remote-supervisor';
 import type { TaskDetail } from '@/types/index';
 import { formatContextReport } from '@/tui/utils/context-report';
 import { renderShortcutList } from '@/tui/utils/shortcut-catalog';
-import { formatWorkspaceDetail } from '@/tui/utils/workspace-display';
+import { formatTaskList } from '@/tui/utils/task-list';
 
 /** Slash command definitions for autocomplete suggestions. */
 export const SLASH_COMMANDS = [
@@ -40,14 +40,10 @@ export function useSlashCommands(supervisor: RemoteSupervisor) {
         const status = parts[1] as TaskDetail['status'] | undefined;
         const tasks = await supervisor.engine.list(status);
         if (tasks.length === 0) return { handled: true, output: 'No tasks' };
-        const lines = tasks.map(t => {
-          // Only tasks stamped with workspace identity show it; legacy tasks
-          // append nothing (never "undefined").
-          const workspace = formatWorkspaceDetail(t.workspace);
-          const workspacePart = workspace ? ` — ${workspace}` : '';
-          return `[${t.status}] ${t.id}: ${t.description}${workspacePart}${t.result ? ` → ${t.result}` : ''}`;
-        });
-        return { handled: true, output: lines.join('\n') };
+        // Descriptions are digested to one line each and the list is capped —
+        // rendering full instructions verbatim hung Ink's re-layout. See
+        // task-list.ts; every other column is unchanged.
+        return { handled: true, output: formatTaskList(tasks) };
       }
 
       case 'workers': {
