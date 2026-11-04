@@ -3,6 +3,7 @@ import type { DisplayItem, DisplaySection } from '@/tui/types/display-item';
 import { buildChatLookups, EMPTY_CHAT_LOOKUPS } from '@/tui/utils/chat-lookups';
 import { AssistantStepRow } from '@/tui/components/chat-area/assistant-step-row';
 import { SignalRow } from '@/tui/components/chat-area/signal-row';
+import { stringWidth } from '@/tui/utils/text-width';
 import { renderToString, h } from './render-to-string';
 
 // --- self-contained fixtures (fresh objects per call) ---
@@ -115,6 +116,77 @@ describe('AssistantStepRow summary rows', () => {
     expect(out).toContain('✔ 已派发');
     expect(out).toContain('claude-code · 多阶段');
     expect(out).not.toContain('You will be notified');
+  });
+
+  it('appends the workspace slug to an add_task row that declared a non-default workspace', () => {
+    const lookups = buildChatLookups([], {
+      defaultWorkspacePath: '/w/default',
+      workspaces: [{ path: '/w/other', slug: 'other' }],
+    });
+    const out = renderToString(h(AssistantStepRow, {
+      item: step([
+        call('c6', 'add_task', { title: 'Build it', description: 'do the thing', workspace: '/w/other' }),
+        result('c6', 'add_task', 'Task t-1-rr4f added (priority: normal, worker: puppet). You will be notified when the task completes.'),
+      ]),
+      lookups,
+    }));
+    const header = out.split('\n').map(line => line.trimEnd()).find(line => line.includes('派发任务')) ?? '';
+
+    expect(header).toContain('⊕ 派发任务 Build it #rr4f — other');
+    expect(header).toContain('✔ 已派发');
+  });
+
+  it('renders a default-workspace add_task row exactly as before', () => {
+    const lookups = buildChatLookups([], {
+      defaultWorkspacePath: '/w/default',
+      workspaces: [{ path: '/w/default', slug: 'default' }],
+    });
+    const headerFor = (args: Record<string, unknown>): string => {
+      const out = renderToString(h(AssistantStepRow, {
+        item: step([
+          call('c7', 'add_task', { title: 'Build it', description: 'do the thing', ...args }),
+          result('c7', 'add_task', 'Task t-1-rr4f added (priority: normal, worker: puppet). You will be notified when the task completes.'),
+        ]),
+        lookups,
+      }));
+      return out.split('\n').map(line => line.trimEnd()).find(line => line.includes('派发任务')) ?? '';
+    };
+
+    // Declaring the default path (in any spelling) must render byte-identically
+    // to declaring no workspace at all — the whole point of the rule.
+    const implicit = headerFor({});
+    expect(implicit).toContain('⊕ 派发任务 Build it #rr4f');
+    expect(implicit).not.toContain('default');
+    expect(headerFor({ workspace: '/w/default' })).toBe(implicit);
+    expect(headerFor({ workspace: '/w/default/' })).toBe(implicit);
+  });
+
+  it('keeps the add_task header on one line inside an 80-column terminal', () => {
+    const lookups = buildChatLookups([], {
+      defaultWorkspacePath: '/w/default',
+      workspaces: [{ path: '/w/some-really-long-workspace-directory-name', slug: 'some-really-long-workspace-directory-name' }],
+    });
+    const headerFor = (title: string, workspace?: string): string => {
+      const out = renderToString(h(AssistantStepRow, {
+        item: step([
+          call('c8', 'add_task', { title, description: 'd', ...(workspace ? { workspace } : {}) }),
+          result('c8', 'add_task', 'Task t-1-rr4f added (priority: normal, worker: puppet).'),
+        ]),
+        lookups,
+      }));
+      return out.split('\n').map(line => line.trimEnd()).find(line => line.includes('派发任务')) ?? '';
+    };
+
+    for (const title of ['短标题', '标题'.repeat(25), 'x'.repeat(50)]) {
+      for (const workspace of [undefined, '/w/some-really-long-workspace-directory-name']) {
+        const header = headerFor(title, workspace);
+        expect(stringWidth(header)).toBeLessThanOrEqual(80);
+        expect(header).not.toContain('\n');
+      }
+    }
+    // The slug survives at the row's end even when the title had to give way.
+    const tagged = headerFor('标题'.repeat(25), '/w/some-really-long-workspace-directory-name');
+    expect(tagged).toContain(' — some-really-');
   });
 
   it('keeps generic result rows for tools without a summary row', () => {

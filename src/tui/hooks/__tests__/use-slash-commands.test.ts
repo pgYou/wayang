@@ -94,38 +94,41 @@ describe('handleCommand /shortcut', () => {
   });
 });
 
-describe('handleCommand /tasks', () => {
-  /** Same probe as above, but with an injectable supervisor stand-in. */
-  async function captureWith(
-    supervisor: RemoteSupervisor,
-  ): Promise<(input: string) => Promise<SlashCommandResult>> {
-    const box: { fn?: (input: string) => Promise<SlashCommandResult> } = {};
-    function Probe() {
-      const { handleCommand } = useSlashCommands(supervisor);
-      useEffect(() => {
-        box.fn = handleCommand;
-      }, [handleCommand]);
-      return null;
-    }
-    const stdout = {
-      columns: 80,
-      rows: 24,
-      write: () => true,
-      on() { return stdout; },
-      off() { return stdout; },
-      removeListener() { return stdout; },
-    };
-    const app = render(h(Probe), {
-      stdout: stdout as unknown as NodeJS.WriteStream,
-      debug: true,
-      patchConsole: false,
-    });
-    await new Promise<void>(resolve => setImmediate(resolve));
-    app.unmount();
-    if (!box.fn) throw new Error('handleCommand was never captured');
-    return box.fn;
-  }
+/** Default workspace the /tasks and /projects mocks report. */
+const DEFAULT_WORKSPACE = '/w/default';
 
+/** Same probe as above, but with an injectable supervisor stand-in. */
+async function captureWith(
+  supervisor: RemoteSupervisor,
+): Promise<(input: string) => Promise<SlashCommandResult>> {
+  const box: { fn?: (input: string) => Promise<SlashCommandResult> } = {};
+  function Probe() {
+    const { handleCommand } = useSlashCommands(supervisor);
+    useEffect(() => {
+      box.fn = handleCommand;
+    }, [handleCommand]);
+    return null;
+  }
+  const stdout = {
+    columns: 80,
+    rows: 24,
+    write: () => true,
+    on() { return stdout; },
+    off() { return stdout; },
+    removeListener() { return stdout; },
+  };
+  const app = render(h(Probe), {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    debug: true,
+    patchConsole: false,
+  });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  app.unmount();
+  if (!box.fn) throw new Error('handleCommand was never captured');
+  return box.fn;
+}
+
+describe('handleCommand /tasks', () => {
   const makeTask = (id: string, description: string): TaskDetail => ({
     id,
     title: 'title',
@@ -136,7 +139,10 @@ describe('handleCommand /tasks', () => {
   });
 
   const withTasks = (tasks: TaskDetail[]): RemoteSupervisor =>
-    ({ engine: { list: async () => tasks } }) as unknown as RemoteSupervisor;
+    ({
+      engine: { list: async () => tasks },
+      ctx: { workspaceDir: DEFAULT_WORKSPACE, workspaces: [] },
+    }) as unknown as RemoteSupervisor;
 
   it('renders one line per task with a digested description', async () => {
     const long = 'instruction '.repeat(500);
@@ -190,11 +196,102 @@ describe('handleCommand /tasks', () => {
           return status === 'failed' ? [makeTask('t-9', 'boom')] : [];
         },
       },
+      ctx: { workspaceDir: DEFAULT_WORKSPACE, workspaces: [] },
     } as unknown as RemoteSupervisor;
     const handleCommand = await captureWith(supervisor);
 
     expect((await handleCommand('/tasks')).output).toBe('No tasks');
     expect((await handleCommand('/tasks failed')).output).toContain('[completed] t-9: boom');
     expect(seen).toEqual([undefined, 'failed']);
+  });
+});
+
+describe('handleCommand /tasks workspace marks', () => {
+  const taskIn = (workspace: { path: string; slug: string }): TaskDetail => ({
+    id: 't-1',
+    title: 'title',
+    description: 'write tests',
+    priority: 'normal',
+    status: 'completed',
+    createdAt: 1,
+    workspace,
+  });
+
+  const withCtx = (tasks: TaskDetail[], workspaces: Array<{ path: string; slug: string }> = []): RemoteSupervisor =>
+    ({
+      engine: { list: async () => tasks },
+      ctx: { workspaceDir: DEFAULT_WORKSPACE, workspaces },
+    }) as unknown as RemoteSupervisor;
+
+  it('shows the slug for a task dispatched outside the default workspace', async () => {
+    const handleCommand = await captureWith(withCtx([taskIn({ path: '/w/other', slug: 'other' })]));
+
+    expect((await handleCommand('/tasks')).output)
+      .toBe('[completed] t-1: write tests — other');
+  });
+
+  it('leaves a default-workspace task unmarked', async () => {
+    const handleCommand = await captureWith(withCtx([taskIn({ path: DEFAULT_WORKSPACE, slug: 'default' })]));
+
+    expect((await handleCommand('/tasks')).output).toBe('[completed] t-1: write tests');
+  });
+});
+
+describe('handleCommand /projects', () => {
+  const withProjects = (
+    workspaces: Array<{ path: string; slug: string }>,
+    tasks: TaskDetail[] = [],
+  ): RemoteSupervisor =>
+    ({
+      engine: { list: async () => tasks },
+      ctx: { workspaceDir: DEFAULT_WORKSPACE, workspaces },
+    }) as unknown as RemoteSupervisor;
+
+  it('lists every session workspace as "<slug>  <path>" with the default marked', async () => {
+    const handleCommand = await captureWith(withProjects([
+      { path: '/w/alpha', slug: 'alpha' },
+      { path: DEFAULT_WORKSPACE, slug: 'default' },
+    ]));
+
+    expect((await handleCommand('/projects')).output?.split('\n')).toEqual([
+      'default  /w/default  *',
+      'alpha  /w/alpha',
+      '* = default workspace',
+    ]);
+  });
+
+  it('picks up a workspace the session only used through a task', async () => {
+    const handleCommand = await captureWith(withProjects(
+      [{ path: DEFAULT_WORKSPACE, slug: 'default' }],
+      [{ ...({
+        id: 't-1', title: 't', description: 'd', priority: 'normal',
+        status: 'completed', createdAt: 1,
+      }), workspace: { path: '/w/late', slug: 'late' } } as TaskDetail],
+    ));
+
+    const lines = (await handleCommand('/projects')).output?.split('\n') ?? [];
+
+    expect(lines[0]).toBe('default  /w/default  *');
+    expect(lines[1]).toBe('late  /w/late');
+  });
+
+  it('prints "No projects" without any workspace data', async () => {
+    const handleCommand = await captureWith({
+      engine: { list: async () => [] },
+      ctx: { workspaceDir: '', workspaces: [] },
+    } as unknown as RemoteSupervisor);
+
+    expect((await handleCommand('/projects')).output).toBe('No projects');
+  });
+
+  it('is registered, listed in /help, and does not collide with /workspaces', async () => {
+    const names = SLASH_COMMANDS.map(command => command.name);
+    expect(names).toContain('projects');
+    expect(names).not.toContain('workspaces');
+
+    const handleCommand = await captureWith(withProjects([{ path: DEFAULT_WORKSPACE, slug: 'default' }]));
+    const help = (await handleCommand('/help')).output ?? '';
+
+    expect(help).toContain('/projects');
   });
 });

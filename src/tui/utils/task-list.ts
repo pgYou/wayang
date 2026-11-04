@@ -13,7 +13,7 @@
 
 import type { TaskDetail } from '@/types/index';
 import { collapseWhitespace, truncateToWidth } from '@/tui/utils/text-width';
-import { formatWorkspaceDetail } from '@/tui/utils/workspace-display';
+import { formatTaskWorkspaceMark } from '@/tui/utils/workspace-display';
 
 /** Max display columns for one description in the list (CJK/emoji count double). */
 export const TASK_LIST_DESCRIPTION_MAX_WIDTH = 80;
@@ -117,26 +117,37 @@ function noteFor(total: number, shown: number): string {
   return `… 显示最近 ${shown} / 共 ${total} 条`;
 }
 
+export interface TaskRowOptions {
+  descriptionMaxWidth?: number;
+  /**
+   * The session's default workspace (`ctx.workspaceDir`). Tasks running there
+   * are the norm and carry no marker; only a task dispatched elsewhere shows
+   * its workspace slug. Absent means "unknown", in which case every stamped
+   * task shows its slug rather than hiding the attribution.
+   */
+  defaultWorkspacePath?: string;
+}
+
 /** One list row: every existing column, with the description digested. */
 export function formatTaskRow(
   task: TaskDetail,
-  descriptionMaxWidth: number = TASK_LIST_DESCRIPTION_MAX_WIDTH,
+  options: TaskRowOptions = {},
 ): string {
-  // Only tasks stamped with workspace identity show it; legacy tasks
-  // append nothing (never "undefined").
-  const workspace = formatWorkspaceDetail(task.workspace);
-  const workspacePart = workspace ? ` — ${workspace}` : '';
-  const description = truncateForList(task.description, descriptionMaxWidth);
+  // Only a task stamped with workspace identity *and* running outside the
+  // default workspace shows it; default-workspace and legacy tasks append
+  // nothing (never "undefined").
+  const workspacePart = formatTaskWorkspaceMark(task.workspace, options.defaultWorkspacePath);
+  const description = truncateForList(task.description, options.descriptionMaxWidth);
   return `[${task.status}] ${task.id}: ${description}${workspacePart}${task.result ? ` → ${task.result}` : ''}`;
 }
 
 /** Render the whole `/tasks` output: capped rows plus an optional note line. */
 export function formatTaskList(
   tasks: readonly TaskDetail[],
-  options: { maxItems?: number; descriptionMaxWidth?: number } = {},
+  options: TaskRowOptions & { maxItems?: number } = {},
 ): string {
   const limited = limitForList(tasks, options.maxItems, { isActive: isActiveTask });
-  const lines = limited.items.map(task => formatTaskRow(task, options.descriptionMaxWidth));
+  const lines = limited.items.map(task => formatTaskRow(task, options));
   if (limited.note) lines.push(limited.note);
   return lines.join('\n');
 }

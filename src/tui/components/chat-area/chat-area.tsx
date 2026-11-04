@@ -3,6 +3,7 @@ import { Box, Static, Text } from 'ink';
 import type { DisplayItem } from '@/tui/types/display-item';
 import { theme } from '@/tui/theme';
 import { buildChatLookups } from '@/tui/utils/chat-lookups';
+import { EMPTY_WORKSPACE_CONTEXT, type WorkspaceDisplayContext } from '@/tui/utils/workspace-display';
 import { ItemRow } from './item-row';
 import { StreamingSpinner } from './streaming-spinner';
 
@@ -14,6 +15,11 @@ interface ChatAreaProps {
   streamingItems?: DisplayItem[];
   /** Usable content width (accounts for padding). */
   contentWidth?: number;
+  /**
+   * Session workspace context, used to label the workspace an `add_task` row
+   * dispatched into. Omitted means "unknown", i.e. only declarations are shown.
+   */
+  workspace?: WorkspaceDisplayContext;
 }
 
 /**
@@ -30,7 +36,13 @@ function shouldShowGap(prev: DisplayItem | null, _current: DisplayItem): boolean
   return true;
 }
 
-const ChatArea = React.memo(function ChatArea({ items, busy, streamingItems, contentWidth }: ChatAreaProps) {
+const ChatArea = React.memo(function ChatArea({
+  items,
+  busy,
+  streamingItems,
+  contentWidth,
+  workspace = EMPTY_WORKSPACE_CONTEXT,
+}: ChatAreaProps) {
   const width = contentWidth ?? 78;
 
   // Read items → Static (render once, terminal scrollback).
@@ -44,7 +56,7 @@ const ChatArea = React.memo(function ChatArea({ items, busy, streamingItems, con
   // Cross-row context (permission request by id, worker by id). Static rows
   // render once with the lookups as of that moment — the rows they refer to
   // always come earlier in the conversation, so they are already present.
-  const lookups = useMemo(() => buildChatLookups(items), [items]);
+  const lookups = useMemo(() => buildChatLookups(items, workspace), [items, workspace]);
 
   return (
     <>
