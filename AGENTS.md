@@ -26,7 +26,8 @@ Wayang is a multi-agent orchestration platform — a CLI tool that coordinates m
 ### 需求开发与合流
 
 - 并行需求或改动较大的需求，基于 `release/x.y.z` 拉 `feat/xxx` 分支开发；需要同时推进多个需求时用 git worktree 隔离工作区，例如 `git worktree add -b feat/xxx ../wayang-xxx origin/release/x.y.z`。
-- 每个需求开独立 PR，base 指向 `release/x.y.z`（不是 main）。
+- 需求开发完成、跑完门槛后，直接在本地把 feat 分支合入 `release/x.y.z` 并推送，例如 `git checkout release/x.y.z && git merge --no-ff feat/xxx && git push`。
+- 合入 release 分支不需要开 PR；PR 只用于需要评审、或 release 最终合回 main 的场景。
 - 开发前先确定验收标准；实现后跑完门槛（`npm run lint`、`npx vitest run`、`npm run build`）再合入 release。
 - 发布收口：版本号与 `CHANGELOG.md` 校准完成、跑通全量测试后打 tag，并将 release 分支合并回 main。
 - 小改动（文档、文案、单文件修补）可直接在 release 分支上提交，不必单开 feat 分支。
@@ -38,6 +39,7 @@ Wayang is a multi-agent orchestration platform — a CLI tool that coordinates m
 - 一个 PR 可以关联多个 issue，但主 issue 只写一个（放在开头的 Fixes/Refs）。
 - 问题解决后回填 issue：结论、关联 PR 链接；确认无需再跟进时再关闭。
 - 需求范围与版本的关系：issue 纳入某个版本时，同步写进该版本 CHANGELOG 段落的规划里（见「版本规划」）。
+- 直接合入 release 分支时（不走 PR），相应的合入 commit 信息必须引用 issue（`Fixes #N` 或 `Refs #N`），并在合入说明里写清改动范围与验收结果。
 
 ## Commands
 
