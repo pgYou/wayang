@@ -45,7 +45,10 @@ describe('validateConfig: permission', () => {
         makeConfigWithPermission({
           allowedDirs: ['/data/shared'],
           autoAllowRoots: ['/tmp'],
+          sensitiveDirs: ['/data/keys'],
+          // Deprecated alias of sensitiveDirs — still accepted and validated.
           deniedDirs: ['/data/secrets'],
+          sensitiveMode: 'deny',
         }),
       ),
     ).toBeNull();
@@ -55,13 +58,14 @@ describe('validateConfig: permission', () => {
   it.each([
     ['allowedDirs', '/data/shared'],
     ['autoAllowRoots', 42],
+    ['sensitiveDirs', { path: '/data/keys' }],
     ['deniedDirs', { path: '/data/secrets' }],
   ])('rejects %s when it is not an array', (key, value) => {
     const err = validateConfig(makeConfigWithPermission({ [key]: value }));
     expect(err).toContain(`permission.${key} must be an array of strings`);
   });
 
-  it.each(['allowedDirs', 'autoAllowRoots', 'deniedDirs'])('rejects %s containing a non-string', (key) => {
+  it.each(['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs'])('rejects %s containing a non-string', (key) => {
     const err = validateConfig(makeConfigWithPermission({ [key]: ['/data/shared', 7] }));
     expect(err).toContain(`permission.${key} must be an array of strings`);
     expect(err).toContain('7');

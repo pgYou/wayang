@@ -1,6 +1,12 @@
+import type { Logger } from '@/infra/logger';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { SignalTurnLineage } from '@/types/index';
 import { generateId } from '@/utils/id';
+import {
+  operationForTool,
+  recordPermissionAudit,
+  verdictDetailSuffix,
+} from '@/services/permission/permission-audit';
 
 /** What a gated tool call needs before it may run. */
 export interface PermissionVerdict {
@@ -17,6 +23,20 @@ export interface PermissionVerdict {
    * description so the controller understands why it is being asked.
    */
   reason?: string;
+  /** Rule that produced the verdict — carried onto the signal and the audit. */
+  matchedRule?: string;
+  /** Sensitive-list entry that matched (never disclosed to the worker). */
+  matchedEntry?: string;
+  /** Which sensitive rule produced the hit. */
+  matchedSource?: string;
+  /** Canonical target the verdict was made about. */
+  resolvedPath?: string;
+  /** What the call would do with the target. */
+  operation?: 'read' | 'write' | 'exec';
+  /** True when the verdict came from the sensitive list. */
+  sensitive?: boolean;
+  /** How the target was judged (read / write / unknown). */
+  access?: 'read' | 'write' | 'unknown';
 }
 
 export interface PermissionMiddlewareConfig {
@@ -44,6 +64,8 @@ export interface PermissionMiddlewareDeps {
   timeoutMs?: number;
   /** Turn lineage attached to emitted permission_request signals. */
   turnLineage?: SignalTurnLineage;
+  /** Session logger for the permission audit trail (metadata only). */
+  logger?: Logger;
 }
 
 interface PendingPermission {
@@ -86,18 +108,43 @@ export function wrapWithPermissionMiddleware(
           return originalExecute(args, options);
         }
 
-        // Hard refusal (e.g. a denylisted path): never ask, never execute.
+        // Hard refusal (e.g. a sensitive WRITE, or sensitiveMode: 'deny'):
+        // never ask, never execute — but always audit.
         if (verdict.decision === 'deny') {
+          recordPermissionAudit(deps.logger, {
+            decision: 'hard-denied',
+            operation: verdict.operation ?? operationForTool(toolName),
+            resolvedPath: verdict.resolvedPath,
+            requestedPath: typeof args.path === 'string' ? args.path : undefined,
+            matchedEntry: verdict.matchedEntry,
+            matchedSource: verdict.matchedSource,
+            matchedRule: verdict.matchedRule,
+            taskId: deps.taskId,
+            workerId: deps.workerId,
+            toolName,
+          });
           return verdict.message ?? `[ERROR] ${toolName}: refused by the path permission policy`;
         }
 
         const requestId = generateId('perm');
+        const operation = verdict.operation ?? operationForTool(toolName);
         const baseDescription = config.describeCall(toolName, args);
         // Surface a non-obvious escalation reason (command substitution,
-        // output redirection, …) in the request so the controller can judge it.
-        const description = verdict.reason
-          ? `${baseDescription} [reason: ${verdict.reason}]`
-          : baseDescription;
+        // output redirection, …) and — on a sensitive hit — the entry and rule
+        // that fired, so the controller can judge the request without reading
+        // the file. Ordinary out-of-scope asks keep their existing wording.
+        const hitDetail = verdict.sensitive
+          ? verdictDetailSuffix({
+              matchedRule: verdict.matchedRule,
+              matchedEntry: verdict.matchedEntry,
+              matchedSource: verdict.matchedSource,
+              resolvedPath: verdict.resolvedPath,
+              operation,
+            })
+          : '';
+        const description = `${baseDescription}${hitDetail}${
+          verdict.reason ? ` [reason: ${verdict.reason}]` : ''
+        }`;
 
         deps.signalQueue.enqueue({
           source: 'worker',
@@ -112,6 +159,13 @@ export function wrapWithPermissionMiddleware(
             toolName,
             toolArgs: args,
             description,
+            ...(verdict.matchedRule !== undefined && { matchedRule: verdict.matchedRule }),
+            ...(verdict.matchedEntry !== undefined && { matchedEntry: verdict.matchedEntry }),
+            ...(verdict.matchedSource !== undefined && { matchedSource: verdict.matchedSource }),
+            ...(verdict.resolvedPath !== undefined && { resolvedPath: verdict.resolvedPath }),
+            ...(verdict.sensitive !== undefined && { sensitive: verdict.sensitive }),
+            ...(verdict.access !== undefined && { access: verdict.access }),
+            operation,
           },
           ...(deps.turnLineage ?? {}),
         });
@@ -135,6 +189,30 @@ export function wrapWithPermissionMiddleware(
             },
             timer,
           });
+        });
+
+        // Audit BEFORE executing: the record must exist even if the tool then
+        // crashes, and a denied call must leave the same trail as an approved
+        // one (approvals are exactly what an audit needs to catch).
+        recordPermissionAudit(deps.logger, {
+          decision: result.approved ? 'approved' : 'denied',
+          operation,
+          resolvedPath: verdict.resolvedPath,
+          requestedPath: typeof args.path === 'string' ? args.path : undefined,
+          matchedEntry: verdict.matchedEntry,
+          matchedSource: verdict.matchedSource,
+          matchedRule: verdict.matchedRule,
+          taskId: deps.taskId,
+          workerId: deps.workerId,
+          toolName,
+          ...(!result.approved && {
+            source:
+              result.reason === 'timeout'
+                ? ('timeout' as const)
+                : result.reason === 'Worker aborted'
+                  ? ('aborted' as const)
+                  : ('controller' as const),
+          }),
         });
 
         if (!result.approved) {

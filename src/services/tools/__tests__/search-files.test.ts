@@ -60,7 +60,7 @@ describe('searchFilesTool', () => {
 /**
  * The read gate. These cases pass `homeDir`, which switches on
  * `decideAccess({ access: 'read', ... })`: reads must stay inside home, and
- * the denylist (~/.ssh, ~/.wayang, …) wins over "inside home".
+ * the sensitive list (~/.ssh, ~/.wayang, …) wins over "inside home".
  */
 describe('searchFilesTool read boundary', () => {
   let home: string;
@@ -95,37 +95,38 @@ describe('searchFilesTool read boundary', () => {
     expect(result).toContain('note.md');
   });
 
-  it('denies a denylisted path (~/.ssh) without reading any files', async () => {
+  it('refuses a sensitive path (~/.ssh) without reading any files', async () => {
     const tool = searchFilesTool({ cwd: workspace, homeDir: home });
     const result = await exec(tool, { pattern: '**/*', path: join(home, '.ssh') });
-    // Denylist wording, and no leaked file listing from the protected dir.
-    expect(result).toContain('denylist');
+    // Sensitive-list wording, and no leaked file listing from the protected dir.
+    // (This reader has no approval channel, so the policy's `ask` is a refusal.)
+    expect(result).toContain('sensitive list');
     expect(result).not.toContain('id_rsa');
   });
 
-  it('denies the wayang data dir (~/.wayang) via the denylist', async () => {
+  it('refuses the wayang data dir (~/.wayang) via the sensitive list', async () => {
     const tool = searchFilesTool({ cwd: workspace, homeDir: home });
     const result = await exec(tool, { pattern: '**/*', path: join(home, '.wayang') });
-    expect(result).toContain('denylist');
+    expect(result).toContain('sensitive list');
   });
 
-  it('denies a path outside home with a message distinct from the denylist', async () => {
+  it('refuses a path outside home with a message distinct from the sensitive list', async () => {
     const tool = searchFilesTool({ cwd: workspace, homeDir: home });
     const result = await exec(tool, { pattern: '**/*', path: '/etc' });
     expect(result).toContain('outside the home boundary');
-    expect(result).not.toContain('denylist');
+    expect(result).not.toContain('sensitive list');
   });
 
-  it('denies a symlink whose ancestor resolves into ~/.ssh (target leaf may not exist)', async () => {
+  it('refuses a symlink whose ancestor resolves into ~/.ssh (target leaf may not exist)', async () => {
     // home/innocent -> home/.ssh ; requesting home/innocent/<missing> must
-    // canonicalize via the existing ancestor and still hit the denylist.
+    // canonicalize via the existing ancestor and still hit the sensitive list.
     symlinkSync(join(home, '.ssh'), join(home, 'innocent'));
     const tool = searchFilesTool({ cwd: workspace, homeDir: home });
     const result = await exec(tool, {
       pattern: '**/*',
       path: join(home, 'innocent', 'nonexistent_key'),
     });
-    expect(result).toContain('denylist');
+    expect(result).toContain('sensitive list');
   });
 
   it('resolves a relative path against the workspace and allows it inside home', async () => {
