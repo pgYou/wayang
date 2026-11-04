@@ -544,6 +544,66 @@ describe('evaluateBashAccess', () => {
       expect(write.decision).toBe('deny');
       expect(write.matchedRule).toBe('sensitive-list-write');
     });
+
+    /**
+     * GNU sed hides two capabilities inside the SCRIPT STRING: `e` runs a shell
+     * command (`sed -n '1e id'`, `s///e`) and `w` / `W` / `r` / `R` write or
+     * read a file. A token-level sweep cannot see them, so the script is now
+     * validated against a whitelist: anything we cannot locate (`-f file`) or
+     * that carries another command is `unknown` (→ ask), never a read.
+     */
+    describe('sed scripts that can execute or write are not read', () => {
+      it.each([
+        'sed -n 1,5p ~/f',
+        "sed -n '/x/p' ~/f",
+        "sed 's/a/b/' ~/f",
+        "sed -n '1p;2p' ~/f",
+        "sed -n 's/a/b/g' ~/f",
+        'sed --version',
+        "sed -n -e '1p' -e '2p' ~/f",
+        // Address forms the stripper has to read through.
+        "sed -n '/a;b/p' ~/f",
+        "sed -n '1,5!p' ~/f",
+        "sed -n '/x/,/y/p' ~/f",
+        "sed -n '$p' ~/f",
+        "sed -n 'y/a/b/' ~/f",
+        "sed -n -e1p -e2p ~/f",
+      ])('%s is still read', (command) => {
+        expect(evaluateBashAccess(scope(), command).access).toBe('read');
+      });
+
+      it.each([
+        "sed -n '1e cmd' ~/f",
+        "sed 's/a/b/e' ~/f",
+        "sed -n 'w /tmp/x' ~/f",
+        "sed -n 'W /tmp/x' ~/f",
+        "sed -n '1r /etc/passwd' ~/f",
+        'sed -f script.sed ~/f',
+        "sed -n '1e' ~/f",
+        "sed --expression='1e cmd' ~/f",
+      ])('%s is no longer read (the script executes or writes)', (command) => {
+        const verdict = evaluateBashAccess(scope(), command);
+        expect(verdict.decision).toBe('ask');
+        expect(verdict.access).not.toBe('read');
+      });
+
+      it('the same judgement applies inside a command substitution', () => {
+        const verdict = evaluateBashAccess(scope(), "echo $(sed -n '1e cmd' ~/f)");
+        expect(verdict.decision).toBe('ask');
+        expect(verdict.access).not.toBe('read');
+      });
+
+      it('the -i write form is still a write, not an unknown', () => {
+        for (const command of ["sed -i 's/a/b/' ~/f", "sed -i.bak 's/a/b/' ~/f"]) {
+          expect(evaluateBashAccess(scope(), command).access).toBe('write');
+        }
+      });
+
+      it('the file tools are untouched by the sed check', () => {
+        expect(evaluateFileAccess(scope(), 'read_file', { path: `${ws}/a.txt` }).access).toBe('read');
+        expect(evaluateFileAccess(scope(), 'write_file', { path: `${ws}/a.txt` }).access).toBe('write');
+      });
+    });
   });
 });
 
