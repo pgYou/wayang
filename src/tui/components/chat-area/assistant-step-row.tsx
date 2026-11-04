@@ -2,7 +2,13 @@ import { Box, Text } from 'ink';
 import type { DisplayItem, DisplaySection } from '@/tui/types/display-item';
 import { theme } from '@/tui/theme';
 import { summarizePermissionResolution } from '@/tui/utils/permission-summary';
-import { summarizeAddTask, summarizeInquiryResolution, summarizeWorkerMessage, type ActionOutcome } from '@/tui/utils/controller-action-summary';
+import {
+  formatAddTaskWorkspaceTag,
+  summarizeAddTask,
+  summarizeInquiryResolution,
+  summarizeWorkerMessage,
+  type ActionOutcome,
+} from '@/tui/utils/controller-action-summary';
 import { EMPTY_CHAT_LOOKUPS, formatWorkerTag, type ChatLookups } from '@/tui/utils/chat-lookups';
 import { TOOL_DETAIL_MAX_LENGTH, LONG_MSG_MAX_LENGTH } from './constants';
 
@@ -318,7 +324,14 @@ function AddTaskRow({ section, result, lookups }: {
     section.text,
     SECONDARY_WIDTH,
     result ? { text: result.text, isError: result.isError } : undefined,
+    {
+      defaultWorkspacePath: lookups.workspace.defaultWorkspacePath,
+      workspaces: lookups.workspace.workspaces,
+    },
   );
+  // Trailing workspace tag: only a call that declared a non-default workspace
+  // gets one, so default dispatches render exactly as before.
+  const workspaceTag = formatAddTaskWorkspaceTag(summary.workspaceSlug);
   const reuse = summary.assignToWorker !== undefined;
   const iconColor = summary.outcome === 'failed' ? theme.action.failColor : theme.action.color;
 
@@ -341,6 +354,7 @@ function AddTaskRow({ section, result, lookups }: {
         </Text>
         <Text bold> {summary.title}</Text>
         {summary.taskShortId && <Text color={theme.secondary.color}> #{summary.taskShortId}</Text>}
+        {workspaceTag ? <Text color={theme.secondary.color}>{workspaceTag}</Text> : null}
         <OutcomeMark outcome={summary.outcome} ok="已派发" failed="派发失败" />
       </Box>
       <SecondaryLine>{metaLine}</SecondaryLine>

@@ -244,10 +244,68 @@ describe('formatTaskRow', () => {
     const row = formatTaskRow(task);
 
     expect(row).toContain('[running] t-42: ');
-    expect(row).toContain(' — demo (/w/demo)');
+    expect(row).toContain(' — demo');
     expect(row).toContain(' → ok');
     expect(row).toContain('…');
     expect(row).not.toContain(task.description);
+  });
+
+  it('marks a task that runs outside the session default workspace with its slug', () => {
+    const task = makeTask({
+      id: 't-42',
+      status: 'running',
+      description: 'write tests',
+      workspace: { path: '/w/other', slug: 'other' },
+      result: 'ok',
+    });
+
+    expect(formatTaskRow(task, { defaultWorkspacePath: '/w/default' }))
+      .toBe('[running] t-42: write tests — other → ok');
+  });
+
+  it('prints a default-workspace task exactly as an unmarked task', () => {
+    const task = makeTask({
+      id: 't-42',
+      status: 'running',
+      description: 'write tests',
+      workspace: { path: '/w/default', slug: 'default' },
+      result: 'ok',
+    });
+
+    const row = formatTaskRow(task, { defaultWorkspacePath: '/w/default' });
+
+    expect(row).toBe('[running] t-42: write tests → ok');
+    expect(row).toBe(formatTaskRow(makeTask({ id: 't-42', status: 'running', description: 'write tests', result: 'ok' })));
+  });
+
+  it('compares canonicalized paths, not raw spellings', () => {
+    const task = makeTask({
+      description: 'write tests',
+      workspace: { path: '/w/default/', slug: 'default' },
+    });
+
+    expect(formatTaskRow(task, { defaultWorkspacePath: '/w/default' }))
+      .toBe('[completed] t-1: write tests');
+  });
+
+  it('keeps the slug when the default workspace is unknown', () => {
+    // Without a default there is nothing to compare against — showing the slug
+    // beats silently dropping the attribution.
+    const task = makeTask({ description: 'ctx', workspace: { path: '/w/impl', slug: 'impl' } });
+
+    expect(formatTaskRow(task)).toBe('[completed] t-1: ctx — impl');
+  });
+
+  it('falls back to the slugified directory name when the task carries no slug', () => {
+    const task = makeTask({ description: 'ctx', workspace: { path: '/w/My Project', slug: '' } });
+
+    expect(formatTaskRow(task, { defaultWorkspacePath: '/w/default' }))
+      .toBe('[completed] t-1: ctx — my-project');
+  });
+
+  it('appends no marker for a task without workspace identity', () => {
+    expect(formatTaskRow(makeTask({ description: 'ctx' }), { defaultWorkspacePath: '/w/default' }))
+      .toBe('[completed] t-1: ctx');
   });
 
   it('renders one line per task even for multi-line descriptions', () => {

@@ -72,6 +72,42 @@ export function sliceToWidth(s: string, maxWidth: number): string {
   return out;
 }
 
+/** Take at most `maxWidth` display columns from the END of `s` (no ellipsis). */
+function sliceToWidthFromEnd(s: string, maxWidth: number): string {
+  if (maxWidth <= 0) return '';
+  const chars = Array.from(s);
+  let w = 0;
+  let out = '';
+  for (let i = chars.length - 1; i >= 0; i -= 1) {
+    const cw = charWidth(chars[i].codePointAt(0) ?? 0);
+    if (w + cw > maxWidth) break;
+    out = chars[i] + out;
+    w += cw;
+  }
+  return out;
+}
+
+/**
+ * Middle-ellipsis truncation to at most `maxWidth` display columns: keep the
+ * head and the tail, replace the middle with a single "…".
+ *
+ * Used where both ends of a value carry meaning — a file path's leading
+ * directories identify the tree, its trailing segments identify the project —
+ * so unlike `truncateToWidth` the tail survives. Never exceeds `maxWidth`
+ * columns; strings that already fit are returned untouched.
+ */
+export function truncateMiddleToWidth(s: string, maxWidth: number): string {
+  if (maxWidth <= 0) return '';
+  if (stringWidth(s) <= maxWidth) return s;
+  if (maxWidth === 1) return '…';
+  // One column goes to the ellipsis; the rest splits between head and tail,
+  // the head taking the odd column (paths are read left-to-right).
+  const keep = maxWidth - 1;
+  const headBudget = Math.ceil(keep / 2);
+  const tailBudget = keep - headBudget;
+  return sliceToWidth(s, headBudget) + '…' + sliceToWidthFromEnd(s, tailBudget);
+}
+
 /** Collapse runs of whitespace (incl. newlines) to single spaces. */
 export function collapseWhitespace(s: string): string {
   return s.replace(/\s+/g, ' ').trim();

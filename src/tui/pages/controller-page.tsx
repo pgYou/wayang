@@ -101,6 +101,17 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
     }
   });
 
+  // Workspace context for the chat rows: the default workspace plus the
+  // session's identities, so an add_task row can resolve the same slug the
+  // /tasks list shows.
+  const workspaceContext = useMemo(
+    () => ({
+      defaultWorkspacePath: supervisor.ctx.workspaceDir,
+      workspaces: supervisor.ctx.workspaces,
+    }),
+    [supervisor],
+  );
+
   const { handleCommand } = useSlashCommands(supervisor);
 
   const handleSubmit = useMemoizedFn(async (input: string) => {
@@ -146,6 +157,7 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
           busy={busy}
           streamingItems={streamingItems}
           contentWidth={chatContentWidth}
+          workspace={workspaceContext}
         />
       </Box>
       {overlay && <OverlayPanel overlay={overlay} />}

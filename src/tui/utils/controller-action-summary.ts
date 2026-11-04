@@ -7,7 +7,8 @@
  * in the conversation entries. The paired tool result is folded into the
  * summary (delivered / failed) so rows do not need a separate result line.
  */
-import { collapseWhitespace, fitWithSuffix, shortId, truncateToWidth } from './text-width';
+import { collapseWhitespace, fitWithSuffix, shortId, stringWidth, truncateToWidth } from './text-width';
+import { resolveDeclaredWorkspaceSlug } from './workspace-display';
 
 /** Paired tool-result context for an action call, when one exists. */
 export interface ActionResult {
@@ -120,6 +121,12 @@ export interface AddTaskSummary {
   assignToWorker?: string;
   /** Created task id short handle ("#xxxx"), parsed from the result. */
   taskShortId?: string;
+  /**
+   * Slug of the workspace the call declared, when it declared one that differs
+   * from the session default. Undefined for a default-workspace dispatch, so
+   * the row renders exactly as before.
+   */
+  workspaceSlug?: string;
   /** Description preview lines. */
   lines: string[];
   hiddenLines: number;
@@ -131,20 +138,69 @@ export interface AddTaskSummary {
 const TASK_ID_RE = /^Task (\S+) (?:added|assigned)/;
 
 /**
+ * Columns the header's fixed chrome occupies: the lead-in icon plus action
+ * label ("⊕ 派发任务 ", 11), the " #xxxx" task handle (6) and the outcome mark
+ * ("  ✔ 已派发", 10). Ink separates sibling text nodes with one column, which is
+ * why the handle and the mark each include a leading space.
+ */
+const ADD_TASK_HEADER_CHROME = 27;
+
+/** Columns the workspace tag adds on top of its own text (sibling separator). */
+const ADD_TASK_TAG_INSET = 1;
+
+/** Max columns the trailing " — <slug>" workspace tag may claim. */
+export const ADD_TASK_WORKSPACE_TAG_MAX_WIDTH = 16;
+
+/**
+ * Trailing workspace tag for an `add_task` header row: " — <slug>", or '' when
+ * the task runs in the default workspace (nothing to attribute). Truncated to
+ * at most `maxWidth` columns so a long slug can never push the row past the
+ * terminal, and never wrapped — the header stays one line.
+ */
+export function formatAddTaskWorkspaceTag(
+  slug?: string | null,
+  maxWidth: number = ADD_TASK_WORKSPACE_TAG_MAX_WIDTH,
+): string {
+  const label = slug?.trim();
+  if (!label) return '';
+  return truncateToWidth(` — ${label}`, maxWidth);
+}
+
+export interface AddTaskSummaryOptions {
+  /** Lines of description preview (default 2). */
+  maxLines?: number;
+  /** The session's default workspace — declarations pointing at it show no tag. */
+  defaultWorkspacePath?: string;
+  /** Known workspace identities, used to resolve the registry slug. */
+  workspaces?: ReadonlyArray<{ path?: string | null; slug?: string | null }> | null;
+}
+
+/**
  * Summarize an `add_task` call. Success results start with "Task <id> added" or
  * "Task <id> assigned"; anything else (validation messages, "[ERROR] …") means
  * the task was not dispatched.
+ *
+ * The workspace tag comes from the call's own `workspace` argument (the tool
+ * stamps the slug server-side, so the argument is all the row has) resolved
+ * against the session's known identities — no extra RPC field, no task change.
  */
 export function summarizeAddTask(
   argsJson: string,
   width: number,
   result?: ActionResult,
-  maxLines = 2,
+  options: AddTaskSummaryOptions = {},
 ): AddTaskSummary {
   const args = parseArgs(argsJson) ?? {};
+  const maxLines = options.maxLines ?? 2;
   const title = str(args.title) ?? '(untitled)';
   const description = str(args.description) ?? '';
   const { lines, hidden } = previewLines(description, maxLines, width);
+
+  const declaredWorkspaceSlug = resolveDeclaredWorkspaceSlug(str(args.workspace), {
+    defaultWorkspacePath: options.defaultWorkspacePath,
+    workspaces: options.workspaces,
+  });
+  const workspaceTag = formatAddTaskWorkspaceTag(declaredWorkspaceSlug);
 
   let outcome: ActionOutcome = 'pending';
   let taskShortId: string | undefined;
@@ -160,8 +216,14 @@ export function summarizeAddTask(
     }
   }
 
+  // The title yields the columns the workspace tag and the fixed header chrome
+  // need, so the header can never wrap onto a second line.
+  const tagCost = workspaceTag ? stringWidth(workspaceTag) + ADD_TASK_TAG_INSET : 0;
+  const titleBudget = Math.max(1, width - ADD_TASK_HEADER_CHROME - tagCost);
+
   return {
-    title: fitWithSuffix(collapseWhitespace(title), '', width),
+    title: fitWithSuffix(collapseWhitespace(title), '', titleBudget),
+    ...(declaredWorkspaceSlug && { workspaceSlug: declaredWorkspaceSlug }),
     workerType: str(args.workerType) ?? str(args.worker_type) ?? 'puppet',
     ...(str(args.priority) && { priority: str(args.priority) }),
     multiStage: args.multiStage === true,
