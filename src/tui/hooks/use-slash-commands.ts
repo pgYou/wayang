@@ -3,12 +3,14 @@ import type { RemoteSupervisor } from '@/client/remote-supervisor';
 import type { TaskDetail } from '@/types/index';
 import { formatContextReport } from '@/tui/utils/context-report';
 import { renderShortcutList } from '@/tui/utils/shortcut-catalog';
-import { formatWorkspaceDetail } from '@/tui/utils/workspace-display';
+import { formatTaskList } from '@/tui/utils/task-list';
+import { formatProjectList } from '@/tui/utils/workspace-display';
 
 /** Slash command definitions for autocomplete suggestions. */
 export const SLASH_COMMANDS = [
   { name: 'tasks', args: '[status]', description: 'List tasks' },
   { name: 'workers', description: 'List active workers' },
+  { name: 'projects', description: 'List session workspaces' },
   { name: 'cancel', args: '<id>', description: 'Cancel a task' },
   { name: 'context', description: 'Show context token breakdown' },
   { name: 'compact', description: 'Compact context' },
@@ -40,14 +42,30 @@ export function useSlashCommands(supervisor: RemoteSupervisor) {
         const status = parts[1] as TaskDetail['status'] | undefined;
         const tasks = await supervisor.engine.list(status);
         if (tasks.length === 0) return { handled: true, output: 'No tasks' };
-        const lines = tasks.map(t => {
-          // Only tasks stamped with workspace identity show it; legacy tasks
-          // append nothing (never "undefined").
-          const workspace = formatWorkspaceDetail(t.workspace);
-          const workspacePart = workspace ? ` — ${workspace}` : '';
-          return `[${t.status}] ${t.id}: ${t.description}${workspacePart}${t.result ? ` → ${t.result}` : ''}`;
-        });
-        return { handled: true, output: lines.join('\n') };
+        // Descriptions are digested to one line each and the list is capped —
+        // rendering full instructions verbatim hung Ink's re-layout. See
+        // task-list.ts; every other column is unchanged. Only tasks running
+        // outside the session's default workspace are marked with a slug.
+        return {
+          handled: true,
+          output: formatTaskList(tasks, { defaultWorkspacePath: supervisor.ctx.workspaceDir }),
+        };
+      }
+
+      case 'projects': {
+        // Session workspaces (`ctx.workspaces`) plus the workspaces stamped on
+        // this session's tasks — the task list is the only place a workspace
+        // first touched mid-session shows up, since ctx.workspaces is a
+        // bootstrap snapshot. Which is why /projects is not a plain echo of it.
+        const tasks = await supervisor.engine.list();
+        return {
+          handled: true,
+          output: formatProjectList({
+            workspaces: supervisor.ctx.workspaces,
+            taskWorkspaces: tasks.map(task => task.workspace ?? {}),
+            defaultWorkspacePath: supervisor.ctx.workspaceDir,
+          }),
+        };
       }
 
       case 'workers': {
@@ -88,8 +106,9 @@ export function useSlashCommands(supervisor: RemoteSupervisor) {
           handled: true,
           output: [
             'Commands:',
-            '  /tasks [status]   — List tasks',
+            '  /tasks [status]   — List tasks (workspace slug when not the default)',
             '  /workers          — List active workers',
+            '  /projects         — List session workspaces (* = default workspace)',
             '  /cancel <id>      — Cancel a task and abort its worker',
             '  /context          — Show context token breakdown',
             '  /compact          — Compact conversation context',

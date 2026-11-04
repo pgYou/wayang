@@ -174,8 +174,12 @@ function requestArgs(meta: PermissionRequestMeta): Record<string, unknown> {
     : {};
 }
 
-/** "(resolved: /abs/path)" suffix written by the engine's file-tool describer. */
-const RESOLVED_PATH_RE = /^\S+: (.*) \(resolved: (.*)\)$/s;
+/**
+ * "(resolved: /abs/path)" suffix written by the engine's file-tool describer,
+ * optionally followed by a `[...]` detail block (a sensitive hit: entry, rule,
+ * operation). Both parts are metadata — never file content.
+ */
+const RESOLVED_PATH_RE = /^\S+: (.*) \(resolved: (.*?)\)(?: \[(.*)\])?$/s;
 
 /**
  * Extract the part of a request description that adds information beyond the
@@ -192,8 +196,13 @@ export function meaningfulDescription(description: string | undefined): string {
   if (/^execute shell command:/i.test(text)) return '';
   const m = RESOLVED_PATH_RE.exec(text);
   if (m) {
-    const [, rawPath, resolved] = m;
-    return resolved && resolved !== rawPath ? `解析为 ${resolved}` : '';
+    const [, rawPath, resolved, hit] = m;
+    const parts: string[] = [];
+    if (resolved && resolved !== rawPath) parts.push(`解析为 ${resolved}`);
+    // The policy's hit block (`.ssh`, rule, operation) explains WHY the call is
+    // gated; it carries no file content, so it is safe to surface.
+    if (hit) parts.push(`[${hit}]`);
+    return collapseWhitespace(parts.join(' '));
   }
   return collapseWhitespace(text);
 }

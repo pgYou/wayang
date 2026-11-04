@@ -1,10 +1,53 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents when working with code in this repository.
 
 ## Project Overview
 
 Wayang is a multi-agent orchestration platform — a CLI tool that coordinates multiple AI workers (LLM agents) to execute tasks concurrently. A **Controller** agent (powered by Vercel AI SDK) interprets user intent, decomposes work into tasks, and dispatches them to **Worker** agents. Workers can be built-in "puppet" agents (LLM-driven with tools) or third-party agents like Claude Code (via `@anthropic-ai/claude-agent-sdk`).
+
+## 版本迭代流程
+
+本节描述人（维护者）参与的发版流程，分三步：版本准备、版本规划、需求开发与合流。
+
+### 版本准备
+
+进入一个新版本时，先做分支与元信息准备：
+
+- 从 main 拉出 `release/x.y.z` 分支并推送远端，例如 `git branch release/0.8.1 main && git push -u origin release/0.8.1`。
+- 修改 `package.json` 的 `version` 为新版本号。
+- 在 `CHANGELOG.md` 顶部新增该版本的段落，写清版本号与日期。
+
+### 版本规划
+
+- 版本规划先以 draft 形式写进 `CHANGELOG.md` 的新版本段落：包含本次要做的 issue、预期范围与里程碑，作为实施前的记录。
+- 实施完成后按真实落地情况校准该段落：补齐条目、移除未做的项、修正描述。`CHANGELOG.md` 最终以实际交付为准，不保留与实施不符的规划文字。
+
+### 需求开发与合流
+
+- 并行需求或改动较大的需求，基于 `release/x.y.z` 拉 `feat/xxx` 分支开发；需要同时推进多个需求时用独立 worktree 隔离工作区（见「工作区布局」）。
+- 需求开发完成、跑完门槛后，直接在本地把 feat 分支合入 `release/x.y.z` 并推送，例如 `git checkout release/x.y.z && git merge --no-ff feat/xxx && git push`。
+- 合入 release 分支不需要开 PR；PR 只用于需要评审、或 release 最终合回 main 的场景。
+- 开发前先确定验收标准；实现后跑完门槛（`npm run lint`、`npx vitest run`、`npm run build`）再合入 release。
+- 发布收口：版本号与 `CHANGELOG.md` 校准完成、跑通全量测试后打 tag，并将 release 分支合并回 main。
+- 小改动（文档、文案、单文件修补）可直接在 release 分支上提交，不必单开 feat 分支。
+
+### 工作区布局
+
+- 主仓常驻 `release/x.y.z` 分支，不用于直接开发需求；它承担合流与发布的角色。
+- 需求一律在独立 worktree 的功能分支上开发，worktree 从 release 分支拉出，例如 `git worktree add -b feat/xxx ../wayang-xxx release/x.y.z`；并行需求各占一个 worktree。
+- 同一个分支只能被一个工作区检出：`release/x.y.z` 由主仓检出，worktree 只挂 `feat/xxx` 或 `docs/xxx`。
+- 需求完成后回到主仓合流：`git merge --no-ff feat/xxx && git push`，不需要 PR。
+- 合流后清理：`git worktree remove ../wayang-xxx` 并删除已合入的功能分支，保持 `git worktree list` 只有主仓与在进行中的需求。
+
+### 问题跟踪与 PR 关联
+
+- 开发过程中发现的问题（bug、体验缺陷、设计疑问、待验证的假设）先提交 issue 记录，写清现象、影响、期望行为与验收标准；不要用对话记录或 TODO 注释代替 issue。
+- 修复或实现时，PR 正文必须引用对应 issue：修复类用 `Fixes #N`（合并后自动关闭），关联类用 `Refs #N`；并在 PR 描述里说明改动范围与验收结果。
+- 一个 PR 可以关联多个 issue，但主 issue 只写一个（放在开头的 Fixes/Refs）。
+- 问题解决后回填 issue：结论、关联 PR 链接；确认无需再跟进时再关闭。
+- 需求范围与版本的关系：issue 纳入某个版本时，同步写进该版本 CHANGELOG 段落的规划里（见「版本规划」）。
+- 直接合入 release 分支时（不走 PR），相应的合入 commit 信息必须引用 issue（`Fixes #N` 或 `Refs #N`），并在合入说明里写清改动范围与验收结果。
 
 ## Commands
 

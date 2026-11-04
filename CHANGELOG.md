@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.8.1 (2026-11-04)
+
+### Features
+
+- **敏感列表命中改为审批并留审计（#24、#35 的一部分）**：denylist 更名为 sensitiveList；读方向的命中不再直接拒绝，转为 controller 审批（请求里带命中条目、命中来源 segment/filename/pair/home-default/config-dir、规则与读写方向，批准后可读原文，拒绝不泄露内容）；写方向仍硬拒且不可被 allowedDirs / task allowedDirs / workspace 覆盖。批准、拒绝、硬拒三种情况都写结构化审计（pino，字段限定为路径、命中条目、taskId、workerId、时间、读写方向、决策、来源，不含文件内容）。新增 permission.sensitiveDirs；旧的 permission.deniedDirs 保留为 deprecated 别名（与 sensitiveDirs 合并去重，首次使用打一次 warn）；新增 permission.sensitiveMode: ask | deny，默认 ask，可用于回到旧行为。
+- **bash 丢弃型重定向与只读命令替换豁免（#24）**：新增最小 shell 词法器（不认识构造一律视为无法解析）。输出重定向目标为 /dev/null、/dev/stdout、/dev/stderr 及 fd 复制（2>&1、&>）不再触发审批；真实文件重定向仍按写判定。$(...) 与反引号内为只读白名单命令（cat/ls/grep/head/tail/wc/stat/file/which/command/readlink/echo/printf/date/pwd）时递归判定其路径，嵌套上限 5 层；无法解析一律转审批。
+- **TUI 展示任务 workspace 与 /projects（#36）**：/tasks 仅对非默认 workspace 的任务追加 slug 标记，默认任务输出不变；controller 对话流中 add_task 行显示该任务声明的工作区 slug（默认工作区不显示，未知 slug 回退目录名）；新增 /projects 列出本 session 使用过的工作区（slug 与绝对路径一一对应，默认工作区标 *，无数据输出 No projects，长路径按显示宽度中间省略）。
+- **controller 启动时加载 AGENTS.md（#38）**：home 目录的 AGENTS.md 作为基线、启动目录的作为补充（冲突以工作目录为准，提示中明确说明），启动时计算一次注入 controller 系统提示；同文件按 realpath 去重，缺失静默跳过，总量上限 32KB 按 UTF-8 字节截断并在字符边界切分、末尾标注。worker 侧按任务 workspace 加载规则的行为不变。
+
+### Fixes
+
+- **/tasks 不再渲染完整任务描述（#39）**：描述按显示宽度截断为单行（80 列上限，CJK/emoji 双宽），列表设 20 条预算且优先保留 pending/running，超出时提示真实总数与未显示的历史条数。修复任务描述很长时 /tasks 导致 TUI 卡死。
+- **直接启动时恢复最后活跃的 session（#40）**：默认自动恢复改为按最近活动时间选取（conversation.jsonl 最新条目时间与 meta.lastActiveAt 取较大者，缺失回退 createdAt，再缺失回退索引快照），时间相同按 sessionId 字节序降序做确定性 tie-break。显式 --resume <id> 与交互选择器语义不变。
+
+### Breaking
+
+- **sensitiveList 的读命中由硬拒改为审批**：原先命中即拒绝、无审批通道；现在读方向会向 controller 发起审批，批准后可读原文（密钥等内容可能进入模型上下文，这是有意的取舍）。写方向仍是硬拒。
+- **permission.deniedDirs 标记为 deprecated**：仍然生效（与 sensitiveDirs 合并），但首次使用会打印一次迁移提示；后续版本将移除。
+
+### 未纳入本版本
+
+- #24 的后续项：bash 只读命令分类、审批记忆/任务级授权、审批可观测性统计，留待后续版本（设计见 docs/design/permission-policy-0.8.1.md）。
+
+### 验证
+
+- lint（tsc --noEmit + eslint）通过；全量测试 102 文件 / 1685 用例通过；build 成功（dist/cli.js 约 542 KB）。
+
 ## v0.8.0 (未发布)
 
 ### Features

@@ -348,8 +348,22 @@ export interface ControllerDynamicContext {
   workers?: Record<string, WorkerConfig>;
 }
 
+export interface ControllerPromptOptions {
+  /**
+   * Pre-rendered startup rules section — the result of `loadControllerRules()`
+   * (home + cwd AGENTS.md). Computed ONCE at agent construction: the files are
+   * never re-read between turns, so the prompt stays stable for the session.
+   * Empty/omitted means no rules file was found and `assemble()` drops it.
+   */
+  rules?: string;
+}
+
 /** Build the full Controller system prompt. */
-export function buildControllerSystemPrompt(ctx: SystemContext, skills: SkillRegistry): string {
+export function buildControllerSystemPrompt(
+  ctx: SystemContext,
+  skills: SkillRegistry,
+  opts?: ControllerPromptOptions,
+): string {
   return assemble(
     IDENTITY,
     RESPONSE_STYLE,
@@ -361,5 +375,8 @@ export function buildControllerSystemPrompt(ctx: SystemContext, skills: SkillReg
     buildWorkerList(ctx.config.workers),
     buildSkillCatalog(skills),
     buildEnvironment(ctx),
+    // Project conventions go last: they are the most specific instruction and
+    // the last word on conflicts with the generic sections above.
+    opts?.rules,
   );
 }

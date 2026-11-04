@@ -156,6 +156,18 @@ describe('summarizePermissionRequest', () => {
     expect(same.detail).toBe('');
   });
 
+  it('surfaces the policy hit block of a sensitive read as the detail', () => {
+    const sensitive = summarizePermissionRequest(
+      meta(
+        'read_file',
+        { path: '~/.ssh/id_rsa' },
+        'read_file: ~/.ssh/id_rsa (resolved: /home/u/.ssh/id_rsa) [hit: .ssh (segment) ; rule: sensitive-list ; op: read]',
+      ),
+      W,
+    );
+    expect(sensitive.detail).toBe('解析为 /home/u/.ssh/id_rsa [hit: .ssh (segment) ; rule: sensitive-list ; op: read]');
+  });
+
   it('exposes structured parts: tool name, target and request short id', () => {
     const s = summarizePermissionRequest(meta('bash', { command: 'git status' }), W);
     expect(s.toolName).toBe('bash');

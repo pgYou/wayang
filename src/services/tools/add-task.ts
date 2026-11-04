@@ -2,7 +2,8 @@ import { z } from 'zod';
 import type { TaskDetail } from '@/types/index';
 import type { PermissionConfig } from '@/types/config';
 import { normalizeWorkspacePath, resolveWorkspaceRef } from '@/infra/workspace-registry';
-import { defaultDeniedPaths, isDenied, isPathWithin, normalizePath } from '@/infra/permission/policy';
+import { defaultSensitivePaths, isDenied, isPathWithin, normalizePath } from '@/infra/permission/policy';
+import { mergeSensitiveDirs } from '@/infra/permission/permission-config';
 import { generateId } from '@/utils/id';
 import { defineTool, safeExecute } from './common';
 import { buildWorkspaceRulesSummary } from './workspace-rules';
@@ -46,14 +47,15 @@ export interface AddTaskToolDeps {
   wayangDir?: string | null;
   /**
    * The user's home directory — the boundary an `allowedDirs` entry must stay
-   * inside, and the anchor of the built-in denylist. Injected (never read
+   * inside, and the anchor of the built-in sensitive list. Injected (never read
    * globally); when absent, a call that declares `allowedDirs` is rejected
    * because the boundary cannot be checked.
    */
   homeDir?: string;
   /**
-   * User-config permission section. Its `deniedDirs` extend the built-in
-   * denylist for `allowedDirs` validation. Injected (never read globally).
+   * User-config permission section. Its `sensitiveDirs` (plus the deprecated
+   * `deniedDirs` alias) extend the built-in sensitive list for `allowedDirs`
+   * validation. Injected (never read globally).
    */
   permissionConfig?: PermissionConfig;
 }
@@ -104,8 +106,9 @@ function resolveTaskWorkspace(
  *
  * Every entry is normalized through the shared policy (relative entries resolve
  * against the target workspace), must sit inside the user's home directory, and
- * must not match the denied-path list (built-in denylist plus configured
- * `deniedDirs`). A single bad entry fails the WHOLE call — the returned error
+ * must not match the sensitive list (built-in entries plus configured
+ * `sensitiveDirs`, `deniedDirs` included). A single bad entry fails the WHOLE
+ * call — the returned error
  * names the offending entry and the reason — so a task is never created with a
  * partial grant. Valid entries are deduped while preserving declaration order.
  *
@@ -130,11 +133,9 @@ function resolveTaskAllowedDirs(
   // Relative entries resolve against the task workspace (the same base the
   // policy uses), falling back to home when the workspace is unknown.
   const base = workspacePath !== undefined ? normalizePath(workspacePath, { base: home }) : home;
-  const deniedPaths = [
-    ...defaultDeniedPaths(home),
-    ...(deps.permissionConfig?.deniedDirs ?? [])
-      .filter((d): d is string => typeof d === 'string' && d.length > 0)
-      .map((d) => normalizePath(d, { base: home })),
+  const sensitivePaths = [
+    ...defaultSensitivePaths(home),
+    ...mergeSensitiveDirs(deps.permissionConfig).map((d) => normalizePath(d, { base: home })),
   ].map((d) => normalizePath(d));
 
   const seen = new Set<string>();
@@ -154,9 +155,9 @@ function resolveTaskAllowedDirs(
       };
     }
 
-    if (isDenied(resolved, deniedPaths)) {
+    if (isDenied(resolved, sensitivePaths)) {
       return {
-        error: `Invalid allowedDirs entry "${raw}" (resolved to ${resolved}): it matches the denied-path list (a sensitive location such as credentials or tool config). The task was NOT created.`,
+        error: `Invalid allowedDirs entry "${raw}" (resolved to ${resolved}): it matches the sensitive list (a protected location such as credentials or tool config). The task was NOT created.`,
       };
     }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { wrapWithPermissionMiddleware } from '@/services/tools/permission-middleware';
 import type { SignalQueue } from '@/services/signal/signal-queue';
+import { createMockLogger } from '@/__tests__/helpers';
 
 function mockSignalQueue() {
   const enqueued: any[] = [];
@@ -24,7 +25,7 @@ function mockTool(name: string, returnValue: string) {
 const alwaysBlock = () => ({ decision: 'ask' as const });
 /** Verdict that never asks (for passthrough tests). */
 const neverBlock = () => ({ decision: 'allow' as const });
-/** Verdict that refuses without asking (denylist semantics). */
+/** Verdict that refuses without asking (sensitive-write semantics). */
 const policyDeny = () => ({ decision: 'deny' as const, message: '[ERROR] bash: refused by the path permission policy' });
 /** Verdict that asks only for dangerous bash keywords. */
 const dangerousBashCheck = (toolName: string, args: any) =>
@@ -304,7 +305,7 @@ describe('wrapWithPermissionMiddleware', () => {
       signalQueue: queue as unknown as SignalQueue,
     });
 
-    const output = await result.wrappedTools.bash.execute({ command: 'cat ~/.ssh/id_rsa' });
+    const output = await result.wrappedTools.bash.execute({ command: 'rm -rf ~/.ssh' });
 
     // The policy message is returned verbatim (it controls disclosure) ...
     expect(output).toBe('[ERROR] bash: refused by the path permission policy');
@@ -312,5 +313,251 @@ describe('wrapWithPermissionMiddleware', () => {
     expect(queue.enqueue).not.toHaveBeenCalled();
     // ... and the tool never runs.
     expect(tools.bash.execute).not.toHaveBeenCalled();
+  });
+
+  describe('permission audit trail', () => {
+    /** Sensitive-read verdict: the shape `decideToolAccess` produces on a hit. */
+    const sensitiveAsk = () => ({
+      decision: 'ask' as const,
+      matchedRule: 'sensitive-list',
+      matchedEntry: '.ssh',
+      matchedSource: 'segment' as const,
+      resolvedPath: '/home/u/.ssh/id_rsa',
+      sensitive: true,
+      access: 'read' as const,
+    });
+
+    function auditCalls(logger: ReturnType<typeof createMockLogger>): Record<string, any>[] {
+      return (logger.info as ReturnType<typeof vi.fn>).mock.calls
+        .map((call) => call[0] as Record<string, any>)
+        .filter((record) => record && record.audit === 'permission');
+    }
+
+    it('records an APPROVED request (with the hit) before running the tool', async () => {
+      const logger = createMockLogger();
+      const tools = mockTool('read_file', 'PRIVATE-KEY');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['read_file'],
+        decide: sensitiveAsk,
+        describeCall: (name, args) => `read_file: ${args.path}`,
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      const pending = result.wrappedTools.read_file.execute({ path: '~/.ssh/id_rsa' });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+      // The request itself explains the hit, and carries the structured fields.
+      expect(payload.description).toContain('hit: .ssh (segment)');
+      expect(payload.description).toContain('rule: sensitive-list');
+      expect(payload.description).toContain('op: read');
+      expect(payload.matchedEntry).toBe('.ssh');
+      expect(payload.matchedSource).toBe('segment');
+      expect(payload.resolvedPath).toBe('/home/u/.ssh/id_rsa');
+      expect(payload.operation).toBe('read');
+      expect(payload.sensitive).toBe(true);
+
+      result.resolvePermission(payload.requestId, true);
+      await pending;
+
+      const audits = auditCalls(logger);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        audit: 'permission',
+        decision: 'approved',
+        operation: 'read',
+        // #43: the judged direction travels as its own field.
+        access: 'read',
+        resolvedPath: '/home/u/.ssh/id_rsa',
+        requestedPath: '~/.ssh/id_rsa',
+        matchedEntry: '.ssh',
+        matchedSource: 'segment',
+        matchedRule: 'sensitive-list',
+        taskId: 't1',
+        workerId: 'w1',
+        toolName: 'read_file',
+      });
+      // The audit never quotes the file it protected.
+      expect(JSON.stringify(audits[0])).not.toContain('PRIVATE-KEY');
+    });
+
+    it('records a DENIED request with its source', async () => {
+      const logger = createMockLogger();
+      const tools = mockTool('read_file', 'PRIVATE-KEY');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['read_file'],
+        decide: sensitiveAsk,
+        describeCall: (name, args) => `read_file: ${args.path}`,
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      const pending = result.wrappedTools.read_file.execute({ path: '~/.ssh/id_rsa' });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+      result.resolvePermission(payload.requestId, false, 'not needed');
+      expect(await pending).toContain('Permission denied');
+
+      const audits = auditCalls(logger);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({ decision: 'denied', source: 'controller', taskId: 't1' });
+      expect(tools.read_file.execute).not.toHaveBeenCalled();
+    });
+
+    it('records a timeout as a denial', async () => {
+      vi.useFakeTimers();
+      const logger = createMockLogger();
+      const tools = mockTool('read_file', 'PRIVATE-KEY');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['read_file'],
+        decide: sensitiveAsk,
+        describeCall: () => 'read_file',
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+        timeoutMs: 10,
+      });
+
+      const pending = result.wrappedTools.read_file.execute({ path: '~/.ssh/id_rsa' });
+      await vi.advanceTimersByTimeAsync(20);
+      expect(await pending).toContain('timed out');
+      expect(auditCalls(logger)[0]).toMatchObject({ decision: 'denied', source: 'timeout' });
+      vi.useRealTimers();
+    });
+
+    it('records a HARD DENIAL without asking', async () => {
+      const logger = createMockLogger();
+      const tools = mockTool('write_file', 'should not run');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['write_file'],
+        decide: () => ({
+          decision: 'deny' as const,
+          message: '[ERROR] write_file: refused',
+          matchedRule: 'sensitive-list-write',
+          matchedEntry: '.ssh',
+          matchedSource: 'segment' as const,
+          resolvedPath: '/home/u/.ssh/authorized_keys',
+          sensitive: true,
+          access: 'write' as const,
+        }),
+        describeCall: () => 'write_file',
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      const output = await result.wrappedTools.write_file.execute({
+        path: '~/.ssh/authorized_keys',
+        content: 'SECRET-CONTENT',
+      });
+      expect(output).toBe('[ERROR] write_file: refused');
+      expect(queue.enqueue).not.toHaveBeenCalled();
+
+      const audits = auditCalls(logger);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        decision: 'hard-denied',
+        operation: 'write',
+        access: 'write',
+        matchedEntry: '.ssh',
+        matchedRule: 'sensitive-list-write',
+        resolvedPath: '/home/u/.ssh/authorized_keys',
+        taskId: 't1',
+        workerId: 'w1',
+      });
+      // No file content ever reaches the audit record.
+      expect(JSON.stringify(audits[0])).not.toContain('SECRET-CONTENT');
+    });
+
+    /**
+     * #42 + #43 together: a dangerous bash command that hits the sensitive list
+     * keeps BOTH the hit and the danger in the approval description, and the
+     * audit says `exec` (tool category) with its own `access` direction.
+     */
+    it('keeps the sensitive hit of a dangerous bash ask, and audits exec + access', async () => {
+      const logger = createMockLogger();
+      const tools = mockTool('bash', 'ran');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['bash'],
+        // The shape `evaluateBashAccess` produces for `sudo cat ~/.ssh/id_rsa`.
+        decide: () => ({
+          decision: 'ask' as const,
+          matchedRule: 'dangerous-bash',
+          matchedEntry: '.ssh',
+          matchedSource: 'segment' as const,
+          resolvedPath: '/home/u/.ssh/id_rsa',
+          sensitive: true,
+          access: 'unknown' as const,
+        }),
+        describeCall: (_name, args) => `Execute shell command: ${args.command}`,
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      const pending = result.wrappedTools.bash.execute({ command: 'sudo cat ~/.ssh/id_rsa' });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+
+      // The approval names the danger AND the entry it hit.
+      expect(payload.description).toContain('rule: dangerous-bash');
+      expect(payload.description).toContain('hit: .ssh (segment)');
+      expect(payload.matchedRule).toBe('dangerous-bash');
+      expect(payload.matchedEntry).toBe('.ssh');
+
+      result.resolvePermission(payload.requestId, false, 'no');
+      await pending;
+
+      const audits = auditCalls(logger);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        decision: 'denied',
+        // Tool category stays exec; the direction is its own field.
+        operation: 'exec',
+        access: 'unknown',
+        matchedRule: 'dangerous-bash',
+        matchedEntry: '.ssh',
+        resolvedPath: '/home/u/.ssh/id_rsa',
+        toolName: 'bash',
+      });
+    });
+
+    it('records access: unknown when the verdict judged no direction', async () => {
+      const logger = createMockLogger();
+      const tools = mockTool('bash', 'ran');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['bash'],
+        decide: () => ({ decision: 'ask' as const, matchedRule: 'dynamic-shell', reason: 'could not parse' }),
+        describeCall: () => 'Execute shell command',
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      const pending = result.wrappedTools.bash.execute({ command: 'echo $((' });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+      result.resolvePermission(payload.requestId, false, 'no');
+      await pending;
+
+      const audit = auditCalls(logger)[0];
+      expect(audit).toMatchObject({ operation: 'exec', access: 'unknown', decision: 'denied' });
+    });
   });
 });

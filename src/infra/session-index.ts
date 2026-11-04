@@ -45,7 +45,13 @@ export interface SessionIndex {
   list(query?: ListSessionsQuery): SessionEntry[];
   /** Look up a single session by ID. */
   get(sessionId: string): SessionEntry | null;
-  /** Most recently created session for a workspace, or null. */
+  /**
+   * Most recently *created* session for a workspace, or null.
+   *
+   * Deliberately creation-ordered: the default resume path does not use this —
+   * `getLatestSessionForWorkspace` ranks by last activity (issue #40), because
+   * it needs to read session content, which this meta-only index does not.
+   */
   latestForWorkspace(workspace: string, opts?: { includeArchived?: boolean }): SessionEntry | null;
   /** Record a session that was just created/updated in this process. */
   upsert(entry: SessionEntry): void;

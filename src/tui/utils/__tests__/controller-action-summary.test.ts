@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  ADD_TASK_WORKSPACE_TAG_MAX_WIDTH,
+  formatAddTaskWorkspaceTag,
   previewLines,
   summarizeAddTask,
   summarizeWorkerMessage,
 } from '@/tui/utils/controller-action-summary';
+import { stringWidth } from '@/tui/utils/text-width';
 
 // --- previewLines ---
 
@@ -121,5 +124,65 @@ describe('summarizeAddTask', () => {
     expect(s.outcome).toBe('failed');
     expect(s.failure).toBe('Unknown worker type "foo".');
     expect(s.taskShortId).toBeUndefined();
+  });
+});
+
+describe('summarizeAddTask workspace', () => {
+  const dispatch = (workspace?: string): string => JSON.stringify({
+    title: '写测试',
+    description: '补充单测',
+    ...(workspace !== undefined && { workspace }),
+  });
+
+  it('resolves the slug of a declared workspace from the known identities', () => {
+    const s = summarizeAddTask(dispatch('/w/other'), 80, undefined, {
+      defaultWorkspacePath: '/w/default',
+      workspaces: [{ path: '/w/other', slug: 'other-2' }],
+    });
+
+    expect(s.workspaceSlug).toBe('other-2');
+    expect(formatAddTaskWorkspaceTag(s.workspaceSlug)).toBe(' — other-2');
+  });
+
+  it('adds nothing when the call declared no workspace (default dispatch)', () => {
+    const s = summarizeAddTask(dispatch(), 80, undefined, { defaultWorkspacePath: '/w/default' });
+
+    expect(s.workspaceSlug).toBeUndefined();
+    expect(formatAddTaskWorkspaceTag(s.workspaceSlug)).toBe('');
+  });
+
+  it('adds nothing when the declared workspace is the default one', () => {
+    const s = summarizeAddTask(dispatch('/w/default/'), 80, undefined, { defaultWorkspacePath: '/w/default' });
+
+    expect(s.workspaceSlug).toBeUndefined();
+  });
+
+  it('falls back to the directory name when no slug is known', () => {
+    const s = summarizeAddTask(dispatch('/w/Unregistered Project'), 80, undefined, {
+      defaultWorkspacePath: '/w/default',
+      workspaces: [],
+    });
+
+    expect(s.workspaceSlug).toBe('unregistered-project');
+  });
+
+  it('keeps the header inside the column budget once the tag is appended', () => {
+    const longSlug = dispatch('/w/a-very-long-unregistered-workspace-name-here');
+    const s = summarizeAddTask(longSlug, 80, { text: 'Task t-1-abcd added.' }, {
+      defaultWorkspacePath: '/w/default',
+      workspaces: [],
+    });
+    const tag = formatAddTaskWorkspaceTag(s.workspaceSlug);
+
+    expect(stringWidth(tag)).toBeLessThanOrEqual(ADD_TASK_WORKSPACE_TAG_MAX_WIDTH);
+    // Header chrome (icon+label+#id+outcome = 27) + tag (tag + 1 separator) +
+    // title, measured against the 80-column terminal the row is drawn in.
+    expect(27 + stringWidth(tag) + 1 + stringWidth(s.title)).toBeLessThanOrEqual(80);
+  });
+
+  it('never lets a CJK slug tag exceed its width cap', () => {
+    for (let width = 1; width <= ADD_TASK_WORKSPACE_TAG_MAX_WIDTH; width += 1) {
+      expect(stringWidth(formatAddTaskWorkspaceTag('数据平台工作区', width))).toBeLessThanOrEqual(width);
+    }
   });
 });

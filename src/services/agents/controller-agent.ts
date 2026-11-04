@@ -20,6 +20,7 @@ import {
   SUMMARIZER_SYSTEM_PROMPT,
   buildSummarizerPrompt,
   buildControllerSystemPrompt,
+  loadControllerRules,
 } from './prompts/index';
 import { createControllerTools } from '@/services/tools/index';
 import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
@@ -76,6 +77,13 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     tools: ToolSet,
     skills: import('@/services/skills/registry').SkillRegistry,
     recorder: ToolCallRecorder = new ToolCallRecorder(),
+    /**
+     * Startup rules section (home + cwd AGENTS.md), already rendered by
+     * `loadControllerRules()` in `create()`. Passed in rather than read here
+     * so the files are touched exactly once per process and the prompt never
+     * changes mid-session.
+     */
+    controllerRules?: string,
   ) {
     super(provider);
     this.ctx = ctx;
@@ -93,7 +101,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 
     this.contextManager = new ContextManager(
       state,
-      buildControllerSystemPrompt(this.ctx, skills),
+      buildControllerSystemPrompt(this.ctx, skills, { rules: controllerRules }),
       provider.contextWindowTokens,
     );
     this.setHooks({
@@ -128,13 +136,22 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 
     // Derive the read scope for controller file access. The wayang data dir
     // lives at <userHome>/.wayang, so its parent is the user's home — the home
-    // the read policy anchors on (denylisting ~/.wayang inside it in turn).
+    // the read policy anchors on (with ~/.wayang sensitive inside it in turn).
     // Ad-hoc session dirs (hand-built temp dirs in tests) don't follow the
     // `<wayangDir>/sessions/<id>` layout, so fall back to the OS home rather
     // than guessing a parent.
     const wayangDir = wayangDirForSessionDir(ctx.sessionDir);
     const homeDir =
       wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
+
+    // Startup rules (issue #38): the home AGENTS.md as baseline, the cwd one as
+    // supplement, read once here — the prompt is built from this string and
+    // never re-read between turns. Missing files yield an empty string, so the
+    // prompt is unchanged when neither exists.
+    const controllerRules = loadControllerRules({
+      homeDir,
+      cwd: ctx.workspaceDir || process.cwd(),
+    });
 
     const tools = createControllerTools({
       addTask: (task: TaskDetail) => engine.add(task),
@@ -165,7 +182,8 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       cwd: ctx.workspaceDir,
       homeDir,
       // User-config permission section: add_task validates a task's allowedDirs
-      // against the built-in denylist plus these configured deniedDirs.
+      // against the built-in sensitive list plus these configured
+      // sensitiveDirs (the deprecated deniedDirs alias is merged in).
       permissionConfig: opts.config.permission,
       getNotebook: () => state.get<string>('runtimeState.notebook') ?? '',
       setNotebook: (content, mode) => {
@@ -191,7 +209,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       wayangDir,
     });
 
-    return new ControllerAgent(ctx, state, provider, tools, skills, recorder);
+    return new ControllerAgent(ctx, state, provider, tools, skills, recorder, controllerRules);
   }
 
   /** Run the controller agent — streams text chunks while updating streamingEntries in state. */

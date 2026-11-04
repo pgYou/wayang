@@ -11,6 +11,7 @@
  */
 import type { PermissionRequestMeta, WorkerInquiryMeta } from '@/types/conversation';
 import type { DisplayItem } from '@/tui/types/display-item';
+import { EMPTY_WORKSPACE_CONTEXT, type WorkspaceDisplayContext } from '@/tui/utils/workspace-display';
 
 /** Display context of one worker, collected from its signal rows. */
 export interface WorkerContext {
@@ -42,6 +43,12 @@ export interface ChatLookups {
   workers: Map<string, WorkerContext>;
   /** workerType → display emoji (first one seen). */
   workerTypeEmoji: Map<string, string>;
+  /**
+   * Session workspace context. Not derived from the items: an `add_task` row
+   * carries only the declared path, so it needs the default workspace and the
+   * known identities to resolve the same slug `/tasks` shows.
+   */
+  workspace: WorkspaceDisplayContext;
 }
 
 export const EMPTY_CHAT_LOOKUPS: ChatLookups = {
@@ -49,10 +56,14 @@ export const EMPTY_CHAT_LOOKUPS: ChatLookups = {
   inquiries: new Map(),
   workers: new Map(),
   workerTypeEmoji: new Map(),
+  workspace: EMPTY_WORKSPACE_CONTEXT,
 };
 
 /** Build the lookups from the chat's display items. */
-export function buildChatLookups(items: readonly DisplayItem[]): ChatLookups {
+export function buildChatLookups(
+  items: readonly DisplayItem[],
+  workspace: WorkspaceDisplayContext = EMPTY_WORKSPACE_CONTEXT,
+): ChatLookups {
   const permissionRequests = new Map<string, PermissionRequestContext>();
   const inquiries = new Map<string, WorkerInquiryContext>();
   const workers = new Map<string, WorkerContext>();
@@ -90,7 +101,7 @@ export function buildChatLookups(items: readonly DisplayItem[]): ChatLookups {
     }
   }
 
-  return { permissionRequests, inquiries, workers, workerTypeEmoji };
+  return { permissionRequests, inquiries, workers, workerTypeEmoji, workspace };
 }
 
 /**

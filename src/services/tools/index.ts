@@ -61,14 +61,15 @@ export interface ControllerToolDeps {
   cwd?: string;
   /**
    * The user's home directory — the read scope for search_files, and the
-   * boundary add_task's `allowedDirs` must stay inside. Denylisted subpaths
+   * boundary add_task's `allowedDirs` must stay inside. Sensitive subpaths
    * (credentials, tool config, ~/.wayang) stay unreadable. This is NOT
    * ~/.wayang; it is the home that contains it.
    */
   homeDir?: string;
   /**
-   * User-config permission section, injected into add_task so its `deniedDirs`
-   * extend the built-in denylist when validating `allowedDirs`.
+   * User-config permission section, injected into add_task so its
+   * `sensitiveDirs` (and the deprecated `deniedDirs` alias) extend the built-in
+   * sensitive list when validating `allowedDirs`.
    */
   permissionConfig?: PermissionConfig;
   /** Get worker conversation entries for a task. */

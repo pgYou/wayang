@@ -1,6 +1,6 @@
 // Types barrel — re-export all for backward compatibility
 
-export type { ProviderConfig, WayangConfig, WorkerConfig, ToolChoice } from './config';
+export type { ProviderConfig, WayangConfig, WorkerConfig, ToolChoice, PermissionConfig, SensitiveMode } from './config';
 export { validateConfig } from './config';
 
 export type {
