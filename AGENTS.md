@@ -31,6 +31,14 @@ Wayang is a multi-agent orchestration platform — a CLI tool that coordinates m
 - 发布收口：版本号与 `CHANGELOG.md` 校准完成、跑通全量测试后打 tag，并将 release 分支合并回 main。
 - 小改动（文档、文案、单文件修补）可直接在 release 分支上提交，不必单开 feat 分支。
 
+### 问题跟踪与 PR 关联
+
+- 开发过程中发现的问题（bug、体验缺陷、设计疑问、待验证的假设）先提交 issue 记录，写清现象、影响、期望行为与验收标准；不要用对话记录或 TODO 注释代替 issue。
+- 修复或实现时，PR 正文必须引用对应 issue：修复类用 `Fixes #N`（合并后自动关闭），关联类用 `Refs #N`；并在 PR 描述里说明改动范围与验收结果。
+- 一个 PR 可以关联多个 issue，但主 issue 只写一个（放在开头的 Fixes/Refs）。
+- 问题解决后回填 issue：结论、关联 PR 链接；确认无需再跟进时再关闭。
+- 需求范围与版本的关系：issue 纳入某个版本时，同步写进该版本 CHANGELOG 段落的规划里（见「版本规划」）。
+
 ## Commands
 
 ```bash
