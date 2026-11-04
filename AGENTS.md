@@ -25,12 +25,20 @@ Wayang is a multi-agent orchestration platform — a CLI tool that coordinates m
 
 ### 需求开发与合流
 
-- 并行需求或改动较大的需求，基于 `release/x.y.z` 拉 `feat/xxx` 分支开发；需要同时推进多个需求时用 git worktree 隔离工作区，例如 `git worktree add -b feat/xxx ../wayang-xxx origin/release/x.y.z`。
+- 并行需求或改动较大的需求，基于 `release/x.y.z` 拉 `feat/xxx` 分支开发；需要同时推进多个需求时用独立 worktree 隔离工作区（见「工作区布局」）。
 - 需求开发完成、跑完门槛后，直接在本地把 feat 分支合入 `release/x.y.z` 并推送，例如 `git checkout release/x.y.z && git merge --no-ff feat/xxx && git push`。
 - 合入 release 分支不需要开 PR；PR 只用于需要评审、或 release 最终合回 main 的场景。
 - 开发前先确定验收标准；实现后跑完门槛（`npm run lint`、`npx vitest run`、`npm run build`）再合入 release。
 - 发布收口：版本号与 `CHANGELOG.md` 校准完成、跑通全量测试后打 tag，并将 release 分支合并回 main。
 - 小改动（文档、文案、单文件修补）可直接在 release 分支上提交，不必单开 feat 分支。
+
+### 工作区布局
+
+- 主仓常驻 `release/x.y.z` 分支，不用于直接开发需求；它承担合流与发布的角色。
+- 需求一律在独立 worktree 的功能分支上开发，worktree 从 release 分支拉出，例如 `git worktree add -b feat/xxx ../wayang-xxx release/x.y.z`；并行需求各占一个 worktree。
+- 同一个分支只能被一个工作区检出：`release/x.y.z` 由主仓检出，worktree 只挂 `feat/xxx` 或 `docs/xxx`。
+- 需求完成后回到主仓合流：`git merge --no-ff feat/xxx && git push`，不需要 PR。
+- 合流后清理：`git worktree remove ../wayang-xxx` 并删除已合入的功能分支，保持 `git worktree list` 只有主仓与在进行中的需求。
 
 ### 问题跟踪与 PR 关联
 
