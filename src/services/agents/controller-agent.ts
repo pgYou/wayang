@@ -20,6 +20,7 @@ import {
   SUMMARIZER_SYSTEM_PROMPT,
   buildSummarizerPrompt,
   buildControllerSystemPrompt,
+  loadControllerRules,
 } from './prompts/index';
 import { createControllerTools } from '@/services/tools/index';
 import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
@@ -76,6 +77,13 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     tools: ToolSet,
     skills: import('@/services/skills/registry').SkillRegistry,
     recorder: ToolCallRecorder = new ToolCallRecorder(),
+    /**
+     * Startup rules section (home + cwd AGENTS.md), already rendered by
+     * `loadControllerRules()` in `create()`. Passed in rather than read here
+     * so the files are touched exactly once per process and the prompt never
+     * changes mid-session.
+     */
+    controllerRules?: string,
   ) {
     super(provider);
     this.ctx = ctx;
@@ -93,7 +101,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 
     this.contextManager = new ContextManager(
       state,
-      buildControllerSystemPrompt(this.ctx, skills),
+      buildControllerSystemPrompt(this.ctx, skills, { rules: controllerRules }),
       provider.contextWindowTokens,
     );
     this.setHooks({
@@ -135,6 +143,15 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     const wayangDir = wayangDirForSessionDir(ctx.sessionDir);
     const homeDir =
       wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
+
+    // Startup rules (issue #38): the home AGENTS.md as baseline, the cwd one as
+    // supplement, read once here — the prompt is built from this string and
+    // never re-read between turns. Missing files yield an empty string, so the
+    // prompt is unchanged when neither exists.
+    const controllerRules = loadControllerRules({
+      homeDir,
+      cwd: ctx.workspaceDir || process.cwd(),
+    });
 
     const tools = createControllerTools({
       addTask: (task: TaskDetail) => engine.add(task),
@@ -192,7 +209,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       wayangDir,
     });
 
-    return new ControllerAgent(ctx, state, provider, tools, skills, recorder);
+    return new ControllerAgent(ctx, state, provider, tools, skills, recorder, controllerRules);
   }
 
   /** Run the controller agent — streams text chunks while updating streamingEntries in state. */
