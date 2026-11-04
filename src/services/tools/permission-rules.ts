@@ -28,7 +28,9 @@
  *   - the destructive-command heuristic, which stays a "ask the controller"
  *     tier on top of the policy (the policy only judges paths),
  *   - escalation to `ask` when a target cannot be determined statically:
- *     `~user` (another user's home), command substitution, output redirection.
+ *     `~user` (another user's home), command substitution, output redirection,
+ *     and a read-only-table command that FAILED its own deferred condition
+ *     (`sed -f`, a script that executes or writes — `read-only-unverified`).
  *
  * Verdicts: `allow` → run immediately, `ask` → controller approval,
  * `deny` → refuse without asking (`sensitiveMode: 'deny'` on a sensitive hit).
@@ -75,7 +77,8 @@ export type WorkerMatchedRule =
   | 'dangerous-bash'
   | 'no-path'
   | 'home-other-user'
-  | 'dynamic-shell';
+  | 'dynamic-shell'
+  | 'read-only-unverified';
 
 /** Everything the shared policy needs to know about ONE worker run's boundary. */
 export interface WorkerAccessScope {
@@ -136,8 +139,9 @@ export interface ToolAccessDecision {
   /**
    * Canonical paths this call would need approval FOR — one entry per asking
    * candidate, and only on an `ask` reached by judging path candidates (a
-   * `dangerous-bash`, `dynamic-shell` or `home-other-user` escalation carries
-   * none: those asks are not "one path, once" decisions).
+   * `dangerous-bash`, `dynamic-shell`, `home-other-user` or
+   * `read-only-unverified` escalation carries none: those asks are not "one
+   * path, once" decisions).
    *
    * Exists for the task approval memory (issue #46): a grant is per
    * `direction:path`, so a reuse decision must know EVERY path the call asks
@@ -157,15 +161,22 @@ export interface ToolAccessDecision {
  * forces an approval. Treating it as a relative path would be wrong: a shell
  * reads `cat ~root/.ssh/x` as `/root/.ssh/x`, not as workspace-relative.
  */
-interface HomeExpansion {
+export interface HomeExpansion {
   /** Path after `~` / `~/` expansion; unchanged for `~<name>`. */
   path: string;
   /** True for `~<name>` — another user's home, which cannot be resolved safely. */
   unresolvable: boolean;
 }
 
-/** Expand a leading `~` / `~/` against `homeDir`; flag `~<name>` as unresolvable. */
-function expandHome(p: string, homeDir: string): HomeExpansion {
+/**
+ * Expand a leading `~` / `~/` against `homeDir`; flag `~<name>` as unresolvable.
+ *
+ * Exported for the file tools (starting with `read_file`): the tool must open
+ * the SAME path the permission gate judged, so both expand against the one
+ * injected home directory — never the process's own `os.homedir()`, which can
+ * differ from the gate's anchor (`--home-dir`).
+ */
+export function expandHome(p: string, homeDir: string): HomeExpansion {
   if (p === '~') return { path: homeDir, unresolvable: false };
   if (p.startsWith('~/')) return { path: resolve(homeDir, p.slice(2)), unresolvable: false };
   if (p.startsWith('~')) return { path: p, unresolvable: true };
@@ -205,6 +216,12 @@ function expandHomeVars(command: string, homeDir: string): string {
  *     live inside the script string — `isReadOnlySedScript` (see
  *     `SED_READ_ONLY_SCRIPT_COMMANDS`);
  *   - `git` is a read only for its read subcommands — `isReadOnlyGitCommand`.
+ *
+ * A condition that FAILS is not the same as an off-table command: `sed` is on
+ * the table because it usually only reads, so a script that executes, writes
+ * or cannot be located makes the segment `unverified` (see `classifySegment`)
+ * and the top level escalates it to an approval (`read-only-unverified`)
+ * instead of letting the no-candidate fallback run it silently.
  *
  * Classifying a read never widens what a worker may touch on its own: the
  * policy still judges every path, and a policy allow that rests solely on
@@ -792,39 +809,96 @@ function headCommand(segment: ShellSegment): { command: string; words: string[] 
 }
 
 /**
- * Is this segment a read? It must not write (write verb, write flag, or a
- * redirection into a real file — `isWriteSegment`) and its head command must be
- * on `READ_ONLY_COMMANDS`, with the extra conditions that table defers.
+ * How ONE segment classifies, plus WHY a read-only-table command inside it
+ * could not be verified as a read.
  *
- * Opt-in, so anything the gate has not been taught to read — `python`, `make`,
- * `npm`, `xargs`, an unparsable head — stays `unknown`.
+ * `unverified` is the fail-closed signal the top level escalates on (see
+ * `unverifiedReadOnlyCommand`): an off-table command (`python`, `make`, `npm`)
+ * is merely `unknown` and keeps the historic no-candidate allow, while a table
+ * member that failed its OWN check must never run silently on the table's
+ * promise that it only reads.
  */
-function isReadOnlySegment(segment: ShellSegment): boolean {
-  if (isWriteSegment(segment)) return false;
-  const head = headCommand(segment);
-  if (head === undefined) return false;
-  if (!READ_ONLY_COMMANDS.has(head.command)) return false;
-  if (head.command === 'git') return isReadOnlyGitCommand(head.words);
-  // `sed` is a read only when its SCRIPT cannot execute or write: the ability
-  // rides inside a script word, so it is judged here rather than by the token
-  // sweep. The `-i` write forms were already settled by `isWriteSegment`.
-  if (head.command === 'sed') {
-    const scripts = sedScriptsOf(head.words);
-    if (scripts === undefined) return false;
-    return scripts.every((script) => isReadOnlySedScript(script));
-  }
-  return true;
+interface SegmentClassification {
+  /** The access this segment justifies — see `classifySegment`. */
+  mode: AccessMode;
+  /**
+   * The head command when it is on `READ_ONLY_COMMANDS` but the deferred
+   * condition the table attaches to it failed — today only `sed` has one (a
+   * script that executes, writes, or cannot be located at all). A future
+   * condition on `find` / `git` would plug in here. Never set on a write
+   * segment: a write verb / flag / redirection settles the segment as a write
+   * FIRST, whatever the table says.
+   */
+  unverified?: string;
 }
 
 /**
- * The access a SINGLE segment justifies: `write` when it certainly writes,
- * `read` when its head command is on the read-only table, `unknown` otherwise.
- * Segments are judged independently so a `cat` next to a `tee` keeps its own
- * direction.
+ * Classify one segment: `write` when it certainly writes (write verb, write
+ * flag, or a redirection into a real file — `isWriteSegment`), `read` when its
+ * head command is on `READ_ONLY_COMMANDS` AND every deferred condition that
+ * table attaches to it holds, `unknown` otherwise. Segments are judged
+ * independently so a `cat` next to a `tee` keeps its own direction.
  */
+function classifySegment(segment: ShellSegment): SegmentClassification {
+  if (isWriteSegment(segment)) return { mode: 'write' };
+  const head = headCommand(segment);
+  if (head === undefined) return { mode: 'unknown' };
+  if (!READ_ONLY_COMMANDS.has(head.command)) return { mode: 'unknown' };
+  if (head.command === 'git') {
+    // `git`'s subcommand check is a classifier, not a deferred condition: a
+    // non-read subcommand is DETERMINED not to be a read (like an off-table
+    // command), not "a reader we failed to verify". It therefore stays
+    // `unknown` and keeps the historic no-candidate allow (`git clone …`).
+    return { mode: isReadOnlyGitCommand(head.words) ? 'read' : 'unknown' };
+  }
+  // `sed` is a read only when its SCRIPT cannot execute or write: the ability
+  // rides inside a script word, so it is judged here rather than by the token
+  // sweep. The `-i` write forms were already settled by `isWriteSegment`.
+  // When the check fails the segment is not merely `unknown`: `sed` is on the
+  // table precisely because it usually only reads, so the failure is reported
+  // as `unverified` for the top level to escalate on.
+  if (head.command === 'sed') {
+    const scripts = sedScriptsOf(head.words);
+    if (scripts === undefined) return { mode: 'unknown', unverified: 'sed' };
+    return scripts.every((script) => isReadOnlySedScript(script))
+      ? { mode: 'read' }
+      : { mode: 'unknown', unverified: 'sed' };
+  }
+  return { mode: 'read' };
+}
+
+/**
+ * Is this segment a VERIFIED read? (see `classifySegment`)
+ *
+ * Opt-in, so anything the gate has not been taught to read — `python`, `make`,
+ * `npm`, `xargs`, an unparsable head — stays `unknown`. A table command whose
+ * deferred condition failed is `unknown` too, but carries `unverified` in its
+ * classification (see `unverifiedReadOnlyCommand`).
+ */
+function isReadOnlySegment(segment: ShellSegment): boolean {
+  return classifySegment(segment).mode === 'read';
+}
+
+/** The access a SINGLE segment justifies — see `classifySegment`. */
 function segmentAccess(segment: ShellSegment): AccessMode {
-  if (isWriteSegment(segment)) return 'write';
-  return isReadOnlySegment(segment) ? 'read' : 'unknown';
+  return classifySegment(segment).mode;
+}
+
+/**
+ * The first head command that is on `READ_ONLY_COMMANDS` but FAILED the
+ * deferred condition the table attaches to it (see `classifySegment`), or
+ * undefined. This is the fail-closed signal for the top level: such a line
+ * must not run silently just because it produced no asking path candidate
+ * (relative operands only) or only candidates the policy would allow — the
+ * table's promise ("this command only reads") is exactly what failed to
+ * verify.
+ */
+function unverifiedReadOnlyCommand(segments: readonly ShellSegment[]): string | undefined {
+  for (const segment of segments) {
+    const { unverified } = classifySegment(segment);
+    if (unverified !== undefined) return unverified;
+  }
+  return undefined;
 }
 
 /** A path candidate plus how the policy should judge it. */
@@ -1198,13 +1272,18 @@ function fallbackSensitiveHit(
  * Ordering: a hard refusal (only reachable under `sensitiveMode: 'deny'`, from
  * the candidate sweep) → destructive-command tier → dynamic constructs (a
  * command substitution that is not read-only, an output redirection into a real
- * file, a command the lexer cannot parse) → remaining `ask` candidates → allow.
+ * file, a command the lexer cannot parse) → the read-only-unverified
+ * escalation (a table command that failed its deferred condition) → remaining
+ * `ask` candidates (a sensitive ask first, then the ordinary ones) → allow.
  * A hard refusal therefore outranks the destructive-command heuristic, and a
  * sensitive `ask` carries its hit into the approval request.
  *
  * Fallback when the command yields NO path candidate (`ls -la`, `npm test`,
  * `sed -n 1,10p src/cli.ts`): there is nothing for the policy to judge, so the
  * historic rule applies — a dangerous command still asks, anything else runs.
+ * The one exception is the read-only-unverified escalation above: a table
+ * command that failed its deferred condition asks precisely because the
+ * table's "this only reads" promise is what could not be verified.
  * Relative spellings are never candidates, so the sensitive list cannot see
  * them; they are confined by the task workspace (the shell's cwd), as before.
  *
@@ -1375,6 +1454,31 @@ function evaluateBashCommand(
   }
 
   if (sensitiveAsk) return sensitiveAsk;
+
+  // A read-only-table command whose deferred condition failed (`sed -f`, a
+  // script that executes or writes): the line LOOKS like a reader, and that is
+  // exactly what could not be proven. It asks even with no path candidate at
+  // all (relative operands only) and even when every candidate sits inside the
+  // workspace — an allow must never rest on a verification that failed. The
+  // tiers above keep their priority (a sensitive hit still names its entry, a
+  // destructive command still reports `dangerous-bash`), a write segment was
+  // already settled as a write inside `classifySegment`, and the ask carries
+  // no `askPaths`: it is about the command, not one path, so the task
+  // approval memory (issue #46) can never cover it with an old grant.
+  const unverifiedCommand = unverifiedReadOnlyCommand(segments);
+  if (unverifiedCommand !== undefined) {
+    return {
+      decision: 'ask',
+      matchedRule: 'read-only-unverified',
+      reason:
+        `\`${unverifiedCommand}\` is on the read-only command table, but its script or arguments ` +
+        'cannot be verified as read-only — controller approval is required',
+      // Never audited as a read: read-only-ness is exactly what failed to
+      // verify. A candidate-proven write keeps its direction.
+      access: lineAccess === 'write' ? 'write' : 'unknown',
+    };
+  }
+
   if (firstAsk) return firstAsk;
   if (firstAllow) return firstAllow;
   // No candidate to judge: the verdict is the historic one, but the line still

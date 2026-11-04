@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writeFileTool } from '@/services/tools/write-file';
@@ -92,13 +92,16 @@ describe('write_file path validation', () => {
 
 describe('read_file path validation', () => {
   let cwd: string;
+  let home: string;
 
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), 'wayang-test-'));
+    home = mkdtempSync(join(tmpdir(), 'wayang-home-'));
   });
 
   afterEach(() => {
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   });
 
   it('should read file within cwd', async () => {
@@ -106,5 +109,39 @@ describe('read_file path validation', () => {
     const tool = readFileTool({ cwd });
     const result = await exec(tool, { path: 'test.txt' });
     expect(result).toBe('1\thello');
+  });
+
+  /**
+   * 0.8.4 P3: a leading `~` used to be resolved against the WORKSPACE
+   * (`<workspace>/~/x.txt` → ENOENT). It now expands against the injected
+   * home — the same anchor the permission gate judges the path with — so an
+   * approved `read_file('~/.config')` opens the file that was approved.
+   */
+  it('expands a leading ~/ against the injected home, not the workspace', async () => {
+    writeFileSync(join(home, 'x.txt'), 'from home', 'utf-8');
+    mkdirSync(join(home, 'nested'), { recursive: true });
+    writeFileSync(join(home, 'nested', 'y.txt'), 'nested', 'utf-8');
+    const tool = readFileTool({ cwd, homeDir: home });
+    expect(await exec(tool, { path: '~/x.txt' })).toBe('1\tfrom home');
+    expect(await exec(tool, { path: '~/nested/y.txt' })).toBe('1\tnested');
+  });
+
+  it('~user stays unexpanded (cannot be resolved safely)', async () => {
+    writeFileSync(join(home, 'x.txt'), 'from home', 'utf-8');
+    const tool = readFileTool({ cwd, homeDir: home });
+    const result = await exec(tool, { path: '~someone/x.txt' });
+    // Not the home file: the unexpanded spelling resolves inside the
+    // workspace and fails, exactly as before.
+    expect(result).toContain('[ERROR]');
+    expect(result).not.toContain('from home');
+    expect(result).toContain(join(cwd, '~someone', 'x.txt'));
+  });
+
+  it('keeps the historic behaviour when no homeDir is injected', async () => {
+    writeFileSync(join(home, 'x.txt'), 'from home', 'utf-8');
+    const tool = readFileTool({ cwd });
+    const result = await exec(tool, { path: '~/x.txt' });
+    expect(result).toContain('[ERROR]');
+    expect(result).toContain(join(cwd, '~', 'x.txt'));
   });
 });

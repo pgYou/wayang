@@ -2,11 +2,16 @@ import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineTool, safeExecute } from './common';
+import { expandHome } from './permission-rules';
 
 const DEFAULT_MAX_LINES = 500;
 
-export function readFileTool(deps: { cwd?: string } = {}) {
+export function readFileTool(deps: { cwd?: string; homeDir?: string } = {}) {
   const workspace = deps.cwd ?? process.cwd();
+  // The SAME home directory the permission gate anchors `~` on (injected by
+  // the engine). Only set when known: expanding against a guessed home could
+  // open a different file than the one the gate judged and approved.
+  const homeDir = deps.homeDir;
 
   return defineTool({
     description: `Read file content (with line numbers). Returns at most ${DEFAULT_MAX_LINES} lines by default. Use offset (1-based start line) and limit to read specific sections of large files.`,
@@ -16,7 +21,13 @@ export function readFileTool(deps: { cwd?: string } = {}) {
       limit: z.number().int().min(1).optional().describe('Number of lines to read'),
     }),
     execute: safeExecute('read_file', async ({ path, offset, limit }) => {
-      const resolved = resolve(workspace, path);
+      // A leading `~` expands against the injected home, so an approved
+      // `read_file('~/.config')` opens the file that was approved instead of
+      // `<workspace>/~/.config` (ENOENT). `~user` stays unexpanded — it cannot
+      // be resolved safely (see `expandHome`) and the gate asks about it
+      // anyway.
+      const expanded = homeDir === undefined ? path : expandHome(path, homeDir).path;
+      const resolved = resolve(workspace, expanded);
       const content = readFileSync(resolved, 'utf-8');
       const lines = content.split('\n');
       const totalLines = lines.length;

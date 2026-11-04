@@ -130,6 +130,12 @@ export interface WorkerToolDeps {
   listTasks: (status?: TaskDetail['status']) => TaskDetail[];
   reportProgress: (message: string, percent?: number) => void;
   cwd?: string;
+  /**
+   * The user's home directory, injected so `read_file` can expand a leading
+   * `~` against the SAME anchor the permission gate judged the path with —
+   * never a guessed `os.homedir()`, which can differ from the gate's.
+   */
+  homeDir?: string;
   /** Called when worker calls the done tool. */
   onComplete: (summary: string) => void;
   /** Called when worker calls the fail tool. */
@@ -214,7 +220,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
 export function createWorkerTools(deps: WorkerToolDeps) {
   return {
     bash: bashTool({ cwd: deps.cwd }),
-    read_file: readFileTool({ cwd: deps.cwd }),
+    read_file: readFileTool({ cwd: deps.cwd, homeDir: deps.homeDir }),
     write_file: writeFileTool({ cwd: deps.cwd }),
     edit_file: editFileTool({ cwd: deps.cwd }),
     search_files: searchFilesTool({ cwd: deps.cwd }),

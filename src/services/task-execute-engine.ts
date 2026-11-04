@@ -1257,6 +1257,9 @@ export class TaskExecuteEngine implements Subscribable {
           ...createWorkerTools({
           listTasks: (status?: TaskDetail['status']) => this.list(status),
           cwd: workspace,
+          // read_file expands `~` against the same anchor the permission gate
+          // below (accessScope) judges paths with.
+          homeDir: this.homeDir,
           tavilyApiKey: this.ctx.config.tavilyApiKey,
           registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {

@@ -668,6 +668,123 @@ describe('evaluateBashAccess', () => {
       });
     });
   });
+
+  /**
+   * The 0.8.4 P0 fix: the read-only table's deferred conditions used to reach
+   * only the audit `access`, never the decision. A table command that FAILED
+   * its condition (`sed`'s script whitelist) with no absolute-path operand
+   * produced no candidate at all, and the no-candidate fallback allowed it
+   * silently — so `sed -n '1e id' package.json` executed arbitrary commands
+   * with zero approvals. These cases pin the fail-closed tier: such a segment
+   * asks as `read-only-unverified`, whatever its operands spell.
+   */
+  describe('a read-only table command that cannot be verified asks (0.8.4 P0)', () => {
+    it.each([
+      "sed -n '1e id' package.json",
+      "sed 's/version/VER/e' package.json",
+      "sed 's/version/VER/w out.txt' package.json",
+      "sed -n 'w out.txt' package.json",
+      // The path rides INSIDE the quoted script, so it is no path candidate —
+      // the exact shape that used to fall through to the allow.
+      "sed -n 'r /etc/hostname' package.json",
+      "sed -n 'r hostname.txt' package.json",
+      'sed -f mini.sed package.json',
+      "sed -n '1p;e echo poisoned' package.json",
+      "sed --expression='1e cmd' package.json",
+    ])('%s → ask + read-only-unverified (no absolute-path operand)', (command) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('read-only-unverified');
+      expect(verdict.access).toBe('unknown');
+      expect(verdict.reason).toContain('cannot be verified as read-only');
+      // Not a one-path decision, so the task approval memory (#46) can never
+      // cover it with an old grant — a grant must not launder the script.
+      expect(verdict.askPaths).toBeUndefined();
+    });
+
+    it('the same failure asks even when a candidate IS present and would be allowed', () => {
+      // Workspace-absolute operand: the policy allows the path, but the
+      // verdict may not rest on a verification that failed.
+      const inside = evaluateBashAccess(scope(), `sed -n '1e cmd' ${ws}/f`);
+      expect(inside.decision).toBe('ask');
+      expect(inside.matchedRule).toBe('read-only-unverified');
+      // `~/f` used to ask as outside-all; the unverified tier now owns the ask.
+      const home = evaluateBashAccess(scope(), 'sed -f mini.sed ~/f');
+      expect(home.decision).toBe('ask');
+      expect(home.matchedRule).toBe('read-only-unverified');
+    });
+
+    it.each([
+      "sed -n '1p' package.json",
+      "sed -n -e '1p' -e '2p' package.json",
+      "sed -n '1p;2p' package.json",
+      "sed 's/a/b/' package.json",
+      'sed -n 1,10p src/cli.ts',
+    ])('%s is a VERIFIED read and still runs (allow + read)', (command) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('no-path');
+      expect(verdict.access).toBe('read');
+    });
+
+    it('a write segment is settled as a write BEFORE the read-only check (write priority)', () => {
+      // `-i` is a flagged write: the segment never reaches the read-only
+      // check, so it is never "unverified". With a candidate the direction is
+      // a write, exactly as before.
+      expect(evaluateBashAccess(scope(), "sed -i 's/a/b/' ~/f").access).toBe('write');
+      // Without a candidate the historic no-candidate shape is unchanged.
+      const verdict = evaluateBashAccess(scope(), "sed -i 's/a/b/' package.json");
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('no-path');
+      expect(verdict.access).toBe('unknown');
+    });
+
+    it('the command-substitution interior keeps asking (inner logic unchanged)', () => {
+      const verdict = evaluateBashAccess(scope(), "echo $(sed -n '1e cmd' package.json)");
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.reason).toContain('command substitution');
+      // …and a VERIFIED sed inside a substitution stays exempt.
+      expect(evaluateBashAccess(scope(), 'echo $(sed -n "1p" notes.txt)').decision).toBe('allow');
+    });
+
+    it('a sensitive hit keeps its priority over the unverified tier', () => {
+      const verdict = evaluateBashAccess(scope(), "sed -n '1e id' ~/.ssh/id_rsa");
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('sensitive-list');
+      expect(verdict.matchedEntry).toBe('.ssh');
+      // Under `sensitiveMode: 'deny'` it is still REFUSED, never downgraded to
+      // an unverified ask.
+      const strict = evaluateBashAccess(scope({ permission: { sensitiveMode: 'deny' } }), "sed -n '1e id' ~/.ssh/id_rsa");
+      expect(strict.decision).toBe('deny');
+      expect(strict.matchedRule).toBe('sensitive-list');
+      // …and the plain sensitive-write control is untouched.
+      expect(evaluateBashAccess(scope(), 'tee ~/.ssh/authorized_keys').matchedRule).toBe('sensitive-list');
+    });
+
+    it("git's subcommand check stays a classifier, not a deferred condition (scope guard)", () => {
+      // A non-read git subcommand is "determined not a read", like an
+      // off-table command — it keeps the historic no-candidate allow.
+      for (const command of ['git clone https://github.com/foo/bar.git', 'git push', 'git clean -fdx']) {
+        const verdict = evaluateBashAccess(scope(), command);
+        expect(verdict.decision).toBe('allow');
+        expect(verdict.matchedRule).toBe('no-path');
+        expect(verdict.access).toBe('unknown');
+      }
+    });
+
+    it('a mixed line escalates on its unverified segment and is never audited as a read', () => {
+      for (const command of [
+        'cat package.json && sed -f mini.sed package.json',
+        'cat ~/notes.md && sed -n \'1e id\' p',
+      ]) {
+        const verdict = evaluateBashAccess(scope(), command);
+        expect(verdict.decision).toBe('ask');
+        expect(verdict.matchedRule).toBe('read-only-unverified');
+        expect(verdict.access).toBe('unknown');
+      }
+    });
+  });
 });
 
 describe('evaluateFileAccess', () => {
