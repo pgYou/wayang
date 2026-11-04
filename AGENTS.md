@@ -6,6 +6,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Wayang is a multi-agent orchestration platform — a CLI tool that coordinates multiple AI workers (LLM agents) to execute tasks concurrently. A **Controller** agent (powered by Vercel AI SDK) interprets user intent, decomposes work into tasks, and dispatches them to **Worker** agents. Workers can be built-in "puppet" agents (LLM-driven with tools) or third-party agents like Claude Code (via `@anthropic-ai/claude-agent-sdk`).
 
+## 版本迭代流程
+
+本节描述人（维护者）参与的发版流程，分三步：版本准备、版本规划、需求开发与合流。
+
+### 版本准备
+
+进入一个新版本时，先做分支与元信息准备：
+
+- 从 main 拉出 `release/x.y.z` 分支并推送远端，例如 `git branch release/0.8.1 main && git push -u origin release/0.8.1`。
+- 修改 `package.json` 的 `version` 为新版本号。
+- 在 `CHANGELOG.md` 顶部新增该版本的段落，写清版本号与日期。
+
+### 版本规划
+
+- 版本规划先以 draft 形式写进 `CHANGELOG.md` 的新版本段落：包含本次要做的 issue、预期范围与里程碑，作为实施前的记录。
+- 实施完成后按真实落地情况校准该段落：补齐条目、移除未做的项、修正描述。`CHANGELOG.md` 最终以实际交付为准，不保留与实施不符的规划文字。
+
+### 需求开发与合流
+
+- 并行需求或改动较大的需求，基于 `release/x.y.z` 拉 `feat/xxx` 分支开发；需要同时推进多个需求时用 git worktree 隔离工作区，例如 `git worktree add -b feat/xxx ../wayang-xxx origin/release/x.y.z`。
+- 每个需求开独立 PR，base 指向 `release/x.y.z`（不是 main）。
+- 开发前先确定验收标准；实现后跑完门槛（`npm run lint`、`npx vitest run`、`npm run build`）再合入 release。
+- 发布收口：版本号与 `CHANGELOG.md` 校准完成、跑通全量测试后打 tag，并将 release 分支合并回 main。
+- 小改动（文档、文案、单文件修补）可直接在 release 分支上提交，不必单开 feat 分支。
+
 ## Commands
 
 ```bash
