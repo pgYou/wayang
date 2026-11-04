@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.2 (2026-11-04)
+
+### 构建与发布
+
+- 新增 GitHub Actions 发布流水线（.github/workflows/release.yml）：推送 v* tag 时自动执行 lint、全量测试与构建，校验 tag 与 package.json 版本一致、目标版本尚未发布，再以 npm Trusted Publishing（OIDC）发布，无需长期 token，自动生成 provenance。手动 dispatch 默认 dry-run。
+- 本版本无功能变更，仅用于打通自动发布链路。
+
 ## v0.8.1 (2026-11-04)
 
 ### Features
