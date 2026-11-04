@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.8.4 (未发布)
+
+### 权限
+
+- bash 只读命令分类（#47）：引入显式只读命令表，段首命令命中即判 read，命令替换内部与顶层共用同一张表。判定前剥离 sudo / env / nohup / time / nice / ionice / command / exec / builtin 等前缀与前导变量赋值；git 只放行 status、log、diff、show、rev-parse、ls-files、blame、grep、describe、shortlog 与 branch -a / remote -v。写动词、写 flag、真实重定向仍优先判写；不在表内一律 unknown（fail-closed）。
+- 收紧 sed 的只读准入：脚本按白名单校验，`e` / `w` / `W` / `r` / `R` 命令与 `s///e` 等 flag 一律不判只读，`-f script.sed` 因无法在判定期确认同样不判只读。
+- 敏感写改为审批：敏感命中不再是「不可审批」，而是「不可静默」——敏感列表仍压过所有 allow 规则，命中只可能是 ask 或 deny。默认 `sensitiveMode: 'ask'` 时读写都走审批（请求带命中条目、来源、路径与方向），`sensitiveMode: 'deny'` 时读写都直接拒。`matchedRule` 统一为 `sensitive-list`，方向由审计的 `access` 字段承载，旧的 `sensitive-list-write` 移除。
+- 任务级审批记忆（#46）：同一任务内，同一路径的读方向批准一次后不再重复询问；key 为「方向 + 规范化路径」，文件工具与 bash 共享；敏感命中、写方向、deny 结果永不记忆；任务进入 completed / failed / cancelled 即清除，不跨任务、不跨 session、不持久化。新增 `permission.approvalMemory: 'task' | 'off'`（默认 `task`）。审计新增 `granted-by-memory` 决策与 `grantId` 字段。
+
+### 说明
+
+- 本版尚未发布到 npm；发布由 `v0.8.4` tag 触发。
+- 权限改造在 0.8.x 收口，后续版本不再扩展该范围。
+
 ## v0.8.3 (2026-11-04)
 
 ### 权限
