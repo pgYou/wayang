@@ -4,6 +4,7 @@ import {
   TASK_LIST_MAX_ITEMS,
   formatTaskList,
   formatTaskRow,
+  isActiveTask,
   limitForList,
   truncateForList,
 } from '@/tui/utils/task-list';
@@ -22,6 +23,20 @@ const makeTask = (overrides: Partial<TaskDetail> = {}): TaskDetail => ({
 
 /** A description long enough to blow past the cap in plain ASCII. */
 const longDescription = (width: number): string => 'x'.repeat(width + 40);
+
+/**
+ * Build tasks in the order the engine returns them: `pending` first, then
+ * `running`, then `history` — history is append-ordered, so its tail is newest.
+ */
+const makeEngineList = (
+  active: Array<{ id: string; status: 'pending' | 'running' }>,
+  historyIds: string[],
+): TaskDetail[] => [
+  ...active.map(({ id, status }) => makeTask({ id, status, description: `desc ${id}` })),
+  ...historyIds.map(id => makeTask({ id, description: `desc ${id}` })),
+];
+
+const historyIds = (count: number): string[] => Array.from({ length: count }, (_, i) => `h-${i}`);
 
 describe('truncateForList', () => {
   it('keeps a short description verbatim, without an ellipsis', () => {
@@ -132,6 +147,88 @@ describe('limitForList', () => {
 
     expect(items).toHaveLength(25);
   });
+
+  it('keeps active entries at the head instead of trimming them', () => {
+    const tasks = makeEngineList(
+      [
+        { id: 'p-1', status: 'pending' },
+        { id: 'r-1', status: 'running' },
+      ],
+      historyIds(30),
+    );
+
+    const limited = limitForList(tasks, TASK_LIST_MAX_ITEMS, { isActive: isActiveTask });
+
+    expect(limited.items).toHaveLength(TASK_LIST_MAX_ITEMS);
+    expect(limited.items.slice(0, 2).map(task => task.id)).toEqual(['p-1', 'r-1']);
+    // Old history goes first: the newest 18 survive, h-0 … h-11 do not.
+    expect(limited.items.map(task => task.id)).toEqual([
+      'p-1',
+      'r-1',
+      ...Array.from({ length: 18 }, (_, i) => `h-${12 + i}`),
+    ]);
+    expect(limited.total).toBe(32);
+    expect(limited.hidden).toBe(12);
+    expect(limited.note).toBe('… 显示最近 20 / 共 32 条（另有 12 条历史未显示）');
+  });
+
+  it('keeps every active entry when actives alone exceed the cap', () => {
+    const active = Array.from({ length: 25 }, (_, i) => ({
+      id: `a-${i}`,
+      status: (i % 2 === 0 ? 'pending' : 'running') as 'pending' | 'running',
+    }));
+    const tasks = makeEngineList(active, historyIds(5));
+
+    const limited = limitForList(tasks, TASK_LIST_MAX_ITEMS, { isActive: isActiveTask });
+
+    // Rows may exceed the cap — hiding a live task is worse than a long list.
+    expect(limited.items).toHaveLength(25);
+    expect(limited.items.map(task => task.id)).toEqual(active.map(task => task.id));
+    expect(limited.total).toBe(30);
+    expect(limited.hidden).toBe(5);
+    expect(limited.note).toBe('… 显示最近 25 / 共 30 条（另有 5 条历史未显示）');
+  });
+
+  it('keeps the incoming order so no row jumps around', () => {
+    const tasks = [...makeEngineList([], historyIds(30)), makeTask({ id: 'late', status: 'running' })];
+
+    const limited = limitForList(tasks, 5, { isActive: isActiveTask });
+
+    // Active row stays where it was in the list, not hoisted to the top.
+    expect(limited.items.map(task => task.id)).toEqual(['h-26', 'h-27', 'h-28', 'h-29', 'late']);
+  });
+
+  it('emits no note when nothing was dropped, even with active entries', () => {
+    const tasks = makeEngineList(
+      [
+        { id: 'p-1', status: 'pending' },
+        { id: 'r-1', status: 'running' },
+      ],
+      historyIds(3),
+    );
+
+    const limited = limitForList(tasks, TASK_LIST_MAX_ITEMS, { isActive: isActiveTask });
+
+    expect(limited.items).toHaveLength(5);
+    expect(limited.hidden).toBe(0);
+    expect(limited.note).toBeNull();
+  });
+
+  it('emits no note for an empty list', () => {
+    const limited = limitForList<TaskDetail>([], TASK_LIST_MAX_ITEMS, { isActive: isActiveTask });
+
+    expect(limited).toEqual({ items: [], total: 0, hidden: 0, note: null });
+  });
+});
+
+describe('isActiveTask', () => {
+  it('treats pending and running as active and every other status as history', () => {
+    expect(isActiveTask({ status: 'pending' })).toBe(true);
+    expect(isActiveTask({ status: 'running' })).toBe(true);
+    expect(isActiveTask({ status: 'completed' })).toBe(false);
+    expect(isActiveTask({ status: 'failed' })).toBe(false);
+    expect(isActiveTask({ status: 'cancelled' })).toBe(false);
+  });
 });
 
 describe('formatTaskRow', () => {
@@ -173,6 +270,53 @@ describe('formatTaskList', () => {
     // The newest 20 survive; the oldest are dropped.
     expect(lines[0]).toContain('t-37');
     expect(lines[TASK_LIST_MAX_ITEMS - 1]).toContain('t-56');
+  });
+
+  it('keeps pending and running rows at the head of an over-cap list', () => {
+    const tasks = makeEngineList(
+      [
+        { id: 'p-1', status: 'pending' },
+        { id: 'r-1', status: 'running' },
+      ],
+      historyIds(30),
+    );
+
+    const lines = formatTaskList(tasks).split('\n');
+
+    expect(lines).toHaveLength(TASK_LIST_MAX_ITEMS + 1);
+    expect(lines[0]).toContain('[pending] p-1:');
+    expect(lines[1]).toContain('[running] r-1:');
+    // The newest history fills the remaining budget, oldest first to go.
+    expect(lines[2]).toContain('h-12');
+    expect(lines[TASK_LIST_MAX_ITEMS - 1]).toContain('h-29');
+    expect(lines[TASK_LIST_MAX_ITEMS]).toBe('… 显示最近 20 / 共 32 条（另有 12 条历史未显示）');
+    expect(lines.join('\n')).not.toContain('h-11');
+  });
+
+  it('notes only the cut when terminal history is the only thing trimmed', () => {
+    const tasks = historyIds(57).map(id => makeTask({ id }));
+
+    const lines = formatTaskList(tasks).split('\n');
+
+    expect(lines).toHaveLength(TASK_LIST_MAX_ITEMS + 1);
+    expect(lines[TASK_LIST_MAX_ITEMS]).toBe('… 显示最近 20 / 共 57 条');
+    expect(lines[TASK_LIST_MAX_ITEMS]).not.toContain('另有');
+  });
+
+  it('emits no note line when active rows fit under the cap', () => {
+    const tasks = makeEngineList(
+      [
+        { id: 'p-1', status: 'pending' },
+        { id: 'r-1', status: 'running' },
+      ],
+      historyIds(5),
+    );
+
+    const lines = formatTaskList(tasks).split('\n');
+
+    expect(lines).toHaveLength(7);
+    expect(lines.some(line => line.startsWith('…'))).toBe(false);
+    expect(lines.join('\n')).toContain('[pending] p-1:');
   });
 
   it('outputs every row and no note when at or below the cap', () => {

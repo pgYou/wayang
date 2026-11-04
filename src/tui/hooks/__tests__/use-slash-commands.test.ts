@@ -164,6 +164,23 @@ describe('handleCommand /tasks', () => {
     expect(result.output).not.toContain('\n\n');
   });
 
+  it('keeps active tasks visible when the /tasks list is capped', async () => {
+    const tasks: TaskDetail[] = [
+      { ...makeTask('p-1', 'queued work'), status: 'pending' },
+      { ...makeTask('r-1', 'running work'), status: 'running' },
+      ...Array.from({ length: 30 }, (_, i) => makeTask(`h-${i}`, 'done')),
+    ];
+    const handleCommand = await captureWith(withTasks(tasks));
+
+    const result = await handleCommand('/tasks');
+
+    const lines = result.output!.split('\n');
+    expect(lines).toHaveLength(21);
+    expect(lines[0]).toContain('[pending] p-1: queued work');
+    expect(lines[1]).toContain('[running] r-1: running work');
+    expect(lines[20]).toBe('… 显示最近 20 / 共 32 条（另有 12 条历史未显示）');
+  });
+
   it('still reports an empty list and keeps the status filter', async () => {
     const seen: Array<string | undefined> = [];
     const supervisor = {
