@@ -46,36 +46,22 @@ import { resolveApprovalMemory } from '@/infra/permission/permission-config';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
-import { basename, dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { normalizeWorkspacePath } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 const PUPPET_WORKER_TYPE = 'puppet';
 
-/**
- * The user's home directory a session belongs to — the anchor of the path
- * permission policy (sensitive list + read scope).
- *
- * The wayang data dir lives at `<userHome>/.wayang`, so its parent is the home
- * the policy anchors on. Ad-hoc session dirs (hand-built temp dirs in tests)
- * don't follow the `<wayangDir>/sessions/<id>` layout, so fall back to the OS
- * home rather than guessing a parent. Derived ONCE at construction and injected
- * into every policy call — the decision code never reads it globally.
- */
-function resolveUserHomeDir(sessionDir: string): string {
-  const wayangDir = wayangDirForSessionDir(sessionDir);
-  return wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
-}
-
 /** Construction options for TaskExecuteEngine. */
 export interface TaskExecuteEngineOptions {
   /**
    * The user's home directory the path permission policy anchors on (sensitive
-   * list and read scope). Derived from `ctx.sessionDir` when omitted; inject it
-   * explicitly in tests (which use temp home dirs) or whenever the session
-   * layout does not follow `<userHome>/.wayang/sessions/<id>`.
+   * list and read scope). Always the PROCESS home (`os.homedir()`) when
+   * omitted — never derived from the session layout: where wayang keeps its
+   * data (`--wayang-root`) has nothing to do with whose home the policy
+   * protects. Inject it explicitly in tests (which use temp home dirs) to
+   * keep the boundary controlled.
    */
   homeDir?: string;
   /**
@@ -186,7 +172,7 @@ export class TaskExecuteEngine implements Subscribable {
     options: TaskExecuteEngineOptions = {},
   ) {
     this.logger = ctx.logger;
-    this.homeDir = options.homeDir ?? resolveUserHomeDir(ctx.sessionDir);
+    this.homeDir = options.homeDir ?? homedir();
     this.permission = options.permission ?? ctx.config.permission;
     this.onTaskWorkspace = options.onTaskWorkspace;
     this.maxConcurrency = ctx.maxConcurrency;
@@ -1257,9 +1243,9 @@ export class TaskExecuteEngine implements Subscribable {
           ...createWorkerTools({
           listTasks: (status?: TaskDetail['status']) => this.list(status),
           cwd: workspace,
-          // read_file expands `~` against the same anchor the permission gate
-          // below (accessScope) judges paths with.
-          homeDir: this.homeDir,
+          // `~` expansion in the tools anchors on the PROCESS home
+          // (`expandHome`), the same anchor the permission gate below
+          // (accessScope) judges expanded paths with — no injection needed.
           tavilyApiKey: this.ctx.config.tavilyApiKey,
           registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {

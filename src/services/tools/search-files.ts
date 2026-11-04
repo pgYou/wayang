@@ -2,6 +2,7 @@ import fg from 'fast-glob';
 import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
 import { decideAccess, normalizePath } from '@/infra/permission/policy';
+import { expandHome } from './permission-rules';
 
 export function searchFilesTool(deps: { cwd?: string; homeDir?: string }) {
   const workspace = deps.cwd ?? process.cwd();
@@ -25,11 +26,16 @@ export function searchFilesTool(deps: { cwd?: string; homeDir?: string }) {
         .describe('Base directory for search (default: workspace root)'),
     }),
     execute: safeExecute('search_files', async ({ pattern, path }) => {
+      // `~` / `$HOME` expand against the PROCESS home BEFORE normalization —
+      // the same anchor the permission gate judges (`expandHome`) — so
+      // `search_files(path: '~/x')` searches what a shell would call `~/x`,
+      // not a literal `~` directory inside the workspace.
+      const expandedPath = path !== undefined ? expandHome(path).path : undefined;
       // Canonicalize through the shared policy so symlinked ancestors are
       // resolved before the decision — a lexical prefix check would let a
       // symlink smuggle a sensitive path past the gate.
-      const basePath = path
-        ? normalizePath(path, { base: workspace })
+      const basePath = expandedPath
+        ? normalizePath(expandedPath, { base: workspace })
         : normalizePath(workspace);
 
       if (homeDir) {
@@ -39,7 +45,7 @@ export function searchFilesTool(deps: { cwd?: string; homeDir?: string }) {
         // distinct wording so the two causes stay distinguishable in logs.
         const { decision, matchedEntry } = decideAccess({
           access: 'read',
-          homeDir,
+          userHome: homeDir,
           cwd: workspace,
           path: basePath,
         });

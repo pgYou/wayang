@@ -25,8 +25,9 @@ export interface BootstrapOptions {
   configPath: string;
   /**
    * Root directory containing the `.wayang` data dir (usually $HOME).
-   * Matches the `--home-dir` flag semantics so the same value can be
-   * forwarded to the server process.
+   * Matches the `--wayang-root` flag semantics (deprecated alias `--home-dir`)
+   * so the same value can be forwarded to the server process. NEVER the OS
+   * user home the permission policy anchors on — that is the process `$HOME`.
    */
   homeDir: string;
   /**
@@ -147,7 +148,7 @@ function dedupeDisplayWorkspaces(refs: ReadonlyArray<WorkspaceRef>): WorkspaceRe
 
 export async function bootstrap(options: BootstrapOptions): Promise<void> {
   // Resolve the actual data dir once; forwarded as-is to the server spawn so
-  // the server's `--home-dir` (root semantics) does not double-join `.wayang`.
+  // the server's `--wayang-root` (root semantics) does not double-join `.wayang`.
   const wayangHome = path.join(options.homeDir, '.wayang');
 
   // Client-side load keeps interactive onboarding in the terminal; the
@@ -226,7 +227,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
 
   const { remote, stop } = await connectToServer({
     configPath: options.configPath,
-    // Pass the ROOT dir: the server's `--home-dir` flag expects it and joins
+    // Pass the ROOT dir: the server's `--wayang-root` flag expects it and joins
     // `.wayang` itself. Passing the pre-joined dir caused a double join.
     homeDir: options.homeDir,
     workspaceDir,

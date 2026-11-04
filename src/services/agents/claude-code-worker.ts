@@ -55,7 +55,6 @@ import {
 } from '@/services/permission/permission-audit';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import type { SkillRegistry } from '@/services/skills/registry';
-import { basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
 /** Stream-close timeout for SDK MCP calls — must exceed the 5-min inquiry timeout. */
@@ -153,7 +152,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
    * from the worker's own directory is used when absent.
    */
   private _accessScope: WorkerAccessScope | null = null;
-  /** Session directory this worker belongs to (fallback homeDir derivation). */
+  /** Session directory this worker belongs to (workspace-registry lookup). */
   private readonly sessionDir: string;
   /** Turn lineage for permission-request signals emitted by this worker. */
   private _turnLineage: SignalTurnLineage = {};
@@ -561,13 +560,13 @@ export class ClaudeCodeWorker implements IWorkerInstance {
    * Shared policy scope for this run. The engine injects the exact scope it
    * applies to puppet workers; when a worker is driven directly (tests), derive
    * a minimal scope from its own directory (no task allowedDirs / config — the
-   * conservative reading).
+   * conservative reading). The home anchor is ALWAYS the process home — never
+   * derived from the session layout: where wayang keeps its data has nothing
+   * to do with whose home the policy protects.
    */
   private effectiveAccessScope(): WorkerAccessScope {
     if (this._accessScope) return this._accessScope;
-    const wayangDir = wayangDirForSessionDir(this.sessionDir);
-    const homeDir = wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
-    return { homeDir, workspace: this.workspaceDir };
+    return { homeDir: homedir(), workspace: this.workspaceDir };
   }
 
   /**

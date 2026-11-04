@@ -87,7 +87,7 @@ function connect(options: Partial<Parameters<typeof connectRemoteServer>[0]> = {
 // --- Tests ---
 
 describe('connectRemoteServer — spawn contract', () => {
-  it('forwards --home-dir as-is (ROOT semantics, no .wayang join) and formats resume session', async () => {
+  it('forwards --wayang-root as-is (ROOT semantics, no .wayang join) and formats resume session', async () => {
     serveRpc(child);
     const pending = connect({ session: { resume: '20260101-000000' }, logLevel: 'debug' });
 
@@ -104,7 +104,7 @@ describe('connectRemoteServer — spawn contract', () => {
       '--config', '/fake/config.json',
       // Regression guard: the root is passed verbatim; the server joins
       // `.wayang` itself. Pre-joining here caused a double join server-side.
-      '--home-dir', '/fake/root',
+      '--wayang-root', '/fake/root',
       '--workspace-dir', '/fake/workspace',
       '--session', 'resume:20260101-000000',
       '--log-level', 'debug',

@@ -70,7 +70,7 @@ interface SpawnedServer {
  * Spawn `wayang server` as a real child process and connect an RpcClient to
  * its stdio. Waits for the READY notification before resolving.
  *
- * `--home-dir` points at a temp root: the CLI joins `.wayang` itself, and the
+ * `--wayang-root` points at a temp root: the CLI joins `.wayang` itself, and the
  * child never touches the developer's real ~/.wayang.
  */
 async function spawnServer(extraArgs: string[] = []): Promise<SpawnedServer> {
@@ -79,7 +79,7 @@ async function spawnServer(extraArgs: string[] = []): Promise<SpawnedServer> {
     [
       CLI_PATH,
       'server',
-      '--home-dir', homeDir,
+      '--wayang-root', homeDir,
       '--workspace-dir', workspaceDir,
       '--config', configPath,
       '--log-level', 'silent',
@@ -185,7 +185,7 @@ describe.skipIf(!HAS_BUILD)('wayang server — spawn-level e2e', () => {
       [
         CLI_PATH,
         'server',
-        '--home-dir', homeDir,
+        '--wayang-root', homeDir,
         '--workspace-dir', workspaceDir,
         '--config', configPath,
         '--log-level', 'silent',
@@ -238,7 +238,7 @@ describe.skipIf(!HAS_BUILD)('wayang server — spawn-level e2e', () => {
     provider.reset([{ match: isControllerRequest, text: 'ok.' }]);
     const srv = await spawnServer();
     try {
-      // The server joins `.wayang` onto --home-dir, so all state lands there.
+      // The server joins `.wayang` onto --wayang-root, so all state lands there.
       expect(existsSync(join(homeDir, '.wayang', 'sessions', srv.ready.sessionId))).toBe(true);
       expect(srv.ready.sessionDir.startsWith(join(homeDir, '.wayang'))).toBe(true);
     } finally {

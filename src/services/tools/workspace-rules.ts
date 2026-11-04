@@ -105,7 +105,7 @@ function describeRefusal(
     access: 'read',
     path: rulesPath,
     cwd: workspacePath,
-    homeDir,
+    userHome: homeDir,
     taskWorkspace: workspacePath,
     extraSensitiveDirs: mergeSensitiveDirs(input.permissionConfig),
     sensitiveMode: resolveSensitiveMode(input.permissionConfig),

@@ -152,7 +152,7 @@ describe('decideAccess: the sensitive list wins over every allow rule', () => {
     const result = decideAccess({
       path: join(home, '.ssh', 'id_rsa'),
       access: 'read',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: home,
       taskAllowedDirs: [home],
       configAllowedDirs: [home],
@@ -172,7 +172,7 @@ describe('decideAccess: the sensitive list wins over every allow rule', () => {
     const result = decideAccess({
       path: join(home, '.npmrc'),
       access: 'write',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: home,
     });
     // 0.8.4: the write direction asks like the read direction does — the
@@ -184,12 +184,12 @@ describe('decideAccess: the sensitive list wins over every allow rule', () => {
   });
 
   it('treats an UNKNOWN access like a read for the sensitive list (bash), but never as a home-scope allow', () => {
-    const sensitive = decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'unknown', homeDir: home });
+    const sensitive = decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'unknown', userHome: home });
     expect(sensitive.decision).toBe('ask');
     expect(sensitive.matchedRule).toBe('sensitive-list');
 
     // `unknown` does not earn the read-within-home allow.
-    const plain = decideAccess({ path: join(home, 'documents', 'n.md'), access: 'unknown', homeDir: home });
+    const plain = decideAccess({ path: join(home, 'documents', 'n.md'), access: 'unknown', userHome: home });
     expect(plain.decision).toBe('ask');
     expect(plain.matchedRule).toBe('outside-all');
   });
@@ -199,7 +199,7 @@ describe('decideAccess: the sensitive list wins over every allow rule', () => {
     const fromExtra = decideAccess({
       path: join(extra, 'notes.md'),
       access: 'read',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: work,
       extraSensitiveDirs: [extra],
     });
@@ -213,7 +213,7 @@ describe('decideAccess: the sensitive list wins over every allow rule', () => {
     const writeExtra = decideAccess({
       path: join(extra, 'notes.md'),
       access: 'write',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: work,
       extraSensitiveDirs: [extra],
     });
@@ -227,7 +227,7 @@ describe('decideAccess: the sensitive list wins over every allow rule', () => {
     const relative = decideAccess({
       path: join(home, 'vault', 'k.txt'),
       access: 'read',
-      homeDir: home,
+      userHome: home,
       extraSensitiveDirs: ['vault'],
     });
     expect(relative.decision).toBe('ask');
@@ -236,7 +236,7 @@ describe('decideAccess: the sensitive list wins over every allow rule', () => {
     const fromDefault = decideAccess({
       path: join(home, '.gnupg', 'key.gpg'),
       access: 'read',
-      homeDir: home,
+      userHome: home,
       extraSensitiveDirs: [extra],
     });
     expect(fromDefault.decision).toBe('ask');
@@ -246,7 +246,7 @@ describe('decideAccess: the sensitive list wins over every allow rule', () => {
 
 describe('decideAccess: read vs write scope', () => {
   it('allows reading an ordinary directory inside home', () => {
-    const result = decideAccess({ path: join(home, 'documents'), access: 'read', homeDir: home });
+    const result = decideAccess({ path: join(home, 'documents'), access: 'read', userHome: home });
     expect(result.decision).toBe('allow');
     expect(result.matchedRule).toBe('read-within-home');
     // The structured narrowing signal — consumers key off this, not the string.
@@ -256,22 +256,22 @@ describe('decideAccess: read vs write scope', () => {
   it('sets withinReadScope only for the read-inside-home allow', () => {
     // Explicit allow roots are NOT read-scope-only narrowing targets.
     expect(
-      decideAccess({ path: join(home, 'documents'), access: 'read', homeDir: home, configAllowedDirs: [join(home, 'documents')] })
+      decideAccess({ path: join(home, 'documents'), access: 'read', userHome: home, configAllowedDirs: [join(home, 'documents')] })
         .withinReadScope,
     ).toBeFalsy();
     expect(
-      decideAccess({ path: join(home, 'documents'), access: 'read', homeDir: home, taskWorkspace: join(home, 'documents') })
+      decideAccess({ path: join(home, 'documents'), access: 'read', userHome: home, taskWorkspace: join(home, 'documents') })
         .withinReadScope,
     ).toBeFalsy();
     // Writes are never allowed by the read-inside-home rule.
-    expect(decideAccess({ path: join(home, 'documents', 'n.md'), access: 'write', homeDir: home }).withinReadScope).toBeFalsy();
+    expect(decideAccess({ path: join(home, 'documents', 'n.md'), access: 'write', userHome: home }).withinReadScope).toBeFalsy();
     // Deny / ask results carry the flag as falsy too.
-    expect(decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'read', homeDir: home }).withinReadScope).toBeFalsy();
-    expect(decideAccess({ path: outside, access: 'read', homeDir: home }).withinReadScope).toBeFalsy();
+    expect(decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'read', userHome: home }).withinReadScope).toBeFalsy();
+    expect(decideAccess({ path: outside, access: 'read', userHome: home }).withinReadScope).toBeFalsy();
   });
 
   it('does not allow writing inside home outside any workspace', () => {
-    const result = decideAccess({ path: join(home, 'documents', 'note.md'), access: 'write', homeDir: home });
+    const result = decideAccess({ path: join(home, 'documents', 'note.md'), access: 'write', userHome: home });
     expect(result.decision).toBe('ask');
     expect(result.matchedRule).toBe('outside-all');
   });
@@ -280,7 +280,7 @@ describe('decideAccess: read vs write scope', () => {
     const result = decideAccess({
       path: join(home, 'documents', 'note.md'),
       access: 'write',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: join(home, 'documents'),
     });
     expect(result.decision).toBe('allow');
@@ -288,31 +288,31 @@ describe('decideAccess: read vs write scope', () => {
   });
 
   it('asks for reads outside home', () => {
-    const result = decideAccess({ path: outside, access: 'read', homeDir: home, taskWorkspace: work });
+    const result = decideAccess({ path: outside, access: 'read', userHome: home, taskWorkspace: work });
     expect(result).toEqual({ decision: 'ask', matchedRule: 'outside-all', resolvedPath: outside });
   });
 
   it('does not treat a home-sibling as inside home', () => {
     const sibling = `${home}-sibling`;
-    expect(decideAccess({ path: sibling, access: 'read', homeDir: home }).decision).toBe('ask');
+    expect(decideAccess({ path: sibling, access: 'read', userHome: home }).decision).toBe('ask');
   });
 
   it('asks for the filesystem root even on read', () => {
-    expect(decideAccess({ path: '/', access: 'read', homeDir: home }).decision).toBe('ask');
+    expect(decideAccess({ path: '/', access: 'read', userHome: home }).decision).toBe('ask');
   });
 });
 
 describe('decideAccess: configured allow rules', () => {
   it('allows via configAllowedDirs for both read and write', () => {
-    const read = decideAccess({ path: outside, access: 'read', homeDir: home, configAllowedDirs: [outside] });
+    const read = decideAccess({ path: outside, access: 'read', userHome: home, configAllowedDirs: [outside] });
     expect(read.matchedRule).toBe('config-allowed');
-    const write = decideAccess({ path: join(outside, 'f.txt'), access: 'write', homeDir: home, configAllowedDirs: [outside] });
+    const write = decideAccess({ path: join(outside, 'f.txt'), access: 'write', userHome: home, configAllowedDirs: [outside] });
     expect(write.decision).toBe('allow');
     expect(write.matchedRule).toBe('config-allowed');
   });
 
   it('allows via autoAllowRoots', () => {
-    const result = decideAccess({ path: join(outside, 'f.txt'), access: 'read', homeDir: home, autoAllowRoots: [outside] });
+    const result = decideAccess({ path: join(outside, 'f.txt'), access: 'read', userHome: home, autoAllowRoots: [outside] });
     expect(result.decision).toBe('allow');
     expect(result.matchedRule).toBe('auto-allow-root');
   });
@@ -321,7 +321,7 @@ describe('decideAccess: configured allow rules', () => {
     const result = decideAccess({
       path: outside,
       access: 'read',
-      homeDir: home,
+      userHome: home,
       configAllowedDirs: [outside],
       autoAllowRoots: [outside],
     });
@@ -329,7 +329,7 @@ describe('decideAccess: configured allow rules', () => {
   });
 
   it('respects segment boundaries for configured dirs', () => {
-    const result = decideAccess({ path: `${outside}-other`, access: 'read', homeDir: home, autoAllowRoots: [outside] });
+    const result = decideAccess({ path: `${outside}-other`, access: 'read', userHome: home, autoAllowRoots: [outside] });
     expect(result.decision).toBe('ask');
   });
 });
@@ -339,7 +339,7 @@ describe('decideAccess: task allowedDirs scope', () => {
     const result = decideAccess({
       path: join(home, 'documents', 'nested'),
       access: 'write',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: work,
       taskAllowedDirs: [join(home, 'documents')],
     });
@@ -351,7 +351,7 @@ describe('decideAccess: task allowedDirs scope', () => {
     const result = decideAccess({
       path: join(home, 'documents', 'nested'),
       access: 'write',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: work,
     });
     expect(result.decision).toBe('ask');
@@ -362,7 +362,7 @@ describe('decideAccess: task allowedDirs scope', () => {
     const other = decideAccess({
       path: join(home, 'documents', 'nested'),
       access: 'write',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: work,
       taskAllowedDirs: [],
     });
@@ -372,13 +372,13 @@ describe('decideAccess: task allowedDirs scope', () => {
 
 describe('decideAccess: canonicalization inputs', () => {
   it('resolves relative paths against cwd', () => {
-    const result = decideAccess({ path: 'documents/note.md', cwd: home, access: 'read', homeDir: home });
+    const result = decideAccess({ path: 'documents/note.md', cwd: home, access: 'read', userHome: home });
     expect(result.decision).toBe('allow');
     expect(result.resolvedPath).toBe(join(home, 'documents', 'note.md'));
   });
 
   it('resolves symlinked paths before matching', () => {
-    const result = decideAccess({ path: join(link, 'src'), access: 'write', homeDir: home, taskWorkspace: work });
+    const result = decideAccess({ path: join(link, 'src'), access: 'write', userHome: home, taskWorkspace: work });
     expect(result.decision).toBe('allow');
     expect(result.matchedRule).toBe('task-workspace');
     expect(result.resolvedPath).toBe(join(realpathSync(work), 'src'));
@@ -388,7 +388,7 @@ describe('decideAccess: canonicalization inputs', () => {
     const homeLink = join(root, 'link-to-home');
     symlinkSync(home, homeLink);
     for (const access of ['read', 'write'] as const) {
-      const verdict = decideAccess({ path: join(homeLink, '.ssh', 'id_rsa'), access, homeDir: home });
+      const verdict = decideAccess({ path: join(homeLink, '.ssh', 'id_rsa'), access, userHome: home });
       // The canonical target is what gets matched — a symlinked spelling
       // cannot downgrade either direction to an allow.
       expect(verdict.decision).toBe('ask');
@@ -422,8 +422,8 @@ describe('normalizePath: deepest existing ancestor through symlinked parents', (
     expect(isDenied(normalized, defaultSensitivePaths(home))).toBe(true);
     // 0.8.4: both directions ask — the canonical path is judged either way and
     // the symlink buys neither direction an allow.
-    expect(decideAccess({ path: target, access: 'write', homeDir: home }).decision).toBe('ask');
-    expect(decideAccess({ path: target, access: 'read', homeDir: home }).decision).toBe('ask');
+    expect(decideAccess({ path: target, access: 'write', userHome: home }).decision).toBe('ask');
+    expect(decideAccess({ path: target, access: 'read', userHome: home }).decision).toBe('ask');
   });
 
   it('asks before WRITING an existing file under .ssh reached through a symlinked directory', () => {
@@ -431,7 +431,7 @@ describe('normalizePath: deepest existing ancestor through symlinked parents', (
     writeFileSync(join(home, '.ssh', 'existing_key'), 'secret');
     expect(realpathSync(target)).toBe(join(realHome, '.ssh', 'existing_key'));
     expect(normalizePath(target)).toBe(join(realHome, '.ssh', 'existing_key'));
-    const write = decideAccess({ path: target, access: 'write', homeDir: home });
+    const write = decideAccess({ path: target, access: 'write', userHome: home });
     expect(write.decision).toBe('ask');
     expect(write.matchedRule).toBe('sensitive-list');
     expect(write.matchedEntry).toBe('.ssh');
@@ -444,7 +444,7 @@ describe('normalizePath: deepest existing ancestor through symlinked parents', (
     expect(normalizePath('no-such-dir/no-such-file.txt', { base: home })).toBe(join(home, 'no-such-dir', 'no-such-file.txt'));
     // And it must not be mistaken for something inside the sensitive list.
     expect(isDenied(normalizePath(ghost), defaultSensitivePaths(home))).toBe(false);
-    expect(decideAccess({ path: ghost, access: 'read', homeDir: home }).decision).toBe('allow');
+    expect(decideAccess({ path: ghost, access: 'read', userHome: home }).decision).toBe('allow');
   });
 
   it('re-appends a deep missing tail onto the resolved ancestor', () => {
@@ -468,7 +468,7 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
   it('asks (with the entry named) for a READ under a root that is NOT the injected home', () => {
     // `outside` is a sibling of home — the injected homeDir does NOT contain it.
     const target = join(outside, '.ssh', 'id_rsa');
-    const result = decideAccess({ path: target, access: 'read', homeDir: home });
+    const result = decideAccess({ path: target, access: 'read', userHome: home });
     expect(result.decision).toBe('ask');
     expect(result.matchedRule).toBe('sensitive-list');
     expect(result.matchedEntry).toBe('.ssh');
@@ -479,12 +479,12 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
       [join(outside, '.aws', 'credentials'), '.aws'],
       [join(outside, '.netrc'), '.netrc'],
     ] as const) {
-      const read = decideAccess({ path, access: 'read', homeDir: home });
+      const read = decideAccess({ path, access: 'read', userHome: home });
       expect(read.decision).toBe('ask');
       expect(read.matchedRule).toBe('sensitive-list');
       expect(read.matchedEntry).toBe(entry);
 
-      const write = decideAccess({ path, access: 'write', homeDir: home });
+      const write = decideAccess({ path, access: 'write', userHome: home });
       expect(write.decision).toBe('ask');
       // One rule name for both directions; `matchedSource`/`matchedEntry` say
       // what matched and the caller reports the direction separately.
@@ -498,7 +498,7 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
     const result = decideAccess({
       path: join(outside, '.ssh', 'id_rsa'),
       access: 'read',
-      homeDir: home,
+      userHome: home,
       configAllowedDirs: [outside],
       autoAllowRoots: [outside],
       taskWorkspace: outside,
@@ -516,8 +516,8 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
     symlinkSync(join(outside, '.ssh'), linkToSsh);
     const target = join(linkToSsh, 'missing_key'); // leaf missing on purpose
     expect(normalizePath(target)).toBe(join(outside, '.ssh', 'missing_key'));
-    expect(decideAccess({ path: target, access: 'read', homeDir: home }).decision).toBe('ask');
-    expect(decideAccess({ path: target, access: 'write', homeDir: home }).decision).toBe('ask');
+    expect(decideAccess({ path: target, access: 'read', userHome: home }).decision).toBe('ask');
+    expect(decideAccess({ path: target, access: 'write', userHome: home }).decision).toBe('ask');
   });
 
   it('asks before writing a .ssh directory INSIDE the task workspace (intentional strictness)', () => {
@@ -527,7 +527,7 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
     const result = decideAccess({
       path: join(work, '.ssh', 'id_rsa'),
       access: 'write',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: work,
       taskAllowedDirs: [work],
     });
@@ -542,9 +542,9 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
     // Case-sensitive on Linux: .SSH is a different directory from .ssh.
     expect(isSensitiveSegmentPath('/a/.SSH')).toBe(false);
     // And decideAccess does not deny them (they fall through to ask here).
-    expect(decideAccess({ path: '/a/b.ssh', access: 'read', homeDir: home }).decision).not.toBe('deny');
-    expect(decideAccess({ path: '/a/.sshfoo', access: 'read', homeDir: home }).decision).not.toBe('deny');
-    expect(decideAccess({ path: '/a/.SSH', access: 'read', homeDir: home }).decision).not.toBe('deny');
+    expect(decideAccess({ path: '/a/b.ssh', access: 'read', userHome: home }).decision).not.toBe('deny');
+    expect(decideAccess({ path: '/a/.sshfoo', access: 'read', userHome: home }).decision).not.toBe('deny');
+    expect(decideAccess({ path: '/a/.SSH', access: 'read', userHome: home }).decision).not.toBe('deny');
   });
 
   it('covers every configured sensitive segment anywhere in the path', () => {
@@ -576,7 +576,7 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
     expect(matchSensitiveEntry('/srv/x/.config/gh/hosts.yml')).toBeUndefined();
     // `.config/gh` is a home-anchored (multi-segment) entry: it is reported in
     // its configured spelling when it sits under the injected home.
-    expect(decideAccess({ path: join(home, '.config', 'gh', 'hosts.yml'), access: 'read', homeDir: home })).toMatchObject({
+    expect(decideAccess({ path: join(home, '.config', 'gh', 'hosts.yml'), access: 'read', userHome: home })).toMatchObject({
       decision: 'ask',
       matchedEntry: '.config/gh',
       matchedSource: 'home-default',
@@ -586,7 +586,7 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
 
 describe("decideAccess: wayang's own paths are released (0.8.3)", () => {
   it('a READ under ~/.wayang no longer hits the sensitive list', () => {
-    const result = decideAccess({ path: join(home, '.wayang', 'tmp', 'a.txt'), access: 'read', homeDir: home });
+    const result = decideAccess({ path: join(home, '.wayang', 'tmp', 'a.txt'), access: 'read', userHome: home });
     expect(result.sensitive).toBeUndefined();
     expect(result.matchedRule).not.toBe('sensitive-list');
     // It falls through to the plain "reads inside home" rule instead.
@@ -595,14 +595,14 @@ describe("decideAccess: wayang's own paths are released (0.8.3)", () => {
   });
 
   it('a WRITE under ~/.wayang is not denied (it asks, as any non-workspace path does)', () => {
-    const result = decideAccess({ path: join(home, '.wayang', 'tmp', 'a.txt'), access: 'write', homeDir: home });
+    const result = decideAccess({ path: join(home, '.wayang', 'tmp', 'a.txt'), access: 'write', userHome: home });
     expect(result.decision).not.toBe('deny');
     expect(result.matchedRule).not.toBe('sensitive-list');
     expect(result.decision).toBe('ask');
   });
 
   it('an `unknown` access (bash) under ~/.wayang neither denies nor reports a sensitive hit', () => {
-    const result = decideAccess({ path: join(home, '.wayang', 'tmp', 'a.txt'), access: 'unknown', homeDir: home });
+    const result = decideAccess({ path: join(home, '.wayang', 'tmp', 'a.txt'), access: 'unknown', userHome: home });
     expect(result.decision).not.toBe('deny');
     expect(result.sensitive).toBeUndefined();
   });
@@ -611,7 +611,7 @@ describe("decideAccess: wayang's own paths are released (0.8.3)", () => {
     const result = decideAccess({
       path: join(home, '.wayang', 'tmp', 'a.txt'),
       access: 'write',
-      homeDir: home,
+      userHome: home,
       configAllowedDirs: [join(home, '.wayang')],
     });
     expect(result.decision).toBe('allow');
@@ -625,7 +625,7 @@ describe("decideAccess: wayang's own paths are released (0.8.3)", () => {
    * ordinary scope rules.
    */
   it('a READ of ~/.wayang.config.json no longer hits the sensitive list', () => {
-    const read = decideAccess({ path: join(home, '.wayang.config.json'), access: 'read', homeDir: home });
+    const read = decideAccess({ path: join(home, '.wayang.config.json'), access: 'read', userHome: home });
     expect(read.matchedRule).not.toBe('sensitive-list');
     expect(read.matchedEntry).toBeUndefined();
     expect(read.matchedSource).toBeUndefined();
@@ -637,7 +637,7 @@ describe("decideAccess: wayang's own paths are released (0.8.3)", () => {
   });
 
   it('a WRITE of ~/.wayang.config.json is no longer denied (falls through to `ask`)', () => {
-    const write = decideAccess({ path: join(home, '.wayang.config.json'), access: 'write', homeDir: home });
+    const write = decideAccess({ path: join(home, '.wayang.config.json'), access: 'write', userHome: home });
     expect(write.decision).not.toBe('deny');
     expect(write.matchedRule).not.toBe('sensitive-list');
     // No special rule fires: it is just a write outside every allowed scope.
@@ -648,7 +648,7 @@ describe("decideAccess: wayang's own paths are released (0.8.3)", () => {
   });
 
   it('an `unknown` access (bash) of ~/.wayang.config.json reports no sensitive hit', () => {
-    const verdict = decideAccess({ path: join(home, '.wayang.config.json'), access: 'unknown', homeDir: home });
+    const verdict = decideAccess({ path: join(home, '.wayang.config.json'), access: 'unknown', userHome: home });
     expect(verdict.decision).not.toBe('deny');
     expect(verdict.sensitive).toBeUndefined();
     expect(verdict.matchedEntry).toBeUndefined();
@@ -658,7 +658,7 @@ describe("decideAccess: wayang's own paths are released (0.8.3)", () => {
     const read = decideAccess({
       path: join(work, '.wayang.config.json'),
       access: 'read',
-      homeDir: home,
+      userHome: home,
       taskWorkspace: work,
     });
     expect(read.decision).toBe('allow');
@@ -667,9 +667,9 @@ describe("decideAccess: wayang's own paths are released (0.8.3)", () => {
   });
 
   it('other credentials are untouched (regression)', () => {
-    expect(decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'read', homeDir: home }).matchedEntry).toBe('.ssh');
-    expect(decideAccess({ path: join(home, '.aws', 'credentials'), access: 'read', homeDir: home }).matchedEntry).toBe('.aws');
-    const write = decideAccess({ path: join(home, '.npmrc'), access: 'write', homeDir: home });
+    expect(decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'read', userHome: home }).matchedEntry).toBe('.ssh');
+    expect(decideAccess({ path: join(home, '.aws', 'credentials'), access: 'read', userHome: home }).matchedEntry).toBe('.aws');
+    const write = decideAccess({ path: join(home, '.npmrc'), access: 'write', userHome: home });
     expect(write.decision).toBe('ask');
     expect(write.matchedRule).toBe('sensitive-list');
   });
@@ -678,7 +678,7 @@ describe("decideAccess: wayang's own paths are released (0.8.3)", () => {
 describe('decideAccess: sensitiveMode', () => {
   it("'ask' (the default) asks in both directions", () => {
     for (const access of ['read', 'write'] as const) {
-      const verdict = decideAccess({ path: join(home, '.ssh', 'id_rsa'), access, homeDir: home });
+      const verdict = decideAccess({ path: join(home, '.ssh', 'id_rsa'), access, userHome: home });
       expect(verdict.decision).toBe('ask');
       expect(verdict.matchedRule).toBe('sensitive-list');
       expect(verdict.matchedEntry).toBe('.ssh');
@@ -687,17 +687,17 @@ describe('decideAccess: sensitiveMode', () => {
     }
     // Explicit `ask` behaves like the default.
     expect(
-      decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'write', homeDir: home, sensitiveMode: 'ask' }).decision,
+      decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'write', userHome: home, sensitiveMode: 'ask' }).decision,
     ).toBe('ask');
   });
 
   it("'deny' refuses BOTH directions without asking", () => {
-    const read = decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'read', homeDir: home, sensitiveMode: 'deny' });
+    const read = decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'read', userHome: home, sensitiveMode: 'deny' });
     expect(read.decision).toBe('deny');
     expect(read.matchedRule).toBe('sensitive-list');
     expect(read.matchedEntry).toBe('.ssh');
 
-    const write = decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'write', homeDir: home, sensitiveMode: 'deny' });
+    const write = decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'write', userHome: home, sensitiveMode: 'deny' });
     expect(write.decision).toBe('deny');
     // One rule name for both directions; the caller reports the direction.
     expect(write.matchedRule).toBe('sensitive-list');
@@ -708,13 +708,13 @@ describe('decideAccess: sensitiveMode', () => {
     const unknown = decideAccess({
       path: join(home, '.ssh', 'id_rsa'),
       access: 'unknown',
-      homeDir: home,
+      userHome: home,
       sensitiveMode: 'deny',
     });
     expect(unknown.decision).toBe('deny');
 
     // Nothing sensitive: the mode changes nothing.
-    expect(decideAccess({ path: join(home, 'documents'), access: 'read', homeDir: home, sensitiveMode: 'deny' }).decision).toBe(
+    expect(decideAccess({ path: join(home, 'documents'), access: 'read', userHome: home, sensitiveMode: 'deny' }).decision).toBe(
       'allow',
     );
   });
@@ -722,7 +722,7 @@ describe('decideAccess: sensitiveMode', () => {
   it('neither mode is a way to ALLOW a sensitive path', () => {
     const allowed = {
       path: join(home, '.ssh', 'id_rsa'),
-      homeDir: home,
+      userHome: home,
       taskWorkspace: home,
       taskAllowedDirs: [home],
       configAllowedDirs: [home],

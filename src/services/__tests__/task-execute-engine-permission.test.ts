@@ -579,4 +579,42 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(await sensitive).toContain('Permission denied');
     expect(readFileSync(join(home, '.ssh', 'id_rsa'), 'utf-8')).toBe('PRIVATE-KEY');
   });
+
+  it('13. the boundary anchors on the process home, never on the session layout (0.8.4)', async () => {
+    // The session dir sits under a CUSTOM root (`<home>` here stands in for
+    // what `--wayang-root` produces) while $HOME points elsewhere. The old
+    // derivation reverse-engineered "the user's home" from the session dir
+    // and got the custom root — so the read boundary followed the flag. The
+    // engine must anchor on the PROCESS home instead.
+    const procHome = mkdtempSync(join(tmpdir(), 'wayang-perm-engine-proc-'));
+    const realHome = process.env.HOME;
+    process.env.HOME = procHome;
+    try {
+      writeFileSync(join(procHome, 'z.cfg'), 'PROC-HOME-CONTENT');
+      const ctx = createMockCtx({
+        sessionDir: join(home, '.wayang', 'sessions', 's1'),
+        workspaceDir: taskWs,
+        config: { providers: {}, controller: {}, worker: {} } as unknown as WayangConfig,
+      });
+      const signalQueue = new SignalQueue(ctx);
+      // NO homeDir option: the engine default must be os.homedir().
+      const engine = new TaskExecuteEngine(ctx, signalQueue, new SkillRegistry([]));
+      const tools = await startTask(engine);
+
+      // Reading a PROCESS-home file: the boundary is the process home, so
+      // the verdict is the narrowed read-within-home ask (NOT outside-all,
+      // which is what the old session-derived boundary produced).
+      const pending = tools.read_file.execute({ path: join(procHome, 'z.cfg') });
+      await flush();
+      const requests = permissionRequests(signalQueue);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].matchedRule).toBe('read-within-home');
+
+      engine.resolvePermission(requests[0].requestId, true);
+      expect(await pending).toContain('PROC-HOME-CONTENT');
+    } finally {
+      process.env.HOME = realHome;
+      rmSync(procHome, { recursive: true, force: true });
+    }
+  });
 });

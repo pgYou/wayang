@@ -18,6 +18,7 @@ import { normalizeWorkspacePath } from '@/infra/workspace-registry';
 let homeDir: string;
 let workspaceDir: string;
 let generalWorkspaceDir: string;
+let realHome: string | undefined;
 
 function makeDir(base: string, name: string): string {
   const dir = path.join(base, name);
@@ -29,10 +30,15 @@ beforeEach(() => {
   homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-addtask-home-'));
   workspaceDir = makeDir(homeDir, 'repo');
   generalWorkspaceDir = path.join(homeDir, '.wayang', 'workspace');
+  // `~` / `$HOME` expand against the PROCESS home (os.homedir() reads $HOME
+  // on POSIX), so point $HOME at the temp home these tests declare.
+  realHome = process.env.HOME;
+  process.env.HOME = homeDir;
 });
 
 afterEach(() => {
   fs.rmSync(homeDir, { recursive: true, force: true });
+  process.env.HOME = realHome;
 });
 
 async function exec(toolObj: any, args: any): Promise<string> {

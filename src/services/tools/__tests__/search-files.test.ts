@@ -67,6 +67,7 @@ describe('searchFilesTool', () => {
 describe('searchFilesTool read boundary', () => {
   let home: string;
   let workspace: string;
+  let realHome: string | undefined;
 
   beforeEach(() => {
     // Layout: home/{project/src,a.ts ; documents/note.md ; .ssh/id_rsa ; .wayang/}
@@ -79,10 +80,15 @@ describe('searchFilesTool read boundary', () => {
     mkdirSync(join(home, '.ssh'), { recursive: true });
     writeFileSync(join(home, '.ssh', 'id_rsa'), 'secret', 'utf-8');
     mkdirSync(join(home, '.wayang'), { recursive: true });
+    // `~` expands against the PROCESS home (os.homedir() reads $HOME on
+    // POSIX), so point $HOME at the temp home for the tilde cases.
+    realHome = process.env.HOME;
+    process.env.HOME = home;
   });
 
   afterEach(() => {
     rmSync(home, { recursive: true, force: true });
+    process.env.HOME = realHome;
   });
 
   it('allows an ordinary directory inside home', async () => {
@@ -137,5 +143,26 @@ describe('searchFilesTool read boundary', () => {
     const tool = searchFilesTool({ cwd: workspace, homeDir: home });
     const result = await exec(tool, { pattern: '**/*.ts', path: 'src' });
     expect(result).toContain('a.ts');
+  });
+
+  it('expands a leading ~/ against the process home, then judges that path', async () => {
+    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const result = await exec(tool, { pattern: '**/*.md', path: '~/documents' });
+    expect(result).toContain('note.md');
+  });
+
+  it('a ~/ path expanding outside the boundary is refused, never silently searched', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'wayang-search-other-'));
+    try {
+      // $HOME points elsewhere while the gate anchors at the temp home: the
+      // expanded path lands OUTSIDE the boundary and must be refused.
+      process.env.HOME = other;
+      const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+      const result = await exec(tool, { pattern: '**/*.md', path: '~/documents' });
+      expect(result).toContain('outside the home boundary');
+    } finally {
+      process.env.HOME = home;
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 });

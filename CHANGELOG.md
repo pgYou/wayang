@@ -2,6 +2,14 @@
 
 ## v0.8.4 (未发布)
 
+### 路径语义与 CLI
+
+- `~` 展开与读策略边界拆分（#47）：`~` / `$HOME` 的展开结果恒与 shell 一致（锚定进程 `$HOME`），权限边界（敏感列表与 read-within-home 的锚点）是另一个概念——生产环境二者同为用户主目录，但策略锚点可注入（测试），展开绝不跟随它。此前二者共用「策略 homeDir」展开，当锚点偏离进程 `$HOME` 时，`read_file('~/x')` 打开的文件与 `cat ~/x` 不同，权限门裁决的也是另一条路径。
+- 删除「从 sessionDir 反推用户主目录」的逻辑（#47）：engine、controller agent 与 Claude Code worker 三处均改为直接取进程 `$HOME`。此前 `--home-dir` 指向自定义目录时，反推出的「用户主目录」等于该目录，读边界与敏感列表全部锚在错误的位置。
+- 统一 `~` 展开器：read_file / write_file / edit_file / search_files / search_content / add_task 的 workspace 声明全部走同一个 `expandHome`（锚定进程 `$HOME`），`$HOME` / `${HOME}` 前缀同样展开，`~user` 仍不展开（无法安全解析，门按 `home-other-user` 询问）。bash 侧 `$HOME` 替换与候选展开同样改锚进程 `$HOME`，`cat ~/x` 与 `cat $HOME/x` 在裁决上等价。
+- CLI：`--home-dir` 更名 `--wayang-root`（默认 `~`，即 `$HOME`），语义不变——它是 wayang 运行时状态的根目录（数据在 `<root>/.wayang`，配置在 `<root>/.wayang.config.json`），从来不是操作系统用户主目录。`--home-dir` 保留为弃用别名，使用时警告一次；两者同时给出时 `--wayang-root` 优先。
+- 全局技能目录跟随 wayang 数据目录（`<wayang-root>/.wayang/skills`，默认 `~/.wayang/skills`），不再硬编码进程主目录。
+
 ### 权限
 
 - bash 只读命令分类（#47）：引入显式只读命令表，段首命令命中即判 read，命令替换内部与顶层共用同一张表。判定前剥离 sudo / env / nohup / time / nice / ionice / command / exec / builtin 等前缀与前导变量赋值；git 只放行 status、log、diff、show、rev-parse、ls-files、blame、grep、describe、shortlog 与 branch -a / remote -v。写动词、写 flag、真实重定向仍优先判写；不在表内一律 unknown（fail-closed）。

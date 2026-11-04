@@ -35,6 +35,7 @@
  * Verdicts: `allow` → run immediately, `ask` → controller approval,
  * `deny` → refuse without asking (`sensitiveMode: 'deny'` on a sensitive hit).
  */
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import {
   decideAccess,
@@ -83,8 +84,12 @@ export type WorkerMatchedRule =
 /** Everything the shared policy needs to know about ONE worker run's boundary. */
 export interface WorkerAccessScope {
   /**
-   * The user's home directory — the sensitive-list anchor and the read scope.
-   * Injected by the engine (never read globally here).
+   * The user's home directory — the POLICY BOUNDARY (sensitive-list anchor and
+   * read scope). Injected by the engine (never read globally here). In
+   * production it is the process home (`os.homedir()`), but it is a separate
+   * concept from `~` EXPANSION: `expandHome` always anchors on the process
+   * home so a tool opens exactly what a shell would, while this field decides
+   * whether that path is inside the scope a worker may touch.
    */
   homeDir: string;
   /** The task's workspace: the tool cwd and this run's writable boundary. */
@@ -152,49 +157,93 @@ export interface ToolAccessDecision {
 }
 
 /**
- * Result of expanding a leading `~` in a shell word.
+ * Result of expanding a leading `~` / `$HOME` token in a path.
  *
- * `~` and `~/...` expand against the injected home directory. `~<name>` (tilde
- * followed by anything other than `/` or end-of-word) names ANOTHER user's
- * home. We deliberately do NOT resolve it — that would mean reading /etc/passwd
- * or guessing the layout — so it is reported as unresolvable and the caller
- * forces an approval. Treating it as a relative path would be wrong: a shell
- * reads `cat ~root/.ssh/x` as `/root/.ssh/x`, not as workspace-relative.
+ * `~` and `~/...` expand against the PROCESS home (see `expandHome`).
+ * `~<name>` (tilde followed by anything other than `/` or end-of-word) names
+ * ANOTHER user's home. We deliberately do NOT resolve it — that would mean
+ * reading /etc/passwd or guessing the layout — so it is reported as
+ * unresolvable and the caller forces an approval. Treating it as a relative
+ * path would be wrong: a shell reads `cat ~root/.ssh/x` as `/root/.ssh/x`,
+ * not as workspace-relative.
  */
 export interface HomeExpansion {
-  /** Path after `~` / `~/` expansion; unchanged for `~<name>`. */
+  /** Path after `~` / `~/` / `$HOME` expansion; unchanged for `~<name>`. */
   path: string;
   /** True for `~<name>` — another user's home, which cannot be resolved safely. */
   unresolvable: boolean;
 }
 
 /**
- * Expand a leading `~` / `~/` against `homeDir`; flag `~<name>` as unresolvable.
+ * The process's home directory — the anchor a SHELL expands `~` and `$HOME`
+ * to (`os.homedir()`: `$HOME` when set, the account entry otherwise).
  *
- * Exported for the file tools (starting with `read_file`): the tool must open
- * the SAME path the permission gate judged, so both expand against the one
- * injected home directory — never the process's own `os.homedir()`, which can
- * differ from the gate's anchor (`--home-dir`).
+ * TWO different "home" concepts must not be conflated:
+ *
+ *   - THIS one is an IO semantic: `read_file('~/x')` and `cat ~/x` must open
+ *     the same file, and the shell's anchor is the process environment —
+ *     never a Wayang flag or the session layout.
+ *   - The policy boundary (`WorkerAccessScope.homeDir`, renamed `userHome`):
+ *     WHO may read what. In production it is the same directory, but it is a
+ *     separate decision input — a scope may anchor anywhere (tests inject
+ *     temp dirs), and expansion must not follow it.
  */
-export function expandHome(p: string, homeDir: string): HomeExpansion {
-  if (p === '~') return { path: homeDir, unresolvable: false };
-  if (p.startsWith('~/')) return { path: resolve(homeDir, p.slice(2)), unresolvable: false };
+export function processHomeDir(): string {
+  return homedir();
+}
+
+/**
+ * Expand a leading `~` / `$HOME` token against the PROCESS home.
+ *
+ * Exported for the file tools (`read_file` onwards): the tool must open the
+ * SAME path the permission gate judged, and both must match what a shell
+ * would open for `~/x` / `$HOME/x`. That anchor is the process home — never
+ * the policy boundary (`scope.homeDir`), which may differ (a Wayang run with
+ * a custom root anchors its policy elsewhere while the worker's shell still
+ * expands `~` to the real `$HOME`).
+ *
+ * `$HOME` / `${HOME}` are accepted as leading tokens for the file tools and
+ * declared workspaces, where no shell sits in between to expand them. A bare
+ * `$HOMEDIR`-style prefix is NOT expanded (only the exact spellings).
+ * `~<name>` stays unresolvable — see `HomeExpansion`.
+ */
+export function expandHome(p: string): HomeExpansion {
+  const home = processHomeDir();
+  if (p === '~' || p === '$HOME' || p === '${HOME}') {
+    return home === ''
+      ? { path: p, unresolvable: true }
+      : { path: home, unresolvable: false };
+  }
+  if (p.startsWith('~/')) {
+    return home === ''
+      ? { path: p, unresolvable: true }
+      : { path: resolve(home, p.slice(2)), unresolvable: false };
+  }
+  for (const prefix of ['$HOME/', '${HOME}/']) {
+    if (p.startsWith(prefix)) {
+      return home === ''
+        ? { path: p, unresolvable: true }
+        : { path: resolve(home, p.slice(prefix.length)), unresolvable: false };
+    }
+  }
   if (p.startsWith('~')) return { path: p, unresolvable: true };
   return { path: p, unresolvable: false };
 }
 
 /**
- * Replace `$HOME` / `${HOME}` with the injected home directory BEFORE path
- * candidate extraction, so `cat $HOME/.ssh/id_rsa` is judged against the same
- * concrete path a shell would open (and the sensitive list can see it). Only
- * these two spellings are rewritten: positional/special parameters (`$1`, `$@`,
- * …) and every other variable are left untouched, so common `awk '{print $1}'`
- * commands never trip the gates.
+ * Replace `$HOME` / `${HOME}` with the PROCESS home BEFORE path candidate
+ * extraction, so `cat $HOME/.ssh/id_rsa` is judged against the same concrete
+ * path a shell would open (and the sensitive list can see it) — the same
+ * anchor `expandHome` uses. Only these two spellings are rewritten:
+ * positional/special parameters (`$1`, `$@`, …) and every other variable are
+ * left untouched, so common `awk '{print $1}'` commands never trip the gates.
  */
-function expandHomeVars(command: string, homeDir: string): string {
+function expandHomeVars(command: string): string {
+  const home = processHomeDir();
+  if (home === '') return command;
   // `${HOME}` first, then a bare `$HOME` not followed by an identifier char
   // (so `$HOMEDIR` is not partially rewritten).
-  return command.replace(/\$\{HOME\}/g, homeDir).replace(/\$HOME(?![A-Za-z0-9_])/g, homeDir);
+  return command.replace(/\$\{HOME\}/g, home).replace(/\$HOME(?![A-Za-z0-9_])/g, home);
 }
 
 /**
@@ -1001,7 +1050,7 @@ function decidePath(
     path,
     access,
     cwd: scope.workspace,
-    homeDir: scope.homeDir,
+    userHome: scope.homeDir,
     taskWorkspace: scope.workspace,
     taskAllowedDirs: scope.taskAllowedDirs,
     configAllowedDirs: permission?.allowedDirs,
@@ -1095,7 +1144,7 @@ export function evaluateFileAccess(
   if (typeof rawPath !== 'string' || !rawPath) return { decision: 'allow', matchedRule: 'no-path' };
 
   const access: AccessMode = READ_ONLY_FILE_TOOLS.has(toolName) ? 'read' : 'write';
-  const expanded = expandHome(rawPath, scope.homeDir);
+  const expanded = expandHome(rawPath);
   if (expanded.unresolvable) {
     // `~user`: another user's home. We do not guess it, so we cannot prove it
     // is inside any allowed scope — ask rather than silently allow.
@@ -1243,7 +1292,7 @@ function fallbackSensitiveHit(
   for (const raw of expandedCommand.split(/[\s=]+/)) {
     const word = raw.replace(/^['"]+/, '').replace(/['"]+$/, '');
     if (!word.startsWith('/') && !word.startsWith('~')) continue;
-    const expanded = expandHome(word, scope.homeDir);
+    const expanded = expandHome(word);
     if (expanded.unresolvable) continue;
     const verdict = decidePath(scope, expanded.path, 'write');
     if (verdict.sensitive) return toToolDecision(verdict, 'write');
@@ -1308,7 +1357,7 @@ function evaluateBashCommand(
 ): ToolAccessDecision {
   // `$HOME` / `${HOME}` are expanded BEFORE lexing so the concrete path the
   // shell would open is what gets judged (and the sensitive list can see it).
-  const expandedCommand = expandHomeVars(command, scope.homeDir);
+  const expandedCommand = expandHomeVars(command);
 
   const tokenized = tokenizeShellLite(expandedCommand);
   if (!tokenized.ok) {
@@ -1330,7 +1379,7 @@ function evaluateBashCommand(
   const candidates: BashCandidate[] = [];
   let hasUnresolvableHome = false;
   for (const candidate of extractPathCandidates(segments)) {
-    const expanded = expandHome(candidate.path, scope.homeDir);
+    const expanded = expandHome(candidate.path);
     if (expanded.unresolvable) {
       hasUnresolvableHome = true;
       continue;

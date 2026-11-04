@@ -1,5 +1,4 @@
 import { mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { z } from 'zod';
 import type { TaskDetail } from '@/types/index';
@@ -9,6 +8,7 @@ import { defaultSensitivePaths, isDenied, isPathWithin, normalizePath } from '@/
 import { mergeSensitiveDirs } from '@/infra/permission/permission-config';
 import { generateId } from '@/utils/id';
 import { defineTool, safeExecute } from './common';
+import { expandHome } from './permission-rules';
 import { buildWorkspaceRulesSummary } from './workspace-rules';
 
 export interface AddTaskToolDeps {
@@ -70,29 +70,17 @@ export interface AddTaskToolDeps {
   generalWorkspaceDir?: string;
 }
 
-/** A leading `~` or `$HOME` token, which no shell expands for us here. */
-const HOME_VAR_PREFIX = /^\$(?:\{HOME\}|HOME)(?=\/|$)/;
-
 /**
  * Expand a leading `~` or `$HOME` in a declared workspace.
  *
  * No shell sits between the controller and this tool, so `~/notes` would
  * otherwise be taken as a directory literally named `~` next to the process
- * cwd and the task would run somewhere nobody asked for. Returns null for a
- * form that cannot be expanded (`~user`): guessing whose home that is would be
- * worse than refusing the task.
+ * cwd and the task would run somewhere nobody asked for. Expansion goes
+ * through the ONE shared expander (`expandHome`) and anchors on the PROCESS
+ * home — the same thing a shell means by `~`. `~user` is reported
+ * unresolvable: guessing whose home that is would be worse than refusing the
+ * task.
  */
-function expandHomePrefix(raw: string, homeDir: string): string | null {
-  if (raw === '~') return homeDir;
-  if (raw.startsWith('~/')) return path.join(homeDir, raw.slice(2));
-  const match = HOME_VAR_PREFIX.exec(raw);
-  if (match) {
-    const rest = raw.slice(match[0].length);
-    return rest === '' ? homeDir : path.join(homeDir, rest);
-  }
-  // Any other leading `~` (`~user/…`) is not expandable.
-  return raw.startsWith('~') ? null : raw;
-}
 
 /**
  * Make sure a declared workspace exists. A missing directory is created
@@ -131,13 +119,13 @@ function resolveTaskWorkspace(
 
   let declared: string | undefined;
   if (requested !== undefined && requested.trim() !== '') {
-    const expanded = expandHomePrefix(requested.trim(), deps.homeDir ?? homedir());
-    if (expanded === null) {
+    const expanded = expandHome(requested.trim());
+    if (expanded.unresolvable) {
       return {
         error: `Cannot resolve workspace "${requested}": only "~" and "$HOME" expand to the home directory, so no readable path was left. The task was NOT created.`,
       };
     }
-    declared = expanded;
+    declared = expanded.path;
   }
 
   if (!current) {

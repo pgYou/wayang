@@ -50,10 +50,16 @@ let target: string;
 let otherTarget: string;
 /** Sensitive target (`<home>/.ssh/id_rsa`). */
 let sensitiveTarget: string;
+/** The real $HOME, saved while tests point it at the stand-in home. */
+let realHome: string | undefined;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'wayang-grant-home-'));
   ws = mkdtempSync(join(tmpdir(), 'wayang-grant-ws-'));
+  // `~` expands against the PROCESS home (os.homedir() reads $HOME on POSIX),
+  // so point $HOME at the stand-in home the scope also anchors on.
+  realHome = process.env.HOME;
+  process.env.HOME = home;
   mkdirSync(join(home, 'shared'), { recursive: true });
   mkdirSync(join(home, '.ssh'), { recursive: true });
   target = join(home, 'shared', 'notes.txt');
@@ -67,6 +73,7 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
   rmSync(ws, { recursive: true, force: true });
+  process.env.HOME = realHome;
 });
 
 /** Permission audit records written to the logger, in order. */

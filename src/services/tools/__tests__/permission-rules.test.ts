@@ -22,6 +22,7 @@ import {
   decideToolAccess,
   evaluateBashAccess,
   evaluateFileAccess,
+  expandHome,
   type WorkerAccessScope,
 } from '@/services/tools/permission-rules';
 
@@ -29,10 +30,19 @@ import {
 let home: string;
 /** Task workspace — deliberately NOT inside home (mirrors a checkout elsewhere). */
 let ws: string;
+/** The real $HOME, saved while tests point it at the stand-in home. */
+let realHome: string | undefined;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'wayang-perm-home-'));
   ws = mkdtempSync(join(tmpdir(), 'wayang-perm-ws-'));
+  // `~` / `$HOME` expand against the PROCESS home (os.homedir() reads $HOME
+  // on POSIX). Point $HOME at the stand-in home so tilde paths in these tests
+  // resolve into it, keeping assertions independent of the real user's home —
+  // and matching the default production state where the policy anchor and the
+  // process home are the same directory.
+  realHome = process.env.HOME;
+  process.env.HOME = home;
   mkdirSync(join(home, '.ssh'), { recursive: true });
   writeFileSync(join(home, '.ssh', 'id_rsa'), 'secret');
   writeFileSync(join(home, '.zshrc'), 'export PATH');
@@ -42,6 +52,7 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
   rmSync(ws, { recursive: true, force: true });
+  process.env.HOME = realHome;
 });
 
 function scope(overrides: Partial<WorkerAccessScope> = {}): WorkerAccessScope {
@@ -885,7 +896,7 @@ describe('evaluateFileAccess', () => {
     expect(refusal.message).toContain('sensitiveMode is "deny"');
   });
 
-  it('~ paths expand against the injected home, and the sensitive list wins', () => {
+  it('~ paths expand against the process home ($HOME), and the sensitive list wins', () => {
     const readKey = evaluateFileAccess(scope(), 'read_file', { path: '~/.ssh/id_rsa' });
     expect(readKey.decision).toBe('ask');
     expect(readKey.matchedEntry).toBe('.ssh');
@@ -1270,6 +1281,88 @@ describe('sensitive writes go through approval (0.8.4)', () => {
       expect(verdict.access).toBe('write');
       // An ask carries no refusal text — the approval request explains it.
       expect(verdict.message).toBeUndefined();
+    }
+  });
+});
+
+/**
+ * 0.8.4 semantic split: `~` EXPANSION anchors on the PROCESS home ($HOME) —
+ * the same file a shell opens — while the POLICY BOUNDARY (scope.homeDir) is
+ * a separate decision input that may anchor elsewhere (an injected scope, a
+ * custom wayang root in the old derivation). These cases pin the divergence:
+ * expansion must NOT follow the boundary, and a path that lands outside the
+ * boundary must ask rather than be silently allowed.
+ */
+describe('process-home expansion vs the policy boundary (0.8.4)', () => {
+  /** A second temp dir used as the process home while the scope anchors at `home`. */
+  let otherHome: string;
+
+  beforeEach(() => {
+    otherHome = mkdtempSync(join(tmpdir(), 'wayang-perm-other-'));
+  });
+
+  afterEach(() => {
+    rmSync(otherHome, { recursive: true, force: true });
+  });
+
+  /** Scope anchored at `home` (the suite's stand-in) while $HOME is elsewhere. */
+  function divergentScope(): WorkerAccessScope {
+    return { homeDir: home, workspace: ws };
+  }
+
+  it('expandHome anchors on the process home, not on any injected value', () => {
+    process.env.HOME = otherHome;
+    try {
+      expect(expandHome('~').path).toBe(otherHome);
+      expect(expandHome('~/x').path).toBe(join(otherHome, 'x'));
+      expect(expandHome('$HOME/x').path).toBe(join(otherHome, 'x'));
+      expect(expandHome('${HOME}/x').path).toBe(join(otherHome, 'x'));
+      expect(expandHome('$HOMEDIR/x').path).toBe('$HOMEDIR/x');
+      expect(expandHome('relative/x').path).toBe('relative/x');
+      expect(expandHome('/abs/x').path).toBe('/abs/x');
+      expect(expandHome('~user/x')).toMatchObject({ path: '~user/x', unresolvable: true });
+    } finally {
+      process.env.HOME = home;
+    }
+  });
+
+  it('a file-tool `~` path resolves to the process home and asks when outside the boundary', () => {
+    process.env.HOME = otherHome;
+    try {
+      const verdict = evaluateFileAccess(divergentScope(), 'read_file', { path: '~/x' });
+      // Expanded to the PROCESS home (what `cat ~/x` would open)…
+      expect(verdict.resolvedPath).toBe(join(otherHome, 'x'));
+      // …but the boundary anchors at `home`, so the path is outside every
+      // allowed scope: ask (outside-all), never a silent allow.
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('outside-all');
+    } finally {
+      process.env.HOME = home;
+    }
+  });
+
+  it('a `~` path inside the boundary still narrows read-within-home to ask (default behaviour preserved)', () => {
+    // $HOME === the scope anchor (the default production state): unchanged.
+    const verdict = evaluateFileAccess(divergentScope(), 'read_file', { path: '~/x' });
+    expect(verdict.resolvedPath).toBe(join(home, 'x'));
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.matchedRule).toBe('read-within-home');
+  });
+
+  it('bash judges `cat ~/x` and `cat $HOME/x` identically (same expanded path)', () => {
+    process.env.HOME = otherHome;
+    try {
+      const tilde = evaluateBashAccess(divergentScope(), 'cat ~/x');
+      const envVar = evaluateBashAccess(divergentScope(), 'cat $HOME/x');
+      expect(tilde.decision).toBe('ask');
+      expect(envVar.decision).toBe('ask');
+      expect(tilde.matchedRule).toBe('outside-all');
+      expect(envVar.matchedRule).toBe('outside-all');
+      // Both ask about the SAME path — the one a shell would open.
+      expect(tilde.askPaths).toEqual([join(otherHome, 'x')]);
+      expect(envVar.askPaths).toEqual(tilde.askPaths);
+    } finally {
+      process.env.HOME = home;
     }
   });
 });

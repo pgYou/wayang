@@ -8,6 +8,8 @@ import { SkillRegistry } from '@/services/skills/registry';
 import { resolveSkillDirs } from '@/services/skills/skill-dir';
 import { readSessionUnfinishedTasks } from '@/infra/session-helpers';
 import { SessionLock } from '@/infra/session-lock';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { ConversationIndex, TurnView, WayangConfig } from '@/types/index';
 
 /** Parameters for Supervisor initialization. */
@@ -97,9 +99,11 @@ export class Supervisor {
     // Create services
     this.signalQueue = new SignalQueue(this.ctx);
 
-    // Shared skill registry (global + project + config dirs).
+    // Shared skill registry (global + project + config dirs). The global dir
+    // lives under the wayang DATA dir (follows `--wayang-root`), not the
+    // process home.
     this.skills = new SkillRegistry(
-      resolveSkillDirs(workspaceDir, config.skillsDirs),
+      resolveSkillDirs(options.homeDir ?? join(homedir(), '.wayang'), workspaceDir, config.skillsDirs),
       this.ctx.logger,
     );
 

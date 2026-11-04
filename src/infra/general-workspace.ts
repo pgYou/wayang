@@ -10,8 +10,9 @@
  *   `<wayangDir>/workspace`   (i.e. ~/.wayang/workspace by default)
  *
  * Why here and not /tmp or the home directory:
- * - It sits inside `home`, so the path policy's ordinary scope rules cover it
- *   and a task needs no extra grant to run there.
+ * - It sits inside the wayang data dir (under the user's home by default), so
+ *   the path policy's ordinary scope rules cover it and a task needs no extra
+ *   grant to run there.
  * - It is NOT on the sensitive list (released in 0.8.3 along with the rest of
  *   ~/.wayang): its whole point is that a worker can read and write there.
  * - It is stable. A per-session temp dir disappears with the session; this one
@@ -42,7 +43,9 @@ export interface GeneralWorkspaceContext {
  *
  * Ad-hoc session dirs (hand-built temp dirs in tests) do not follow the
  * `<wayangDir>/sessions/<id>` layout, so fall back to the default location
- * rather than guessing a parent — the same rule the home-dir derivation uses.
+ * rather than guessing a parent. This derivation is about WAYANG'S DATA —
+ * it says nothing about the user home the permission policy anchors on
+ * (always the process `$HOME`, never derived from the session layout).
  */
 function wayangDirFor(ctx: GeneralWorkspaceContext): string {
   return wayangDirForSessionDir(ctx.sessionDir) ?? join(homedir(), '.wayang');

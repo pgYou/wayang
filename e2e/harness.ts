@@ -88,7 +88,7 @@ export async function setupE2E(script: ScriptEntry[], options: E2EOptions = {}):
     CLI_ENTRY,
     'server',
     '--config', configPath,
-    '--home-dir', homeDir,
+    '--wayang-root', homeDir,
     '--workspace-dir', workspaceDir,
     '--session', options.session ?? 'new',
     '--log-level', 'silent',

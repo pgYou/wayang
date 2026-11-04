@@ -119,13 +119,15 @@ wayang --resume --all             # 查看所有会话并选择
 
 | 参数                  | 说明           | 默认值                  |
 | --------------------- | -------------- | ----------------------- |
-| `--home-dir`          | 数据存储目录   | `~/.wayang`             |
+| `--wayang-root`       | Wayang 根目录：数据（session、审计、技能）在 `<path>/.wayang`，配置在 `<path>/.wayang.config.json`。不是权限策略锚定的用户主目录 | `~`（`$HOME`） |
 | `-w, --workspace-dir` | Agent 工作目录 | 当前目录                |
 | `-c, --config`        | 配置文件路径   | `~/.wayang.config.json` |
 | `-r, --resume [id]`   | 恢复会话       | —                       |
 | `--verbose`           | 启用详细日志   | —                       |
 | `-h, --help`          | 显示帮助       | —                       |
 | `-v, --version`       | 显示版本       | —                       |
+
+`--home-dir <path>` 仍可用，作为 `--wayang-root` 的弃用别名（语义相同；使用时会警告一次）。
 
 ## 项目结构
 

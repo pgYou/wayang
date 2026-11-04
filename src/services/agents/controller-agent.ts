@@ -27,7 +27,6 @@ import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/wor
 import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { ensureGeneralWorkspace, resolveGeneralWorkspace } from '@/infra/general-workspace';
 import { resolveWorkspaceRef } from '@/infra/workspace-registry';
-import { basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { SystemContext } from '@/infra/system-context';
 import type { TaskExecuteEngine } from '@/services/task-execute-engine';
@@ -135,17 +134,18 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     // record) surface as debug logs instead of silent no-ops.
     const recorder = new ToolCallRecorder(ctx.logger);
 
-    // Derive the read scope for controller file access. The wayang data dir
-    // lives at <userHome>/.wayang, so its parent is the user's home — the home
-    // the read policy anchors on. ~/.wayang itself is not sensitive (0.8.3):
-    // it is wayang's own runtime data directory (sessions, audit logs, worker
-    // temp files), and the sensitive list covers third-party credentials only.
-    // Ad-hoc session dirs (hand-built temp dirs in tests) don't follow the
-    // `<wayangDir>/sessions/<id>` layout, so fall back to the OS home rather
-    // than guessing a parent.
+    // The read scope for controller file access: the user's home the policy
+    // anchors on. ALWAYS the process home — never derived from the session
+    // layout (where wayang keeps its data, `--wayang-root`, has nothing to do
+    // with whose home the policy protects). ~/.wayang itself is not sensitive
+    // (0.8.3): it is wayang's own runtime data directory (sessions, audit
+    // logs, worker temp files), and the sensitive list covers third-party
+    // credentials only.
+    const homeDir = homedir();
+    // The wayang DATA dir this session belongs to (workspace-registry lookups
+    // key on it). Derived from the session layout — a data-dir concern, kept
+    // separate from the user home above.
     const wayangDir = wayangDirForSessionDir(ctx.sessionDir);
-    const homeDir =
-      wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
 
     // Where tasks with no codebase of their own (research, collecting material,
     // drafting) run. Advertised by absolute path in add_task's description, so

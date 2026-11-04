@@ -123,13 +123,16 @@ wayang --resume --all             # list all sessions to pick
 
 | Flag                  | Description             | Default                 |
 | --------------------- | ----------------------- | ----------------------- |
-| `--home-dir`          | Data storage directory  | `~/.wayang`             |
+| `--wayang-root`       | Wayang root directory: data (sessions, audit, skills) at `<path>/.wayang`, config at `<path>/.wayang.config.json`. Never the OS user home the permission policy anchors on. | `~` (`$HOME`) |
 | `-w, --workspace-dir` | Agent working directory | cwd                     |
 | `-c, --config`        | Config file path        | `~/.wayang.config.json` |
 | `-r, --resume [id]`   | Resume a session        | —                       |
 | `--verbose`           | Enable verbose logging  | —                       |
 | `-h, --help`          | Show help               | —                       |
 | `-v, --version`       | Show version            | —                       |
+
+`--home-dir <path>` still works as a deprecated alias of `--wayang-root`
+(identical semantics; the CLI warns once when it is used).
 
 ## Skills
 
@@ -139,7 +142,7 @@ wayang --resume --all             # list all sessions to pick
 
 Wayang scans these directories (later ones override earlier ones on name conflict):
 
-1. `~/.wayang/skills/` — global, cross-project skills
+1. `~/.wayang/skills/` — global, cross-project skills (under the wayang root: `<wayang-root>/.wayang/skills/`)
 2. `<workspace>/.wayang/skills/` — project-level skills (commit these to share with your team)
 3. Any extra dirs listed in `config.skillsDirs`
 
