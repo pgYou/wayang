@@ -46,8 +46,17 @@ export type PermissionAccess = 'read' | 'write' | 'unknown';
  * - `denied`       — the controller refused (or the request timed out / aborted)
  * - `hard-denied`  — the policy refused without asking (`sensitiveMode: 'deny'`
  *                    on a sensitive hit; the default mode asks instead)
+ * - `granted-by-memory` — the call asked, but a grant recorded earlier in the
+ *                    SAME task already covered every path it needed, so no
+ *                    `permission_request` was emitted. `grantId` names that
+ *                    earlier approval (issue #46). Reads only — a write and a
+ *                    sensitive hit always ask again.
  */
-export type PermissionAuditDecision = 'approved' | 'denied' | 'hard-denied';
+export type PermissionAuditDecision =
+  | 'approved'
+  | 'denied'
+  | 'hard-denied'
+  | 'granted-by-memory';
 
 /** Why an `ask` ended the way it did (only meaningful for `denied`). */
 export type PermissionAuditSource = 'controller' | 'timeout' | 'aborted';
@@ -85,6 +94,12 @@ export interface PermissionAuditEntry {
   decision: PermissionAuditDecision;
   /** Set on `denied`: who/what ended the request. */
   source?: PermissionAuditSource;
+  /**
+   * Set on `granted-by-memory`: the grant whose earlier approval let this call
+   * run unprompted. An id, never content — the trail says WHICH decision this
+   * one inherited, not what was read.
+   */
+  grantId?: string;
 }
 
 /** Operation implied by a gated tool name (`bash` runs commands). */
@@ -130,6 +145,7 @@ export function recordPermissionAudit(logger: Logger | undefined, entry: Permiss
       ...(entry.workerId !== undefined && { workerId: entry.workerId }),
       ...(entry.toolName !== undefined && { toolName: entry.toolName }),
       ...(entry.source !== undefined && { source: entry.source }),
+      ...(entry.grantId !== undefined && { grantId: entry.grantId }),
     },
     'permission audit',
   );

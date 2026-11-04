@@ -1,7 +1,14 @@
 import type { Logger } from '@/infra/logger';
+import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
 import type { SignalQueue } from '@/services/signal/signal-queue';
+import type { ApprovalMemoryMode } from '@/types/config';
 import type { SignalTurnLineage } from '@/types/index';
 import { generateId } from '@/utils/id';
+import {
+  approvalKey,
+  sharedApprovalMemory,
+  type ApprovalMemory,
+} from '@/services/permission/approval-memory';
 import {
   auditAccessFor,
   operationForTool,
@@ -38,6 +45,13 @@ export interface PermissionVerdict {
   sensitive?: boolean;
   /** How the target was judged (read / write / unknown). */
   access?: 'read' | 'write' | 'unknown';
+  /**
+   * Canonical paths this call asks approval FOR (see
+   * `ToolAccessDecision.askPaths`). The task approval memory keys grants per
+   * `direction:path`, so every one of them must already be granted before the
+   * call is let through without a prompt.
+   */
+  askPaths?: string[];
 }
 
 export interface PermissionMiddlewareConfig {
@@ -67,6 +81,44 @@ export interface PermissionMiddlewareDeps {
   turnLineage?: SignalTurnLineage;
   /** Session logger for the permission audit trail (metadata only). */
   logger?: Logger;
+  /**
+   * `permission.approvalMemory` (default `'task'`). `'off'` disables the whole
+   * grant path: no lookup, no writes, byte-for-byte the pre-#46 behaviour.
+   */
+  approvalMemory?: ApprovalMemoryMode;
+  /**
+   * Where per-task read grants live. The engine injects its per-session store
+   * (`TaskExecuteEngine.approvalGrants`) and clears a task's slice on the
+   * terminal transitions; without an injection a shared process-wide store is
+   * used, which keeps a standalone middleware usable.
+   */
+  grants?: ApprovalMemory;
+}
+
+/**
+ * The grants a verdict may reuse, or `[]` when this call must ask again.
+ *
+ * The rule is the whole contract of the feature (issue #46):
+ *   - only `ask` reaches here (`allow` already ran, `deny` never runs);
+ *   - only READ — a write approval is never carried to a later write;
+ *   - never a sensitive hit — `~/.ssh` is asked about every single time, even
+ *     under the default `sensitiveMode: 'ask'` where the hit IS approvable;
+ *   - and the call must name at least one concrete path, so escalations that
+ *     are not about a single path (`dangerous-bash`, `dynamic-shell`,
+ *     `home-other-user`) can never be covered by an old grant.
+ */
+function reusableGrantKeys(verdict: PermissionVerdict): string[] {
+  if (verdict.decision !== 'ask') return [];
+  if (verdict.access !== 'read') return [];
+  if (verdict.sensitive === true) return [];
+  const paths = verdict.askPaths ?? [];
+  if (paths.length === 0) return [];
+  const keys: string[] = [];
+  for (const path of paths) {
+    const key = approvalKey('read', path);
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
 }
 
 interface PendingPermission {
@@ -92,6 +144,8 @@ export function wrapWithPermissionMiddleware(
   const pending = new Map<string, PendingPermission>();
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const gatedSet = new Set(config.gatedTools);
+  const memoryEnabled = (deps.approvalMemory ?? DEFAULT_APPROVAL_MEMORY) === 'task';
+  const grants = deps.grants ?? sharedApprovalMemory;
 
   const wrappedTools = { ...tools };
 
@@ -127,6 +181,38 @@ export function wrapWithPermissionMiddleware(
             toolName,
           });
           return verdict.message ?? `[ERROR] ${toolName}: refused by the path permission policy`;
+        }
+
+        // Task approval memory (#46): when every path this call asks about was
+        // already approved for reading in THIS task, it runs without a prompt.
+        // The decision point is deliberately HERE — before the request is built
+        // and enqueued — so a reuse produces no `permission_request` at all;
+        // the controller only sees the effect in the worker's transcript and in
+        // the audit trail below.
+        //
+        // `permission.approvalMemory: 'off'` short-circuits the whole feature:
+        // no keys are derived, so neither the lookup below nor the write after
+        // an approval can happen.
+        const grantKeys = memoryEnabled ? reusableGrantKeys(verdict) : [];
+        if (grantKeys.length > 0 && grantKeys.every((key) => grants.has(deps.taskId, key))) {
+          const hitOperation = verdict.operation ?? operationForTool(toolName);
+          recordPermissionAudit(deps.logger, {
+            decision: 'granted-by-memory',
+            grantId: grants.get(deps.taskId, grantKeys[0])?.grantId,
+            operation: hitOperation,
+            // `reusableGrantKeys` only ever returns read keys, so the record
+            // can state the direction plainly.
+            access: 'read',
+            resolvedPath: verdict.resolvedPath,
+            requestedPath: typeof args.path === 'string' ? args.path : undefined,
+            matchedEntry: verdict.matchedEntry,
+            matchedSource: verdict.matchedSource,
+            matchedRule: verdict.matchedRule,
+            taskId: deps.taskId,
+            workerId: deps.workerId,
+            toolName,
+          });
+          return originalExecute(args, options);
         }
 
         const requestId = generateId('perm');
@@ -218,6 +304,17 @@ export function wrapWithPermissionMiddleware(
                   : ('controller' as const),
           }),
         });
+
+        // An approval of a READ that is not sensitive opens one grant per
+        // asking path, so the same path inside this task asks no further. A
+        // denial writes nothing (a refusal is a decision about this request,
+        // not a standing answer), and writes / sensitive hits never get here
+        // because `reusableGrantKeys` returned no keys for them.
+        if (result.approved) {
+          for (const key of grantKeys) {
+            grants.remember(deps.taskId, key, { requestId });
+          }
+        }
 
         if (!result.approved) {
           if (result.reason === 'timeout') {

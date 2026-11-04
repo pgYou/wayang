@@ -41,6 +41,8 @@ import { createWorkerTools } from '@/services/tools/index';
 import { askControllerTool } from '@/services/tools/ask-controller';
 import { wrapWithPermissionMiddleware, type PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import { FILE_TOOL_NAMES, decideToolAccess, type WorkerAccessScope } from '@/services/tools/permission-rules';
+import { ApprovalMemory } from '@/services/permission/approval-memory';
+import { resolveApprovalMemory } from '@/infra/permission/permission-config';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
@@ -169,6 +171,13 @@ export class TaskExecuteEngine implements Subscribable {
   private readonly permission?: PermissionConfig;
   /** Session-side hook: remember every workspace a task is accepted for. */
   private readonly onTaskWorkspace?: (workspace: WorkspaceRef) => void;
+  /**
+   * Task-scoped approval grants (#46): one store per engine (= per session),
+   * handed to every worker's permission middleware so a grant approved in one
+   * worker run is visible to the next run of the SAME task. Nothing is
+   * persisted — a resumed session builds a new engine and starts empty.
+   */
+  readonly approvalGrants = new ApprovalMemory();
 
   constructor(
     private readonly ctx: SystemContext,
@@ -290,6 +299,10 @@ export class TaskExecuteEngine implements Subscribable {
         status: 'cancelled',
         completedAt: Date.now(),
       });
+      // Pending tasks never pass through `moveToHistory`, so their approval
+      // grants are dropped here (usually none — but a re-queued task could
+      // still hold one, and a cancelled task must not).
+      this.clearApprovalGrants(id);
       // No worker was ever spawned — announce directly so the dispatching
       // controller turn resolves as cancelled instead of running forever.
       this.emitTaskCancelled(task);
@@ -851,6 +864,32 @@ export class TaskExecuteEngine implements Subscribable {
       status,
       completedAt: Date.now(),
     });
+    // This is the single exit for a RUNNING task into a terminal state
+    // (completed / failed / cancelled), so it is also where the task's
+    // approval grants die — a grant must never outlive the task it was given
+    // in (issue #46).
+    this.clearApprovalGrants(id);
+  }
+
+  /**
+   * Drop every approval grant remembered for one task.
+   *
+   * A direct call, not a lifecycle hook: the grant store is part of the
+   * permission gate's own semantics (the key #46 invariant is "a grant is
+   * task-scoped"), and a hook listener that is missing would silently turn
+   * task-scoped approvals into session-scoped ones — exactly the kind of
+   * failure `LifecycleHooks` is not meant to own.
+   *
+   * Called from the terminal transitions only: `moveToHistory` (which serves
+   * completed / failed / cancelled) and the pending branch of `cancel()`
+   * (a pending task never reaches `moveToHistory`). A multi-stage task parked
+   * idle keeps its grants — it is the same task.
+   */
+  private clearApprovalGrants(taskId: string): void {
+    const cleared = this.approvalGrants.clearTask(taskId);
+    if (cleared > 0) {
+      this.logger.info({ taskId, grants: cleared }, 'Cleared task approval grants');
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1279,6 +1318,12 @@ export class TaskExecuteEngine implements Subscribable {
         turnLineage: this.workerLineage(workerId),
         // Permission audit trail (metadata only) shares the session logger.
         logger: this.ctx.logger,
+        // Task-scoped approval memory (#46): the switch comes from
+        // `permission.approvalMemory`, the store is this engine's per-session
+        // one, cleared per task on the terminal transitions (see
+        // `clearApprovalGrants`).
+        approvalMemory: resolveApprovalMemory(this.permission),
+        grants: this.approvalGrants,
       });
       tools = middleware.wrappedTools;
       this.permissionResolvers.set(workerId, middleware);

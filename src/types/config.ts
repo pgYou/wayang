@@ -72,6 +72,18 @@ export interface WorkerConfig {
 export type SensitiveMode = 'ask' | 'deny';
 
 /**
+ * How long an approval is remembered for (issue #46).
+ * - 'task' (default): approving a READ of a path once lets the same path be
+ *   read again inside the SAME task without asking again. The grant dies with
+ *   the task (completed / failed / cancelled), is never shared across tasks or
+ *   sessions, and is not persisted — a `--resume`d session starts empty.
+ *   Reads only, by canonical path: writes always ask again, and a sensitive
+ *   hit (`~/.ssh`, …) always asks again, whatever this setting says.
+ * - 'off': no memory at all — every ask is asked (the pre-#46 behaviour).
+ */
+export type ApprovalMemoryMode = 'task' | 'off';
+
+/**
  * Path permission policy (consumed by `src/infra/permission/policy.ts`).
  * All fields are optional and additive: omitting the section keeps the
  * previous behaviour exactly. Relative entries resolve against the user's
@@ -98,6 +110,12 @@ export interface PermissionConfig {
   deniedDirs?: string[];
   /** How sensitive hits are handled. Defaults to 'ask'. */
   sensitiveMode?: SensitiveMode;
+  /**
+   * Whether an approval is remembered within the task it was given in.
+   * Defaults to 'task' (read grants per task, cleared when the task ends);
+   * 'off' restores plain one-approval-per-call. See `ApprovalMemoryMode`.
+   */
+  approvalMemory?: ApprovalMemoryMode;
 }
 
 export interface WayangConfig {
@@ -161,6 +179,10 @@ export function validateConfig(config: WayangConfig): string | null {
     const mode = permission.sensitiveMode;
     if (mode !== undefined && mode !== 'ask' && mode !== 'deny') {
       return `permission.sensitiveMode must be 'ask' or 'deny' (got ${JSON.stringify(mode)})`;
+    }
+    const approvalMemory = permission.approvalMemory;
+    if (approvalMemory !== undefined && approvalMemory !== 'task' && approvalMemory !== 'off') {
+      return `permission.approvalMemory must be 'task' or 'off' (got ${JSON.stringify(approvalMemory)})`;
     }
   }
   return null;

@@ -151,6 +151,46 @@ describe('recordPermissionAudit', () => {
     expect(JSON.stringify(record)).not.toContain('sk-live-123');
   });
 
+  /**
+   * #46: a call let through by the task approval memory is not an approval —
+   * it is a REUSE of an earlier one, and the trail has to say which. The
+   * granted-by-memory record therefore carries `grantId` (and nothing about
+   * what was read).
+   */
+  it('records granted-by-memory with the grantId that covered the call (#46)', () => {
+    const logger = createMockLogger();
+    recordPermissionAudit(logger, {
+      decision: 'granted-by-memory',
+      grantId: 'grant-1-abc',
+      operation: 'read',
+      access: 'read',
+      resolvedPath: '/home/u/.zshrc',
+      matchedRule: 'read-within-home',
+      taskId: 't-1',
+      workerId: 'w-1',
+      toolName: 'read_file',
+    });
+
+    const record = firstRecord(logger);
+    expect(record).toMatchObject({
+      decision: 'granted-by-memory',
+      grantId: 'grant-1-abc',
+      operation: 'read',
+      access: 'read',
+      resolvedPath: '/home/u/.zshrc',
+      matchedRule: 'read-within-home',
+      taskId: 't-1',
+      workerId: 'w-1',
+      toolName: 'read_file',
+    });
+  });
+
+  it('omits grantId on every other decision (only a reuse has one to name)', () => {
+    const logger = createMockLogger();
+    recordPermissionAudit(logger, { decision: 'approved', operation: 'read', toolName: 'read_file' });
+    expect(firstRecord(logger)).not.toHaveProperty('grantId');
+  });
+
   it('is a no-op without a logger (auditing never breaks the tool path)', () => {
     expect(() =>
       recordPermissionAudit(undefined, { decision: 'approved', operation: 'read', toolName: 'read_file' }),

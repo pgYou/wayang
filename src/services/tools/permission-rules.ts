@@ -133,6 +133,18 @@ export interface ToolAccessDecision {
    * (`write` > `read` > `unknown`) — see `commandAccess`.
    */
   access?: AccessMode;
+  /**
+   * Canonical paths this call would need approval FOR — one entry per asking
+   * candidate, and only on an `ask` reached by judging path candidates (a
+   * `dangerous-bash`, `dynamic-shell` or `home-other-user` escalation carries
+   * none: those asks are not "one path, once" decisions).
+   *
+   * Exists for the task approval memory (issue #46): a grant is per
+   * `direction:path`, so a reuse decision must know EVERY path the call asks
+   * about. Checking just `resolvedPath` (the first asking candidate) would let
+   * an approved `cat /etc/a /etc/b` silently cover `/etc/b` on the second run.
+   */
+  askPaths?: string[];
 }
 
 /**
@@ -948,8 +960,21 @@ function toToolDecision(verdict: DecideAccessResult, access: AccessMode): ToolAc
 }
 
 /**
- * Narrow the policy's "reads inside home" allow for a BASH candidate.
+ * Declare the canonical target as this verdict's only asking path.
  *
+ * Applied where the verdict was reached by judging ONE concrete path — a file
+ * tool, or one candidate inside a bash command. The task approval memory
+ * (issue #46) keys grants on `direction:path`, so an `ask` must say WHICH paths
+ * it is about; `resolvedPath` alone is not enough for a bash command whose
+ * several candidates all ask (see `ToolAccessDecision.askPaths`).
+ */
+function withAskPaths(decision: ToolAccessDecision): ToolAccessDecision {
+  if (decision.decision !== 'ask' || decision.resolvedPath === undefined) return decision;
+  return { ...decision, askPaths: [decision.resolvedPath] };
+}
+
+/**
+ * Narrow the policy's "reads inside home" allow for a BASH candidate.
  * The policy lets a read happen anywhere under home (the controller's own read
  * scope, rule 6), but a WORKER's silence-worthy scope is its workspace, its task
  * allowedDirs and the explicitly configured roots. A bash candidate that the
@@ -968,9 +993,10 @@ function narrowHomeRead(verdict: DecideAccessResult, candidate: BashCandidate): 
       matchedRule: 'read-within-home',
       resolvedPath: verdict.resolvedPath,
       access: candidate.access,
+      ...(verdict.resolvedPath !== undefined && { askPaths: [verdict.resolvedPath] }),
     };
   }
-  return toToolDecision(verdict, candidate.access);
+  return withAskPaths(toToolDecision(verdict, candidate.access));
 }
 
 /**
@@ -1011,9 +1037,15 @@ export function evaluateFileAccess(
   // "read inside home" rule. Structured check (withinReadScope), not the
   // matchedRule string literal, so renaming the rule cannot widen access.
   if (verdict.decision === 'allow' && verdict.withinReadScope) {
-    return { decision: 'ask', matchedRule: 'read-within-home', resolvedPath: verdict.resolvedPath, access };
+    return {
+      decision: 'ask',
+      matchedRule: 'read-within-home',
+      resolvedPath: verdict.resolvedPath,
+      access,
+      ...(verdict.resolvedPath !== undefined && { askPaths: [verdict.resolvedPath] }),
+    };
   }
-  return toToolDecision(verdict, access);
+  return withAskPaths(toToolDecision(verdict, access));
 }
 
 /** Every command substitution in a lexed command line, in source order. */
@@ -1236,6 +1268,11 @@ function evaluateBashCommand(
   // `.aws`, not the first candidate's `outside-all`. It never turns an ask into
   // an allow, so the boundary is unchanged.
   let sensitiveAsk: ToolAccessDecision | undefined;
+  // Every candidate path this call asks about. One approval covers ONE path
+  // (the task approval memory keys grants per `direction:path`), so the verdict
+  // has to name all of them: `cat /etc/a /etc/b` asks for two grants, and a
+  // reuse decision is only valid when BOTH are already held.
+  const askPaths: string[] = [];
   for (const candidate of candidates) {
     const verdict = decidePath(scope, candidate.path, candidate.access);
     if (verdict.decision === 'deny') return toToolDecision(verdict, candidate.access);
@@ -1245,6 +1282,8 @@ function evaluateBashCommand(
         ...narrowed,
         ...(candidate.reason !== undefined && { reason: candidate.reason }),
       };
+      const askingPath = narrowed.resolvedPath ?? candidate.path;
+      if (!askPaths.includes(askingPath)) askPaths.push(askingPath);
       if (ask.sensitive === true) sensitiveAsk ??= ask;
       else firstAsk ??= ask;
     } else firstAllow ??= narrowed;
@@ -1261,8 +1300,14 @@ function evaluateBashCommand(
       : segments.length > 0 && segments.every((segment) => segmentAccess(segment) === 'read')
         ? 'read'
         : 'unknown';
-  if (sensitiveAsk) sensitiveAsk = { ...sensitiveAsk, access: lineAccess };
-  if (firstAsk) firstAsk = { ...firstAsk, access: lineAccess };
+  // The asking paths are attached only to the path-candidate asks. The
+  // escalations below (`dangerous-bash`, `dynamic-shell`, `home-other-user`)
+  // are NOT "one path, once" decisions and therefore carry none — the approval
+  // memory must not reuse a grant for them.
+  if (sensitiveAsk) {
+    sensitiveAsk = { ...sensitiveAsk, access: lineAccess, ...(askPaths.length > 0 && { askPaths }) };
+  }
+  if (firstAsk) firstAsk = { ...firstAsk, access: lineAccess, ...(askPaths.length > 0 && { askPaths }) };
   if (firstAllow) firstAllow = { ...firstAllow, access: lineAccess };
 
   // A hard refusal (above; only under `sensitiveMode: 'deny'`) outranks

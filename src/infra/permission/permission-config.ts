@@ -23,11 +23,14 @@
  * rule, so the mode only chooses between an approval and a refusal.
  */
 
-import type { PermissionConfig } from '@/types/config';
+import type { ApprovalMemoryMode, PermissionConfig } from '@/types/config';
 import type { SensitiveMode } from './policy';
 
 /** Default `permission.sensitiveMode`: sensitive reads request approval. */
 export const DEFAULT_SENSITIVE_MODE: SensitiveMode = 'ask';
+
+/** Default `permission.approvalMemory`: approvals live as long as their task. */
+export const DEFAULT_APPROVAL_MEMORY: ApprovalMemoryMode = 'task';
 
 /**
  * The configured sensitive directories, deduped, with the deprecated
@@ -51,6 +54,15 @@ export function mergeSensitiveDirs(permission?: PermissionConfig): string[] {
 /** `permission.sensitiveMode` with the default applied. */
 export function resolveSensitiveMode(permission?: PermissionConfig): SensitiveMode {
   return permission?.sensitiveMode ?? DEFAULT_SENSITIVE_MODE;
+}
+
+/**
+ * `permission.approvalMemory` with the default applied. Kept as a helper (and
+ * not read field-by-field at the call sites) so the default lives in one place
+ * and every consumer — middleware, engine cleanup — agrees on it.
+ */
+export function resolveApprovalMemory(permission?: PermissionConfig): ApprovalMemoryMode {
+  return permission?.approvalMemory ?? DEFAULT_APPROVAL_MEMORY;
 }
 
 /** True once the deprecation warning has been emitted (per process). */
