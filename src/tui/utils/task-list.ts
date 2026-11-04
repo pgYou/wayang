@@ -8,6 +8,11 @@
  * caps the number of rows — keeping pending/running tasks ahead of older
  * history — while every other column stays exactly as it was.
  *
+ * `task.result` is the other free-form field on a row: it holds the worker's
+ * final report, which is just as often multi-kilobyte and multi-line. It gets
+ * the exact same one-line digest treatment (see `TASK_LIST_RESULT_MAX_WIDTH`),
+ * so one finished task can never wrap the panel into hundreds of rows.
+ *
  * Pure formatting only — no RPC shape changes, no task data mutation.
  */
 
@@ -17,6 +22,13 @@ import { formatTaskWorkspaceMark } from '@/tui/utils/workspace-display';
 
 /** Max display columns for one description in the list (CJK/emoji count double). */
 export const TASK_LIST_DESCRIPTION_MAX_WIDTH = 80;
+
+/**
+ * Max display columns for one result digest in the list (CJK/emoji count
+ * double). Smaller than the description budget: the result is a trailing
+ * "what came out of it" summary, not the instruction the user needs to verify.
+ */
+export const TASK_LIST_RESULT_MAX_WIDTH = 60;
 
 /** Max rows rendered by `/tasks`; older entries collapse into a trailing note. */
 export const TASK_LIST_MAX_ITEMS = 20;
@@ -119,6 +131,8 @@ function noteFor(total: number, shown: number): string {
 
 export interface TaskRowOptions {
   descriptionMaxWidth?: number;
+  /** Max display columns for the result digest; same one-line rule as the description. */
+  resultMaxWidth?: number;
   /**
    * The session's default workspace (`ctx.workspaceDir`). Tasks running there
    * are the norm and carry no marker; only a task dispatched elsewhere shows
@@ -128,7 +142,7 @@ export interface TaskRowOptions {
   defaultWorkspacePath?: string;
 }
 
-/** One list row: every existing column, with the description digested. */
+/** One list row: every existing column, with description and result digested. */
 export function formatTaskRow(
   task: TaskDetail,
   options: TaskRowOptions = {},
@@ -138,7 +152,13 @@ export function formatTaskRow(
   // nothing (never "undefined").
   const workspacePart = formatTaskWorkspaceMark(task.workspace, options.defaultWorkspacePath);
   const description = truncateForList(task.description, options.descriptionMaxWidth);
-  return `[${task.status}] ${task.id}: ${description}${workspacePart}${task.result ? ` → ${task.result}` : ''}`;
+  // The result is the worker's free-form report — flatten and cap it exactly
+  // like the description, so it can only ever contribute columns, never rows.
+  // An absent, empty or whitespace-only result appends nothing at all.
+  const result = task.result
+    ? truncateForList(task.result, options.resultMaxWidth ?? TASK_LIST_RESULT_MAX_WIDTH)
+    : '';
+  return `[${task.status}] ${task.id}: ${description}${workspacePart}${result ? ` → ${result}` : ''}`;
 }
 
 /** Render the whole `/tasks` output: capped rows plus an optional note line. */
