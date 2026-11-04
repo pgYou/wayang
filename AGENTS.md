@@ -42,8 +42,10 @@ Wayang is a multi-agent orchestration platform — a CLI tool that coordinates m
 
 ### 临时文件与中间产物
 
-- 临时文件放 `~/.wayang/tmp/`；若仍触发审批，改用任务 workspace 内的忽略目录。
-- `~/.wayang` 在权限策略的敏感列表里（`src/infra/permission/policy.ts`）：worker 对它的写入是硬拒绝、读取需审批，需要落盘中间产物时以任务 workspace 内的忽略目录为准，不要用 `/tmp`，也不要往仓库里塞临时文件。
+- worker 的临时文件与中间产物统一放任务 workspace 内的 `.scratch/`（已加入 `.gitignore`，不提交）。
+- 不要用 `/tmp`：它不在 workspace 内，每条命令都会触发跨目录审批。
+- 不要用 `~/.wayang/`：它在权限策略的敏感列表里（`src/infra/permission/policy.ts`），写方向是硬拒绝、读方向需审批，放中间产物只会卡住流程。
+- 需要长期保留的产物放任务 workspace 内的正常路径并纳入版本控制，不要留在 `.scratch/`。
 
 ### 问题跟踪与 PR 关联
 
