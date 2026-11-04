@@ -41,6 +41,14 @@ import {
   type SensitiveMatchSource,
 } from '@/infra/permission/policy';
 import { mergeSensitiveDirs, resolveSensitiveMode } from '@/infra/permission/permission-config';
+import {
+  CMDSUBST_PLACEHOLDER,
+  classifyRedirections,
+  isDiscardRedirectTarget,
+  tokenizeShellLite,
+  type ShellSegment,
+  type ShellSubstitution,
+} from '@/services/tools/shell-lexer';
 import type { PermissionConfig } from '@/types/config';
 
 /** File tools gated by the permission middleware for path access. */
@@ -55,9 +63,6 @@ const READ_ONLY_FILE_TOOLS: ReadonlySet<string> = new Set(['read_file', 'search_
  * false positives from quoted strings.
  */
 const DANGEROUS_BASH_PATTERN = /(?:^|\||;|&&)\s*(?:rm\s|sudo\b|chmod\b|chown\b|mkfs\b|dd\s|shutdown\b|reboot\b|kill\s+-9)/;
-
-/** URLs (scheme://...) — their path components are not local filesystem paths. */
-const URL_RE = /[a-zA-Z][a-zA-Z0-9+.-]*:\/\/\S+/g;
 
 /**
  * Matched rules beyond the policy's own set: the destructive-command tier and
@@ -159,29 +164,27 @@ function expandHomeVars(command: string, homeDir: string): string {
 }
 
 /**
- * Shell constructs whose real target cannot be determined statically: command
- * substitution (backticks / `$(`) and output redirection (`>` / `>>`) to a
- * file. A command containing any of them is escalated to `ask` so the
- * controller can inspect it instead of the gate silently allowing a target it
- * never saw. Ordinary parameters such as `$1` / `${1}` are NOT command
- * substitution and do not trigger this.
+ * Commands a command substitution may contain without the substitution itself
+ * becoming approval-worthy: `$(command -v waya)`, `$(cat notes.txt)`,
+ * `$(readlink -f x)`. This is NOT the read-only command classifier (that is a
+ * later change): it is a narrow list for substitution interiors only, and every
+ * inner command still goes through the normal path sweep — so
+ * `$(cat /etc/passwd)` still asks, for the target rather than for the `$(`.
+ *
+ * Not listed means `ask`: an inner `rm`, `sed`, `find`, `xargs` or anything
+ * else the gate has not been taught to read stays behind an approval.
  */
-function detectUnsafeDynamicTarget(command: string): string | undefined {
-  if (command.includes('`')) return 'command substitution (backticks)';
-  if (/\$\(/.test(command)) return 'command substitution ($(...))';
-  if (hasOutputRedirection(command)) return 'output redirection';
-  return undefined;
-}
+const CMDSUBST_READONLY_VERBS: ReadonlySet<string> = new Set([
+  'cat', 'ls', 'grep', 'head', 'tail', 'wc', 'stat', 'file', 'which', 'command',
+  'readlink', 'echo', 'printf', 'date', 'pwd',
+]);
 
 /**
- * Detect a `>` / `>>` writing to a file. File-descriptor duplication
- * (`2>&1`, `>&2`) targets another fd, not a path, and is ignored.
+ * How deep command substitutions are followed before giving up. A command
+ * nested deeper than this asks: past a few levels the intent is more likely
+ * generated code than a diagnostic one-liner.
  */
-function hasOutputRedirection(command: string): boolean {
-  // `>` / `>>` not immediately followed by `&` (fd duplication), with an actual
-  // target word after optional spaces.
-  return /(?:^|[^<>])>>?\s*(?!&)\S/.test(command);
-}
+const MAX_CMDSUBST_DEPTH = 5;
 
 /**
  * Commands that write to the paths they name. A candidate in the same command
@@ -211,21 +214,24 @@ const BASH_FLAGGED_WRITE_VERBS: ReadonlyMap<string, readonly string[]> = new Map
   ['find', ['-delete', '-fprint', '-fls', '-fprintf', '-exec', '-execdir', '-ok']],
 ]);
 
-/** Command-segment separator: shell operators and newlines. */
-const BASH_SEGMENT_RE = /[\n;|&]+/;
-
-/** `>` / `>>` with a real target (not fd duplication such as `2>&1`). */
-const OUTPUT_REDIRECTION_RE = /(?:^|[^<>])>>?(?!&)/;
-
-/** Strip the quote/operator punctuation that clings to a shell word. */
-function cleanShellWord(raw: string): string {
-  return raw.replace(/^['"]+/, '').replace(/['",;|&()<>'`]+$/, '');
-}
-
-/** Does this command segment certainly write (write verb, flag or redirection)? */
-function isWriteSegment(segment: string): boolean {
-  if (OUTPUT_REDIRECTION_RE.test(segment)) return true;
-  const words = segment.split(/\s+/).map(cleanShellWord).filter((w) => w.length > 0);
+/**
+ * Does this segment certainly write — a write verb, a write flag, or an output
+ * redirection into a real file? Read from the lexer's tokens, so a discard
+ * (`> /dev/null`) and an fd copy (`2>&1`) are not mistaken for a file write,
+ * and a `>` inside quotes is not mistaken for a redirection.
+ */
+function isWriteSegment(segment: ShellSegment): boolean {
+  const words: string[] = [];
+  for (const token of segment.tokens) {
+    if (token.kind === 'word') {
+      words.push(token.word.text);
+      continue;
+    }
+    const { redirect } = token;
+    if (redirect.kind !== 'output') continue;
+    if (isDiscardRedirectTarget(redirect.target?.text)) continue;
+    return true;
+  }
   for (const word of words) {
     if (BASH_WRITE_VERBS.has(word)) return true;
     const flags = BASH_FLAGGED_WRITE_VERBS.get(word);
@@ -239,30 +245,65 @@ interface BashCandidate {
   path: string;
   /** `write` when the candidate sits in a write-capable segment, else `unknown`. */
   access: 'write' | 'unknown';
+  /** Present for redirection targets — surfaced on `ask` so the reason is clear. */
+  reason?: string;
 }
 
 /**
- * Extract path candidates from a shell command: whole shell words that START
- * with `/` or `~` (after stripping quotes and operator fragments). Only whole
- * words count — `src/cli.ts` must not be mistaken for the absolute path
- * `/cli.ts` — and URLs are stripped beforehand.
+ * Split one unquoted shell word into path candidates. A word only yields a
+ * candidate when a piece of it STARTS with `/` or `~`: `src/cli.ts` must not be
+ * mistaken for the absolute path `/cli.ts`, and a URL (`https://…`) is not a
+ * filesystem path. `--prefix=/usr/local` and `of=$HOME/x` do carry one, so the
+ * word is split on `=` as before.
+ */
+function pathPieces(text: string, access: BashCandidate['access']): BashCandidate[] {
+  const candidates: BashCandidate[] = [];
+  for (const piece of text.split('=')) {
+    if (!piece.startsWith('/') && !piece.startsWith('~')) continue;
+    // The discard family is never a file to judge: `tee /dev/null` is not a
+    // write outside the workspace.
+    if (isDiscardRedirectTarget(piece)) continue;
+    candidates.push({ path: piece, access });
+  }
+  return candidates;
+}
+
+/**
+ * Extract path candidates from a lexed command line: absolute / `~` words plus
+ * the targets of redirections into real files.
  *
  * Relative spellings are deliberately NOT extracted (historic behaviour: a
  * relative word is not a path candidate, so it never triggers a prompt). Bash
  * resolves those against the task workspace, which is also the tool's cwd.
  *
- * Candidates are collected segment by segment (split on shell operators) so
- * each one carries the strongest access its OWN segment can justify: a `cat`
- * in one segment cannot downgrade the `tee` next to it.
+ * Candidates are collected segment by segment so each one carries the strongest
+ * access its OWN segment can justify: a `cat` in one segment cannot downgrade
+ * the `tee` next to it. A redirection target is always a write, whatever the
+ * rest of the segment does.
  */
-function extractPathCandidates(command: string): BashCandidate[] {
-  const withoutUrls = command.replace(URL_RE, ' ');
+function extractPathCandidates(segments: ShellSegment[]): BashCandidate[] {
   const candidates: BashCandidate[] = [];
-  for (const segment of withoutUrls.split(BASH_SEGMENT_RE)) {
-    const access: BashCandidate['access'] = isWriteSegment(segment) ? 'write' : 'unknown';
-    for (const raw of segment.split(/[\s=]+/)) {
-      const word = cleanShellWord(raw);
-      if (word.startsWith('/') || word.startsWith('~')) candidates.push({ path: word, access });
+  for (const segment of segments) {
+    const segmentAccess: BashCandidate['access'] = isWriteSegment(segment) ? 'write' : 'unknown';
+    for (const token of segment.tokens) {
+      if (token.kind === 'word') {
+        candidates.push(...pathPieces(token.word.text, segmentAccess));
+        continue;
+      }
+      const { redirect } = token;
+      if (redirect.kind === 'fd-dup' || redirect.kind === 'here-doc' || redirect.kind === 'here-string') continue;
+      const target = redirect.target?.text;
+      if (target === undefined || isDiscardRedirectTarget(target)) continue;
+      // A substitution target is judged through evaluateSubstitutions instead.
+      if (target.includes(CMDSUBST_PLACEHOLDER)) continue;
+      const access: BashCandidate['access'] = redirect.kind === 'output' ? 'write' : segmentAccess;
+      for (const candidate of pathPieces(target, access)) {
+        candidates.push(
+          redirect.kind === 'output'
+            ? { ...candidate, reason: `output redirection to "${target}"` }
+            : candidate,
+        );
+      }
     }
   }
   return candidates;
@@ -354,6 +395,131 @@ export function evaluateFileAccess(
   return toToolDecision(verdict, access);
 }
 
+/** Every command substitution in a lexed command line, in source order. */
+function collectSubstitutions(segments: ShellSegment[]): ShellSubstitution[] {
+  const substitutions: ShellSubstitution[] = [];
+  for (const segment of segments) {
+    for (const token of segment.tokens) {
+      const word = token.kind === 'word' ? token.word : token.redirect.target;
+      if (word) substitutions.push(...word.substitutions);
+    }
+  }
+  return substitutions;
+}
+
+/**
+ * Is a substituted command read-only, so that the substitution itself needs no
+ * approval? Every command in it must be on `CMDSUBST_READONLY_VERBS` and must
+ * not write (write verb, write flag such as `sed -i` / `find -delete`, or a
+ * redirection into a real file). Nested substitutions are judged again by the
+ * caller's recursion, so `$(echo $(date))` stays exempt while
+ * `$(echo $(rm -rf /))` does not.
+ */
+function checkSubstitutionInner(inner: string): { ok: true } | { ok: false; reason: string } {
+  const tokenized = tokenizeShellLite(inner);
+  if (!tokenized.ok) return { ok: false, reason: `cannot parse it (${tokenized.error})` };
+  if (tokenized.segments.length === 0) return { ok: false, reason: 'it is empty' };
+  for (const segment of tokenized.segments) {
+    const verb = segment.tokens.find((token) => token.kind === 'word');
+    if (!verb || verb.kind !== 'word' || verb.word.text === CMDSUBST_PLACEHOLDER) {
+      return { ok: false, reason: 'it has no command word to judge' };
+    }
+    if (!CMDSUBST_READONLY_VERBS.has(verb.word.text)) {
+      return { ok: false, reason: `\`${verb.word.text}\` is not a read-only command` };
+    }
+    if (isWriteSegment(segment)) return { ok: false, reason: `\`${verb.word.text}\` writes` };
+  }
+  return { ok: true };
+}
+
+/**
+ * Decide the command substitutions of one command line.
+ *
+ * A substitution is exempt when its inner command is read-only (see
+ * `checkSubstitutionInner`) AND that inner command passes the ordinary bash
+ * rules — so `$(command -v waya)` and `$(cat notes.txt)` run, while
+ * `$(cat /etc/passwd)` asks for the path and `$(rm -rf /)` asks for the command.
+ * Everything else asks: an inner command outside the read-only list, an empty
+ * or unparsable inner command, or nesting deeper than `MAX_CMDSUBST_DEPTH`.
+ *
+ * Returns `undefined` when the whole command line may continue to be judged.
+ */
+function evaluateSubstitutions(
+  scope: WorkerAccessScope,
+  segments: ShellSegment[],
+  depth: number,
+): ToolAccessDecision | undefined {
+  const substitutions = collectSubstitutions(segments);
+  if (substitutions.length === 0) return undefined;
+  if (depth + 1 > MAX_CMDSUBST_DEPTH) {
+    return {
+      decision: 'ask',
+      matchedRule: 'dynamic-shell',
+      reason: `command substitution nested deeper than ${MAX_CMDSUBST_DEPTH} levels`,
+    };
+  }
+
+  for (const substitution of substitutions) {
+    const inner = substitution.inner.trim();
+    if (inner.length === 0) {
+      return { decision: 'ask', matchedRule: 'dynamic-shell', reason: `empty command substitution ${substitution.raw}` };
+    }
+    const readOnly = checkSubstitutionInner(inner);
+    if (!readOnly.ok) {
+      return {
+        decision: 'ask',
+        matchedRule: 'dynamic-shell',
+        reason: `command substitution ${substitution.raw}: ${readOnly.reason}`,
+      };
+    }
+    const verdict = evaluateBashCommand(scope, inner, depth + 1);
+    // A sensitive WRITE inside the substitution refuses the whole command.
+    if (verdict.decision === 'deny') return verdict;
+    if (verdict.decision === 'ask') {
+      const detail = verdict.reason ?? (verdict.resolvedPath ? `target ${verdict.resolvedPath}` : verdict.matchedRule);
+      return {
+        decision: 'ask',
+        matchedRule: 'dynamic-shell',
+        reason: `command substitution ${substitution.raw} needs approval: ${detail}`,
+        // Carry the inner hit through, so an approval request still names the
+        // path (and the sensitive entry) the substituted command would touch.
+        ...(verdict.resolvedPath !== undefined && { resolvedPath: verdict.resolvedPath }),
+        ...(verdict.matchedEntry !== undefined && {
+          matchedEntry: verdict.matchedEntry,
+          matchedSource: verdict.matchedSource,
+          sensitive: true,
+        }),
+      };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Deny-only sweep for a command the lexer rejected.
+ *
+ * It can only TIGHTEN a verdict, never loosen one: it splits on the coarse
+ * delimiters the old extractor used, treats every absolute / `~` word as a
+ * WRITE and returns only when the policy refuses one of them. That keeps the
+ * "a sensitive path is never writable" invariant when a command is
+ * syntactically broken (`tee ~/.ssh/authorized_keys "x`) instead of degrading
+ * to an approvable ask.
+ */
+function fallbackSensitiveWrite(
+  scope: WorkerAccessScope,
+  expandedCommand: string,
+): ToolAccessDecision | undefined {
+  for (const raw of expandedCommand.split(/[\s=]+/)) {
+    const word = raw.replace(/^['"]+/, '').replace(/['"]+$/, '');
+    if (!word.startsWith('/') && !word.startsWith('~')) continue;
+    const expanded = expandHome(word, scope.homeDir);
+    if (expanded.unresolvable) continue;
+    const verdict = decidePath(scope, expanded.path, 'write');
+    if (verdict.decision === 'deny') return toToolDecision(verdict, 'write');
+  }
+  return undefined;
+}
+
 /**
  * Decide a bash command.
  *
@@ -365,29 +531,65 @@ export function evaluateFileAccess(
  * (the strict mode: "inside home" alone never justifies a write either).
  *
  * Ordering: sensitive write / `sensitiveMode: 'deny'` deny (from the candidate
- * sweep) → destructive-command tier → remaining `ask` candidates → allow.
- * A hard deny therefore outranks the destructive-command heuristic.
+ * sweep) → destructive-command tier → dynamic constructs (a command substitution
+ * that is not read-only, an output redirection into a real file, a command the
+ * lexer cannot parse) → remaining `ask` candidates → allow. A hard deny
+ * therefore outranks the destructive-command heuristic.
  *
  * Fallback when the command yields NO path candidate (`ls -la`, `npm test`,
  * `sed -n 1,10p src/cli.ts`): there is nothing for the policy to judge, so the
  * historic rule applies — a dangerous command still asks, anything else runs.
  * Relative spellings are never candidates, so the sensitive list cannot see
  * them; they are confined by the task workspace (the shell's cwd), as before.
+ *
+ * Discard redirections (`> /dev/null`, `2>&1`) and read-only command
+ * substitutions are exempt from the dynamic tier — see `evaluateSubstitutions`
+ * and `classifyRedirections`.
  */
 export function evaluateBashAccess(scope: WorkerAccessScope, command: string): ToolAccessDecision {
-  // `$HOME` / `${HOME}` are expanded BEFORE extraction so the concrete path the
+  return evaluateBashCommand(scope, command, 0);
+}
+
+/**
+ * The recursive body of `evaluateBashAccess`. `depth` counts how many command
+ * substitutions deep this command sits: the outer command is 0, so
+ * `$(cat $(echo x))` reaches 2 and a sixth nested `$(` asks instead of being
+ * followed any further.
+ */
+function evaluateBashCommand(
+  scope: WorkerAccessScope,
+  command: string,
+  depth: number,
+): ToolAccessDecision {
+  // `$HOME` / `${HOME}` are expanded BEFORE lexing so the concrete path the
   // shell would open is what gets judged (and the sensitive list can see it).
   const expandedCommand = expandHomeVars(command, scope.homeDir);
 
+  const tokenized = tokenizeShellLite(expandedCommand);
+  if (!tokenized.ok) {
+    // A command the lexer cannot finish is never a silent allow. A sensitive
+    // WRITE still refuses outright: the deny invariant outranks parseability.
+    const refusal = fallbackSensitiveWrite(scope, expandedCommand);
+    if (refusal) return refusal;
+    return {
+      decision: 'ask',
+      matchedRule: 'dynamic-shell',
+      reason: `could not parse the shell command (${tokenized.error})`,
+    };
+  }
+
+  const segments = tokenized.segments;
+  const redirections = classifyRedirections(segments);
+
   const candidates: BashCandidate[] = [];
   let hasUnresolvableHome = false;
-  for (const candidate of extractPathCandidates(expandedCommand)) {
+  for (const candidate of extractPathCandidates(segments)) {
     const expanded = expandHome(candidate.path, scope.homeDir);
     if (expanded.unresolvable) {
       hasUnresolvableHome = true;
       continue;
     }
-    candidates.push({ path: expanded.path, access: candidate.access });
+    candidates.push({ ...candidate, path: expanded.path });
   }
 
   let firstAsk: ToolAccessDecision | undefined;
@@ -395,8 +597,12 @@ export function evaluateBashAccess(scope: WorkerAccessScope, command: string): T
   for (const candidate of candidates) {
     const verdict = decidePath(scope, candidate.path, candidate.access);
     if (verdict.decision === 'deny') return toToolDecision(verdict, candidate.access);
-    if (verdict.decision === 'ask') firstAsk ??= toToolDecision(verdict, candidate.access);
-    else firstAllow ??= toToolDecision(verdict, candidate.access);
+    if (verdict.decision === 'ask') {
+      firstAsk ??= {
+        ...toToolDecision(verdict, candidate.access),
+        ...(candidate.reason !== undefined && { reason: candidate.reason }),
+      };
+    } else firstAllow ??= toToolDecision(verdict, candidate.access);
   }
 
   // A hard deny (above) outranks everything. Then the destructive tier.
@@ -404,11 +610,33 @@ export function evaluateBashAccess(scope: WorkerAccessScope, command: string): T
     return { decision: 'ask', matchedRule: 'dangerous-bash' };
   }
 
-  // Targets that cannot be determined statically — and another user's home —
-  // escalate to ask, never a silent allow. The reason is surfaced in the
-  // approval request so the controller knows WHY.
-  const dynamic = detectUnsafeDynamicTarget(expandedCommand);
-  if (dynamic) return { decision: 'ask', matchedRule: 'dynamic-shell', reason: dynamic };
+  // Command substitution: the inner command is judged by the same rules
+  // (recursively), so `$(cat /etc/passwd)` asks for the path and
+  // `$(command -v waya)` does not ask at all.
+  const substitution = evaluateSubstitutions(scope, segments, depth);
+  if (substitution) return substitution;
+
+  // A redirection whose target cannot be resolved statically asks.
+  if (redirections.unresolved !== undefined) {
+    return {
+      decision: 'ask',
+      matchedRule: 'dynamic-shell',
+      reason: `output redirection target cannot be determined statically (${redirections.unresolved})`,
+    };
+  }
+
+  // A redirection into a real file: the policy may well allow the target
+  // (inside the workspace), but a redirected write is never silent.
+  if (redirections.writeTargets.length > 0 && !firstAsk) {
+    return {
+      decision: 'ask',
+      matchedRule: 'dynamic-shell',
+      reason: `output redirection writes a file ("${redirections.writeTargets.join('", "')}")`,
+    };
+  }
+
+  // Another user's home cannot be resolved — ask, never a silent allow. The
+  // reason is surfaced in the approval request so the controller knows WHY.
   if (hasUnresolvableHome) {
     return {
       decision: 'ask',

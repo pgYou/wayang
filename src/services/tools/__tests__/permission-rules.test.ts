@@ -239,6 +239,138 @@ describe('evaluateBashAccess', () => {
       expect(evaluateBashAccess(scope(), 'ls -la 2>&1').decision).toBe('allow');
     });
   });
+
+  /**
+   * 0.8.1 PR2: the diagnostics idioms that used to ask for no reason. A
+   * discard target (`/dev/null`, `/dev/stdout`, `/dev/stderr`) is not a file
+   * write, and `2>&1` retargets a descriptor rather than opening a path — so
+   * neither may reach the "output redirection" escalation.
+   */
+  describe('discard redirections and fd duplication are exempt', () => {
+    it.each([
+      'ls -la >/dev/null',
+      'ls -la 2>/dev/null',
+      'ls -la >>/dev/null',
+      'ls -la &>/dev/null',
+      'ls -la &>>/dev/null',
+      'ls -la >/dev/stdout',
+      'ls -la 2>/dev/stderr',
+      'ls -la > /dev/null 2>&1',
+      'ls -la 2>&1',
+      'ls -la >&2',
+      'ls -la 1>&2',
+      'tee /dev/null',
+    ])('%s → allow (writes no file)', (command) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.reason).toBeUndefined();
+    });
+
+    it('the two reported false positives no longer ask', () => {
+      const probe = evaluateBashAccess(
+        scope(),
+        'command -v waya >/dev/null 2>&1 && readlink -f "$(command -v waya)"',
+      );
+      expect(probe.decision).toBe('allow');
+      const listing = evaluateBashAccess(scope(), 'npm ls -g --depth=0 2>/dev/null | grep -i waya');
+      expect(listing.decision).toBe('allow');
+    });
+
+    it('a redirection into a real file still asks (workspace, absolute, mixed)', () => {
+      // Inside the workspace the policy would allow the write; a redirected
+      // write is still not something the gate runs silently.
+      const relative = evaluateBashAccess(scope(), 'echo hi > out.txt');
+      expect(relative.decision).toBe('ask');
+      expect(relative.reason).toContain('output redirection');
+      expect(evaluateBashAccess(scope(), `echo hi > ${ws}/out.txt`).decision).toBe('ask');
+      // …and out of the workspace it keeps its policy verdict.
+      expect(evaluateBashAccess(scope(), 'echo hi > /etc/passwd').decision).toBe('ask');
+      // Only the real target is to blame in a mixed command line.
+      const mixed = evaluateBashAccess(scope(), 'ls -la >/dev/null && echo x > real.txt');
+      expect(mixed.decision).toBe('ask');
+      expect(mixed.reason).toContain('real.txt');
+    });
+
+    it('an fd copy of a discard target is not a path candidate', () => {
+      expect(evaluateBashAccess(scope(), `ls ${ws} 2>/dev/null >/dev/null`).decision).toBe('allow');
+    });
+  });
+
+  /**
+   * 0.8.1 PR2: a command substitution is exempt when the command inside it is
+   * read-only, and that inner command is judged by the ordinary rules — so the
+   * reason for an approval names the target instead of the `$(`.
+   */
+  describe('command substitution: a read-only inner command is exempt', () => {
+    it.each([
+      'readlink -f "$(command -v waya)"',
+      'echo $(pwd)',
+      'echo $(date)',
+      'echo `date`',
+      'cat $(cat notes.txt)',
+      'echo "x $(date)"',
+      'echo $(echo $(date))',
+      "echo 'a`b'",
+      "echo '$(date)'",
+    ])('%s → allow', (command) => {
+      expect(evaluateBashAccess(scope(), command).decision).toBe('allow');
+    });
+
+    it('an inner target outside the workspace still asks, naming the path', () => {
+      const verdict = evaluateBashAccess(scope(), 'echo $(cat /etc/passwd)');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.reason).toContain('/etc/passwd');
+    });
+
+    it('a non-read-only inner command asks', () => {
+      for (const command of ['echo $(rm -rf /)', 'echo $(git status)', 'echo $(cat a.txt | tee b.txt)']) {
+        const verdict = evaluateBashAccess(scope(), command);
+        expect(verdict.decision).toBe('ask');
+        expect(verdict.matchedRule).toBe('dynamic-shell');
+      }
+    });
+
+    it('backticked substitutions follow the same rules', () => {
+      expect(evaluateBashAccess(scope(), 'readlink -f `command -v waya`').decision).toBe('allow');
+      const verdict = evaluateBashAccess(scope(), 'cat `echo /etc/passwd`');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.reason).toContain('/etc/passwd');
+    });
+
+    it('nesting is followed up to the depth limit', () => {
+      const nested = (levels: number): string => {
+        let command = 'date';
+        for (let i = 0; i < levels; i += 1) command = `echo $(${command})`;
+        return command;
+      };
+      expect(evaluateBashAccess(scope(), nested(3)).decision).toBe('allow');
+      const tooDeep = evaluateBashAccess(scope(), nested(6));
+      expect(tooDeep.decision).toBe('ask');
+      expect(tooDeep.reason).toContain('nested');
+    });
+
+    it.each(["echo 'abc", 'echo "abc', 'echo $(date', 'cat <<EOF'])(
+      '%s → ask (the command cannot be parsed)',
+      (command) => {
+        const verdict = evaluateBashAccess(scope(), command);
+        expect(verdict.decision).toBe('ask');
+        expect(verdict.matchedRule).toBe('dynamic-shell');
+      },
+    );
+
+    it('a sensitive path inside a substitution is still a write refusal / read ask', () => {
+      const read = evaluateBashAccess(scope(), 'cat "$(cat $HOME/.ssh/id_rsa)"');
+      expect(read.decision).toBe('ask');
+      // The inner hit survives the wrap: the approval still names the entry.
+      expect(read.matchedEntry).toBe('.ssh');
+      expect(read.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
+      // A broken command mentioning a sensitive path keeps the hard refusal.
+      const broken = evaluateBashAccess(scope(), 'tee ~/.ssh/authorized_keys "x');
+      expect(broken.decision).toBe('deny');
+      expect(broken.matchedRule).toBe('sensitive-list-write');
+    });
+  });
 });
 
 describe('evaluateFileAccess', () => {
