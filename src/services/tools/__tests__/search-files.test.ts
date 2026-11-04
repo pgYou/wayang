@@ -60,8 +60,9 @@ describe('searchFilesTool', () => {
 /**
  * The read gate. These cases pass `homeDir`, which switches on
  * `decideAccess({ access: 'read', ... })`: reads must stay inside home, and
- * the sensitive list (~/.ssh, ~/.wayang.config.json, …) wins over "inside
- * home" — while the ~/.wayang DATA DIR itself is readable since 0.8.3.
+ * the sensitive list (~/.ssh, ~/.aws, ~/.npmrc, …) wins over "inside home" —
+ * while wayang's own paths (~/.wayang and ~/.wayang.config.json) have been
+ * readable since 0.8.3.
  */
 describe('searchFilesTool read boundary', () => {
   let home: string;
