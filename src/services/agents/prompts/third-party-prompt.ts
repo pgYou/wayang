@@ -14,6 +14,7 @@ const RULES = [
   'Report meaningful progress as you work (entering a new phase, completing a sub-step, recovering from an error).',
   'Do NOT output a final summary right before completing — the system already captures the result separately.',
   'Match the language of the task description.',
+  'Keep scratch files and intermediate artifacts in `.agents/tmp/` inside the task workspace — never `/tmp`, the home directory, or the repository root.',
   '</Rules>',
 ].join('\n');
 

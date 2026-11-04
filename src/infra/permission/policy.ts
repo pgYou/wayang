@@ -25,9 +25,18 @@
  * and the audit trail carry the matched entry and the canonical target, so the
  * decision is explainable, and the file content itself never leaks into them.
  * WRITING one is a hard `deny` with no approval round-trip: letting an agent
- * rewrite `authorized_keys` (or `.wayang`'s own audit trail) is a persistence
- * risk with no legitimate task behind it. `sensitiveMode: 'deny'` restores the
- * pre-0.8.1 behaviour for BOTH directions, as an escape hatch.
+ * rewrite `authorized_keys` is a persistence risk with no legitimate task
+ * behind it. `sensitiveMode: 'deny'` restores the pre-0.8.1 behaviour for BOTH
+ * directions, as an escape hatch.
+ *
+ * Wayang's OWN paths are deliberately NOT on the list (0.8.3): neither the
+ * `~/.wayang` data directory (sessions, logs, worker temp files) nor the
+ * `~/.wayang.config.json` config file is a user credential — the worker needs
+ * to read its own config and session, so both are released and judged by the
+ * ordinary scope rules. "Released" is not "silently trusted": a read inside
+ * home is still downgraded to `ask` at the worker layer, and a write outside
+ * the workspace still asks. Third-party credentials (`.ssh`, `.aws`, `.npmrc`,
+ * `.docker/config.json`, …) keep their sensitive handling.
  *
  * `access: 'unknown'` means "the caller could not classify the operation"
  * (bash, today). It is treated as a potential write for scope purposes (never
@@ -69,12 +78,14 @@ export type MatchedRule =
  * protected path".
  *
  * - `segment`    — an anchor-independent name matching one whole path segment
- * - `filename`   — an anchor-independent FILE name (`SENSITIVE_FILENAMES`)
  * - `pair`       — a two-segment rule (`.docker/config.json`)
  * - `home-default` — a home-anchored built-in relative entry (e.g. `.config/gh`)
  * - `config-dir` — a user-configured `permission.sensitiveDirs` entry
+ *
+ * The former `filename` source (`.wayang.config.json`) is gone since 0.8.3:
+ * that file is wayang's own config, not a third-party credential.
  */
-export type SensitiveMatchSource = 'segment' | 'filename' | 'pair' | 'home-default' | 'config-dir';
+export type SensitiveMatchSource = 'segment' | 'pair' | 'home-default' | 'config-dir';
 
 /** A sensitive-list hit: the entry itself plus which rule produced it. */
 export interface SensitiveMatch {
@@ -152,7 +163,14 @@ export interface DecideAccessResult {
 /**
  * Paths (relative to the user's home directory) that make up the sensitive
  * list under home — they are never read silently and never written. Credentials
- * and tool configs live here.
+ * and third-party tool configs live here.
+ *
+ * Wayang's own paths are not listed on purpose (0.8.3): the `~/.wayang` data
+ * dir (sessions, logs, worker temp files) and the `~/.wayang.config.json`
+ * config file are the tool's own state, not user credentials, and the worker
+ * needs to read them. They fall through to the ordinary scope rules instead
+ * (read-inside-home → ask at the worker layer, out-of-workspace write → ask),
+ * while real third-party credentials stay sensitive.
  */
 const DEFAULT_SENSITIVE_RELATIVE_PATHS = [
   '.ssh',
@@ -167,8 +185,6 @@ const DEFAULT_SENSITIVE_RELATIVE_PATHS = [
   '.npmrc',
   '.pypirc',
   '.config/gh',
-  '.wayang.config.json',
-  '.wayang',
 ] as const;
 
 /**
@@ -185,6 +201,12 @@ const DEFAULT_SENSITIVE_RELATIVE_PATHS = [
  * Matching is WHOLE-SEGMENT equality (`.sshfoo` and `b.ssh` never match),
  * and — deliberately — case-SENSITIVE, mirroring the Linux filesystem where
  * `.SSH` is a different directory from `.ssh`. Do NOT lowercase here.
+ *
+ * Wayang's own directory (`.wayang`) is intentionally absent since 0.8.3: it is
+ * released so a worker can keep temp files and read its session there, wherever
+ * it appears. Its config file (`.wayang.config.json`) is released in the same
+ * release for the same reason — the worker must be able to read the config, and
+ * neither path is a third-party credential.
  */
 const SENSITIVE_SEGMENTS: ReadonlySet<string> = new Set([
   '.ssh',
@@ -197,17 +219,6 @@ const SENSITIVE_SEGMENTS: ReadonlySet<string> = new Set([
   '.git-credentials',
   '.npmrc',
   '.pypirc',
-  // The wayang data dir (sessions/conversations) — same intent as the
-  // home-anchored `.wayang` entry, but applied wherever it appears.
-  '.wayang',
-]);
-
-/**
- * Sensitive file-name segments that are not themselves directory names. A path
- * is sensitive when any one of its segments equals one of these.
- */
-const SENSITIVE_FILENAMES: ReadonlySet<string> = new Set([
-  '.wayang.config.json',
 ]);
 
 /**
@@ -330,7 +341,6 @@ export function matchSensitiveEntry(absPath: string): SensitiveMatch | undefined
   for (let i = 0; i < segments.length; i += 1) {
     const segment = segments[i];
     if (SENSITIVE_SEGMENTS.has(segment)) return { entry: segment, source: 'segment' };
-    if (SENSITIVE_FILENAMES.has(segment)) return { entry: segment, source: 'filename' };
     // Two-segment rules (`.docker/config.json`) keep their pair semantics.
     for (const [dir, child] of SENSITIVE_SEGMENT_PAIRS) {
       if (segment === dir && segments[i + 1] === child) {

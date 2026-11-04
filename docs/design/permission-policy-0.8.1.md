@@ -77,7 +77,7 @@
   - `anchor-independent sensitive segments` 组：断言由 `deny` 改为按 access 分叉（读 `ask` / 写 `deny`），`matchedEntry` 断言补齐。
 - `src/services/__tests__/task-execute-engine-permission.test.ts`
   - 5 / 5b / 6 / 7a / 7b 组：写路径的用例保持"拒绝且不发 permission_request"；读路径的用例改成"发一次 permission_request → 拒绝则报错、批准则执行"（新增 4a 风格的对照）。7a 用 `cat` 的话要换成写动词或补一条读用例。
-- `e2e/scenarios/permission.test.ts`：该场景是 `chmod`（写动词、非敏感），不受影响；新增一个场景：`cat ~/.wayang.config.json` → 一次 `permission_request` → 批准 → 输出包含原文 → 审计文件出现一条 allow 记录。
+- `e2e/scenarios/permission.test.ts`：该场景是 `chmod`（写动词、非敏感），不受影响；新增一个场景：`cat ~/.ssh/id_rsa` → 一次 `permission_request` → 批准 → 输出包含原文 → 审计文件出现一条 allow 记录。
 
 新增测试清单
 
@@ -253,7 +253,8 @@
 现状三张表（`DEFAULT_DENIED_RELATIVE_PATHS`、`SENSITIVE_SEGMENTS`、`SENSITIVE_FILENAMES`）里有重复：`.ssh`、`.aws`、`.wayang` 等在两张表里都出现，同一个路径改一处不生效（#35 的核心抱怨）。合并规则：
 
 - 保留两条**匹配维度**，不保留三张表：
-  - 维度 1「锚点无关段名」：任意绝对路径的任意整段等于集合里的名字即命中。目录名与文件名统一进这一个集合（`.ssh`、`.gnupg`、`.aws`、`.azure`、`.gcloud`、`.kube`、`.netrc`、`.git-credentials`、`.npmrc`、`.pypirc`、`.wayang`、`.wayang.config.json`）。之所以能合并：判定只关心"整段相等"，目录与文件在匹配上没有区别。
+  - 维度 1「锚点无关段名」：任意绝对路径的任意整段等于集合里的名字即命中。目录名与文件名统一进这一个集合（`.ssh`、`.gnupg`、`.aws`、`.azure`、`.gcloud`、`.kube`、`.netrc`、`.git-credentials`、`.npmrc`、`.pypirc`）。之所以能合并：判定只关心"整段相等"，目录与文件在匹配上没有区别。
+  - 0.8.3 起 wayang 自身的配置与会话目录（`~/.wayang` 目录与 `~/.wayang.config.json` 配置文件）**都不在敏感列表内**：它们属于工具自有路径，worker 需要读取自身配置与会话，因此两者都不再命中敏感列表，改由常规作用域规则裁决（home 内读 → worker 层仍降级为 ask，workspace 外写 → ask）。真正的第三方凭据（`.ssh`、`.aws`、`.npmrc` 等）保持敏感。
   - 维度 2「home 锚定的多段路径」：只剩确实需要多段语义的条目（`.docker/config.json`、`.config/gh`）。这些条目无法用单段名表达（单段 `.docker` 会误伤普通 docker 配置目录）。
 - 匹配语义**完全不变**（这是不回退安全性的前提）：整段相等、大小写敏感（`.SSH` ≠ `.ssh`）、命中即覆盖其下所有子孙、先 `realpath` 规范化再匹配、`.docker` 只在紧跟 `config.json` 时算命中。
 - 单一段名表之外，`~/.config/gh` 这类条目在选择上保持现状（0.8.1 不新增、不删除任何条目，避免本轮同时改"命中处置"和"命中范围"两件事）。
@@ -283,7 +284,7 @@
 明确仍硬拒（不出请求、不进审批流程）的情形：
 
 1. **写敏感路径**：`read_file` 之外的 `write_file` / `edit_file` 打敏感路径 → `deny`；bash 里出现在写动词片段（`rm`、`mv`、`cp`、`tee`、`chmod`、`chown`、`dd`、`truncate`、`install`、`sed -i`、`find -delete`、`sh -c` 里的写动词等）的敏感目标 → `deny`。理由：产品决策接受的是"密钥进入上下文"的读风险，不是"agent 改写 `authorized_keys`"的持久化风险；后者一旦放行，审批就变成一句话的事，而收益为零（写敏感目录几乎没有正当任务）。
-2. **`.wayang` 自身的写**：落在上一条里（`.wayang` 是敏感段名），顺带保护会话目录、审计文件、`conversation.jsonl` 不被 worker 改写（审计不可被篡改）。
+2. **wayang 自身路径不是敏感条目（0.8.3 起）**：`~/.wayang` 目录与 `~/.wayang.config.json` 都不在敏感列表内，因此对它们的写不再走"敏感写硬拒"，而是落到常规规则（workspace 外写 → `ask`）。会话目录 / 审计文件 / `conversation.jsonl` 同样不靠敏感表保护。
 3. **敏感路径的整体授权**：`add_task` 的 `allowedDirs` 报敏感目录 → 仍然整体拒绝创建任务（不允许把敏感目录一次性"预授权"进任务边界）。
 4. **controller 自身工具**：`search_files` 等没有审批通道的调用点，政策 `ask` 一律按拒绝处理（不引入"没人可问就放行"）。
 
@@ -383,7 +384,7 @@ subject 只有三种（都基于规范化路径）：
 - 在 workspace 内执行 12 条典型只读命令（`ls -lt`、`cat package.json`、`grep -rn TODO src`、`stat`、`date`、`git status`、`git diff --stat`、`git log --oneline -5`、`wc -l src/cli.ts`、`sed -n 1,40p src/cli.ts`、`head -n 5 README.md`、`find . -name '*.ts' -maxdepth 2`），产生的 `permission_request` 数量为 0（PR3 + PR5 的 friction budget 测试断言 `metrics.requests === 0`）。
 - `evaluateBashAccess(scope, 'cat /tmp/x')` 返回 `decision: 'ask'`、`access: 'read'`、`matchedRule: 'read-outside-scope'`，且同一 scope 加上 `permission.autoAllowRoots = ['/tmp']` 后返回 `'allow'`；而 `evaluateBashAccess(scope, 'rm /tmp/x')` 在两种 scope 下都返回 `'ask'`、`access: 'write'`（危险命令层不会被 `autoAllowRoots` 抵消）。
 - `evaluateToolAccess(scope, 'read_file', { path: '~/.ssh/id_rsa' })` 返回 `decision: 'ask'`、`matchedEntry: '.ssh'`；`evaluateToolAccess(scope, 'write_file', { path: '~/.ssh/authorized_keys' })` 返回 `decision: 'deny'`。
-- 敏感路径命中在 puppet 与 claude-code 两个 worker 上产生**恰好一条** `permission_request`（用 e2e 场景断言 `signals.filter(type === 'permission_request').length === 1`），批准后 `cat ~/.wayang.config.json` 的输出包含文件原文，且 `<sessionDir>/permission-audit.jsonl` 新增一条 `decision: 'allow'`、`matchedEntry: '.wayang.config.json'`、带 `taskId` / `ts` / `operation: 'read'` 的记录。
+- 敏感路径命中在 puppet 与 claude-code 两个 worker 上产生**恰好一条** `permission_request`（用 e2e 场景断言 `signals.filter(type === 'permission_request').length === 1`），批准后 `cat ~/.ssh/id_rsa` 的输出包含文件原文，且 `<sessionDir>/permission-audit.jsonl` 新增一条 `decision: 'allow'`、`matchedEntry: '.ssh'`、带 `taskId` / `ts` / `operation: 'read'` 的记录。
 - 拒绝同一条请求时，worker 收到的错误文本不含文件内容、不含命中条目名、不含规范化的符号链接目标；审计同样新增一条 `decision: 'deny'` 记录。
 - 敏感路径的第二次读取仍然产生一次新的 `permission_request`（即使第一次用的是 `scope: 'task'`）。
 - 同一路径的普通越界读在 `scope: 'task'` 批准之后不再产生 `permission_request`，同一 task 内换一个子目录读仍然产生一次。

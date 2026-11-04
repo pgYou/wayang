@@ -62,6 +62,9 @@ Only use bash when no dedicated tool fits the task (e.g. running builds, install
 - edit_file modifies an existing file by replacing a unique string. The old_string must appear exactly once. If it matches multiple times, the tool will tell you — expand the surrounding context to make it unique.
 - Always verify changes: after write_file or edit_file, use read_file to confirm the content is correct. For large files, use offset and limit to read specific sections instead of the entire file.
 - Use relative paths (relative to workspace). Accessing files outside workspace requires controller approval.
+- Scratch files and intermediate artifacts go to \`.agents/tmp/\` inside the current task workspace. Never \`/tmp\` — it sits outside the workspace, so every command there costs an approval — and never the home directory or the repository root.
+- Anything worth keeping goes to a normal path in the workspace (it is version-controlled); one-off intermediates stay in \`.agents/tmp/\`.
+- Before writing, confirm which workspace you are in: \`pwd\`, or the workspace named in the task description — that one outranks any path you assume.
 
 ## Web search
 
