@@ -40,6 +40,11 @@ Wayang is a multi-agent orchestration platform — a CLI tool that coordinates m
 - 需求完成后回到主仓合流：`git merge --no-ff feat/xxx && git push`，不需要 PR。
 - 合流后清理：`git worktree remove ../wayang-xxx` 并删除已合入的功能分支，保持 `git worktree list` 只有主仓与在进行中的需求。
 
+### 临时文件与中间产物
+
+- 临时文件放 `~/.wayang/tmp/`；若仍触发审批，改用任务 workspace 内的忽略目录。
+- `~/.wayang` 在权限策略的敏感列表里（`src/infra/permission/policy.ts`）：worker 对它的写入是硬拒绝、读取需审批，需要落盘中间产物时以任务 workspace 内的忽略目录为准，不要用 `/tmp`，也不要往仓库里塞临时文件。
+
 ### 问题跟踪与 PR 关联
 
 - 开发过程中发现的问题（bug、体验缺陷、设计疑问、待验证的假设）先提交 issue 记录，写清现象、影响、期望行为与验收标准；不要用对话记录或 TODO 注释代替 issue。
