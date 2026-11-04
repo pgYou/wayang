@@ -60,7 +60,8 @@ describe('searchFilesTool', () => {
 /**
  * The read gate. These cases pass `homeDir`, which switches on
  * `decideAccess({ access: 'read', ... })`: reads must stay inside home, and
- * the sensitive list (~/.ssh, ~/.wayang, …) wins over "inside home".
+ * the sensitive list (~/.ssh, ~/.wayang.config.json, …) wins over "inside
+ * home" — while the ~/.wayang DATA DIR itself is readable since 0.8.3.
  */
 describe('searchFilesTool read boundary', () => {
   let home: string;
@@ -104,10 +105,12 @@ describe('searchFilesTool read boundary', () => {
     expect(result).not.toContain('id_rsa');
   });
 
-  it('refuses the wayang data dir (~/.wayang) via the sensitive list', async () => {
+  it('allows reading the wayang data dir (~/.wayang) — released in 0.8.3', async () => {
+    writeFileSync(join(home, '.wayang', 'note.txt'), 'scratch', 'utf-8');
     const tool = searchFilesTool({ cwd: workspace, homeDir: home });
     const result = await exec(tool, { pattern: '**/*', path: join(home, '.wayang') });
-    expect(result).toContain('sensitive list');
+    expect(result).not.toContain('sensitive list');
+    expect(result).toContain('note.txt');
   });
 
   it('refuses a path outside home with a message distinct from the sensitive list', async () => {

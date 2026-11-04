@@ -25,9 +25,14 @@
  * and the audit trail carry the matched entry and the canonical target, so the
  * decision is explainable, and the file content itself never leaks into them.
  * WRITING one is a hard `deny` with no approval round-trip: letting an agent
- * rewrite `authorized_keys` (or `.wayang`'s own audit trail) is a persistence
- * risk with no legitimate task behind it. `sensitiveMode: 'deny'` restores the
+ * rewrite `authorized_keys` (or `~/.wayang.config.json`) is a persistence risk
+ * with no legitimate task behind it. `sensitiveMode: 'deny'` restores the
  * pre-0.8.1 behaviour for BOTH directions, as an escape hatch.
+ *
+ * The `~/.wayang` DATA DIRECTORY is deliberately NOT on the list (0.8.3): the
+ * worker needs to drop temp files there and read its own session, so the
+ * directory is released while the API-key-bearing CONFIG FILE
+ * (`.wayang.config.json`) stays sensitive.
  *
  * `access: 'unknown'` means "the caller could not classify the operation"
  * (bash, today). It is treated as a potential write for scope purposes (never
@@ -153,6 +158,11 @@ export interface DecideAccessResult {
  * Paths (relative to the user's home directory) that make up the sensitive
  * list under home — they are never read silently and never written. Credentials
  * and tool configs live here.
+ *
+ * The `~/.wayang` DIRECTORY is not listed on purpose: it is the tool's own data
+ * dir (sessions, logs, worker temp files), not user credentials. Only its
+ * config file — `.wayang.config.json`, the one holding the API key — stays
+ * sensitive (see `SENSITIVE_FILENAMES`).
  */
 const DEFAULT_SENSITIVE_RELATIVE_PATHS = [
   '.ssh',
@@ -168,7 +178,6 @@ const DEFAULT_SENSITIVE_RELATIVE_PATHS = [
   '.pypirc',
   '.config/gh',
   '.wayang.config.json',
-  '.wayang',
 ] as const;
 
 /**
@@ -185,6 +194,11 @@ const DEFAULT_SENSITIVE_RELATIVE_PATHS = [
  * Matching is WHOLE-SEGMENT equality (`.sshfoo` and `b.ssh` never match),
  * and — deliberately — case-SENSITIVE, mirroring the Linux filesystem where
  * `.SSH` is a different directory from `.ssh`. Do NOT lowercase here.
+ *
+ * The wayang data dir (`.wayang`) is intentionally absent since 0.8.3: the
+ * directory is released so a worker can keep temp files and read its session
+ * there, wherever it appears. Its config file stays sensitive through
+ * `SENSITIVE_FILENAMES` below.
  */
 const SENSITIVE_SEGMENTS: ReadonlySet<string> = new Set([
   '.ssh',
@@ -197,9 +211,6 @@ const SENSITIVE_SEGMENTS: ReadonlySet<string> = new Set([
   '.git-credentials',
   '.npmrc',
   '.pypirc',
-  // The wayang data dir (sessions/conversations) — same intent as the
-  // home-anchored `.wayang` entry, but applied wherever it appears.
-  '.wayang',
 ]);
 
 /**

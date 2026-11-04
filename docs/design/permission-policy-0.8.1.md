@@ -253,7 +253,8 @@
 现状三张表（`DEFAULT_DENIED_RELATIVE_PATHS`、`SENSITIVE_SEGMENTS`、`SENSITIVE_FILENAMES`）里有重复：`.ssh`、`.aws`、`.wayang` 等在两张表里都出现，同一个路径改一处不生效（#35 的核心抱怨）。合并规则：
 
 - 保留两条**匹配维度**，不保留三张表：
-  - 维度 1「锚点无关段名」：任意绝对路径的任意整段等于集合里的名字即命中。目录名与文件名统一进这一个集合（`.ssh`、`.gnupg`、`.aws`、`.azure`、`.gcloud`、`.kube`、`.netrc`、`.git-credentials`、`.npmrc`、`.pypirc`、`.wayang`、`.wayang.config.json`）。之所以能合并：判定只关心"整段相等"，目录与文件在匹配上没有区别。
+  - 维度 1「锚点无关段名」：任意绝对路径的任意整段等于集合里的名字即命中。目录名与文件名统一进这一个集合（`.ssh`、`.gnupg`、`.aws`、`.azure`、`.gcloud`、`.kube`、`.netrc`、`.git-credentials`、`.npmrc`、`.pypirc`、`.wayang.config.json`）。之所以能合并：判定只关心"整段相等"，目录与文件在匹配上没有区别。
+  - 0.8.3 起 `.wayang` **目录已从两张表移除**（目录已放行，配置文件仍敏感）：worker 需要在该目录下落临时文件并读自己的 session，因此 `~/.wayang` 及其子路径不再命中敏感列表；`.wayang.config.json`（内含 API key）仍保留在 home 锚定条目与文件名级规则里。
   - 维度 2「home 锚定的多段路径」：只剩确实需要多段语义的条目（`.docker/config.json`、`.config/gh`）。这些条目无法用单段名表达（单段 `.docker` 会误伤普通 docker 配置目录）。
 - 匹配语义**完全不变**（这是不回退安全性的前提）：整段相等、大小写敏感（`.SSH` ≠ `.ssh`）、命中即覆盖其下所有子孙、先 `realpath` 规范化再匹配、`.docker` 只在紧跟 `config.json` 时算命中。
 - 单一段名表之外，`~/.config/gh` 这类条目在选择上保持现状（0.8.1 不新增、不删除任何条目，避免本轮同时改"命中处置"和"命中范围"两件事）。
@@ -283,7 +284,7 @@
 明确仍硬拒（不出请求、不进审批流程）的情形：
 
 1. **写敏感路径**：`read_file` 之外的 `write_file` / `edit_file` 打敏感路径 → `deny`；bash 里出现在写动词片段（`rm`、`mv`、`cp`、`tee`、`chmod`、`chown`、`dd`、`truncate`、`install`、`sed -i`、`find -delete`、`sh -c` 里的写动词等）的敏感目标 → `deny`。理由：产品决策接受的是"密钥进入上下文"的读风险，不是"agent 改写 `authorized_keys`"的持久化风险；后者一旦放行，审批就变成一句话的事，而收益为零（写敏感目录几乎没有正当任务）。
-2. **`.wayang` 自身的写**：落在上一条里（`.wayang` 是敏感段名），顺带保护会话目录、审计文件、`conversation.jsonl` 不被 worker 改写（审计不可被篡改）。
+2. **`.wayang` 配置文件的写**：落在上一条里（`.wayang.config.json` 是敏感条目）。注意 `~/.wayang` 目录自 0.8.3 起已放行（目录已放行，配置文件仍敏感），因此会话目录 / 审计文件 / `conversation.jsonl` 不再靠敏感表保护。
 3. **敏感路径的整体授权**：`add_task` 的 `allowedDirs` 报敏感目录 → 仍然整体拒绝创建任务（不允许把敏感目录一次性"预授权"进任务边界）。
 4. **controller 自身工具**：`search_files` 等没有审批通道的调用点，政策 `ask` 一律按拒绝处理（不引入"没人可问就放行"）。
 

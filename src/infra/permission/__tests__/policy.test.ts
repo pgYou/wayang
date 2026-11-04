@@ -19,7 +19,9 @@ import {
  *     home/
  *       .ssh/id_rsa
  *       .npmrc
- *       .wayang/sessions/
+ *       .wayang/sessions/         (data dir — NOT sensitive since 0.8.3)
+ *       .wayang.config.json       (API-key config — still sensitive)
+ *       .wayang/tmp/a.txt
  *       documents/
  *         nested/
  *       home-sibling-not-really/   (name collision only — see boundary tests)
@@ -43,6 +45,9 @@ beforeAll(() => {
 
   mkdirSync(join(home, '.ssh'), { recursive: true });
   mkdirSync(join(home, '.wayang', 'sessions'), { recursive: true });
+  mkdirSync(join(home, '.wayang', 'tmp'), { recursive: true });
+  writeFileSync(join(home, '.wayang', 'tmp', 'a.txt'), 'scratch');
+  writeFileSync(join(home, '.wayang.config.json'), '{"apiKey":"secret"}');
   mkdirSync(join(home, 'documents', 'nested'), { recursive: true });
   mkdirSync(join(work, 'src'), { recursive: true });
   mkdirSync(outside, { recursive: true });
@@ -100,7 +105,8 @@ describe('defaultSensitivePaths', () => {
     expect(denied).toContain(join(home, '.npmrc'));
     expect(denied).toContain(join(home, '.config', 'gh'));
     expect(denied).toContain(join(home, '.wayang.config.json'));
-    expect(denied).toContain(join(home, '.wayang'));
+    // 0.8.3: the data DIRECTORY is released; only the config file stays listed.
+    expect(denied).not.toContain(join(home, '.wayang'));
     expect(denied.every((p) => p.startsWith(home))).toBe(true);
   });
 });
@@ -133,7 +139,10 @@ describe('isDenied / isPathWithin: segment boundaries', () => {
     const denied = defaultSensitivePaths(home);
     expect(isDenied(join(home, '.ssh', 'id_rsa'), denied)).toBe(true);
     expect(isDenied(join(home, '.sshfoo', 'id_rsa'), denied)).toBe(false);
-    expect(isDenied(join(home, '.wayang', 'sessions'), denied)).toBe(true);
+    // 0.8.3: the data dir is no longer on the home-anchored list…
+    expect(isDenied(join(home, '.wayang', 'sessions'), denied)).toBe(false);
+    // …while the config file next to it still is.
+    expect(isDenied(join(home, '.wayang.config.json'), denied)).toBe(true);
   });
 });
 
@@ -520,11 +529,16 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
   it('covers every configured sensitive segment anywhere in the path', () => {
     for (const segment of [
       '.ssh', '.gnupg', '.aws', '.azure', '.gcloud', '.kube',
-      '.netrc', '.git-credentials', '.npmrc', '.pypirc', '.wayang',
+      '.netrc', '.git-credentials', '.npmrc', '.pypirc',
     ]) {
       expect(isSensitiveSegmentPath(`/srv/project/${segment}`)).toBe(true);
     }
     expect(isSensitiveSegmentPath('/srv/project/.wayang.config.json')).toBe(true);
+    // 0.8.3: the `.wayang` DIRECTORY is no longer an anchor-independent
+    // segment either (directory released, config file still sensitive).
+    expect(isSensitiveSegmentPath('/srv/project/.wayang')).toBe(false);
+    expect(isSensitiveSegmentPath('/srv/project/.wayang/tmp/a.txt')).toBe(false);
+    expect(matchSensitiveEntry('/srv/project/.wayang/tmp/a.txt')).toBeUndefined();
   });
 
   it('.docker counts only as the pair .docker/config.json', () => {
@@ -546,6 +560,70 @@ describe('decideAccess: anchor-independent sensitive segments', () => {
       matchedEntry: '.config/gh',
       matchedSource: 'home-default',
     });
+  });
+});
+
+describe('decideAccess: the ~/.wayang directory is released (0.8.3)', () => {
+  it('a READ under ~/.wayang no longer hits the sensitive list', () => {
+    const result = decideAccess({ path: join(home, '.wayang', 'tmp', 'a.txt'), access: 'read', homeDir: home });
+    expect(result.sensitive).toBeUndefined();
+    expect(result.matchedRule).not.toBe('sensitive-list');
+    // It falls through to the plain "reads inside home" rule instead.
+    expect(result.matchedRule).toBe('read-within-home');
+    expect(result.decision).toBe('allow');
+  });
+
+  it('a WRITE under ~/.wayang is not denied (it asks, as any non-workspace path does)', () => {
+    const result = decideAccess({ path: join(home, '.wayang', 'tmp', 'a.txt'), access: 'write', homeDir: home });
+    expect(result.decision).not.toBe('deny');
+    expect(result.matchedRule).not.toBe('sensitive-list-write');
+    expect(result.decision).toBe('ask');
+  });
+
+  it('an `unknown` access (bash) under ~/.wayang neither denies nor reports a sensitive hit', () => {
+    const result = decideAccess({ path: join(home, '.wayang', 'tmp', 'a.txt'), access: 'unknown', homeDir: home });
+    expect(result.decision).not.toBe('deny');
+    expect(result.sensitive).toBeUndefined();
+  });
+
+  it('the release is not overridable-by-accident: configAllowedDirs covering it still allows', () => {
+    const result = decideAccess({
+      path: join(home, '.wayang', 'tmp', 'a.txt'),
+      access: 'write',
+      homeDir: home,
+      configAllowedDirs: [join(home, '.wayang')],
+    });
+    expect(result.decision).toBe('allow');
+    expect(result.matchedRule).toBe('config-allowed');
+  });
+
+  it('~/.wayang.config.json STILL asks on read and denies on write', () => {
+    const read = decideAccess({ path: join(home, '.wayang.config.json'), access: 'read', homeDir: home });
+    expect(read.decision).toBe('ask');
+    expect(read.matchedRule).toBe('sensitive-list');
+    expect(read.matchedEntry).toBe('.wayang.config.json');
+    expect(read.sensitive).toBe(true);
+
+    const write = decideAccess({ path: join(home, '.wayang.config.json'), access: 'write', homeDir: home });
+    expect(write.decision).toBe('deny');
+    expect(write.matchedRule).toBe('sensitive-list-write');
+    expect(write.matchedEntry).toBe('.wayang.config.json');
+
+    // …and it stays sensitive even inside an otherwise allowed tree.
+    const insideWorkspace = decideAccess({
+      path: join(work, '.wayang.config.json'),
+      access: 'read',
+      homeDir: home,
+      taskWorkspace: work,
+    });
+    expect(insideWorkspace.decision).toBe('ask');
+    expect(insideWorkspace.matchedEntry).toBe('.wayang.config.json');
+  });
+
+  it('other credentials are untouched (regression)', () => {
+    expect(decideAccess({ path: join(home, '.ssh', 'id_rsa'), access: 'read', homeDir: home }).matchedEntry).toBe('.ssh');
+    expect(decideAccess({ path: join(home, '.aws', 'credentials'), access: 'read', homeDir: home }).matchedEntry).toBe('.aws');
+    expect(decideAccess({ path: join(home, '.npmrc'), access: 'write', homeDir: home }).matchedRule).toBe('sensitive-list-write');
   });
 });
 

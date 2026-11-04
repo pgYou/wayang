@@ -636,3 +636,89 @@ describe('anchor-independent sensitive list: real home outside the injected home
     expect(verdict.decision).toBe('ask');
   });
 });
+
+/**
+ * 0.8.3: the `~/.wayang` DATA DIRECTORY is released from the sensitive list so
+ * a worker can drop temp files there and read its own session. What stays
+ * sensitive is the API-key-bearing config FILE next to it,
+ * `~/.wayang.config.json`.
+ */
+describe('the ~/.wayang directory is released (0.8.3)', () => {
+  beforeEach(() => {
+    mkdirSync(join(home, '.wayang', 'tmp'), { recursive: true });
+    writeFileSync(join(home, '.wayang', 'tmp', 'a.txt'), 'scratch');
+    writeFileSync(join(home, '.wayang.config.json'), '{"apiKey":"secret"}');
+  });
+
+  it('read_file on ~/.wayang/tmp/a.txt → ask via the home rule, NOT the sensitive list', () => {
+    const verdict = evaluateFileAccess(scope(), 'read_file', { path: '~/.wayang/tmp/a.txt' });
+    // The policy allows (read-inside-home); the worker narrows that to `ask`.
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.matchedRule).toBe('read-within-home');
+    expect(verdict.matchedRule).not.toBe('sensitive-list');
+    expect(verdict.sensitive).toBeUndefined();
+    expect(verdict.matchedEntry).toBeUndefined();
+  });
+
+  it('write_file on ~/.wayang/tmp/a.txt is no longer denied', () => {
+    const verdict = evaluateFileAccess(scope(), 'write_file', { path: '~/.wayang/tmp/a.txt' });
+    expect(verdict.decision).not.toBe('deny');
+    expect(verdict.matchedRule).not.toBe('sensitive-list-write');
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.message).toBeUndefined();
+  });
+
+  it('edit_file on ~/.wayang/tmp/a.txt is no longer denied', () => {
+    const verdict = evaluateFileAccess(scope(), 'edit_file', { path: join(home, '.wayang', 'tmp', 'a.txt') });
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.matchedRule).not.toBe('sensitive-list-write');
+  });
+
+  it('bash redirect into ~/.wayang/tmp is not a sensitive write', () => {
+    const verdict = decideToolAccess(scope(), 'bash', { command: 'echo hi > ~/.wayang/tmp/a.txt' });
+    expect(verdict.decision).not.toBe('deny');
+    expect(verdict.matchedRule).not.toBe('sensitive-list-write');
+    expect(verdict.sensitive).toBeUndefined();
+  });
+
+  it('bash reading inside ~/.wayang does not name a sensitive entry', () => {
+    const verdict = evaluateBashAccess(scope(), 'cat ~/.wayang/tmp/a.txt');
+    expect(verdict.decision).not.toBe('deny');
+    expect(verdict.matchedEntry).toBeUndefined();
+    expect(verdict.sensitive).toBeUndefined();
+  });
+
+  it('a workspace-level config granting ~/.wayang now allows writes there', () => {
+    const verdict = evaluateFileAccess(scope({ permission: { allowedDirs: [join(home, '.wayang')] } }), 'write_file', {
+      path: '~/.wayang/tmp/b.txt',
+    });
+    expect(verdict.decision).toBe('allow');
+    expect(verdict.matchedRule).toBe('config-allowed');
+  });
+
+  it('~/.wayang.config.json still asks on read and denies on write', () => {
+    const read = evaluateFileAccess(scope(), 'read_file', { path: '~/.wayang.config.json' });
+    expect(read.decision).toBe('ask');
+    expect(read.matchedRule).toBe('sensitive-list');
+    expect(read.matchedEntry).toBe('.wayang.config.json');
+    expect(read.sensitive).toBe(true);
+
+    const write = decideToolAccess(scope(), 'write_file', { path: '~/.wayang.config.json', content: 'x' });
+    expect(write.decision).toBe('deny');
+    expect(write.matchedRule).toBe('sensitive-list-write');
+    expect(write.message).toContain('sensitive list');
+  });
+
+  it('bash writing ~/.wayang.config.json is still refused', () => {
+    const verdict = evaluateBashAccess(scope(), 'echo {} > ~/.wayang.config.json');
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.matchedRule).toBe('sensitive-list-write');
+  });
+
+  it('other credentials are unaffected (regression)', () => {
+    expect(evaluateFileAccess(scope(), 'read_file', { path: '~/.ssh/id_rsa' }).matchedEntry).toBe('.ssh');
+    expect(evaluateFileAccess(scope(), 'write_file', { path: '~/.ssh/authorized_keys' }).decision).toBe('deny');
+    // A plain home file keeps the same "ask, not sensitive" shape as ~/.wayang.
+    expect(evaluateFileAccess(scope(), 'read_file', { path: '~/.zshrc' }).matchedRule).toBe('read-within-home');
+  });
+});
