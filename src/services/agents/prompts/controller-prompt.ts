@@ -9,6 +9,7 @@ import type { WorkerConfig } from '@/types/config';
 import { PUPPET_DEFAULTS } from '../worker-defaults';
 import { assemble, buildEnvironment, buildSkillCatalog, section } from './prompt-utils';
 import { SystemContext } from '@/infra/system-context';
+import { resolveGeneralWorkspace } from '@/infra/general-workspace';
 import type { SkillRegistry } from '@/services/skills/registry';
 
 // ---------------------------------------------------------------------------
@@ -286,11 +287,25 @@ You resumed a previous session that had unfinished tasks. Workers were NOT autom
 
 Do NOT blindly re-create everything. The user may have moved on. Prefer to summarize and ask unless the intent is obvious.`);
 
-const WORKING_PRINCIPLES = section('Working principles',
-  `【任务拆分】
+/**
+ * Working principles — the dispatch-quality rules, in the same voice as the
+ * project's own review notes.
+ *
+ * The general workspace is interpolated at build time (never written as a
+ * `~/…` literal): the controller is about to pass that exact path as
+ * add_task's `workspace`, and a spelling it has to re-derive is a spelling
+ * that eventually drifts.
+ */
+function buildWorkingPrinciples(generalWorkspace: string): string {
+  const body = `【任务拆分】
 - 一个任务只交付一个可独立验收的结果；不要把设计、实现、测试塞进同一段。
 - 先做能被单测断言的核心逻辑，把边界（宽字符、代理对、折行位置之类）固化成用例，再叠加集成与交互层。
 - 任务描述必须自包含：背景、目标、输入输出、约束、验收标准。执行方看不到你的对话。
+
+【工作区】
+- 用户给了目录，或任务明显属于某个代码库：用那个目录。
+- 用户没指定、或任务与代码库无关（调研、资料整理、信息查询、写文档草稿）：用通用工作区 ${generalWorkspace}，它不属于任何仓库，首次使用自动创建。
+- 任务会留下中间产物时写进描述：临时文件放任务 workspace 内的 .agents/tmp/，不要用 /tmp。
 
 【分工与审核】
 - 设计判断与机械实现分开派：设计方先实测关键行为，产出「改哪个文件、函数签名、数据结构、边界情况、测试清单」的方案；执行方照方案编码，不做设计决策。
@@ -316,7 +331,9 @@ const WORKING_PRINCIPLES = section('Working principles',
 - 同区互卷 —— 让两个执行者在同一工作区并发提交，互相把对方的改动卷进自己的 commit。
 - 静默判死 —— 凭输出静默判断死活：把在跑长任务当成卡死杀掉，或把活锁当成慢任务死等。
 - 绿灯即完成 —— 单测或流程全绿就宣布完成；偶发失败复跑一次通过就当没发生，不做记录。
-- 零碎取证 —— 把一次取证拆成几十条零碎只读命令逐条等批准，排障被流程本身拖死。`);
+- 零碎取证 —— 把一次取证拆成几十条零碎只读命令逐条等批准，排障被流程本身拖死。`;
+  return section('Working principles', body);
+}
 
 const HARD_CONSTRAINTS = section('Hard constraints',
   `- NEVER execute commands or write files yourself. Delegate via add_task（worker will execute）.
@@ -370,7 +387,7 @@ export function buildControllerSystemPrompt(
     TOOL_USAGE,
     PLANNING_TOOLS,
     SIGNAL_HANDLING,
-    WORKING_PRINCIPLES,
+    buildWorkingPrinciples(resolveGeneralWorkspace(ctx)),
     HARD_CONSTRAINTS,
     buildWorkerList(ctx.config.workers),
     buildSkillCatalog(skills),

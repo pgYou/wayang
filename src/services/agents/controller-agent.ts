@@ -25,6 +25,7 @@ import {
 import { createControllerTools } from '@/services/tools/index';
 import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
 import { wayangDirForSessionDir } from '@/infra/session-helpers';
+import { ensureGeneralWorkspace, resolveGeneralWorkspace } from '@/infra/general-workspace';
 import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import { basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -136,13 +137,27 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 
     // Derive the read scope for controller file access. The wayang data dir
     // lives at <userHome>/.wayang, so its parent is the user's home — the home
-    // the read policy anchors on (with ~/.wayang sensitive inside it in turn).
+    // the read policy anchors on. ~/.wayang itself is not sensitive (0.8.3):
+    // it is wayang's own runtime data directory (sessions, audit logs, worker
+    // temp files), and the sensitive list covers third-party credentials only.
     // Ad-hoc session dirs (hand-built temp dirs in tests) don't follow the
     // `<wayangDir>/sessions/<id>` layout, so fall back to the OS home rather
     // than guessing a parent.
     const wayangDir = wayangDirForSessionDir(ctx.sessionDir);
     const homeDir =
       wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
+
+    // Where tasks with no codebase of their own (research, collecting material,
+    // drafting) run. Advertised by absolute path in add_task's description, so
+    // create it once here — `mkdir -p`, idempotent. A failure is not fatal:
+    // add_task reports it per call and the controller can pick another
+    // workspace.
+    const generalWorkspaceDir = resolveGeneralWorkspace(ctx);
+    try {
+      ensureGeneralWorkspace(ctx);
+    } catch {
+      ctx.logger.warn(`could not create the general workspace at ${generalWorkspaceDir}`);
+    }
 
     // Startup rules (issue #38): the home AGENTS.md as baseline, the cwd one as
     // supplement, read once here — the prompt is built from this string and
@@ -207,6 +222,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       // is stamped instead and the engine executes the task there.
       workspaceDir: ctx.workspaceDir,
       wayangDir,
+      generalWorkspaceDir,
     });
 
     return new ControllerAgent(ctx, state, provider, tools, skills, recorder, controllerRules);

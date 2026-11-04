@@ -736,6 +736,35 @@ describe("wayang's own paths are released (0.8.3)", () => {
     expect(verdict.decision).toBe('ask');
   });
 
+  /**
+   * The general workspace (`<wayangDir>/workspace`, i.e. ~/.wayang/workspace)
+   * is a legitimate task workspace: everything inside it is workspace-scoped,
+   * so it needs neither an approval nor a task grant — the point of a shared
+   * directory for work that belongs to no codebase.
+   */
+  it('the general workspace works as a task workspace (inside is silently allowed)', () => {
+    const generalWs = join(home, '.wayang', 'workspace');
+    mkdirSync(join(generalWs, '.agents', 'tmp'), { recursive: true });
+    const generalScope = scope({ workspace: generalWs });
+
+    expect(evaluateFileAccess(generalScope, 'write_file', { path: join(generalWs, 'notes.md') })).toMatchObject({
+      decision: 'allow',
+      matchedRule: 'task-workspace',
+    });
+    expect(
+      decideToolAccess(generalScope, 'write_file', {
+        path: join(generalWs, '.agents', 'tmp', 'scratch.txt'),
+        content: 'x',
+      }).decision,
+    ).toBe('allow');
+    expect(
+      decideToolAccess(generalScope, 'bash', { command: `mkdir -p ${join(generalWs, '.agents', 'tmp')}` }).decision,
+    ).toBe('allow');
+    expect(
+      evaluateBashAccess(generalScope, `cat ${join(generalWs, 'notes.md')}`).decision,
+    ).toBe('allow');
+  });
+
   it('third-party credentials are unaffected (regression)', () => {
     for (const path of ['~/.ssh/id_rsa', '~/.aws/credentials', '~/.npmrc']) {
       const read = evaluateFileAccess(scope(), 'read_file', { path });

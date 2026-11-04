@@ -1,3 +1,6 @@
+import { mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import * as path from 'node:path';
 import { z } from 'zod';
 import type { TaskDetail } from '@/types/index';
 import type { PermissionConfig } from '@/types/config';
@@ -58,6 +61,52 @@ export interface AddTaskToolDeps {
    * validation. Injected (never read globally).
    */
   permissionConfig?: PermissionConfig;
+  /**
+   * Absolute path of the general workspace (`<wayangDir>/workspace`), i.e.
+   * where tasks with no codebase of their own run. Advertised in the tool
+   * description; a task that targets it creates it like any other declared
+   * workspace.
+   */
+  generalWorkspaceDir?: string;
+}
+
+/** A leading `~` or `$HOME` token, which no shell expands for us here. */
+const HOME_VAR_PREFIX = /^\$(?:\{HOME\}|HOME)(?=\/|$)/;
+
+/**
+ * Expand a leading `~` or `$HOME` in a declared workspace.
+ *
+ * No shell sits between the controller and this tool, so `~/notes` would
+ * otherwise be taken as a directory literally named `~` next to the process
+ * cwd and the task would run somewhere nobody asked for. Returns null for a
+ * form that cannot be expanded (`~user`): guessing whose home that is would be
+ * worse than refusing the task.
+ */
+function expandHomePrefix(raw: string, homeDir: string): string | null {
+  if (raw === '~') return homeDir;
+  if (raw.startsWith('~/')) return path.join(homeDir, raw.slice(2));
+  const match = HOME_VAR_PREFIX.exec(raw);
+  if (match) {
+    const rest = raw.slice(match[0].length);
+    return rest === '' ? homeDir : path.join(homeDir, rest);
+  }
+  // Any other leading `~` (`~user/…`) is not expandable.
+  return raw.startsWith('~') ? null : raw;
+}
+
+/**
+ * Make sure a declared workspace exists. A missing directory is created
+ * (`mkdir -p`, idempotent); returns an error message when that fails so the
+ * call fails loudly instead of silently dropping back to the default
+ * workspace.
+ */
+function ensureWorkspaceDir(dirPath: string): string | null {
+  try {
+    mkdirSync(dirPath, { recursive: true });
+    return null;
+  } catch (err) {
+    return `Cannot create workspace ${dirPath}: ${(err as Error).message}. The task was NOT created.`;
+  }
 }
 
 /**
@@ -65,10 +114,12 @@ export interface AddTaskToolDeps {
  *
  * - no `workspace` argument (or an empty/whitespace one) → the current
  *   workspace (default).
- * - a declared `workspace` → that workspace, canonicalized. A different path
- *   is a legitimate target: the engine builds the worker, the tool cwd and the
- *   permission-gate boundary from `task.workspace.path`, so the task really
- *   executes where it says it does.
+ * - a declared `workspace` → that workspace, canonicalized. A leading `~` or
+ *   `$HOME` is expanded first (no shell does it for us), an absolute path that
+ *   does not exist yet is created, and a different path is a legitimate
+ *   target: the engine builds the worker, the tool cwd and the permission-gate
+ *   boundary from `task.workspace.path`, so the task really executes where it
+ *   says it does.
  * - unknown current workspace + declared one → error; there is nothing to
  *   resolve the request against, so no task is created.
  */
@@ -77,18 +128,41 @@ function resolveTaskWorkspace(
   deps: AddTaskToolDeps,
 ): { workspace?: TaskDetail['workspace'] } | { error: string } {
   const current = deps.workspaceDir;
-  const requestedPath = requested !== undefined && requested.trim() !== ''
-    ? normalizeWorkspacePath(requested)
-    : undefined;
+
+  let declared: string | undefined;
+  if (requested !== undefined && requested.trim() !== '') {
+    const expanded = expandHomePrefix(requested.trim(), deps.homeDir ?? homedir());
+    if (expanded === null) {
+      return {
+        error: `Cannot resolve workspace "${requested}": only "~" and "$HOME" expand to the home directory, so no readable path was left. The task was NOT created.`,
+      };
+    }
+    declared = expanded;
+  }
 
   if (!current) {
-    if (requestedPath !== undefined) {
+    if (declared !== undefined) {
       return {
-        error: `Cannot resolve workspace ${requestedPath}: the current workspace is unknown in this context, so the task was NOT created.`,
+        error: `Cannot resolve workspace ${normalizeWorkspacePath(declared)}: the current workspace is unknown in this context, so the task was NOT created.`,
       };
     }
     return {};
   }
+
+  // An absolute declaration is the directory the task will really run in, so it
+  // is materialized here (`mkdir -p`, idempotent) rather than silently dropped
+  // back to the default workspace. Only an absolute one: a relative
+  // declaration keeps its long-standing meaning (resolved against the process
+  // workspace by `normalizeWorkspacePath`), which is what "the same workspace,
+  // spelled differently" relies on.
+  if (declared !== undefined && path.isAbsolute(declared)) {
+    const dirError = ensureWorkspaceDir(declared);
+    if (dirError !== null) return { error: dirError };
+  }
+
+  // Normalized AFTER creation, so the stamped path is the canonical form of the
+  // directory that now exists (symlinked parents resolved once, not per check).
+  const requestedPath = declared !== undefined ? normalizeWorkspacePath(declared) : undefined;
 
   // Declared workspace wins; the process workspace is only the default.
   // Canonicalization keeps `task.workspace.path` the single value the engine
@@ -195,6 +269,11 @@ function withWorkspaceRules(
 }
 
 export function addTaskTool(deps: AddTaskToolDeps) {
+  // The general workspace is advertised by its resolved absolute path: a
+  // `~/…` literal would be read differently by every agent that sees it.
+  const generalWorkspaceNote = deps.generalWorkspaceDir
+    ? ` Tasks that belong to no codebase (research, collecting material, drafting a document) run in the general workspace ${deps.generalWorkspaceDir} — it is created on first use.`
+    : '';
   return defineTool({
     description: 'Add a new task to the queue. A Worker will execute it automatically.',
     parameters: z.object({
@@ -209,7 +288,7 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         'Dispatch this task to an existing idle worker (the workerId returned from a prior multiStage task). The worker resumes with its accumulated context. Omit for a fresh worker.',
       ),
       workspace: z.string().optional().describe(
-        'Target workspace path; defaults to the current workspace. A different path runs this task there — the worker, its tools and its permission checks use it as their root.',
+        `Target workspace path; defaults to the current workspace. A different path runs this task there — the worker, its tools and its permission checks use it as their root. A leading ~ or $HOME expands to the home directory, and a missing directory is created.${generalWorkspaceNote}`,
       ),
       allowedDirs: z.array(z.string()).optional().describe(
         'Extra directories this task may access, in addition to its workspace. Only this task is affected — the grant is NOT inherited by other tasks. Each entry must be inside the user home and off the denied-path list (credentials, tool config); an invalid entry fails the whole call and no task is created. Paths are normalized; relative entries resolve against the task workspace.',

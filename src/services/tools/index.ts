@@ -61,9 +61,10 @@ export interface ControllerToolDeps {
   cwd?: string;
   /**
    * The user's home directory — the read scope for search_files, and the
-   * boundary add_task's `allowedDirs` must stay inside. Sensitive subpaths
-   * (credentials, tool config, ~/.wayang) stay unreadable. This is NOT
-   * ~/.wayang; it is the home that contains it.
+   * boundary add_task's `allowedDirs` must stay inside. Only third-party
+   * credentials and tool config stay unreadable; ~/.wayang is not on that list
+   * (0.8.3) because it holds wayang's own runtime data (sessions, audit logs,
+   * worker temp files). This is NOT ~/.wayang; it is the home that contains it.
    */
   homeDir?: string;
   /**
@@ -117,6 +118,12 @@ export interface ControllerToolDeps {
   workspaceDir?: string;
   /** Wayang home dir for workspace-registry lookups (path + stable slug). */
   wayangDir?: string | null;
+  /**
+   * Absolute path of the general workspace (`<wayangDir>/workspace`) — where
+   * tasks that belong to no codebase run. Advertised in add_task's workspace
+   * description.
+   */
+  generalWorkspaceDir?: string;
 }
 
 export interface WorkerToolDeps {
@@ -145,6 +152,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
       onTaskDispatched: deps.onTaskDispatched,
       workspaceDir: deps.workspaceDir,
       wayangDir: deps.wayangDir,
+      generalWorkspaceDir: deps.generalWorkspaceDir,
       homeDir: deps.homeDir,
       permissionConfig: deps.permissionConfig,
     }),
