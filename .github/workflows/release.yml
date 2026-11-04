@@ -30,14 +30,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
           cache: npm
 
       - name: Ensure npm supports trusted publishing
         run: |
           npm install -g npm@latest
           npm --version
-          node -e "const [a,b]=process.argv[1].split('.').map(Number); if (a<11 || (a===11 && b<5)) { console.error('npm >= 11.5.1 required'); process.exit(1); }" "$(npm --version)"
+          node -e "const [a,b,c]=process.argv[1].split('.').map(Number); if (a<11 || (a===11 && (b<5 || (b===5 && c<1)))) { console.error('npm >= 11.5.1 required'); process.exit(1); }" "$(npm --version)"
 
       - run: npm ci
 
