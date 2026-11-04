@@ -94,7 +94,7 @@ describe('addTaskTool — allowedDirs declaration', () => {
     expect(added).toHaveLength(0);
   });
 
-  it('rejects a denylisted dir (~/.ssh) and creates no task', async () => {
+  it('rejects a sensitive dir (~/.ssh) and creates no task', async () => {
     const added: TaskDetail[] = [];
     const tool = makeTool(added);
 
@@ -105,15 +105,15 @@ describe('addTaskTool — allowedDirs declaration', () => {
     });
 
     expect(result).toContain(sshDir);
-    expect(result).toContain('denied-path list');
+    expect(result).toContain('sensitive list');
     expect(result).toContain('NOT created');
     expect(added).toHaveLength(0);
   });
 
-  it('rejects a configured deniedDirs entry and creates no task', async () => {
+  it('rejects a configured sensitiveDirs entry and creates no task', async () => {
     const added: TaskDetail[] = [];
     const secretDir = makeDir(homeDir, 'secret-area');
-    const tool = makeTool(added, { permissionConfig: { deniedDirs: ['secret-area'] } });
+    const tool = makeTool(added, { permissionConfig: { sensitiveDirs: ['secret-area'] } });
 
     const result = await exec(tool, {
       title: 'T',
@@ -121,7 +121,23 @@ describe('addTaskTool — allowedDirs declaration', () => {
       allowedDirs: [secretDir],
     });
 
-    expect(result).toContain('denied-path list');
+    expect(result).toContain('sensitive list');
+    expect(result).toContain('NOT created');
+    expect(added).toHaveLength(0);
+  });
+
+  it('honours the deprecated deniedDirs alias for the same rejection', async () => {
+    const added: TaskDetail[] = [];
+    const secretDir = makeDir(homeDir, 'legacy-area');
+    const tool = makeTool(added, { permissionConfig: { deniedDirs: ['legacy-area'] } });
+
+    const result = await exec(tool, {
+      title: 'T',
+      description: 'D',
+      allowedDirs: [secretDir],
+    });
+
+    expect(result).toContain('sensitive list');
     expect(result).toContain('NOT created');
     expect(added).toHaveLength(0);
   });

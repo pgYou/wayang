@@ -57,6 +57,16 @@ export interface WorkerConfig {
 }
 
 /**
+ * How sensitive (credential/tool-config) paths are handled.
+ * - 'ask' (default): a READ hit requests controller approval — the request
+ *   names the matched entry and the canonical path, and the file content is
+ *   read only after approval. WRITE hits are always refused.
+ * - 'deny': restore the pre-0.8.1 behaviour — refuse reads and writes without
+ *   ever asking. Escape hatch for users who never want to be prompted.
+ */
+export type SensitiveMode = 'ask' | 'deny';
+
+/**
  * Path permission policy (consumed by `src/infra/permission/policy.ts`).
  * All fields are optional and additive: omitting the section keeps the
  * previous behaviour exactly. Relative entries resolve against the user's
@@ -67,8 +77,21 @@ export interface PermissionConfig {
   allowedDirs?: string[];
   /** Extra roots auto-allowed (no approval prompt). */
   autoAllowRoots?: string[];
-  /** Extra denied directories, appended to the built-in denylist (which cannot be removed). */
+  /**
+   * Extra sensitive directories, appended to the built-in sensitive list
+   * (which cannot be removed). Reads there ask for approval; writes there are
+   * refused. Also accepts the deprecated `deniedDirs` alias — see there.
+   */
+  sensitiveDirs?: string[];
+  /**
+   * @deprecated Use `sensitiveDirs`. Kept as an alias so existing configs keep
+   * protecting the directories they declare (a config file lives on disk with
+   * no migration tool). Still read, merged with `sensitiveDirs` and deduped;
+   * using it logs a one-time deprecation warning at config load.
+   */
   deniedDirs?: string[];
+  /** How sensitive hits are handled. Defaults to 'ask'. */
+  sensitiveMode?: SensitiveMode;
 }
 
 export interface WayangConfig {
@@ -119,13 +142,19 @@ export function validateConfig(config: WayangConfig): string | null {
   if (!config.providers[wp]) return `worker.provider "${wp}" not found`;
   const permission = config.permission;
   if (permission !== undefined && permission !== null) {
-    const keys = ['allowedDirs', 'autoAllowRoots', 'deniedDirs'] as const;
+    // `deniedDirs` is the deprecated alias of `sensitiveDirs`; both are read,
+    // so both get the same shape check.
+    const keys = ['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs'] as const;
     for (const key of keys) {
       const value = permission[key];
       if (value === undefined) continue;
       if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
         return `permission.${key} must be an array of strings (got ${JSON.stringify(value)})`;
       }
+    }
+    const mode = permission.sensitiveMode;
+    if (mode !== undefined && mode !== 'ask' && mode !== 'deny') {
+      return `permission.sensitiveMode must be 'ask' or 'deny' (got ${JSON.stringify(mode)})`;
     }
   }
   return null;

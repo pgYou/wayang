@@ -128,7 +128,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
 
     // Derive the read scope for controller file access. The wayang data dir
     // lives at <userHome>/.wayang, so its parent is the user's home — the home
-    // the read policy anchors on (denylisting ~/.wayang inside it in turn).
+    // the read policy anchors on (with ~/.wayang sensitive inside it in turn).
     // Ad-hoc session dirs (hand-built temp dirs in tests) don't follow the
     // `<wayangDir>/sessions/<id>` layout, so fall back to the OS home rather
     // than guessing a parent.
@@ -165,7 +165,8 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       cwd: ctx.workspaceDir,
       homeDir,
       // User-config permission section: add_task validates a task's allowedDirs
-      // against the built-in denylist plus these configured deniedDirs.
+      // against the built-in sensitive list plus these configured
+      // sensitiveDirs (the deprecated deniedDirs alias is merged in).
       permissionConfig: opts.config.permission,
       getNotebook: () => state.get<string>('runtimeState.notebook') ?? '',
       setNotebook: (content, mode) => {

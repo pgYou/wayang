@@ -54,7 +54,7 @@ const PUPPET_WORKER_TYPE = 'puppet';
 
 /**
  * The user's home directory a session belongs to — the anchor of the path
- * permission policy (denylist + read scope).
+ * permission policy (sensitive list + read scope).
  *
  * The wayang data dir lives at `<userHome>/.wayang`, so its parent is the home
  * the policy anchors on. Ad-hoc session dirs (hand-built temp dirs in tests)
@@ -70,15 +70,16 @@ function resolveUserHomeDir(sessionDir: string): string {
 /** Construction options for TaskExecuteEngine. */
 export interface TaskExecuteEngineOptions {
   /**
-   * The user's home directory the path permission policy anchors on (denylist
-   * and read scope). Derived from `ctx.sessionDir` when omitted; inject it
+   * The user's home directory the path permission policy anchors on (sensitive
+   * list and read scope). Derived from `ctx.sessionDir` when omitted; inject it
    * explicitly in tests (which use temp home dirs) or whenever the session
    * layout does not follow `<userHome>/.wayang/sessions/<id>`.
    */
   homeDir?: string;
   /**
    * User-config permission section (`allowedDirs` / `autoAllowRoots` /
-   * `deniedDirs`) the policy consults. Defaults to `ctx.config.permission`;
+   * `sensitiveDirs`, plus the deprecated `deniedDirs` alias and
+   * `sensitiveMode`) the policy consults. Defaults to `ctx.config.permission`;
    * injectable so a caller can hand the engine the exact policy it should
    * enforce instead of relying on ambient config.
    */
@@ -1169,8 +1170,9 @@ export class TaskExecuteEngine implements Subscribable {
 
     // Everything the shared access policy needs for this run, assembled once:
     // the task's workspace is the cwd and the writable boundary, the user's
-    // home anchors the denylist / read scope, the task's allowedDirs are the
-    // per-task grant and the config section supplies user allow/deny roots.
+    // home anchors the sensitive list / read scope, the task's allowedDirs are
+    // the per-task grant and the config section supplies user allow/sensitive
+    // roots.
     const accessScope: WorkerAccessScope = {
       homeDir: this.homeDir,
       workspace,
@@ -1253,9 +1255,10 @@ export class TaskExecuteEngine implements Subscribable {
     if (workerType === PUPPET_WORKER_TYPE) {
       const middleware = wrapWithPermissionMiddleware(tools, {
         gatedTools: ['bash', ...FILE_TOOL_NAMES],
-        // Single decision source: the shared access policy (denylist →
+        // Single decision source: the shared access policy (sensitive list →
         // config roots → task allowedDirs → task workspace → read-in-home →
-        // ask). `deny` refuses here without ever emitting a permission_request.
+        // ask). `deny` refuses here without ever emitting a permission_request;
+        // both `deny` and every answered `ask` are audited (see the middleware).
         decide: (toolName, args) => decideToolAccess(accessScope, toolName, args),
         describeCall: (toolName, args) => {
           if (toolName === 'bash') return `Execute shell command: ${args.command}`;
@@ -1274,6 +1277,8 @@ export class TaskExecuteEngine implements Subscribable {
         emoji: workerMeta.emoji,
         signalQueue: this.signalQueue,
         turnLineage: this.workerLineage(workerId),
+        // Permission audit trail (metadata only) shares the session logger.
+        logger: this.ctx.logger,
       });
       tools = middleware.wrappedTools;
       this.permissionResolvers.set(workerId, middleware);

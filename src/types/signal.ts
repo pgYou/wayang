@@ -169,6 +169,20 @@ export interface PermissionRequestSignalPayload {
   toolArgs: Record<string, any>;
   /** Human-readable description of what the tool will do. */
   description: string;
+  /** Policy rule that produced this request (`sensitive-list`, `outside-all`, …). */
+  matchedRule?: string;
+  /** Concrete sensitive-list entry that matched (e.g. `.ssh`, `.docker/config.json`). */
+  matchedEntry?: string;
+  /** Which sensitive rule produced the hit (`segment`, `pair`, `config-dir`, …). */
+  matchedSource?: string;
+  /** Canonical (realpath-normalized) target the verdict was made about. */
+  resolvedPath?: string;
+  /** What the tool would do with the target. */
+  operation?: 'read' | 'write' | 'exec';
+  /** True when the request comes from the sensitive list. */
+  sensitive?: boolean;
+  /** How the target was judged (`unknown` = the command's semantics are unknown). */
+  access?: 'read' | 'write' | 'unknown';
 }
 
 /** Worker asking the controller a blocking question mid-task (ask_controller). */

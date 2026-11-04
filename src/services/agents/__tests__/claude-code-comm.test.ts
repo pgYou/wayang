@@ -362,10 +362,12 @@ describe('ClaudeCodeWorker controller messaging', () => {
 });
 
 /**
- * canUseTool now routes through the SAME shared permission policy as puppet
- * workers (`decideToolAccess`): a denylisted path is denied outright with no
- * approval prompt, a path inside the task workspace runs immediately, and a
- * path inside home but outside the workspace asks the controller.
+ * canUseTool routes through the SAME shared permission policy as puppet
+ * workers (`decideToolAccess`): a sensitive READ asks for approval (naming the
+ * matched entry), a sensitive WRITE is denied outright with no approval prompt,
+ * a path inside the task workspace runs immediately, and a path inside home but
+ * outside the workspace asks the controller. Requests and audits use the same
+ * fields as the puppet middleware.
  */
 describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
   let homeDir: string;
@@ -415,24 +417,60 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
 
   const permissionRequests = (sq: SignalQueue) => sq.query({ type: 'permission_request' });
 
-  it('denies a denylisted path outright — no permission request', async () => {
+  it('asks once for a sensitive read, naming the matched entry', async () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
-    const verdict = await canUseTool('Read', { file_path: join(homeDir, '.ssh', 'id_rsa') });
-    expect(verdict.behavior).toBe('deny');
+    const pending = canUseTool('Read', { file_path: join(homeDir, '.ssh', 'id_rsa') });
+    await settle();
 
-    // A denylist hit never reaches the controller.
-    expect(permissionRequests(signalQueue)).toHaveLength(0);
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    const payload = requests[0].payload as any;
+    // Same explainability fields as the puppet middleware.
+    expect(payload.matchedEntry).toBe('.ssh');
+    expect(payload.matchedRule).toBe('sensitive-list');
+    expect(payload.sensitive).toBe(true);
+    expect(payload.operation).toBe('read');
+    expect(payload.description).toContain('hit: .ssh');
+    expect(payload.description).not.toContain('PRIVATE');
+
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe(true);
+    expect((await pending).behavior).toBe('allow');
   });
 
-  it('denies a denylisted write too, again without asking', async () => {
+  it('denies a sensitive write without asking', async () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
     const verdict = await canUseTool('Write', { file_path: join(homeDir, '.aws', 'credentials') });
     expect(verdict.behavior).toBe('deny');
+    expect(String((verdict as any).message)).toContain('sensitive list');
     expect(permissionRequests(signalQueue)).toHaveLength(0);
+  });
+
+  it('records an audit entry for the approval it routed', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const pending = canUseTool('Read', { file_path: join(homeDir, '.ssh', 'id_rsa') });
+    await settle();
+    const payload = permissionRequests(signalQueue)[0].payload as any;
+    worker.permissionHandler.resolvePermission(payload.requestId, true);
+    await pending;
+
+    const audit = (worker as any).logger.info.mock.calls
+      .map((call: any[]) => call[0])
+      .filter((record: any) => record && record.audit === 'permission');
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({
+      decision: 'approved',
+      operation: 'read',
+      matchedEntry: '.ssh',
+      taskId: 't-perm',
+      workerId: 'cw-perm',
+      toolName: 'Read',
+    });
   });
 
   it('allows a path inside the task workspace (read and write)', async () => {
@@ -464,11 +502,26 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect((await pending).behavior).toBe('allow');
   });
 
-  it('denies a bash command that touches a denylisted path', async () => {
+  it('asks for a bash command that only READS a sensitive path', async () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
-    const verdict = await canUseTool('Bash', { command: `cat ${join(homeDir, '.ssh', 'id_rsa')}` });
+    const pending = canUseTool('Bash', { command: `cat ${join(homeDir, '.ssh', 'id_rsa')}` });
+    await settle();
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    expect((requests[0].payload as any).matchedEntry).toBe('.ssh');
+    expect((requests[0].payload as any).operation).toBe('exec');
+
+    worker.permissionHandler.resolvePermission((requests[0].payload as any).requestId, false, 'no');
+    expect((await pending).behavior).toBe('deny');
+  });
+
+  it('denies a bash command that WRITES a sensitive path, without asking', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const verdict = await canUseTool('Bash', { command: `tee ${join(homeDir, '.ssh', 'authorized_keys')} x` });
     expect(verdict.behavior).toBe('deny');
     expect(permissionRequests(signalQueue)).toHaveLength(0);
   });

@@ -11,6 +11,7 @@ import * as childProcess from 'node:child_process';
 import prompts from 'prompts';
 import type { WayangConfig, WorkerConfig } from './types/index';
 import { validateConfig } from './types/index';
+import { warnDeprecatedPermissionKeys } from './infra/permission/permission-config';
 
 /** Fill missing apiKeys from environment variables. */
 function fillApiKeys(config: WayangConfig): void {
@@ -200,6 +201,12 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
     }
   }
   fillApiKeys(config);
+
+  // Config-key compatibility: `permission.deniedDirs` is a deprecated alias of
+  // `permission.sensitiveDirs`. It is still honoured (see
+  // `mergeSensitiveDirs`), and a config that uses it gets one pointer to the
+  // new key per process — warn only when the legacy key is really populated.
+  warnDeprecatedPermissionKeys(config.permission, (message) => console.warn(`Warning: ${message}`));
 
   const err = validateConfig(config);
   if (err) {

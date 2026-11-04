@@ -41,7 +41,17 @@ import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
-import { decideToolAccess, type WorkerAccessScope } from '@/services/tools/permission-rules';
+import {
+  decideToolAccess,
+  type ToolAccessDecision,
+  type WorkerAccessScope,
+} from '@/services/tools/permission-rules';
+import {
+  operationForTool,
+  recordPermissionAudit,
+  verdictDetailSuffix,
+  type PermissionOperation,
+} from '@/services/permission/permission-audit';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import type { SkillRegistry } from '@/services/skills/registry';
 import { basename, dirname } from 'node:path';
@@ -49,6 +59,23 @@ import { homedir } from 'node:os';
 
 /** Stream-close timeout for SDK MCP calls — must exceed the 5-min inquiry timeout. */
 const INQUIRY_STREAM_CLOSE_TIMEOUT_MS = 360_000;
+
+/**
+ * What an `ask` verdict contributes to the approval request and the audit.
+ * Mirrors the puppet worker's payload fields so both entry points produce the
+ * same request shape and the same audit record.
+ */
+interface PermissionAsk {
+  /** Why the policy could not decide (command substitution, unknown tool, …). */
+  reason?: string;
+  matchedRule?: string;
+  matchedEntry?: string;
+  matchedSource?: string;
+  resolvedPath?: string;
+  operation: PermissionOperation;
+  sensitive?: boolean;
+  access?: 'read' | 'write' | 'unknown';
+}
 
 export class ClaudeCodeWorker implements IWorkerInstance {
   readonly id: string;
@@ -544,10 +571,11 @@ export class ClaudeCodeWorker implements IWorkerInstance {
 
   /**
    * Route a Claude Code tool call through the SAME access policy a puppet
-   * worker uses (`decideToolAccess`). A denylisted path is denied outright
-   * (no approval prompt); an ambiguous target asks the controller; a path
-   * inside the allowed scope runs immediately. This closes the parity gap where
-   * the old regex-only gate let denylisted paths through silently.
+   * worker uses (`decideToolAccess`). A sensitive WRITE is denied outright
+   * (no approval prompt), a sensitive READ asks with the matched entry named,
+   * an ambiguous target asks the controller and a path inside the allowed scope
+   * runs immediately. This closes the parity gap where the old regex-only gate
+   * let sensitive paths through silently.
    */
   private async handleCanUseTool(toolName: string, input: Record<string, unknown>): Promise<PermissionResult> {
     // Without signal context there is nowhere to route an approval, and the run
@@ -560,31 +588,32 @@ export class ClaudeCodeWorker implements IWorkerInstance {
 
     if (toolName === 'Bash') {
       const verdict = decideToolAccess(scope, 'bash', { command: String(input.command ?? '') });
-      if (verdict.decision === 'deny') {
-        return { behavior: 'deny', message: verdict.message ?? 'Denied by the permission policy' };
-      }
-      if (verdict.decision === 'ask') return this.requestPermission(toolName, input, verdict.reason);
+      const operation = operationForTool('bash');
+      if (verdict.decision === 'deny') return this.denyWithAudit(toolName, input, verdict, operation);
+      if (verdict.decision === 'ask') return this.requestPermission(toolName, input, this.askOf(verdict, operation));
       return { behavior: 'allow' };
     }
 
     const fileTool = ClaudeCodeWorker.SDK_FILE_TOOL_MAP[toolName];
     if (fileTool) {
+      const operation = operationForTool(fileTool.policyTool);
       const rawPath = input[fileTool.pathKey];
       if (typeof rawPath !== 'string' || rawPath.length === 0) {
         if (fileTool.pathRequired) {
           // A read/write tool with no usable target: the policy cannot judge
           // what it would touch — stay conservative and ask rather than allow.
-          return this.requestPermission(toolName, input, 'the target path could not be determined');
+          return this.requestPermission(toolName, input, {
+            reason: 'the target path could not be determined',
+            operation,
+          });
         }
         // An optional-path search tool defaults to the workspace (its cwd),
         // which is inside the allowed scope.
         return { behavior: 'allow' };
       }
       const verdict = decideToolAccess(scope, fileTool.policyTool, { path: rawPath });
-      if (verdict.decision === 'deny') {
-        return { behavior: 'deny', message: verdict.message ?? 'Denied by the permission policy' };
-      }
-      if (verdict.decision === 'ask') return this.requestPermission(toolName, input, verdict.reason);
+      if (verdict.decision === 'deny') return this.denyWithAudit(toolName, input, verdict, operation);
+      if (verdict.decision === 'ask') return this.requestPermission(toolName, input, this.askOf(verdict, operation));
       return { behavior: 'allow' };
     }
 
@@ -595,7 +624,61 @@ export class ClaudeCodeWorker implements IWorkerInstance {
 
     // Unrecognized tool: we cannot prove it stays inside the allowed scope, so
     // do not silently allow — escalate to the controller.
-    return this.requestPermission(toolName, input, 'the tool is not recognized by the permission policy');
+    return this.requestPermission(toolName, input, {
+      reason: 'the tool is not recognized by the permission policy',
+      operation: operationForTool('bash'),
+    });
+  }
+
+  /**
+   * Refuse a call the policy hard-denied (sensitive write) and record it.
+   *
+   * The worker receives the policy's disclosure-safe message (its own path
+   * spelling, never the matched entry); the audit trail gets the metadata.
+   * Same shape as the puppet worker's audit, so both entries agree.
+   */
+  private denyWithAudit(
+    toolName: string,
+    input: Record<string, unknown>,
+    verdict: ToolAccessDecision,
+    operation: PermissionOperation,
+  ): PermissionResult {
+    recordPermissionAudit(this.logger, {
+      decision: 'hard-denied',
+      operation,
+      resolvedPath: verdict.resolvedPath,
+      requestedPath: this.requestedPathOf(input),
+      matchedEntry: verdict.matchedEntry,
+      matchedSource: verdict.matchedSource,
+      matchedRule: verdict.matchedRule,
+      taskId: this._runContext?.taskId,
+      workerId: this._runContext?.workerId,
+      toolName,
+    });
+    return { behavior: 'deny', message: verdict.message ?? 'Denied by the permission policy' };
+  }
+
+  /** Project a policy verdict onto the approval-request/audit fields. */
+  private askOf(verdict: ToolAccessDecision, operation: PermissionOperation): PermissionAsk {
+    return {
+      reason: verdict.reason,
+      matchedRule: verdict.matchedRule,
+      matchedEntry: verdict.matchedEntry,
+      matchedSource: verdict.matchedSource,
+      resolvedPath: verdict.resolvedPath,
+      operation,
+      sensitive: verdict.sensitive,
+      access: verdict.access,
+    };
+  }
+
+  /** The target as the worker spelled it (for auditing against the prompt). */
+  private requestedPathOf(input: Record<string, unknown>): string | undefined {
+    for (const key of ['file_path', 'notebook_path', 'path']) {
+      const value = input[key];
+      if (typeof value === 'string' && value.length > 0) return value;
+    }
+    return undefined;
   }
 
   /**
@@ -606,12 +689,13 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private async requestPermission(
     toolName: string,
     input: Record<string, unknown>,
-    reason?: string,
+    ask: PermissionAsk,
   ): Promise<PermissionResult> {
     if (!this._signalQueue || !this._runContext) return { behavior: 'allow' };
 
     const requestId = generateId('perm');
-    const description = this.describePermissionRequest(toolName, input, reason);
+    const description = this.describePermissionRequest(toolName, input, ask);
+    const operation = ask.operation;
 
     this._signalQueue.enqueue({
       source: 'worker',
@@ -626,20 +710,49 @@ export class ClaudeCodeWorker implements IWorkerInstance {
         toolName,
         toolArgs: input,
         description,
+        ...(ask.matchedRule !== undefined && { matchedRule: ask.matchedRule }),
+        ...(ask.matchedEntry !== undefined && { matchedEntry: ask.matchedEntry }),
+        ...(ask.matchedSource !== undefined && { matchedSource: ask.matchedSource }),
+        ...(ask.resolvedPath !== undefined && { resolvedPath: ask.resolvedPath }),
+        ...(ask.sensitive !== undefined && { sensitive: ask.sensitive }),
+        ...(ask.access !== undefined && { access: ask.access }),
+        operation,
       } satisfies PermissionRequestSignalPayload,
       ...this._turnLineage,
     });
 
-    return this._pendingPermissions.wait(requestId, ClaudeCodeWorker.PERMISSION_TIMEOUT_MS, () => {
-      return { behavior: 'deny', message: 'Permission request timed out' } as PermissionResult;
+    const result = await this._pendingPermissions.wait(
+      requestId,
+      ClaudeCodeWorker.PERMISSION_TIMEOUT_MS,
+      () => ({ behavior: 'deny', message: 'Permission request timed out' }) as PermissionResult,
+    );
+
+    // Audit approvals AND refusals with the same fields the puppet worker
+    // uses — one record per gated call, no file content.
+    const denied = result.behavior === 'deny';
+    recordPermissionAudit(this.logger, {
+      decision: denied ? 'denied' : 'approved',
+      operation,
+      resolvedPath: ask.resolvedPath,
+      requestedPath: this.requestedPathOf(input),
+      matchedEntry: ask.matchedEntry,
+      matchedSource: ask.matchedSource,
+      matchedRule: ask.matchedRule,
+      taskId: this._runContext.taskId,
+      workerId: this._runContext.workerId,
+      toolName,
+      ...(denied && {
+        source: result.message === 'Permission request timed out' ? ('timeout' as const) : ('controller' as const),
+      }),
     });
+    return result;
   }
 
   /** Human-readable summary of a gated call for the approval prompt. */
   private describePermissionRequest(
     toolName: string,
     input: Record<string, unknown>,
-    reason?: string,
+    ask: PermissionAsk,
   ): string {
     let detail: string;
     if (toolName === 'Bash') {
@@ -653,7 +766,18 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     } else {
       detail = `${toolName}: ${JSON.stringify(input)}`;
     }
-    return reason ? `${detail} (${reason})` : detail;
+    // Hit detail (entry + rule + op) first, so the controller sees WHAT matched
+    // even when a non-obvious escalation reason is appended as well. Only on a
+    // sensitive hit — ordinary asks keep their existing wording.
+    const hit = ask.sensitive ? verdictDetailSuffix({
+      matchedRule: ask.matchedRule,
+      matchedEntry: ask.matchedEntry,
+      matchedSource: ask.matchedSource,
+      resolvedPath: ask.resolvedPath,
+      operation: ask.operation,
+    }) : '';
+    const withHit = `${detail}${hit}`;
+    return ask.reason ? `${withHit} (${ask.reason})` : withHit;
   }
 
   // --- Prompt as AsyncIterable (supports follow-up messages) ---

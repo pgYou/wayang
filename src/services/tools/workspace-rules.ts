@@ -26,6 +26,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PermissionConfig } from '@/types/config';
 import { decideAccess } from '@/infra/permission/policy';
+import { mergeSensitiveDirs, resolveSensitiveMode } from '@/infra/permission/permission-config';
 
 /** Candidate file names, in priority order — AGENTS.md wins over CLAUDE.md. */
 const RULE_FILE_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const;
@@ -41,7 +42,7 @@ export interface WorkspaceRulesInput {
   workspacePath?: string;
   /** The user's home directory — the anchor of the access policy. */
   homeDir?: string;
-  /** User-config permission section; its `deniedDirs` extend the denylist. */
+  /** User-config permission section; its `sensitiveDirs` extend the sensitive list. */
   permissionConfig?: PermissionConfig;
 }
 
@@ -100,17 +101,21 @@ function describeRefusal(
     return 'unavailable — the permission policy cannot be evaluated here (no home directory in this context), so the file was not read.';
   }
 
-  const { decision } = decideAccess({
+  const { decision, matchedEntry } = decideAccess({
     access: 'read',
     path: rulesPath,
     cwd: workspacePath,
     homeDir,
     taskWorkspace: workspacePath,
-    extraDeniedDirs: input.permissionConfig?.deniedDirs,
+    extraSensitiveDirs: mergeSensitiveDirs(input.permissionConfig),
+    sensitiveMode: resolveSensitiveMode(input.permissionConfig),
   });
 
-  if (decision === 'deny') {
-    return 'unavailable — the file resolves to a denied location (a sensitive one such as credentials or tool config), so its content was not read.';
+  // A sensitive hit (read → `ask`, or `deny` under sensitiveMode: 'deny') is
+  // reported as such: this reader has no approval channel, so the entry is
+  // never read, and the note says why without naming the entry.
+  if (matchedEntry !== undefined || decision === 'deny') {
+    return 'unavailable — the file resolves to a sensitive location (a protected path such as credentials or tool config), so its content was not read.';
   }
   if (decision === 'ask') {
     return 'unavailable — reading it was not approved by the permission policy (the path is outside the readable scope), so its content was not read.';

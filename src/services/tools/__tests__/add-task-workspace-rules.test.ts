@@ -8,7 +8,7 @@
  * workspace's rules file, read fresh per call.
  *
  * Covered here: the lookup order, the two truncation caps, the permission gate
- * (a denylisted file is reported as unavailable, never read), the "no rules →
+ * (a sensitive file is reported as unavailable, never read), the "no rules →
  * no noise" rule, and the cross-workspace isolation guarantee.
  */
 
@@ -136,7 +136,7 @@ describe('addTaskTool — workspace rules summary', () => {
     expect(result).not.toContain('x'.repeat(WORKSPACE_RULES_MAX_CHARS + 1));
   });
 
-  it('reports a denylisted rules file as unavailable without reading it', async () => {
+  it('reports a sensitive rules file as unavailable without reading it', async () => {
     const sshDir = makeDir(homeDir, '.ssh');
     const secret = path.join(sshDir, 'id_rsa_notes.md');
     fs.writeFileSync(secret, 'TOP-SECRET-KEY-MATERIAL');
@@ -147,7 +147,7 @@ describe('addTaskTool — workspace rules summary', () => {
 
     expect(result).toContain(`Workspace rules (from ${path.join(workspaceDir, 'AGENTS.md')}):`);
     expect(result).toContain('unavailable');
-    expect(result).toContain('denied');
+    expect(result).toContain('sensitive');
     // Neither the content nor the resolved location leaks.
     expect(result).not.toContain('TOP-SECRET-KEY-MATERIAL');
     expect(result).not.toContain('.ssh');
@@ -162,14 +162,14 @@ describe('addTaskTool — workspace rules summary', () => {
     expect(result).not.toContain('rules that must not be read unguarded');
   });
 
-  it('honours configured deniedDirs for the rules read', async () => {
+  it('honours configured sensitiveDirs for the rules read', async () => {
     const vault = makeDir(homeDir, 'vault');
     fs.writeFileSync(path.join(vault, 'AGENTS.md'), 'vault rules');
     const tool = addTaskTool({
       addTask: () => 'w-1',
       workspaceDir: vault,
       homeDir,
-      permissionConfig: { deniedDirs: [vault] },
+      permissionConfig: { sensitiveDirs: [vault] },
     });
 
     const result = await exec(tool, { title: 'T', description: 'D' });
