@@ -9,6 +9,7 @@
 - 统一 `~` 展开器：read_file / write_file / edit_file / search_files / search_content / add_task 的 workspace 声明全部走同一个 `expandHome`（锚定进程 `$HOME`），`$HOME` / `${HOME}` 前缀同样展开，`~user` 仍不展开（无法安全解析，门按 `home-other-user` 询问）。bash 侧 `$HOME` 替换与候选展开同样改锚进程 `$HOME`，`cat ~/x` 与 `cat $HOME/x` 在裁决上等价。
 - CLI：`--home-dir` 更名 `--wayang-root`（默认 `~`，即 `$HOME`），语义不变——它是 wayang 运行时状态的根目录（数据在 `<root>/.wayang`，配置在 `<root>/.wayang.config.json`），从来不是操作系统用户主目录。`--home-dir` 保留为弃用别名，使用时警告一次；两者同时给出时 `--wayang-root` 优先。
 - 全局技能目录跟随 wayang 数据目录（`<wayang-root>/.wayang/skills`，默认 `~/.wayang/skills`），不再硬编码进程主目录。
+- Claude Code worker 自动放行 wayang 自家 MCP server 的工具（`mcp__wayang__*`，如 ask_controller）：它们是面向 controller 的工具而非文件 IO，若被「未识别工具」分支拦下，需要 controller 审批才能调用的 ask_controller 会死锁。其它 server 的 MCP 工具（`mcp__other__*`）仍按未识别工具询问。
 
 ### 权限
 

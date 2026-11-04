@@ -622,6 +622,17 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       return { behavior: 'allow' };
     }
 
+    if (toolName.startsWith('mcp__wayang__')) {
+      // Wayang's OWN registered MCP server (ask_controller and friends):
+      // controller-facing tools, not filesystem IO — auto-allow so a worker
+      // can always reach its own controller. Without this the
+      // unrecognized-tool escalation below would gate ask_controller itself,
+      // and an approval request that can only be answered by calling the
+      // controller deadlocks the worker. Other servers' tools
+      // (`mcp__other__*`) keep falling through to that escalation.
+      return { behavior: 'allow' };
+    }
+
     // Unrecognized tool: we cannot prove it stays inside the allowed scope, so
     // do not silently allow — escalate to the controller.
     return this.requestPermission(toolName, input, {

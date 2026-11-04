@@ -647,4 +647,30 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect((await canUseTool('WebSearch', { query: 'x' })).behavior).toBe('allow');
     expect(permissionRequests(signalQueue)).toHaveLength(0);
   });
+
+  it("auto-allows wayang's own MCP tools (mcp__wayang__*) without asking", async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    // ask_controller must always be reachable: gating it on an approval that
+    // only the controller can answer would deadlock the worker.
+    const result = await canUseTool('mcp__wayang__ask_controller', { question: 'q' });
+    expect(result.behavior).toBe('allow');
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
+  });
+
+  it('still asks for another server\'s MCP tools (mcp__other__*)', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const pending = canUseTool('mcp__other__foo', { x: 1 });
+    await settle();
+
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    const payload = requests[0].payload as any;
+    expect(payload.description).toContain('not recognized');
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe(true);
+    expect((await pending).behavior).toBe('deny');
+  });
 });
