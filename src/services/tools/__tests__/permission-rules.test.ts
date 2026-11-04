@@ -61,6 +61,54 @@ describe('evaluateBashAccess', () => {
     });
   });
 
+  /**
+   * #42: the destructive tier must not swallow the sensitive hit the candidate
+   * sweep already found — a `sudo cat ~/.ssh/id_rsa` approval has to say BOTH
+   * "dangerous command" and "touches .ssh".
+   */
+  describe('the destructive tier keeps the sensitive hit it found (#42)', () => {
+    it('sudo cat ~/.ssh/id_rsa → ask, dangerous rule PLUS the .ssh hit', () => {
+      const verdict = evaluateBashAccess(scope(), 'sudo cat ~/.ssh/id_rsa');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dangerous-bash');
+      expect(verdict.matchedEntry).toBe('.ssh');
+      expect(verdict.matchedSource).toBe('segment');
+      expect(verdict.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
+      expect(verdict.sensitive).toBe(true);
+      // A `cat` is never a CERTAIN read, so the direction stays unknown.
+      expect(verdict.access).toBe('unknown');
+    });
+
+    it('sudo cat /etc/hostname → ask with NO hit (nothing sensitive to report)', () => {
+      const verdict = evaluateBashAccess(scope(), 'sudo cat /etc/hostname');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dangerous-bash');
+      expect(verdict.matchedEntry).toBeUndefined();
+      expect(verdict.matchedSource).toBeUndefined();
+      expect(verdict.sensitive).toBeUndefined();
+    });
+
+    it('a dangerous command pointing at a write reports access: write', () => {
+      expect(evaluateBashAccess(scope(), 'sudo tee /tmp/x.yml').access).toBe('write');
+      // Mixed candidates: the strictest access wins (write > unknown).
+      const mixed = evaluateBashAccess(scope(), 'sudo cat /etc/hostname && tee /tmp/y.yml');
+      expect(mixed.matchedRule).toBe('dangerous-bash');
+      expect(mixed.access).toBe('write');
+    });
+
+    it('a sensitive WRITE is still a hard deny, dangerous command or not', () => {
+      for (const command of [
+        'sudo rm -rf ~/.ssh',
+        'sudo tee ~/.ssh/authorized_keys x',
+        'sudo dd if=x of=$HOME/.ssh/id_rsa',
+      ]) {
+        const verdict = evaluateBashAccess(scope(), command);
+        expect(verdict.decision).toBe('deny');
+        expect(verdict.matchedRule).toBe('sensitive-list-write');
+      }
+    });
+  });
+
   describe('paths outside the workspace still require approval', () => {
     it.each([
       'cat /etc/hosts',

@@ -47,6 +47,7 @@ import {
   type WorkerAccessScope,
 } from '@/services/tools/permission-rules';
 import {
+  auditAccessFor,
   operationForTool,
   recordPermissionAudit,
   verdictDetailSuffix,
@@ -646,6 +647,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     recordPermissionAudit(this.logger, {
       decision: 'hard-denied',
       operation,
+      access: auditAccessFor(verdict.access),
       resolvedPath: verdict.resolvedPath,
       requestedPath: this.requestedPathOf(input),
       matchedEntry: verdict.matchedEntry,
@@ -733,6 +735,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     recordPermissionAudit(this.logger, {
       decision: denied ? 'denied' : 'approved',
       operation,
+      access: auditAccessFor(ask.access),
       resolvedPath: ask.resolvedPath,
       requestedPath: this.requestedPathOf(input),
       matchedEntry: ask.matchedEntry,

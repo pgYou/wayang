@@ -249,6 +249,8 @@ describe('worker permission gate — policy-backed decisions', () => {
       audit: 'permission',
       decision: 'approved',
       operation: 'read',
+      // #43: a file read is judged as a read, recorded next to the operation.
+      access: 'read',
       matchedEntry: '.ssh',
       matchedRule: 'sensitive-list',
       resolvedPath: join(home, '.ssh', 'id_rsa'),
@@ -297,6 +299,7 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(audits[0]).toMatchObject({
       decision: 'hard-denied',
       operation: 'write',
+      access: 'write',
       matchedEntry: '.ssh',
       matchedRule: 'sensitive-list-write',
       taskId: 't1',
@@ -342,7 +345,12 @@ describe('worker permission gate — policy-backed decisions', () => {
     // The command never ran, so the key file is untouched.
     expect(existsSync(join(home, '.ssh', 'id_rsa'))).toBe(true);
     expect(permissionRequests(signalQueue)).toHaveLength(0);
-    expect(auditRecords(ctx)[0]).toMatchObject({ decision: 'hard-denied', operation: 'exec' });
+    expect(auditRecords(ctx)[0]).toMatchObject({
+      decision: 'hard-denied',
+      operation: 'exec',
+      access: 'write',
+      matchedEntry: '.ssh',
+    });
   });
 
   it('7a2. bash READING a sensitive path asks once (a read is not a refusal)', async () => {
@@ -360,6 +368,60 @@ describe('worker permission gate — policy-backed decisions', () => {
 
     engine.resolvePermission(requests[0].requestId, true);
     expect(await pending).toContain('PRIVATE-KEY');
+  });
+
+  /**
+   * #42: the destructive tier must not swallow the sensitive hit. The approval
+   * names the danger AND the entry, and the audit keeps both — plus the judged
+   * direction as its own `access` field (#43), separate from `operation: exec`.
+   */
+  it('7a3. a DANGEROUS command hitting a sensitive path names both in the approval', async () => {
+    const { engine, signalQueue, ctx } = makeEngine();
+    const tools = await startTask(engine);
+
+    const pending = tools.bash.execute({ command: `sudo cat ${join(home, '.ssh', 'id_rsa')}` });
+    await flush();
+
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].toolName).toBe('bash');
+    expect(requests[0].matchedRule).toBe('dangerous-bash');
+    expect(requests[0].matchedEntry).toBe('.ssh');
+    expect(requests[0].sensitive).toBe(true);
+    expect(requests[0].description).toContain('dangerous-bash');
+    expect(requests[0].description).toContain('hit: .ssh');
+    // Still only asks — the dangerous tier never refuses on its own.
+    expect(requests[0].description).not.toContain('PRIVATE-KEY');
+
+    engine.resolvePermission(requests[0].requestId, false, 'no');
+    await pending;
+
+    expect(auditRecords(ctx)[0]).toMatchObject({
+      decision: 'denied',
+      operation: 'exec',
+      access: 'unknown',
+      matchedRule: 'dangerous-bash',
+      matchedEntry: '.ssh',
+      resolvedPath: join(home, '.ssh', 'id_rsa'),
+      toolName: 'bash',
+    });
+  });
+
+  it('7a4. a dangerous command with no sensitive hit shows no hit block', async () => {
+    const { engine, signalQueue } = makeEngine();
+    const tools = await startTask(engine);
+
+    const pending = tools.bash.execute({ command: 'sudo cat /etc/hostname' });
+    await flush();
+
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].description).toContain('/etc/hostname');
+    expect(requests[0].description).not.toContain('hit:');
+    expect(requests[0].description).not.toContain('rule:');
+
+    engine.resolvePermission(requests[0].requestId, false, 'no');
+    await pending;
   });
 
   it('7b. a mixed bash command is refused when ANY candidate is a sensitive write', async () => {

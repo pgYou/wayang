@@ -466,6 +466,8 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect(audit[0]).toMatchObject({
       decision: 'approved',
       operation: 'read',
+      // #43: the judged direction is its own field.
+      access: 'read',
       matchedEntry: '.ssh',
       taskId: 't-perm',
       workerId: 'cw-perm',
@@ -538,6 +540,41 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect(payload.toolName).toBe('Bash');
     worker.permissionHandler.resolvePermission(payload.requestId, false, 'no');
     expect((await pending).behavior).toBe('deny');
+  });
+
+  /**
+   * #42 + #43: a dangerous command that also hits the sensitive list keeps both
+   * details in the approval, and the audit separates the tool category from the
+   * judged direction.
+   */
+  it('keeps the sensitive hit of a dangerous bash ask, and audits exec + access', async () => {
+    const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const pending = canUseTool('Bash', { command: `sudo cat ${join(homeDir, '.ssh', 'id_rsa')}` });
+    await settle();
+    const payload = permissionRequests(signalQueue)[0].payload as any;
+    expect(payload.matchedRule).toBe('dangerous-bash');
+    expect(payload.matchedEntry).toBe('.ssh');
+    expect(payload.description).toContain('dangerous-bash');
+    expect(payload.description).toContain('hit: .ssh');
+
+    worker.permissionHandler.resolvePermission(payload.requestId, false, 'no');
+    expect((await pending).behavior).toBe('deny');
+
+    const audit = (worker as any).logger.info.mock.calls
+      .map((call: any[]) => call[0])
+      .filter((record: any) => record && record.audit === 'permission');
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({
+      decision: 'denied',
+      operation: 'exec',
+      access: 'unknown',
+      matchedRule: 'dangerous-bash',
+      matchedEntry: '.ssh',
+      toolName: 'Bash',
+    });
+    expect(JSON.stringify(audit[0])).not.toContain('PRIVATE');
   });
 
   it('stays conservative: an unknown tool asks instead of silently allowing', async () => {
