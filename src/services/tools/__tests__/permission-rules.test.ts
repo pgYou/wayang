@@ -75,8 +75,9 @@ describe('evaluateBashAccess', () => {
       expect(verdict.matchedSource).toBe('segment');
       expect(verdict.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
       expect(verdict.sensitive).toBe(true);
-      // A `cat` is never a CERTAIN read, so the direction stays unknown.
-      expect(verdict.access).toBe('unknown');
+      // `cat` is on the read-only table (the `sudo` prefix is stripped before
+      // the lookup), so the direction is read — the danger rule still asks.
+      expect(verdict.access).toBe('read');
     });
 
     it('sudo cat /etc/hostname → ask with NO hit (nothing sensitive to report)', () => {
@@ -177,7 +178,7 @@ describe('evaluateBashAccess', () => {
       expect(verdict.decision).toBe('ask');
       expect(verdict.matchedRule).toBe('sensitive-list');
       expect(verdict.matchedEntry).toBe('.ssh');
-      expect(verdict.access).toBe('unknown');
+      expect(verdict.access).toBe('read');
     });
 
     it('a sensitive WRITE is refused (and outranks the destructive-command tier)', () => {
@@ -220,11 +221,13 @@ describe('evaluateBashAccess', () => {
     expect(verdict.matchedRule).toBe('sensitive-list');
   });
 
-  it('an unknown-access candidate inside the workspace still runs (the workspace allow is access-agnostic)', () => {
+  it('a read candidate inside the workspace runs (the workspace allow is access-agnostic)', () => {
     const verdict = evaluateBashAccess(scope(), `cat ${ws}/README.md`);
     expect(verdict.decision).toBe('allow');
     expect(verdict.matchedRule).toBe('task-workspace');
-    expect(verdict.access).toBe('unknown');
+    // The direction is reported, not used to gate: the workspace allow does not
+    // depend on it, and a write here would still ask for the redirection tier.
+    expect(verdict.access).toBe('read');
   });
 
   describe('~user and shell constructs that cannot be resolved statically', () => {
@@ -358,6 +361,9 @@ describe('evaluateBashAccess', () => {
       'cat $(cat notes.txt)',
       'echo "x $(date)"',
       'echo $(echo $(date))',
+      // #47: one read-only table for both classifiers — a `git` READ subcommand
+      // is as exempt inside a substitution as it is at the top level.
+      'echo $(git status)',
       "echo 'a`b'",
       "echo '$(date)'",
     ])('%s → allow', (command) => {
@@ -372,7 +378,7 @@ describe('evaluateBashAccess', () => {
     });
 
     it('a non-read-only inner command asks', () => {
-      for (const command of ['echo $(rm -rf /)', 'echo $(git status)', 'echo $(cat a.txt | tee b.txt)']) {
+      for (const command of ['echo $(rm -rf /)', 'echo $(python -V)', 'echo $(cat a.txt | tee b.txt)']) {
         const verdict = evaluateBashAccess(scope(), command);
         expect(verdict.decision).toBe('ask');
         expect(verdict.matchedRule).toBe('dynamic-shell');
@@ -417,6 +423,126 @@ describe('evaluateBashAccess', () => {
       const broken = evaluateBashAccess(scope(), 'tee ~/.ssh/authorized_keys "x');
       expect(broken.decision).toBe('deny');
       expect(broken.matchedRule).toBe('sensitive-list-write');
+    });
+  });
+
+  /**
+   * #47: bash candidates now have a third direction. A hit on the read-only
+   * table is `read` — the direction the audit trail and the approval request
+   * report — but the worker's scope is UNCHANGED: a read inside home but
+   * outside the workspace / task allowedDirs / configured roots is still an
+   * approval, now labelled `read-within-home` instead of falling through to
+   * `outside-all` as an unknown.
+   *
+   * The two halves are equally important: the positives below prove the
+   * classification (and the prefix stripping) works, the negatives prove it did
+   * not become a way to run writes silently.
+   */
+  describe('#47 read-only commands are classified as reads', () => {
+    it.each([
+      'cat ~/notes.md',
+      'grep -rn x ~/proj',
+      'ls ~/dotfiles',
+      'wc -l ~/notes.md',
+      'sed -n 1,5p ~/notes.md',
+      'find ~/docs -name x',
+      'head -3 ~/notes.md',
+      'rg TODO ~/proj',
+      'diff ~/a.md ~/b.md',
+      'du -sh ~/proj',
+    ])('%s → read, and the home read is still narrowed to ask', (command) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.access).toBe('read');
+      expect(verdict.matchedRule).toBe('read-within-home');
+      expect(verdict.decision).toBe('ask');
+    });
+
+    it.each([
+      ['sudo cat ~/notes.md', 'dangerous-bash'],
+      ['sudo -u root cat ~/notes.md', 'dangerous-bash'],
+      ['env FOO=1 cat ~/notes.md', 'read-within-home'],
+      ['env -i FOO=bar cat ~/notes.md', 'read-within-home'],
+      ['nohup cat ~/notes.md', 'read-within-home'],
+      ['time cat ~/notes.md', 'read-within-home'],
+      ['nice -n 5 cat ~/notes.md', 'read-within-home'],
+      ['FOO=1 cat ~/notes.md', 'read-within-home'],
+      ['command cat ~/notes.md', 'read-within-home'],
+    ])('the wrapper prefix is stripped: %s → read (ask via %s)', (command, rule) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.access).toBe('read');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe(rule);
+    });
+
+    it('a read-only line with no absolute path is allowed and audited as read', () => {
+      for (const command of ['git status', 'git log --oneline -5', 'git --no-pager diff HEAD']) {
+        const verdict = evaluateBashAccess(scope(), command);
+        expect(verdict.decision).toBe('allow');
+        expect(verdict.matchedRule).toBe('no-path');
+        expect(verdict.access).toBe('read');
+      }
+      // `git branch` / `git remote` read only with an explicit list flag.
+      for (const command of ['git branch -a', 'git branch --list', 'git remote -v']) {
+        expect(evaluateBashAccess(scope(), command).access).toBe('read');
+        expect(evaluateBashAccess(scope(), command).decision).toBe('allow');
+      }
+      expect(evaluateBashAccess(scope(), 'ls -la').access).toBe('read');
+      expect(evaluateBashAccess(scope(), 'pwd').access).toBe('read');
+    });
+
+    it('a read inside the workspace is (as before) allowed, now reported as read', () => {
+      const verdict = evaluateBashAccess(scope(), `git -C ${ws} status`);
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('task-workspace');
+      expect(verdict.access).toBe('read');
+    });
+
+    it.each([
+      ['rm -rf ~/x', 'write'],
+      ['find ~/x -delete', 'write'],
+      ['find ~/x -fprint0 /tmp/x', 'write'],
+      ['sed -i s/a/b/ ~/f', 'write'],
+      ['sed -i.bak s/a/b/ ~/f', 'write'],
+      ['cat ~/a > ~/b', 'write'],
+      ['cat ~/notes.md && rm ~/x', 'write'],
+    ])('%s → never read (the line writes)', (command, access) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.access).toBe(access);
+      expect(verdict.access).not.toBe('read');
+    });
+
+    it.each([
+      'find . -exec rm {} \\;',
+      'tar -xf a.tar',
+      'git clean -fdx',
+      'git checkout -- .',
+      'git branch -D x',
+      'git remote add origin x',
+      'python x.py',
+      'make',
+      'npm run build',
+    ])('%s stays unknown (not on the read-only table)', (command) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.access).toBe('unknown');
+    });
+
+    it('a write hidden inside a command substitution keeps the line out of read', () => {
+      const verdict = evaluateBashAccess(scope(), 'echo $(rm -rf ~/x)');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.access).not.toBe('read');
+    });
+
+    it('the sensitive list still outranks the read classification', () => {
+      const read = evaluateBashAccess(scope(), 'cat ~/.ssh/id_rsa');
+      expect(read.access).toBe('read');
+      expect(read.decision).toBe('ask');
+      expect(read.matchedRule).toBe('sensitive-list');
+      expect(read.matchedEntry).toBe('.ssh');
+      // …and a write that TOUCHES a sensitive path is still a hard refusal,
+      // even though the verb itself (`cp`) is not a read.
+      const write = evaluateBashAccess(scope(), 'cp ~/notes.md ~/.ssh/id_rsa');
+      expect(write.decision).toBe('deny');
+      expect(write.matchedRule).toBe('sensitive-list-write');
     });
   });
 });

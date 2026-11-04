@@ -399,7 +399,9 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(auditRecords(ctx)[0]).toMatchObject({
       decision: 'denied',
       operation: 'exec',
-      access: 'unknown',
+      // #47: `sudo` is stripped before the read-only lookup, so the audit names
+      // the direction (`cat` reads) while the danger rule still asks.
+      access: 'read',
       matchedRule: 'dangerous-bash',
       matchedEntry: '.ssh',
       resolvedPath: join(home, '.ssh', 'id_rsa'),

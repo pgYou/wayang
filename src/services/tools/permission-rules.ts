@@ -11,18 +11,19 @@
  *   3. the task's own `allowedDirs`,
  *   4. the task workspace,
  *   5. "reads inside home are fine, writes are not" — DELIBERATELY NARROWED
- *      here (see `evaluateFileAccess`): a worker is auto-allowed only inside
- *      its workspace / task allowedDirs / configured roots. Reading the rest
- *      of the user's home still asks, because the sensitive list covers
- *      credentials and tool config, not `.env` files, keys or other projects'
- *      sources.
+ *      here (see `evaluateFileAccess` and `narrowHomeRead`): a worker is
+ *      auto-allowed only inside its workspace / task allowedDirs / configured
+ *      roots. Reading the rest of the user's home still asks, because the
+ *      sensitive list covers credentials and tool config, not `.env` files,
+ *      keys or other projects' sources.
  *
  * This module only adds what is tool-specific:
  *
  *   - which access mode a tool implies (read / write / unknown),
  *   - how a bash command string is reduced to path candidates (expanding
  *     `$HOME` / `${HOME}` first) and whether each candidate sits in a
- *     write-capable segment of the command line,
+ *     read-only, write-capable or unclassifiable command segment (see
+ *     `READ_ONLY_COMMANDS` and `segmentAccess`),
  *   - the destructive-command heuristic, which stays a "ask the controller"
  *     tier on top of the policy (the policy only judges paths),
  *   - escalation to `ask` when a target cannot be determined statically:
@@ -173,19 +174,34 @@ function expandHomeVars(command: string, homeDir: string): string {
 }
 
 /**
- * Commands a command substitution may contain without the substitution itself
- * becoming approval-worthy: `$(command -v waya)`, `$(cat notes.txt)`,
- * `$(readlink -f x)`. This is NOT the read-only command classifier (that is a
- * later change): it is a narrow list for substitution interiors only, and every
- * inner command still goes through the normal path sweep — so
- * `$(cat /etc/passwd)` still asks, for the target rather than for the `$(`.
+ * Commands that only READ what they are pointed at.
  *
- * Not listed means `ask`: an inner `rm`, `sed`, `find`, `xargs` or anything
- * else the gate has not been taught to read stays behind an approval.
+ * Membership is opt-in — "no write feature found" is NOT enough to be a read,
+ * so `python`, `make` and `npm` stay outside the table and keep their previous
+ * `unknown` verdict. The table serves BOTH classifiers: the top-level one (a
+ * candidate in a read-only segment is judged `read`, see `segmentAccess`) and
+ * the command-substitution interior (`$(cat notes.txt)` needs no approval).
+ *
+ * Three members are conditional, and the conditions are enforced outside the
+ * table:
+ *
+ *   - `sed` and `find` write only with a flag (`sed -i`, `find -delete`,
+ *     `find -exec …`) — `isWriteSegment` owns that split, so a write segment is
+ *     never read-only whatever the table says;
+ *   - `git` is a read only for its read subcommands — `isReadOnlyGitCommand`.
+ *
+ * Classifying a read never widens what a worker may touch on its own: the
+ * policy still judges every path, and a policy allow that rests solely on
+ * "reads inside home" is still narrowed to an approval for bash candidates
+ * (see `narrowHomeRead`), exactly as `evaluateFileAccess` does for file tools.
+ * The classification exists to get the DIRECTION right — the audit trail and
+ * the approval request then say read / write / unknown instead of calling
+ * every `cat` unknown.
  */
-const CMDSUBST_READONLY_VERBS: ReadonlySet<string> = new Set([
-  'cat', 'ls', 'grep', 'head', 'tail', 'wc', 'stat', 'file', 'which', 'command',
-  'readlink', 'echo', 'printf', 'date', 'pwd',
+const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
+  'cat', 'ls', 'head', 'tail', 'wc', 'grep', 'rg', 'stat', 'file', 'readlink',
+  'which', 'command', 'echo', 'printf', 'date', 'pwd', 'tree', 'du', 'df',
+  'cut', 'sort', 'uniq', 'tr', 'diff', 'sed', 'find', 'git',
 ]);
 
 /**
@@ -200,11 +216,10 @@ const MAX_CMDSUBST_DEPTH = 5;
  * segment as one of these is judged as a WRITE (so a sensitive target is
  * refused outright, never offered for approval).
  *
- * Deliberately narrow: this is NOT the read-only classifier (that is a later
- * change) — it only separates "this segment certainly writes" from "we cannot
- * tell", so `rm ~/.ssh/x` is a hard deny while `cat ~/.ssh/x` may ask. A
- * command missing from this table loses no safety: it is judged `unknown`,
- * which the policy treats as a write for scope purposes.
+ * This is the write half of the split: `rm ~/.ssh/x` is a hard deny while
+ * `cat ~/.ssh/x` only asks. A command missing from this table loses no safety —
+ * it is judged `unknown` (see `READ_ONLY_COMMANDS` for the read half), which the
+ * policy treats as a write for scope purposes.
  */
 const BASH_WRITE_VERBS: ReadonlySet<string> = new Set([
   'rm', 'rmdir', 'mv', 'cp', 'ln', 'tee', 'dd', 'truncate', 'install',
@@ -215,13 +230,34 @@ const BASH_WRITE_VERBS: ReadonlySet<string> = new Set([
 /**
  * Verbs that write only with a specific flag (`sed -i`, `find -delete`, …).
  * Both the verb and one of its flags must appear in the same segment.
+ *
+ * `find` needs the full write set because it is a read-only command otherwise
+ * (see `READ_ONLY_COMMANDS`): every option that creates, deletes, truncates or
+ * hands a file WRITE handle to another command lives here. `/…/ -ok` prompts but
+ * still runs a command, so it belongs in the write tier with `-exec`.
  */
 const BASH_FLAGGED_WRITE_VERBS: ReadonlyMap<string, readonly string[]> = new Map([
   ['sed', ['-i', '--in-place']],
   ['perl', ['-i']],
   ['ruby', ['-i']],
-  ['find', ['-delete', '-fprint', '-fls', '-fprintf', '-exec', '-execdir', '-ok']],
+  [
+    'find',
+    [
+      '-delete', '-fprint', '-fprint0', '-fls', '-fprintf', '-exec', '-execdir', '-ok', '-okdir',
+    ],
+  ],
 ]);
+
+/**
+ * Does `word` spell the option `flag`? Three spellings count: the flag itself,
+ * `flag=value`, and a SHORT flag with a glued value (`sed -i.bak`, `sed -i''`).
+ * The glued form is only accepted for two-character flags and only when the next
+ * character is not a letter, so `-include` is not read as `-i`.
+ */
+function isFlagWord(word: string, flag: string): boolean {
+  if (word === flag || word.startsWith(`${flag}=`)) return true;
+  return flag.length === 2 && word.startsWith(flag) && !/[A-Za-z]/.test(word.charAt(flag.length));
+}
 
 /**
  * Does this segment certainly write — a write verb, a write flag, or an output
@@ -244,16 +280,163 @@ function isWriteSegment(segment: ShellSegment): boolean {
   for (const word of words) {
     if (BASH_WRITE_VERBS.has(word)) return true;
     const flags = BASH_FLAGGED_WRITE_VERBS.get(word);
-    if (flags && flags.some((flag) => words.includes(flag))) return true;
+    if (flags && flags.some((flag) => words.some((other) => isFlagWord(other, flag)))) return true;
   }
   return false;
+}
+
+/**
+ * git subcommands that only read. `git` itself is in `READ_ONLY_COMMANDS`, so
+ * everything else — `clean`, `checkout`, `reset`, `push`, `commit`, `stash`, …
+ * — falls back to `unknown` and keeps the old verdict.
+ */
+const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'blame', 'grep',
+  'describe', 'shortlog',
+]);
+
+/**
+ * Subcommands whose BARE form reads but whose flags mutate (`git branch -D`,
+ * `git remote add`). They are read-only only with an explicit list flag.
+ */
+const GIT_LIST_ONLY_FLAGS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['branch', ['-a', '--all', '--list', '-l']],
+  ['remote', ['-v', '--verbose']],
+]);
+
+/** git global options that consume the NEXT word (`git -C /repo status`). */
+const GIT_GLOBAL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
+  '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix',
+]);
+
+/**
+ * Is this `git …` segment a read? `words` starts at the `git` word, so global
+ * options are skipped first (`git --no-pager log`, `git -C /repo diff`) and the
+ * subcommand is the first word that is neither an option nor an option's value.
+ * No subcommand at all (bare `git`) is NOT read: it is unknown, fail closed.
+ */
+function isReadOnlyGitCommand(words: readonly string[]): boolean {
+  const args = words.slice(1);
+  let i = 0;
+  while (i < args.length && args[i].startsWith('-')) {
+    i += GIT_GLOBAL_OPTIONS_WITH_VALUE.has(args[i]) ? 2 : 1;
+  }
+  const subcommand = args[i];
+  if (subcommand === undefined) return false;
+  if (GIT_READ_ONLY_SUBCOMMANDS.has(subcommand)) return true;
+  const listFlags = GIT_LIST_ONLY_FLAGS.get(subcommand);
+  if (listFlags === undefined) return false;
+  const flags = args.slice(i + 1).filter((word) => word.startsWith('-'));
+  return flags.length > 0 && flags.every((flag) => listFlags.includes(flag));
+}
+
+/**
+ * Commands that only launch another command. The real command sits behind them,
+ * so a segment's head word is the first word that is not a leading variable
+ * assignment and not one of these prefixes (`sudo cat x`, `env FOO=1 cat x`,
+ * `nohup time cat x`). Skipping them is what lets `sudo cat ~/notes.md` be
+ * judged as the read it is — the destructive-command tier still asks for the
+ * `sudo` itself.
+ */
+const WRAPPER_COMMANDS: ReadonlySet<string> = new Set([
+  'sudo', 'env', 'nohup', 'time', 'nice', 'ionice', 'command', 'exec', 'builtin',
+]);
+
+/** Options of the wrappers above that consume the NEXT word as their value. */
+const WRAPPER_OPTIONS_WITH_VALUE: ReadonlyMap<string, readonly string[]> = new Map([
+  [
+    'sudo',
+    [
+      '-u', '--user', '-g', '--group', '-p', '--prompt', '-C', '--close-from',
+      '-h', '--host', '-r', '--role', '-t', '--type', '-U', '--other-user',
+      '-T', '--command-timeout', '-D', '--chdir',
+    ],
+  ],
+  ['env', ['-u', '--unset', '-C', '--chdir', '-S', '--split-string']],
+  ['nice', ['-n', '--adjustment']],
+  ['ionice', ['-c', '--class', '-n', '--classdata', '-p', '--pid']],
+  ['exec', ['-a']],
+]);
+
+/** A leading shell variable assignment (`FOO=1`), not a command word. */
+const ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * The command a segment actually runs: leading assignments skipped, wrapper
+ * prefixes (with their own arguments) skipped, then the command word — plus the
+ * words from that command on, so `git` can read its subcommand.
+ *
+ * `command -v x` / `builtin -V x` are queries, not launches, so the wrapper IS
+ * the command word there (`command` is on the read-only table for that reason).
+ * A segment with no command word at all — or with a command substitution in its
+ * place — returns `undefined`, and the caller keeps the verdict `unknown`.
+ */
+function headCommand(segment: ShellSegment): { command: string; words: string[] } | undefined {
+  const words: string[] = [];
+  for (const token of segment.tokens) {
+    if (token.kind === 'word') words.push(token.word.text);
+  }
+
+  let i = 0;
+  while (i < words.length) {
+    if (ASSIGNMENT_PATTERN.test(words[i])) {
+      i += 1;
+      continue;
+    }
+    if (!WRAPPER_COMMANDS.has(words[i])) break;
+    const next = words[i + 1];
+    if (next === '-v' || next === '-V') break; // `command -v x`: the wrapper is the query
+    const withValue = WRAPPER_OPTIONS_WITH_VALUE.get(words[i]) ?? [];
+    i += 1;
+    while (i < words.length) {
+      const option = words[i];
+      if (ASSIGNMENT_PATTERN.test(option)) {
+        i += 1; // `env FOO=1 cat x`
+        continue;
+      }
+      if (!option.startsWith('-')) break;
+      i += withValue.includes(option) ? 2 : 1;
+    }
+  }
+
+  const command = words[i];
+  if (command === undefined || command === CMDSUBST_PLACEHOLDER) return undefined;
+  return { command, words: words.slice(i) };
+}
+
+/**
+ * Is this segment a read? It must not write (write verb, write flag, or a
+ * redirection into a real file — `isWriteSegment`) and its head command must be
+ * on `READ_ONLY_COMMANDS`, with the extra conditions that table defers.
+ *
+ * Opt-in, so anything the gate has not been taught to read — `python`, `make`,
+ * `npm`, `xargs`, an unparsable head — stays `unknown`.
+ */
+function isReadOnlySegment(segment: ShellSegment): boolean {
+  if (isWriteSegment(segment)) return false;
+  const head = headCommand(segment);
+  if (head === undefined) return false;
+  if (!READ_ONLY_COMMANDS.has(head.command)) return false;
+  if (head.command === 'git') return isReadOnlyGitCommand(head.words);
+  return true;
+}
+
+/**
+ * The access a SINGLE segment justifies: `write` when it certainly writes,
+ * `read` when its head command is on the read-only table, `unknown` otherwise.
+ * Segments are judged independently so a `cat` next to a `tee` keeps its own
+ * direction.
+ */
+function segmentAccess(segment: ShellSegment): AccessMode {
+  if (isWriteSegment(segment)) return 'write';
+  return isReadOnlySegment(segment) ? 'read' : 'unknown';
 }
 
 /** A path candidate plus how the policy should judge it. */
 interface BashCandidate {
   path: string;
-  /** `write` when the candidate sits in a write-capable segment, else `unknown`. */
-  access: 'write' | 'unknown';
+  /** The access its own segment justifies — see `segmentAccess`. */
+  access: AccessMode;
   /** Present for redirection targets — surfaced on `ask` so the reason is clear. */
   reason?: string;
 }
@@ -293,10 +476,10 @@ function pathPieces(text: string, access: BashCandidate['access']): BashCandidat
 function extractPathCandidates(segments: ShellSegment[]): BashCandidate[] {
   const candidates: BashCandidate[] = [];
   for (const segment of segments) {
-    const segmentAccess: BashCandidate['access'] = isWriteSegment(segment) ? 'write' : 'unknown';
+    const segmentLevel = segmentAccess(segment);
     for (const token of segment.tokens) {
       if (token.kind === 'word') {
-        candidates.push(...pathPieces(token.word.text, segmentAccess));
+        candidates.push(...pathPieces(token.word.text, segmentLevel));
         continue;
       }
       const { redirect } = token;
@@ -305,7 +488,7 @@ function extractPathCandidates(segments: ShellSegment[]): BashCandidate[] {
       if (target === undefined || isDiscardRedirectTarget(target)) continue;
       // A substitution target is judged through evaluateSubstitutions instead.
       if (target.includes(CMDSUBST_PLACEHOLDER)) continue;
-      const access: BashCandidate['access'] = redirect.kind === 'output' ? 'write' : segmentAccess;
+      const access: AccessMode = redirect.kind === 'output' ? 'write' : segmentLevel;
       for (const candidate of pathPieces(target, access)) {
         candidates.push(
           redirect.kind === 'output'
@@ -319,19 +502,23 @@ function extractPathCandidates(segments: ShellSegment[]): BashCandidate[] {
 }
 
 /**
- * The access a whole command line is judged under: the STRICTEST access any of
- * its candidates justifies (`write` > `read` > `unknown`), or `unknown` when
- * the command yields no candidate at all. A command line is one unit of
- * execution, so one write-capable candidate makes the line a write.
+ * The access a whole command line is audited under: the STRICTEST access any of
+ * its candidates justifies, ordered `write` > `read` > `unknown`. A command line
+ * is one unit of execution, so a single write-capable candidate makes the line a
+ * write even when every other candidate is a read.
  *
- * Bash candidates are only ever `write` or `unknown` (a `cat` is never certain
- * to read — see `BashCandidate`), so this collapses to "a write segment named a
- * path"; `read` reaches this helper only through file-tool verdicts, which carry
- * their own access. The audit trail records the result as its own `access`
- * field, apart from the tool-category `operation` (bash → `exec`).
+ * This is a REPORTING value only — each candidate was still judged on its own
+ * access above, so a `cat` next to a `tee` is not treated as a write. The audit
+ * trail records it as its own `access` field, apart from the tool-category
+ * `operation` (bash → `exec`).
  */
 function commandAccess(candidates: readonly BashCandidate[]): AccessMode {
-  return candidates.some((candidate) => candidate.access === 'write') ? 'write' : 'unknown';
+  let access: AccessMode = 'unknown';
+  for (const candidate of candidates) {
+    if (candidate.access === 'write') return 'write';
+    if (candidate.access === 'read') access = 'read';
+  }
+  return access;
 }
 
 /** Run one path past the shared policy with this run's boundary as context. */
@@ -375,6 +562,32 @@ function toToolDecision(verdict: DecideAccessResult, access: AccessMode): ToolAc
       sensitive: true,
     }),
   };
+}
+
+/**
+ * Narrow the policy's "reads inside home" allow for a BASH candidate.
+ *
+ * The policy lets a read happen anywhere under home (the controller's own read
+ * scope, rule 6), but a WORKER's silence-worthy scope is its workspace, its task
+ * allowedDirs and the explicitly configured roots. A bash candidate that the
+ * classification now names a `read` gets exactly the same treatment a file tool
+ * gets: the allow is turned back into an approval. Classifying a command as a
+ * read therefore changes only the DIRECTION reported (audit trail, approval
+ * request) — never the set of paths a worker may open without asking.
+ *
+ * The test is the policy's `withinReadScope` flag, not the `matchedRule` string,
+ * so renaming the rule cannot widen access.
+ */
+function narrowHomeRead(verdict: DecideAccessResult, candidate: BashCandidate): ToolAccessDecision {
+  if (verdict.decision === 'allow' && verdict.withinReadScope) {
+    return {
+      decision: 'ask',
+      matchedRule: 'read-within-home',
+      resolvedPath: verdict.resolvedPath,
+      access: candidate.access,
+    };
+  }
+  return toToolDecision(verdict, candidate.access);
 }
 
 /**
@@ -434,25 +647,26 @@ function collectSubstitutions(segments: ShellSegment[]): ShellSubstitution[] {
 
 /**
  * Is a substituted command read-only, so that the substitution itself needs no
- * approval? Every command in it must be on `CMDSUBST_READONLY_VERBS` and must
- * not write (write verb, write flag such as `sed -i` / `find -delete`, or a
- * redirection into a real file). Nested substitutions are judged again by the
- * caller's recursion, so `$(echo $(date))` stays exempt while
- * `$(echo $(rm -rf /))` does not.
+ * approval? Every segment in it must be a read by the SAME rules the top level
+ * uses — head command on `READ_ONLY_COMMANDS` (`isReadOnlySegment`), no write
+ * verb, no write flag such as `sed -i` / `find -delete`, no redirection into a
+ * real file. One table, two callers: a command taught to read here is a read
+ * at the top level too, and vice versa.
+ *
+ * Nested substitutions are judged again by the caller's recursion, so
+ * `$(echo $(date))` stays exempt while `$(echo $(rm -rf /))` does not.
  */
 function checkSubstitutionInner(inner: string): { ok: true } | { ok: false; reason: string } {
   const tokenized = tokenizeShellLite(inner);
   if (!tokenized.ok) return { ok: false, reason: `cannot parse it (${tokenized.error})` };
   if (tokenized.segments.length === 0) return { ok: false, reason: 'it is empty' };
   for (const segment of tokenized.segments) {
-    const verb = segment.tokens.find((token) => token.kind === 'word');
-    if (!verb || verb.kind !== 'word' || verb.word.text === CMDSUBST_PLACEHOLDER) {
-      return { ok: false, reason: 'it has no command word to judge' };
+    const head = headCommand(segment);
+    if (head === undefined) return { ok: false, reason: 'it has no command word to judge' };
+    if (isWriteSegment(segment)) return { ok: false, reason: `\`${head.command}\` writes` };
+    if (!isReadOnlySegment(segment)) {
+      return { ok: false, reason: `\`${head.command}\` is not a read-only command` };
     }
-    if (!CMDSUBST_READONLY_VERBS.has(verb.word.text)) {
-      return { ok: false, reason: `\`${verb.word.text}\` is not a read-only command` };
-    }
-    if (isWriteSegment(segment)) return { ok: false, reason: `\`${verb.word.text}\` writes` };
   }
   return { ok: true };
 }
@@ -551,9 +765,16 @@ function fallbackSensitiveWrite(
  * The command string is the unit of execution, so every extractable path
  * candidate is judged separately and ANY denied candidate refuses the whole
  * command — a benign `cat` in the same command line cannot launder a denied
- * `rm`. A candidate that sits in a write-capable segment (write verb or
- * redirection) is judged as a WRITE; every other candidate is judged `unknown`
+ * `rm`. A candidate carries the access its OWN segment justifies: `write` for a
+ * write verb / redirection segment, `read` when the segment's head command is on
+ * `READ_ONLY_COMMANDS`, `unknown` for everything the gate has not been taught
  * (the strict mode: "inside home" alone never justifies a write either).
+ *
+ * The read classification does NOT widen what runs silently: the policy still
+ * judges each path, and a policy allow that rests solely on "reads inside home"
+ * is narrowed to an approval here (see `narrowHomeRead`) — the same narrowing
+ * `evaluateFileAccess` applies to file tools. Only the DIRECTION changes, from
+ * `unknown` (which could not even reach that rule) to a named `read`.
  *
  * Ordering: sensitive write / `sensitiveMode: 'deny'` deny (from the candidate
  * sweep) → destructive-command tier → dynamic constructs (a command substitution
@@ -622,18 +843,26 @@ function evaluateBashCommand(
   for (const candidate of candidates) {
     const verdict = decidePath(scope, candidate.path, candidate.access);
     if (verdict.decision === 'deny') return toToolDecision(verdict, candidate.access);
-    if (verdict.decision === 'ask') {
+    const narrowed = narrowHomeRead(verdict, candidate);
+    if (narrowed.decision === 'ask') {
       firstAsk ??= {
-        ...toToolDecision(verdict, candidate.access),
+        ...narrowed,
         ...(candidate.reason !== undefined && { reason: candidate.reason }),
       };
-    } else firstAllow ??= toToolDecision(verdict, candidate.access);
+    } else firstAllow ??= narrowed;
   }
 
   // The command as a whole is audited under the STRICTEST access its candidates
   // justify (see `commandAccess`); the verdict above still judged each
   // candidate on its OWN access, so a `cat` next to a `tee` is not a write.
-  const lineAccess = commandAccess(candidates);
+  // With no candidate at all (`ls -la`, `git status`) the direction comes from
+  // the segments themselves: a wholly read-only line reports `read`.
+  const lineAccess =
+    candidates.length > 0
+      ? commandAccess(candidates)
+      : segments.length > 0 && segments.every((segment) => segmentAccess(segment) === 'read')
+        ? 'read'
+        : 'unknown';
   if (firstAsk) firstAsk = { ...firstAsk, access: lineAccess };
   if (firstAllow) firstAllow = { ...firstAllow, access: lineAccess };
 
@@ -701,7 +930,12 @@ function evaluateBashCommand(
   }
 
   if (firstAsk) return firstAsk;
-  return firstAllow ?? { decision: 'allow', matchedRule: 'no-path' };
+  if (firstAllow) return firstAllow;
+  // No candidate to judge: the verdict is the historic one, but the line still
+  // reports the direction its segments justify, so the audit trail can tell a
+  // read-only line (`git status`) from one the gate does not understand
+  // (`npm run build`).
+  return { decision: 'allow', matchedRule: 'no-path', access: lineAccess };
 }
 
 /**
