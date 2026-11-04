@@ -434,7 +434,67 @@ describe('wrapWithPermissionMiddleware', () => {
       vi.useRealTimers();
     });
 
-    it('records a HARD DENIAL without asking', async () => {
+    it('records an APPROVED sensitive WRITE as operation write + access write', async () => {
+      const logger = createMockLogger();
+      const tools = mockTool('write_file', 'written');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['write_file'],
+        // 0.8.4: a sensitive write is an ordinary `ask` now — the shape
+        // `decideToolAccess` produces for `write_file` on `~/.ssh/authorized_keys`.
+        decide: () => ({
+          decision: 'ask' as const,
+          matchedRule: 'sensitive-list',
+          matchedEntry: '.ssh',
+          matchedSource: 'segment' as const,
+          resolvedPath: '/home/u/.ssh/authorized_keys',
+          sensitive: true,
+          access: 'write' as const,
+        }),
+        describeCall: (name, args) => `write_file: ${args.path}`,
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      const pending = result.wrappedTools.write_file.execute({
+        path: '~/.ssh/authorized_keys',
+        content: 'SECRET-CONTENT',
+      });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+      // The approval request names the entry and the direction.
+      expect(payload.description).toContain('hit: .ssh (segment)');
+      expect(payload.description).toContain('rule: sensitive-list');
+      expect(payload.description).toContain('op: write');
+      expect(payload.matchedEntry).toBe('.ssh');
+      expect(payload.access).toBe('write');
+      expect(payload.operation).toBe('write');
+
+      result.resolvePermission(payload.requestId, true);
+      expect(await pending).toBe('written');
+
+      const audits = auditCalls(logger);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        decision: 'approved',
+        // `operation` stays the tool category, `access` is the direction.
+        operation: 'write',
+        access: 'write',
+        resolvedPath: '/home/u/.ssh/authorized_keys',
+        requestedPath: '~/.ssh/authorized_keys',
+        matchedEntry: '.ssh',
+        matchedSource: 'segment',
+        matchedRule: 'sensitive-list',
+        taskId: 't1',
+        workerId: 'w1',
+        toolName: 'write_file',
+      });
+      expect(JSON.stringify(audits[0])).not.toContain('SECRET-CONTENT');
+    });
+
+    it('records a HARD DENIAL without asking (sensitiveMode: deny)', async () => {
       const logger = createMockLogger();
       const tools = mockTool('write_file', 'should not run');
       const result = wrapWithPermissionMiddleware(tools, {
@@ -442,7 +502,7 @@ describe('wrapWithPermissionMiddleware', () => {
         decide: () => ({
           decision: 'deny' as const,
           message: '[ERROR] write_file: refused',
-          matchedRule: 'sensitive-list-write',
+          matchedRule: 'sensitive-list',
           matchedEntry: '.ssh',
           matchedSource: 'segment' as const,
           resolvedPath: '/home/u/.ssh/authorized_keys',
@@ -472,7 +532,7 @@ describe('wrapWithPermissionMiddleware', () => {
         operation: 'write',
         access: 'write',
         matchedEntry: '.ssh',
-        matchedRule: 'sensitive-list-write',
+        matchedRule: 'sensitive-list',
         resolvedPath: '/home/u/.ssh/authorized_keys',
         taskId: 't1',
         workerId: 'w1',

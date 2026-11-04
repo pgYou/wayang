@@ -3,10 +3,11 @@
  *
  * These cases document BOTH the preserved behaviour (dangerous bash commands,
  * out-of-workspace access, the relative-path and URL extraction regressions)
- * and the 0.8.1 sensitive-list split: a sensitive hit on a READ is an approval
- * prompt (with the matched entry reported), while a sensitive hit on a WRITE is
- * still a hard `deny` — an approval prompt for rewriting `authorized_keys` must
- * not exist. The policy's `read-within-home` allow is narrowed for workers —
+ * and the sensitive list: a hit in EITHER direction — read or write — is an
+ * approval prompt carrying the matched entry, and only `sensitiveMode: 'deny'`
+ * turns it into a hard refusal. What the list always guarantees is that no
+ * allow rule (workspace, task allowedDirs, config allowedDirs / autoAllowRoots)
+ * can make a sensitive hit pass silently. The policy's `read-within-home` allow is narrowed for workers —
  * anything outside the workspace / task allowedDirs / configured roots still
  * asks, reads included.
  *
@@ -97,15 +98,23 @@ describe('evaluateBashAccess', () => {
       expect(mixed.access).toBe('write');
     });
 
-    it('a sensitive WRITE is still a hard deny, dangerous command or not', () => {
+    it('a sensitive WRITE asks (naming the entry) instead of being refused', () => {
       for (const command of [
         'sudo rm -rf ~/.ssh',
         'sudo tee ~/.ssh/authorized_keys x',
         'sudo dd if=x of=$HOME/.ssh/id_rsa',
       ]) {
         const verdict = evaluateBashAccess(scope(), command);
-        expect(verdict.decision).toBe('deny');
-        expect(verdict.matchedRule).toBe('sensitive-list-write');
+        // 0.8.4: a sensitive write is approvable, so the command asks.
+        expect(verdict.decision).toBe('ask');
+        // These lines are ALSO destructive, and the destructive tier owns the
+        // rule name (#42) — it carries the sensitive hit so the approval still
+        // names the credential directory.
+        expect(verdict.matchedRule).toBe('dangerous-bash');
+        expect(verdict.matchedEntry).toBe('.ssh');
+        expect(verdict.matchedSource).toBe('segment');
+        expect(verdict.sensitive).toBe(true);
+        expect(verdict.access).toBe('write');
       }
     });
   });
@@ -181,34 +190,76 @@ describe('evaluateBashAccess', () => {
       expect(verdict.access).toBe('read');
     });
 
-    it('a sensitive WRITE is refused (and outranks the destructive-command tier)', () => {
-      for (const command of ['rm -rf ~/.ssh', 'tee ~/.ssh/authorized_keys x', 'dd if=x of=$HOME/.ssh/id_rsa']) {
+    it('a sensitive WRITE asks instead of being refused (entry always named)', () => {
+      // `tee` / `cp` are not destructive, so the sensitive rule names the ask.
+      for (const [command, entry] of [
+        ['tee ~/.ssh/authorized_keys x', '.ssh'],
+        ['cp notes.md ~/.aws/credentials', '.aws'],
+        ['dd if=x of=$HOME/.ssh/id_rsa', '.ssh'],
+      ] as const) {
         const verdict = evaluateBashAccess(scope(), command);
-        expect(verdict.decision).toBe('deny');
-        expect(verdict.matchedRule).toBe('sensitive-list-write');
+        expect(verdict.decision).toBe('ask');
+        expect(verdict.matchedEntry).toBe(entry);
+        expect(verdict.access).toBe('write');
+        // `dd` also trips the destructive tier, which keeps the rule name but
+        // carries the hit (#42); the others report the sensitive rule itself.
+        expect(['sensitive-list', 'dangerous-bash']).toContain(verdict.matchedRule);
       }
+      // The rule name a plain (non-destructive) sensitive write reports.
+      expect(evaluateBashAccess(scope(), 'tee ~/.ssh/authorized_keys x').matchedRule).toBe('sensitive-list');
+      expect(evaluateBashAccess(scope(), 'tee ~/.ssh/authorized_keys x').matchedSource).toBe('segment');
     });
 
-    it('one sensitive WRITE candidate refuses an otherwise benign command line', () => {
-      expect(evaluateBashAccess(scope(), 'cat ok.txt && tee ~/.ssh/authorized_keys').decision).toBe('deny');
-      // …while a read-only mix only asks (every candidate is a read).
-      expect(evaluateBashAccess(scope(), 'cat ok.txt && cat ~/.ssh/id_rsa').decision).toBe('ask');
+    it('cp into a sensitive file asks with the write direction', () => {
+      const verdict = evaluateBashAccess(scope(), `cp ${join(ws, 'notes.md')} ~/.aws/credentials`);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('sensitive-list');
+      expect(verdict.matchedEntry).toBe('.aws');
+      expect(verdict.matchedSource).toBe('segment');
+      expect(verdict.access).toBe('write');
     });
 
-    it('an output redirection into a sensitive path counts as a write (never an approvable read)', () => {
+    it('one sensitive WRITE candidate makes an otherwise benign command line ask', () => {
+      const mixed = evaluateBashAccess(scope(), 'cat ok.txt && tee ~/.ssh/authorized_keys');
+      expect(mixed.decision).toBe('ask');
+      expect(mixed.matchedRule).toBe('sensitive-list');
+      expect(mixed.matchedEntry).toBe('.ssh');
+      // …and a read-only mix asks as well (every candidate is a read).
+      const readMix = evaluateBashAccess(scope(), 'cat ok.txt && cat ~/.ssh/id_rsa');
+      expect(readMix.decision).toBe('ask');
+      expect(readMix.matchedRule).toBe('sensitive-list');
+      expect(readMix.access).toBe('read');
+    });
+
+    it('an output redirection into a sensitive path is judged as a WRITE (still an ask, never an allow)', () => {
       const verdict = evaluateBashAccess(scope(), 'echo key > ~/.ssh/authorized_keys');
-      expect(verdict.decision).toBe('deny');
-      expect(verdict.matchedRule).toBe('sensitive-list-write');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('sensitive-list');
+      expect(verdict.matchedEntry).toBe('.ssh');
+      expect(verdict.access).toBe('write');
     });
 
-    it('the allow rules cannot launder a sensitive read', () => {
-      const withAllowed = evaluateBashAccess(scope({ permission: { allowedDirs: [home] } }), 'cat ~/.ssh/id_rsa');
-      expect(withAllowed.decision).toBe('ask');
-      expect(withAllowed.matchedRule).toBe('sensitive-list');
+    it('the allow rules cannot launder a sensitive hit, in either direction', () => {
+      for (const command of ['cat ~/.ssh/id_rsa', 'tee ~/.ssh/authorized_keys v']) {
+        const withAllowed = evaluateBashAccess(scope({ permission: { allowedDirs: [home] } }), command);
+        expect(withAllowed.decision).toBe('ask');
+        expect(withAllowed.matchedRule).toBe('sensitive-list');
+        expect(withAllowed.matchedEntry).toBe('.ssh');
 
-      const withTaskGrant = evaluateBashAccess(scope({ taskAllowedDirs: [join(home, '.ssh')] }), 'cat ~/.ssh/id_rsa');
-      expect(withTaskGrant.decision).toBe('ask');
-      expect(withTaskGrant.matchedRule).toBe('sensitive-list');
+        const withTaskGrant = evaluateBashAccess(scope({ taskAllowedDirs: [join(home, '.ssh')] }), command);
+        expect(withTaskGrant.decision).toBe('ask');
+        expect(withTaskGrant.matchedRule).toBe('sensitive-list');
+      }
+
+      // A workspace that IS the home directory does not help either: the
+      // workspace allow sits BELOW the sensitive list in the rule order.
+      const wsIsHome = evaluateBashAccess(
+        scope({ workspace: home, taskAllowedDirs: [home], permission: { autoAllowRoots: [home] } }),
+        'tee ~/.ssh/authorized_keys v',
+      );
+      expect(wsIsHome.decision).toBe('ask');
+      expect(wsIsHome.matchedRule).toBe('sensitive-list');
+      expect(wsIsHome.access).toBe('write');
     });
   });
 
@@ -250,10 +301,14 @@ describe('evaluateBashAccess', () => {
       expect(verdict.matchedEntry).toBe('.ssh');
     });
 
-    it('rm $HOME/.ssh/id_rsa → deny (the write variant keeps the hard refusal)', () => {
+    it('rm $HOME/.ssh/id_rsa → ask (the write variant, expanded then matched)', () => {
       const verdict = evaluateBashAccess(scope(), 'rm $HOME/.ssh/id_rsa');
-      expect(verdict.decision).toBe('deny');
-      expect(verdict.matchedRule).toBe('sensitive-list-write');
+      expect(verdict.decision).toBe('ask');
+      // Destructive AND sensitive: the destructive tier owns the rule name and
+      // the sensitive hit rides along.
+      expect(verdict.matchedRule).toBe('dangerous-bash');
+      expect(verdict.matchedEntry).toBe('.ssh');
+      expect(verdict.access).toBe('write');
     });
 
     it('echo x > $HOME/notes.txt → ask (output redirection)', () => {
@@ -413,16 +468,23 @@ describe('evaluateBashAccess', () => {
       },
     );
 
-    it('a sensitive path inside a substitution is still a write refusal / read ask', () => {
+    it('a sensitive path inside a substitution still asks, naming the entry', () => {
       const read = evaluateBashAccess(scope(), 'cat "$(cat $HOME/.ssh/id_rsa)"');
       expect(read.decision).toBe('ask');
       // The inner hit survives the wrap: the approval still names the entry.
       expect(read.matchedEntry).toBe('.ssh');
       expect(read.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
-      // A broken command mentioning a sensitive path keeps the hard refusal.
+      // A broken command mentioning a sensitive path keeps the hit too — it is
+      // an ask under the default mode, not an unreviewed run.
       const broken = evaluateBashAccess(scope(), 'tee ~/.ssh/authorized_keys "x');
-      expect(broken.decision).toBe('deny');
-      expect(broken.matchedRule).toBe('sensitive-list-write');
+      expect(broken.decision).toBe('ask');
+      expect(broken.matchedRule).toBe('sensitive-list');
+      expect(broken.matchedEntry).toBe('.ssh');
+      expect(broken.access).toBe('write');
+      // …and it is a refusal when the user asked for no prompts.
+      const strict = evaluateBashAccess(scope({ permission: { sensitiveMode: 'deny' } }), 'tee ~/.ssh/authorized_keys "x');
+      expect(strict.decision).toBe('deny');
+      expect(strict.matchedRule).toBe('sensitive-list');
     });
   });
 
@@ -538,11 +600,12 @@ describe('evaluateBashAccess', () => {
       expect(read.decision).toBe('ask');
       expect(read.matchedRule).toBe('sensitive-list');
       expect(read.matchedEntry).toBe('.ssh');
-      // …and a write that TOUCHES a sensitive path is still a hard refusal,
-      // even though the verb itself (`cp`) is not a read.
+      // …and a write that TOUCHES a sensitive path asks under the write
+      // direction, even though the verb itself (`cp`) is not a read.
       const write = evaluateBashAccess(scope(), 'cp ~/notes.md ~/.ssh/id_rsa');
-      expect(write.decision).toBe('deny');
-      expect(write.matchedRule).toBe('sensitive-list-write');
+      expect(write.decision).toBe('ask');
+      expect(write.matchedRule).toBe('sensitive-list');
+      expect(write.access).toBe('write');
     });
 
     /**
@@ -658,7 +721,7 @@ describe('evaluateFileAccess', () => {
     expect(auto.matchedRule).toBe('auto-allow-root');
   });
 
-  it('config sensitiveDirs extend the sensitive list (read asks, write denied)', () => {
+  it('config sensitiveDirs extend the sensitive list (both directions ask)', () => {
     const read = evaluateFileAccess(scope({ permission: { sensitiveDirs: ['docs'] } }), 'read_file', {
       path: join(home, 'docs', 'a.md'),
     });
@@ -670,8 +733,11 @@ describe('evaluateFileAccess', () => {
       path: join(home, 'docs', 'a.md'),
       content: 'x',
     });
-    expect(write.decision).toBe('deny');
-    expect(write.matchedRule).toBe('sensitive-list-write');
+    expect(write.decision).toBe('ask');
+    expect(write.matchedRule).toBe('sensitive-list');
+    expect(write.matchedEntry).toBe('docs');
+    expect(write.matchedSource).toBe('config-dir');
+    expect(write.access).toBe('write');
   });
 
   it('the deprecated deniedDirs alias protects exactly like sensitiveDirs', () => {
@@ -683,21 +749,23 @@ describe('evaluateFileAccess', () => {
     expect(read.matchedRule).toBe('sensitive-list');
   });
 
-  it('sensitiveMode: deny restores the hard refusal for sensitive reads', () => {
-    const verdict = evaluateFileAccess(
-      scope({ permission: { sensitiveMode: 'deny' } }),
-      'read_file',
-      { path: '~/.ssh/id_rsa' },
-    );
-    expect(verdict.decision).toBe('deny');
-    expect(verdict.matchedRule).toBe('sensitive-list');
-    // Writes are refused either way.
-    expect(
-      evaluateFileAccess(scope({ permission: { sensitiveMode: 'deny' } }), 'write_file', {
-        path: '~/.ssh/id_rsa',
-        content: 'x',
-      }).decision,
-    ).toBe('deny');
+  it('sensitiveMode: deny refuses BOTH directions without asking', () => {
+    const strict = scope({ permission: { sensitiveMode: 'deny' } });
+    const read = evaluateFileAccess(strict, 'read_file', { path: '~/.ssh/id_rsa' });
+    expect(read.decision).toBe('deny');
+    expect(read.matchedRule).toBe('sensitive-list');
+    expect(read.matchedEntry).toBe('.ssh');
+
+    const write = evaluateFileAccess(strict, 'write_file', { path: '~/.ssh/id_rsa', content: 'x' });
+    expect(write.decision).toBe('deny');
+    expect(write.matchedRule).toBe('sensitive-list');
+    expect(write.matchedEntry).toBe('.ssh');
+    expect(write.access).toBe('write');
+    // A refusal under 'deny' carries the direction in its message (attached by
+    // `decideToolAccess`, the layer that hands text back to a worker).
+    const refusal = decideToolAccess(strict, 'write_file', { path: '~/.ssh/id_rsa', content: 'x' });
+    expect(refusal.message).toContain('refusing to write');
+    expect(refusal.message).toContain('sensitiveMode is "deny"');
   });
 
   it('~ paths expand against the injected home, and the sensitive list wins', () => {
@@ -705,14 +773,16 @@ describe('evaluateFileAccess', () => {
     expect(readKey.decision).toBe('ask');
     expect(readKey.matchedEntry).toBe('.ssh');
     expect(readKey.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
-    // A sensitive WRITE inside the task workspace is still refused, even
-    // though the workspace would otherwise allow the write.
+    // A sensitive WRITE inside the task allowedDirs still asks: the grant is
+    // outranked by the sensitive rule and cannot pre-approve the write.
     const writeKey = evaluateFileAccess(scope({ taskAllowedDirs: [join(home, '.ssh')] }), 'write_file', {
       path: join(home, '.ssh', 'authorized_keys'),
       content: 'x',
     });
-    expect(writeKey.decision).toBe('deny');
-    expect(writeKey.matchedRule).toBe('sensitive-list-write');
+    expect(writeKey.decision).toBe('ask');
+    expect(writeKey.matchedRule).toBe('sensitive-list');
+    expect(writeKey.matchedEntry).toBe('.ssh');
+    expect(writeKey.access).toBe('write');
     // Not sensitive, but still outside the worker's scopes → asks.
     expect(evaluateFileAccess(scope(), 'read_file', { path: '~/.zshrc' }).decision).toBe('ask');
   });
@@ -731,10 +801,13 @@ describe('evaluateFileAccess', () => {
     expect(read.decision).toBe('ask');
     expect(read.matchedRule).toBe('sensitive-list');
     expect(read.matchedEntry).toBe('.ssh');
-    // Writing through the same link stays a hard refusal.
+    // Writing through the same link asks as well — never an allow, never a
+    // silent run.
     const write = evaluateFileAccess(scope(), 'write_file', { path: 'link/id_rsa', content: 'x' });
-    expect(write.decision).toBe('deny');
-    expect(write.matchedRule).toBe('sensitive-list-write');
+    expect(write.decision).toBe('ask');
+    expect(write.matchedRule).toBe('sensitive-list');
+    expect(write.matchedEntry).toBe('.ssh');
+    expect(write.access).toBe('write');
   });
 
   it('missing or non-string path is not gated', () => {
@@ -745,21 +818,34 @@ describe('evaluateFileAccess', () => {
 });
 
 describe('decideToolAccess', () => {
-  it('attaches a disclosure-safe message on a sensitive write', () => {
+  it('asks (no refusal text) for a sensitive write under the default mode', () => {
     const verdict = decideToolAccess(scope(), 'write_file', { path: '~/.ssh/authorized_keys', content: 'x' });
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.matchedRule).toBe('sensitive-list');
+    expect(verdict.matchedEntry).toBe('.ssh');
+    expect(verdict.access).toBe('write');
+    // Only a refusal carries a message; an ask is described by the approval.
+    expect(verdict.message).toBeUndefined();
+  });
+
+  it('attaches a disclosure-safe message on a refused sensitive write (sensitiveMode: deny)', () => {
+    const strict = scope({ permission: { sensitiveMode: 'deny' } });
+    const verdict = decideToolAccess(strict, 'write_file', { path: '~/.ssh/authorized_keys', content: 'x' });
     expect(verdict.decision).toBe('deny');
     // The worker's own spelling is echoed; the sensitive entry is not named.
     expect(verdict.message).toContain('~/.ssh/authorized_keys');
     expect(verdict.message).toContain('sensitive list');
-    expect(verdict.message).toContain('never writable');
+    expect(verdict.message).toContain('refusing to write');
     expect(verdict.message).not.toContain('.ssh (');
   });
 
-  it('does not echo any path or entry for a denied bash command', () => {
-    const verdict = decideToolAccess(scope(), 'bash', { command: 'rm -rf ~/.ssh' });
+  it('does not echo any path or entry for a refused bash command (sensitiveMode: deny)', () => {
+    const strict = scope({ permission: { sensitiveMode: 'deny' } });
+    const verdict = decideToolAccess(strict, 'bash', { command: 'rm -rf ~/.ssh' });
     expect(verdict.decision).toBe('deny');
     expect(verdict.message).not.toContain('.ssh');
     expect(verdict.message).toContain('sensitive list');
+    expect(verdict.message).toContain('would write');
   });
 
   it('leaves allow/ask verdicts without a message', () => {
@@ -776,8 +862,8 @@ describe('decideToolAccess', () => {
 /**
  * Regression: with `--home-dir` pointing at a directory that is NOT the real
  * home, the real home's credential dirs sit outside the home anchor. They must
- * still be recognized as sensitive — a read asks WITH the entry named (not a
- * bare "outside-all"), and a write is refused outright.
+ * still be recognized as sensitive — both directions ask WITH the entry named
+ * (not a bare "outside-all").
  */
 describe('anchor-independent sensitive list: real home outside the injected home', () => {
   let realHome: string;
@@ -801,13 +887,22 @@ describe('anchor-independent sensitive list: real home outside the injected home
     expect(verdict.sensitive).toBe(true);
   });
 
-  it('write_file on <realHome>/.ssh/id_rsa → deny (sensitive paths are never writable)', () => {
+  it('write_file on <realHome>/.ssh/id_rsa → ask, with the entry and direction', () => {
     const verdict = decideToolAccess(scope(), 'write_file', {
       path: join(realHome, '.ssh', 'id_rsa'),
       content: 'x',
     });
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.matchedRule).toBe('sensitive-list');
+    expect(verdict.matchedEntry).toBe('.ssh');
+    expect(verdict.access).toBe('write');
+  });
+
+  it('write_file on <realHome>/.ssh/id_rsa → deny under sensitiveMode: deny', () => {
+    const strict = scope({ permission: { sensitiveMode: 'deny' } });
+    const verdict = decideToolAccess(strict, 'write_file', { path: join(realHome, '.ssh', 'id_rsa'), content: 'x' });
     expect(verdict.decision).toBe('deny');
-    expect(verdict.matchedRule).toBe('sensitive-list-write');
+    expect(verdict.matchedRule).toBe('sensitive-list');
     expect(verdict.message).toContain('sensitive list');
   });
 
@@ -848,24 +943,24 @@ describe("wayang's own paths are released (0.8.3)", () => {
     expect(verdict.matchedEntry).toBeUndefined();
   });
 
-  it('write_file on ~/.wayang/tmp/a.txt is no longer denied', () => {
+  it('write_file on ~/.wayang/tmp/a.txt is no longer refused', () => {
     const verdict = evaluateFileAccess(scope(), 'write_file', { path: '~/.wayang/tmp/a.txt' });
     expect(verdict.decision).not.toBe('deny');
-    expect(verdict.matchedRule).not.toBe('sensitive-list-write');
+    expect(verdict.matchedRule).not.toBe('sensitive-list');
     expect(verdict.decision).toBe('ask');
     expect(verdict.message).toBeUndefined();
   });
 
-  it('edit_file on ~/.wayang/tmp/a.txt is no longer denied', () => {
+  it('edit_file on ~/.wayang/tmp/a.txt is no longer refused', () => {
     const verdict = evaluateFileAccess(scope(), 'edit_file', { path: join(home, '.wayang', 'tmp', 'a.txt') });
     expect(verdict.decision).toBe('ask');
-    expect(verdict.matchedRule).not.toBe('sensitive-list-write');
+    expect(verdict.matchedRule).not.toBe('sensitive-list');
   });
 
-  it('bash redirect into ~/.wayang/tmp is not a sensitive write', () => {
+  it('bash redirect into ~/.wayang/tmp is not a sensitive hit', () => {
     const verdict = decideToolAccess(scope(), 'bash', { command: 'echo hi > ~/.wayang/tmp/a.txt' });
     expect(verdict.decision).not.toBe('deny');
-    expect(verdict.matchedRule).not.toBe('sensitive-list-write');
+    expect(verdict.matchedRule).not.toBe('sensitive-list');
     expect(verdict.sensitive).toBeUndefined();
   });
 
@@ -895,10 +990,10 @@ describe("wayang's own paths are released (0.8.3)", () => {
     expect(read.decision).toBe('ask');
   });
 
-  it('write_file on ~/.wayang.config.json is no longer denied', () => {
+  it('write_file on ~/.wayang.config.json is not refused', () => {
     const write = decideToolAccess(scope(), 'write_file', { path: '~/.wayang.config.json', content: 'x' });
     expect(write.decision).not.toBe('deny');
-    expect(write.matchedRule).not.toBe('sensitive-list-write');
+    expect(write.matchedRule).not.toBe('sensitive-list');
     // It asks like any other write outside the workspace.
     expect(write.decision).toBe('ask');
     expect(write.matchedEntry).toBeUndefined();
@@ -918,7 +1013,7 @@ describe("wayang's own paths are released (0.8.3)", () => {
   it('bash writing ~/.wayang.config.json is no longer refused', () => {
     const verdict = evaluateBashAccess(scope(), 'echo {} > ~/.wayang.config.json');
     expect(verdict.decision).not.toBe('deny');
-    expect(verdict.matchedRule).not.toBe('sensitive-list-write');
+    expect(verdict.matchedRule).not.toBe('sensitive-list');
     expect(verdict.decision).toBe('ask');
   });
 
@@ -959,10 +1054,13 @@ describe("wayang's own paths are released (0.8.3)", () => {
       expect(read.sensitive).toBe(true);
       expect(read.matchedEntry).toBe(path.split('/')[1]);
 
+      // 0.8.4: the write direction asks too (see sensitivity above); only
+      // `sensitiveMode: 'deny'` refuses it.
       const write = decideToolAccess(scope(), 'write_file', { path, content: 'x' });
-      expect(write.decision).toBe('deny');
-      expect(write.matchedRule).toBe('sensitive-list-write');
-      expect(write.message).toContain('sensitive list');
+      expect(write.decision).toBe('ask');
+      expect(write.matchedRule).toBe('sensitive-list');
+      expect(write.access).toBe('write');
+      expect(write.message).toBeUndefined();
     }
     // `.env` was never on the sensitive list; it keeps its old shape — an
     // approval on both directions, never a silent read and never a deny.
@@ -976,5 +1074,85 @@ describe("wayang's own paths are released (0.8.3)", () => {
     expect(envWrite.matchedRule).toBe('outside-all');
     // A plain home file keeps the same "ask, not sensitive" shape as ~/.wayang.
     expect(evaluateFileAccess(scope(), 'read_file', { path: '~/.zshrc' }).matchedRule).toBe('read-within-home');
+  });
+});
+
+/**
+ * 0.8.4: a sensitive WRITE is routed through the approval flow instead of being
+ * refused outright. The matrix below is the contract: under the default
+ * `sensitiveMode: 'ask'` every direction asks (with `matchedEntry` /
+ * `matchedSource` / `resolvedPath` / `access`), and only `sensitiveMode: 'deny'`
+ * refuses. NO path is ever allowed because every allow rule — workspace, task
+ * allowedDirs, config allowedDirs, autoAllowRoots — sits BELOW the sensitive
+ * list, so the choice is always "ask or refuse", never "pass silently".
+ */
+describe('sensitive writes go through approval (0.8.4)', () => {
+  const sensitiveWrites = [
+    { command: 'tee ~/.ssh/authorized_keys', entry: '.ssh' },
+    { command: 'rm -rf ~/.ssh', entry: '.ssh' },
+    { command: 'cp x ~/.aws/credentials', entry: '.aws' },
+  ];
+
+  it.each(sensitiveWrites)('$command → ask with the entry and access=write', ({ command, entry }) => {
+    const verdict = evaluateBashAccess(scope(), command);
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.matchedEntry).toBe(entry);
+    expect(verdict.matchedSource).toBe('segment');
+    expect(verdict.sensitive).toBe(true);
+    expect(verdict.access).toBe('write');
+    expect(verdict.resolvedPath).toContain(entry);
+  });
+
+  it('cat ~/.ssh/id_rsa → ask with access=read (unchanged)', () => {
+    const verdict = evaluateBashAccess(scope(), 'cat ~/.ssh/id_rsa');
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.matchedRule).toBe('sensitive-list');
+    expect(verdict.matchedEntry).toBe('.ssh');
+    expect(verdict.access).toBe('read');
+  });
+
+  it.each(sensitiveWrites)('$command → deny under sensitiveMode: deny', ({ command }) => {
+    const strict = scope({ permission: { sensitiveMode: 'deny' } });
+    const verdict = evaluateBashAccess(strict, command);
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.matchedRule).toBe('sensitive-list');
+    expect(verdict.access).toBe('write');
+  });
+
+  it('a sensitive read is denied too under sensitiveMode: deny (regression)', () => {
+    const strict = scope({ permission: { sensitiveMode: 'deny' } });
+    const verdict = evaluateBashAccess(strict, 'cat ~/.ssh/id_rsa');
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.matchedRule).toBe('sensitive-list');
+    expect(verdict.access).toBe('read');
+  });
+
+  it('a workspace / allowedDirs grant covering the sensitive path still asks, never allows', () => {
+    const grants: Partial<WorkerAccessScope>[] = [
+      { workspace: home },
+      { taskAllowedDirs: [join(home, '.ssh')] },
+      { permission: { allowedDirs: [join(home, '.ssh')] } },
+      { permission: { autoAllowRoots: [home] } },
+      { workspace: home, taskAllowedDirs: [home], permission: { allowedDirs: [home], autoAllowRoots: [home] } },
+    ];
+    for (const grant of grants) {
+      const verdict = evaluateBashAccess(scope(grant), 'tee ~/.ssh/authorized_keys x');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('sensitive-list');
+      expect(verdict.matchedEntry).toBe('.ssh');
+      expect(verdict.access).toBe('write');
+    }
+  });
+
+  it('write_file / edit_file into a sensitive path ask as writes as well', () => {
+    for (const tool of ['write_file', 'edit_file']) {
+      const verdict = evaluateFileAccess(scope(), tool, { path: '~/.ssh/authorized_keys', content: 'x' });
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('sensitive-list');
+      expect(verdict.matchedEntry).toBe('.ssh');
+      expect(verdict.access).toBe('write');
+      // An ask carries no refusal text — the approval request explains it.
+      expect(verdict.message).toBeUndefined();
+    }
   });
 });

@@ -17,8 +17,10 @@
  * to know which key it came from.
  *
  * `permission.sensitiveMode` is the escape hatch: `'ask'` (default) asks the
- * controller before a sensitive READ, `'deny'` restores the pre-0.8.1
- * "refuse without asking" behaviour for reads and writes alike.
+ * controller before a sensitive hit in EITHER direction (read or write),
+ * `'deny'` restores the pre-0.8.1 "refuse without asking" behaviour for both.
+ * Neither mode allows a sensitive hit through: the list outranks every allow
+ * rule, so the mode only chooses between an approval and a refusal.
  */
 
 import type { PermissionConfig } from '@/types/config';

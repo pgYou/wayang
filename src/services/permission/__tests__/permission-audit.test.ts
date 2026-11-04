@@ -83,7 +83,7 @@ describe('recordPermissionAudit', () => {
     expect(firstRecord(logger).source).toBe('timeout');
   });
 
-  it('records a hard refusal (sensitive write)', () => {
+  it('records a hard refusal (sensitive hit under sensitiveMode: deny)', () => {
     const logger = createMockLogger();
     recordPermissionAudit(logger, {
       decision: 'hard-denied',
@@ -92,14 +92,14 @@ describe('recordPermissionAudit', () => {
       requestedPath: '~/.ssh/authorized_keys',
       matchedEntry: '.ssh',
       matchedSource: 'segment',
-      matchedRule: 'sensitive-list-write',
+      matchedRule: 'sensitive-list',
       taskId: 't-2',
       workerId: 'w-9',
       toolName: 'write_file',
     });
     const record = firstRecord(logger);
     expect(record.decision).toBe('hard-denied');
-    expect(record.matchedRule).toBe('sensitive-list-write');
+    expect(record.matchedRule).toBe('sensitive-list');
     expect(record.operation).toBe('write');
   });
 

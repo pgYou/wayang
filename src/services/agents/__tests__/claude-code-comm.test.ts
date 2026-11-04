@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
-import type { WorkerConfig, TaskDetail } from '@/types/index';
+import type { WorkerConfig, TaskDetail, PermissionConfig } from '@/types/index';
 import { SkillRegistry } from '@/services/skills/registry';
 import { SignalQueue } from '@/services/signal/signal-queue';
 import { createMockCtx } from '@/__tests__/helpers';
@@ -363,11 +363,11 @@ describe('ClaudeCodeWorker controller messaging', () => {
 
 /**
  * canUseTool routes through the SAME shared permission policy as puppet
- * workers (`decideToolAccess`): a sensitive READ asks for approval (naming the
- * matched entry), a sensitive WRITE is denied outright with no approval prompt,
- * a path inside the task workspace runs immediately, and a path inside home but
- * outside the workspace asks the controller. Requests and audits use the same
- * fields as the puppet middleware.
+ * workers (`decideToolAccess`): a sensitive hit — READ or WRITE — asks for
+ * approval (naming the matched entry and the direction), a refusal only happens
+ * under `sensitiveMode: 'deny'`, a path inside the task workspace runs
+ * immediately, and a path inside home but outside the workspace asks the
+ * controller. Requests and audits use the same fields as the puppet middleware.
  */
 describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
   let homeDir: string;
@@ -383,8 +383,11 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
-  /** Instantiate a worker wired with an explicit access scope + signal queue. */
-  function makeWiredWorker() {
+  /**
+   * Instantiate a worker wired with an explicit access scope + signal queue.
+   * `permission` is the user-config section the engine would inject.
+   */
+  function makeWiredWorker(permission?: PermissionConfig) {
     const ctx = createMockCtx({ sessionDir: homeDir, workspaceDir: workspace });
     const worker = new ClaudeCodeWorker(config, homeDir, workspace, ctx, skills);
     const signalQueue = new SignalQueue(createMockCtx({ sessionDir: homeDir, workspaceDir: workspace }));
@@ -393,7 +396,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
       workerId: 'cw-perm',
       taskId: 't-perm',
       taskTitle: 'perm',
-      accessScope: { homeDir, workspace },
+      accessScope: { homeDir, workspace, permission },
     });
     return { worker, signalQueue };
   }
@@ -439,8 +442,31 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect((await pending).behavior).toBe('allow');
   });
 
-  it('denies a sensitive write without asking', async () => {
+  it('asks once for a sensitive write, naming the entry and the direction', async () => {
     const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const pending = canUseTool('Write', { file_path: join(homeDir, '.aws', 'credentials') });
+    await settle();
+
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    const payload = requests[0].payload as any;
+    expect(payload.matchedEntry).toBe('.aws');
+    expect(payload.matchedRule).toBe('sensitive-list');
+    expect(payload.sensitive).toBe(true);
+    // A write to a credential file is described as a write.
+    expect(payload.access).toBe('write');
+    expect(payload.operation).toBe('write');
+    expect(payload.description).toContain('hit: .aws');
+    expect(payload.description).toContain('op: write');
+
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe(true);
+    expect((await pending).behavior).toBe('allow');
+  });
+
+  it('denies a sensitive write without asking under sensitiveMode: deny', async () => {
+    const { worker, signalQueue } = makeWiredWorker({ sensitiveMode: 'deny' });
     const canUseTool = await captureCanUseTool(worker);
 
     const verdict = await canUseTool('Write', { file_path: join(homeDir, '.aws', 'credentials') });
@@ -519,12 +545,32 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect((await pending).behavior).toBe('deny');
   });
 
-  it('denies a bash command that WRITES a sensitive path, without asking', async () => {
+  it('asks for a bash command that WRITES a sensitive path (0.8.4)', async () => {
     const { worker, signalQueue } = makeWiredWorker();
+    const canUseTool = await captureCanUseTool(worker);
+
+    const pending = canUseTool('Bash', { command: `tee ${join(homeDir, '.ssh', 'authorized_keys')} x` });
+    await settle();
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    const payload = requests[0].payload as any;
+    expect(payload.matchedRule).toBe('sensitive-list');
+    expect(payload.matchedEntry).toBe('.ssh');
+    expect(payload.access).toBe('write');
+    // `operation` stays the tool category (`exec` for bash).
+    expect(payload.operation).toBe('exec');
+
+    worker.permissionHandler.resolvePermission(payload.requestId, false, 'no');
+    expect((await pending).behavior).toBe('deny');
+  });
+
+  it('denies a bash command that writes a sensitive path under sensitiveMode: deny', async () => {
+    const { worker, signalQueue } = makeWiredWorker({ sensitiveMode: 'deny' });
     const canUseTool = await captureCanUseTool(worker);
 
     const verdict = await canUseTool('Bash', { command: `tee ${join(homeDir, '.ssh', 'authorized_keys')} x` });
     expect(verdict.behavior).toBe('deny');
+    expect(String((verdict as any).message)).toContain('sensitive list');
     expect(permissionRequests(signalQueue)).toHaveLength(0);
   });
 

@@ -7,8 +7,9 @@
  *
  *   allow → executes, NO permission_request
  *   ask   → permission_request, approval runs / rejection does not
- *   deny  → refused immediately, NO permission_request (sensitive WRITE, or
- *           `sensitiveMode: 'deny'`)
+ *   deny  → refused immediately, NO permission_request (`sensitiveMode: 'deny'`
+ *           on a sensitive hit only: under the default mode a sensitive hit —
+ *           read OR write — asks like anything else)
  *
  * The home directory is a temp dir injected into the engine, so the sensitive
  * list (`<home>/.ssh`, …) is exercised without touching the real user's home.
@@ -281,40 +282,101 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(audits[0]).toMatchObject({ decision: 'denied', matchedEntry: '.ssh', source: 'controller' });
   });
 
-  it('5c. a sensitive WRITE is refused outright — no permission_request, but an audit record', async () => {
+  /**
+   * 0.8.4: a sensitive WRITE is approvable. Even with the task granted the
+   * directory (`taskAllowedDirs: [.ssh]`) the sensitive rule outranks the
+   * grant, so the call asks — and, once approved, performs exactly the write
+   * the controller saw described.
+   */
+  it('5c. a sensitive WRITE asks once; approval performs it and is audited', async () => {
     const { engine, signalQueue, ctx } = makeEngine();
     const tools = await startTask(engine, { taskAllowedDirs: [join(home, '.ssh')] });
 
-    const output = await tools.write_file.execute({ path: join(home, '.ssh', 'new_key'), content: 'x' });
-    expect(output).toContain('[ERROR]');
-    expect(output).toContain('sensitive list');
-    expect(output).toContain('never writable');
-    expect(output).not.toContain('.ssh (');
+    const pending = tools.write_file.execute({ path: join(home, '.ssh', 'new_key'), content: 'x' });
+    await flush();
+
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].toolName).toBe('write_file');
+    expect(requests[0].matchedRule).toBe('sensitive-list');
+    expect(requests[0].matchedEntry).toBe('.ssh');
+    expect(requests[0].matchedSource).toBe('segment');
+    expect(requests[0].resolvedPath).toBe(join(home, '.ssh', 'new_key'));
+    expect(requests[0].access).toBe('write');
+    expect(requests[0].operation).toBe('write');
+    // The approval DESCRIPTION quotes the path and the hit, never the content
+    // (the raw `toolArgs` travel with the signal as before, so the controller
+    // can see what would happen).
+    expect(requests[0].description).toContain('hit: .ssh (segment)');
+    expect(requests[0].description).not.toContain('content');
+    // Nothing has been written yet.
     expect(existsSync(join(home, '.ssh', 'new_key'))).toBe(false);
-    // A hard deny must not become "ask": the signal count is the assertion.
-    expect(permissionRequests(signalQueue)).toHaveLength(0);
+
+    engine.resolvePermission(requests[0].requestId, true);
+    await pending;
+    expect(existsSync(join(home, '.ssh', 'new_key'))).toBe(true);
 
     const audits = auditRecords(ctx);
     expect(audits).toHaveLength(1);
     expect(audits[0]).toMatchObject({
-      decision: 'hard-denied',
+      decision: 'approved',
+      // `operation` is the tool category, `access` the judged direction.
       operation: 'write',
       access: 'write',
       matchedEntry: '.ssh',
-      matchedRule: 'sensitive-list-write',
+      matchedRule: 'sensitive-list',
+      resolvedPath: join(home, '.ssh', 'new_key'),
       taskId: 't1',
     });
   });
 
-  it('5d. sensitiveMode: deny restores the hard refusal for the same read', async () => {
+  it('5c2. a REJECTED sensitive write performs nothing', async () => {
+    const { engine, signalQueue, ctx } = makeEngine();
+    const tools = await startTask(engine, { taskAllowedDirs: [join(home, '.ssh')] });
+
+    const pending = tools.write_file.execute({ path: join(home, '.ssh', 'new_key'), content: 'x' });
+    await flush();
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+
+    engine.resolvePermission(requests[0].requestId, false, 'not in this task');
+    expect(await pending).toContain('Permission denied');
+    expect(existsSync(join(home, '.ssh', 'new_key'))).toBe(false);
+    expect(auditRecords(ctx)[0]).toMatchObject({
+      decision: 'denied',
+      operation: 'write',
+      access: 'write',
+      matchedEntry: '.ssh',
+      source: 'controller',
+    });
+  });
+
+  it('5d. sensitiveMode: deny refuses BOTH directions without asking', async () => {
     const { engine, signalQueue, ctx } = makeEngine({ permission: { sensitiveMode: 'deny' } });
     const tools = await startTask(engine);
 
-    const output = await tools.read_file.execute({ path: join(home, '.ssh', 'id_rsa') });
-    expect(output).toContain('[ERROR]');
-    expect(output).not.toContain('PRIVATE-KEY');
+    const read = await tools.read_file.execute({ path: join(home, '.ssh', 'id_rsa') });
+    expect(read).toContain('[ERROR]');
+    expect(read).not.toContain('PRIVATE-KEY');
+
+    const write = await tools.write_file.execute({ path: join(home, '.ssh', 'id_rsa'), content: 'x' });
+    expect(write).toContain('[ERROR]');
+    expect(write).toContain('sensitive list');
+    expect(write).toContain('refusing to write');
+    // Not a single request: the mode refuses instead of prompting.
     expect(permissionRequests(signalQueue)).toHaveLength(0);
-    expect(auditRecords(ctx)[0]).toMatchObject({ decision: 'hard-denied', operation: 'read' });
+
+    const audits = auditRecords(ctx);
+    expect(audits).toHaveLength(2);
+    expect(audits[0]).toMatchObject({ decision: 'hard-denied', operation: 'read', access: 'read', matchedRule: 'sensitive-list' });
+    expect(audits[1]).toMatchObject({
+      decision: 'hard-denied',
+      operation: 'write',
+      access: 'write',
+      matchedRule: 'sensitive-list',
+      matchedEntry: '.ssh',
+    });
+    expect(readFileSync(join(home, '.ssh', 'id_rsa'), 'utf-8')).not.toBe('x');
   });
 
   it('6. a symlink inside the workspace cannot smuggle a sensitive path', async () => {
@@ -335,18 +397,26 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(await pending).not.toContain('PRIVATE-KEY');
   });
 
-  it('7a. bash WRITING a sensitive path is refused as a whole, without asking', async () => {
+  it('7a. bash WRITING a sensitive path asks once, and a rejection keeps the key', async () => {
     const { engine, signalQueue, ctx } = makeEngine();
     const tools = await startTask(engine);
 
-    const output = await tools.bash.execute({ command: 'rm -rf ~/.ssh/id_rsa' });
-    expect(output).toContain('[ERROR]');
-    expect(output).toContain('sensitive list');
+    const pending = tools.bash.execute({ command: 'rm -rf ~/.ssh/id_rsa' });
+    await flush();
+
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].matchedEntry).toBe('.ssh');
+    expect(requests[0].access).toBe('write');
+    // The tool CATEGORY stays exec even though the direction is a write (#43).
+    expect(requests[0].operation).toBe('exec');
+
+    engine.resolvePermission(requests[0].requestId, false, 'no');
+    expect(await pending).toContain('[ERROR]');
     // The command never ran, so the key file is untouched.
     expect(existsSync(join(home, '.ssh', 'id_rsa'))).toBe(true);
-    expect(permissionRequests(signalQueue)).toHaveLength(0);
     expect(auditRecords(ctx)[0]).toMatchObject({
-      decision: 'hard-denied',
+      decision: 'denied',
       operation: 'exec',
       access: 'write',
       matchedEntry: '.ssh',
@@ -426,16 +496,23 @@ describe('worker permission gate — policy-backed decisions', () => {
     await pending;
   });
 
-  it('7b. a mixed bash command is refused when ANY candidate is a sensitive write', async () => {
+  it('7b. a mixed bash command asks when ANY candidate is a sensitive write', async () => {
     const { engine, signalQueue } = makeEngine();
     const tools = await startTask(engine);
     writeFileSync(join(taskWs, 'ok.txt'), 'ok');
 
-    const output = await tools.bash.execute({ command: 'cat ok.txt && tee ~/.ssh/authorized_keys' });
+    const pending = tools.bash.execute({ command: 'cat ok.txt && tee ~/.ssh/authorized_keys' });
+    await flush();
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].matchedEntry).toBe('.ssh');
+    expect(requests[0].access).toBe('write');
+
+    engine.resolvePermission(requests[0].requestId, false, 'no');
+    const output = await pending;
     expect(output).toContain('[ERROR]');
     expect(output).not.toContain('ok');
     expect(existsSync(join(home, '.ssh', 'authorized_keys'))).toBe(false);
-    expect(permissionRequests(signalQueue)).toHaveLength(0);
   });
 
   it('7b2. a mixed bash command of READS asks once instead of refusing', async () => {
@@ -471,7 +548,7 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(output).toContain('localhost');
   });
 
-  it('8. without task allowedDirs the boundary is unchanged (workspace allow / outside ask / sensitive split)', async () => {
+  it('8. without task allowedDirs the boundary is unchanged (workspace allow / outside ask / sensitive ask)', async () => {
     const { engine, signalQueue } = makeEngine();
     const tools = await startTask(engine); // no taskAllowedDirs
 
@@ -490,10 +567,16 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(await pending).toContain('Permission denied');
     expect(existsSync(join(shared, 'created.txt'))).toBe(false);
 
-    // a sensitive WRITE → hard deny, still without a request
-    expect(
-      await tools.write_file.execute({ path: join(home, '.ssh', 'id_rsa'), content: 'x' }),
-    ).toContain('sensitive list');
-    expect(permissionRequests(signalQueue)).toHaveLength(1); // still just the write request
+    // a sensitive WRITE → asks, and it is a SECOND request (the grant above is
+    // irrelevant: the sensitive rule outranks it)
+    const sensitive = tools.write_file.execute({ path: join(home, '.ssh', 'id_rsa'), content: 'x' });
+    await flush();
+    const sensitiveRequests = permissionRequests(signalQueue);
+    expect(sensitiveRequests).toHaveLength(2);
+    expect(sensitiveRequests[1].matchedEntry).toBe('.ssh');
+    expect(sensitiveRequests[1].access).toBe('write');
+    engine.resolvePermission(sensitiveRequests[1].requestId, false, 'no');
+    expect(await sensitive).toContain('Permission denied');
+    expect(readFileSync(join(home, '.ssh', 'id_rsa'), 'utf-8')).toBe('PRIVATE-KEY');
   });
 });

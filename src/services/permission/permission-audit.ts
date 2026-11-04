@@ -2,7 +2,7 @@
  * Structured permission audit trail.
  *
  * Every permission decision that required the controller (approved / denied)
- * and every hard refusal (sensitive write, `sensitiveMode: 'deny'`) is written
+ * and every hard refusal (`sensitiveMode: 'deny'` on a sensitive hit) is written
  * to the session's pino log with `audit: 'permission'`, so the trail can be
  * filtered out of the regular application log:
  *
@@ -44,8 +44,8 @@ export type PermissionAccess = 'read' | 'write' | 'unknown';
  * The decision being recorded.
  * - `approved`     — the controller approved an `ask` verdict
  * - `denied`       — the controller refused (or the request timed out / aborted)
- * - `hard-denied`  — the policy refused without asking (sensitive write,
- *                    `sensitiveMode: 'deny'`)
+ * - `hard-denied`  — the policy refused without asking (`sensitiveMode: 'deny'`
+ *                    on a sensitive hit; the default mode asks instead)
  */
 export type PermissionAuditDecision = 'approved' | 'denied' | 'hard-denied';
 
@@ -61,7 +61,11 @@ export interface PermissionAuditEntry {
   matchedEntry?: string;
   /** Which sensitive rule produced the hit (`segment`, `config-dir`, …). */
   matchedSource?: string;
-  /** Policy rule that produced the verdict (`sensitive-list-write`, …). */
+  /**
+   * Policy rule that produced the verdict (`sensitive-list`, …). The DIRECTION
+   * of a sensitive hit is not encoded here — it is the separate `access` field,
+   * so one rule name covers both reads and writes.
+   */
   matchedRule?: string;
   /** Task this call belongs to. */
   taskId?: string;

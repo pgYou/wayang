@@ -6,7 +6,7 @@
  * config, does not consult session state, does not prompt, and does not cache.
  * Callers pass every relevant input in and get a decision back:
  *
- *   1. sensitive list      → ask for reads, deny for writes (wins over all)
+ *   1. sensitive list      → ask (both directions; deny under sensitiveMode: 'deny')
  *      - anchor-independent "sensitive segment" rule (any `.ssh`/`.aws`/…),
  *      - home-anchored built-in entries + configurable sensitiveDirs.
  *   2. config allowedDirs  → allow
@@ -21,13 +21,22 @@
  * workspace / task allowedDirs / explicitly configured dirs. "Inside home" must
  * never be enough to justify a write.
  *
- * Sensitive paths: READING one requires approval (`ask`) — the approval request
- * and the audit trail carry the matched entry and the canonical target, so the
- * decision is explainable, and the file content itself never leaks into them.
- * WRITING one is a hard `deny` with no approval round-trip: letting an agent
- * rewrite `authorized_keys` is a persistence risk with no legitimate task
- * behind it. `sensitiveMode: 'deny'` restores the pre-0.8.1 behaviour for BOTH
- * directions, as an escape hatch.
+ * Sensitive paths: TOUCHING one — reading or writing — requires approval
+ * (`ask`). The approval request and the audit trail carry the matched entry,
+ * the matched source, the canonical target and the judged direction, so the
+ * decision is explainable and reviewable, and the file content itself never
+ * leaks into them.
+ *
+ * Hard-refusal semantics (0.8.4): NO path is ever allowed because it is
+ * sensitive — every allow rule below is outranked by this one, so a sensitive
+ * hit can only ask or be refused, never pass silently. It is also no longer
+ * TRUE that a sensitive hit is unapprovable: the user who owns the machine can
+ * approve one write to `authorized_keys` the same way they approve one read of
+ * `id_rsa`, and the audit trail records it. What the rule guarantees is the
+ * absence of a SILENT path, not the absence of an approval. `sensitiveMode:
+ * 'deny'` is the escape hatch for users who do not want to be prompted at all:
+ * it restores the pre-0.8.1 "refuse without asking" behaviour for BOTH
+ * directions.
  *
  * Wayang's OWN paths are deliberately NOT on the list (0.8.3): neither the
  * `~/.wayang` data directory (sessions, logs, worker temp files) nor the
@@ -64,7 +73,6 @@ export type AccessDecision = 'allow' | 'deny' | 'ask';
  */
 export type MatchedRule =
   | 'sensitive-list'
-  | 'sensitive-list-write'
   | 'config-allowed'
   | 'auto-allow-root'
   | 'task-allowed'
@@ -95,8 +103,11 @@ export interface SensitiveMatch {
 }
 
 /**
- * How sensitive paths are handled: `ask` (default) requests approval for reads
- * and refuses writes; `deny` refuses both without ever asking (pre-0.8.1).
+ * How sensitive paths are handled: `ask` (default) requests approval for a hit
+ * in EITHER direction — read or write — and `deny` refuses both without ever
+ * asking (the pre-0.8.1 behaviour). Neither mode can turn a sensitive hit into
+ * an allow: the list outranks every allow rule, so the only question the mode
+ * answers is "ask, or refuse outright?".
  */
 export type SensitiveMode = 'ask' | 'deny';
 
@@ -128,8 +139,9 @@ export interface DecideAccessInput {
    */
   extraSensitiveDirs?: string[];
   /**
-   * User-config `permission.sensitiveMode`. `ask` (default) → sensitive reads
-   * request approval; `deny` → sensitive reads are refused outright.
+   * User-config `permission.sensitiveMode`. `ask` (default) → a sensitive hit
+   * asks for approval in either direction; `deny` → refused outright, no
+   * prompt. Neither mode can make a sensitive hit pass silently.
    */
   sensitiveMode?: SensitiveMode;
 }
@@ -429,18 +441,16 @@ export function decideAccess(input: DecideAccessInput): DecideAccessResult {
   const sensitive = matchSensitiveEntry(resolvedPath) ?? matchSensitivePath(homeDir, resolvedPath, input.extraSensitiveDirs);
   if (sensitive) {
     const hit = { matchedEntry: sensitive.entry, matchedSource: sensitive.source, sensitive: true };
-    // Writes into a sensitive location are refused outright, with no approval
-    // round-trip: "let the agent rewrite authorized_keys" has no legitimate
-    // use, and an approval prompt would make it a one-word decision.
-    if (input.access === 'write') {
-      return { decision: 'deny', matchedRule: 'sensitive-list-write', resolvedPath, ...hit };
-    }
-    // Escape hatch: restore the pre-0.8.1 "never even ask" behaviour.
+    // Escape hatch: `deny` restores the pre-0.8.1 behaviour and refuses
+    // without ever asking. It is the ONLY way a sensitive hit becomes a hard
+    // refusal — see the mode doc on `SensitiveMode`.
     if (sensitiveMode === 'deny') {
       return { decision: 'deny', matchedRule: 'sensitive-list', resolvedPath, ...hit };
     }
-    // Reads (and commands whose semantics are unknown) may be approved once;
-    // the approval request carries the matched entry + canonical path.
+    // Otherwise both directions ask. A write is not "approved" by the rule —
+    // it is escalated like a read, with the same explainability fields, and
+    // may only proceed if the controller approves it. Nothing here can be
+    // reached by an allow rule (this branch comes first).
     return { decision: 'ask', matchedRule: 'sensitive-list', resolvedPath, ...hit };
   }
 

@@ -109,8 +109,9 @@ export function wrapWithPermissionMiddleware(
           return originalExecute(args, options);
         }
 
-        // Hard refusal (e.g. a sensitive WRITE, or sensitiveMode: 'deny'):
-        // never ask, never execute — but always audit.
+        // Hard refusal (reached only when the user configured
+        // `sensitiveMode: 'deny'`): never ask, never execute — but always
+        // audit. A sensitive hit under the default mode arrives as `ask`.
         if (verdict.decision === 'deny') {
           recordPermissionAudit(deps.logger, {
             decision: 'hard-denied',

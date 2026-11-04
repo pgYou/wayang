@@ -5,7 +5,8 @@
  * access policy (`@/infra/permission/policy`), which owns:
  *
  *   1. the sensitive list (highest priority, not overridable by any allow):
- *      reads ask for approval, writes are refused,
+ *      a read AND a write both ask for approval; `sensitiveMode: 'deny'`
+ *      refuses both without asking instead,
  *   2. user-config `allowedDirs` / `autoAllowRoots` / `sensitiveDirs`
  *      (plus the deprecated `deniedDirs` alias, merged into the same list),
  *   3. the task's own `allowedDirs`,
@@ -30,7 +31,7 @@
  *     `~user` (another user's home), command substitution, output redirection.
  *
  * Verdicts: `allow` → run immediately, `ask` → controller approval,
- * `deny` → refuse without asking (sensitive write, or `sensitiveMode: 'deny'`).
+ * `deny` → refuse without asking (`sensitiveMode: 'deny'` on a sensitive hit).
  */
 import { resolve } from 'node:path';
 import {
@@ -585,11 +586,13 @@ const MAX_CMDSUBST_DEPTH = 5;
 
 /**
  * Commands that write to the paths they name. A candidate in the same command
- * segment as one of these is judged as a WRITE (so a sensitive target is
- * refused outright, never offered for approval).
+ * segment as one of these is judged as a WRITE (so a sensitive target asks as
+ * an approved-once write, or is refused outright under `sensitiveMode: 'deny'`).
  *
- * This is the write half of the split: `rm ~/.ssh/x` is a hard deny while
- * `cat ~/.ssh/x` only asks. A command missing from this table loses no safety —
+ * This is the write half of the direction split: `rm ~/.ssh/x` and
+ * `cat ~/.ssh/x` both escalate, but the first reports `access: write` and the
+ * second `access: read`, and a refusal names the direction it refused.
+ * A command missing from this table loses no safety —
  * it is judged `unknown` (see `READ_ONLY_COMMANDS` for the read half), which the
  * policy treats as a write for scope purposes.
  */
@@ -1092,7 +1095,9 @@ function evaluateSubstitutions(
       };
     }
     const verdict = evaluateBashCommand(scope, inner, depth + 1);
-    // A sensitive WRITE inside the substitution refuses the whole command.
+    // A refusal inside the substitution (`sensitiveMode: 'deny'`, or a
+    // destructive deny) refuses the whole command; a sensitive ASK is wrapped
+    // below instead, so the outer approval still names the entry.
     if (verdict.decision === 'deny') return verdict;
     if (verdict.decision === 'ask') {
       const detail = verdict.reason ?? (verdict.resolvedPath ? `target ${verdict.resolvedPath}` : verdict.matchedRule);
@@ -1115,16 +1120,17 @@ function evaluateSubstitutions(
 }
 
 /**
- * Deny-only sweep for a command the lexer rejected.
+ * Sensitive-hit sweep for a command the lexer rejected.
  *
  * It can only TIGHTEN a verdict, never loosen one: it splits on the coarse
  * delimiters the old extractor used, treats every absolute / `~` word as a
- * WRITE and returns only when the policy refuses one of them. That keeps the
- * "a sensitive path is never writable" invariant when a command is
- * syntactically broken (`tee ~/.ssh/authorized_keys "x`) instead of degrading
- * to an approvable ask.
+ * WRITE and returns only when the policy says the word is on the sensitive
+ * list. The mode decides what that means: `sensitiveMode: 'deny'` refuses the
+ * command, `ask` (default) escalates it carrying the matched entry. Either way
+ * a syntactically broken line (`tee ~/.ssh/authorized_keys "x`) does not
+ * degrade to a bare "cannot parse" ask that hides WHY it matters.
  */
-function fallbackSensitiveWrite(
+function fallbackSensitiveHit(
   scope: WorkerAccessScope,
   expandedCommand: string,
 ): ToolAccessDecision | undefined {
@@ -1134,7 +1140,7 @@ function fallbackSensitiveWrite(
     const expanded = expandHome(word, scope.homeDir);
     if (expanded.unresolvable) continue;
     const verdict = decidePath(scope, expanded.path, 'write');
-    if (verdict.decision === 'deny') return toToolDecision(verdict, 'write');
+    if (verdict.sensitive) return toToolDecision(verdict, 'write');
   }
   return undefined;
 }
@@ -1143,9 +1149,10 @@ function fallbackSensitiveWrite(
  * Decide a bash command.
  *
  * The command string is the unit of execution, so every extractable path
- * candidate is judged separately and ANY denied candidate refuses the whole
- * command — a benign `cat` in the same command line cannot launder a denied
- * `rm`. A candidate carries the access its OWN segment justifies: `write` for a
+ * candidate is judged separately: a candidate that asks makes the WHOLE line
+ * ask (a benign `cat` in the same line cannot launder a sensitive `rm` into a
+ * silent run), and under `sensitiveMode: 'deny'` one denied candidate refuses
+ * it. A candidate carries the access its OWN segment justifies: `write` for a
  * write verb / redirection segment, `read` when the segment's head command is on
  * `READ_ONLY_COMMANDS`, `unknown` for everything the gate has not been taught
  * (the strict mode: "inside home" alone never justifies a write either).
@@ -1156,11 +1163,12 @@ function fallbackSensitiveWrite(
  * `evaluateFileAccess` applies to file tools. Only the DIRECTION changes, from
  * `unknown` (which could not even reach that rule) to a named `read`.
  *
- * Ordering: sensitive write / `sensitiveMode: 'deny'` deny (from the candidate
- * sweep) → destructive-command tier → dynamic constructs (a command substitution
- * that is not read-only, an output redirection into a real file, a command the
- * lexer cannot parse) → remaining `ask` candidates → allow. A hard deny
- * therefore outranks the destructive-command heuristic.
+ * Ordering: a hard refusal (only reachable under `sensitiveMode: 'deny'`, from
+ * the candidate sweep) → destructive-command tier → dynamic constructs (a
+ * command substitution that is not read-only, an output redirection into a real
+ * file, a command the lexer cannot parse) → remaining `ask` candidates → allow.
+ * A hard refusal therefore outranks the destructive-command heuristic, and a
+ * sensitive `ask` carries its hit into the approval request.
  *
  * Fallback when the command yields NO path candidate (`ls -la`, `npm test`,
  * `sed -n 1,10p src/cli.ts`): there is nothing for the policy to judge, so the
@@ -1193,10 +1201,11 @@ function evaluateBashCommand(
 
   const tokenized = tokenizeShellLite(expandedCommand);
   if (!tokenized.ok) {
-    // A command the lexer cannot finish is never a silent allow. A sensitive
-    // WRITE still refuses outright: the deny invariant outranks parseability.
-    const refusal = fallbackSensitiveWrite(scope, expandedCommand);
-    if (refusal) return refusal;
+    // A command the lexer cannot finish is never a silent allow, and a
+    // sensitive hit outranks parseability: it is carried as an ask (with the
+    // entry named) or refused, according to `sensitiveMode`.
+    const hit = fallbackSensitiveHit(scope, expandedCommand);
+    if (hit) return hit;
     return {
       decision: 'ask',
       matchedRule: 'dynamic-shell',
@@ -1220,15 +1229,24 @@ function evaluateBashCommand(
 
   let firstAsk: ToolAccessDecision | undefined;
   let firstAllow: ToolAccessDecision | undefined;
+  // A sensitive hit asks with a REASON the controller can act on (a named
+  // credential location), while an ordinary out-of-scope ask says only "some
+  // path is outside the scope". So a sensitive ask is kept apart and wins over
+  // an earlier, vaguer one: `cp notes.md ~/.aws/credentials` must report
+  // `.aws`, not the first candidate's `outside-all`. It never turns an ask into
+  // an allow, so the boundary is unchanged.
+  let sensitiveAsk: ToolAccessDecision | undefined;
   for (const candidate of candidates) {
     const verdict = decidePath(scope, candidate.path, candidate.access);
     if (verdict.decision === 'deny') return toToolDecision(verdict, candidate.access);
     const narrowed = narrowHomeRead(verdict, candidate);
     if (narrowed.decision === 'ask') {
-      firstAsk ??= {
+      const ask: ToolAccessDecision = {
         ...narrowed,
         ...(candidate.reason !== undefined && { reason: candidate.reason }),
       };
+      if (ask.sensitive === true) sensitiveAsk ??= ask;
+      else firstAsk ??= ask;
     } else firstAllow ??= narrowed;
   }
 
@@ -1243,10 +1261,12 @@ function evaluateBashCommand(
       : segments.length > 0 && segments.every((segment) => segmentAccess(segment) === 'read')
         ? 'read'
         : 'unknown';
+  if (sensitiveAsk) sensitiveAsk = { ...sensitiveAsk, access: lineAccess };
   if (firstAsk) firstAsk = { ...firstAsk, access: lineAccess };
   if (firstAllow) firstAllow = { ...firstAllow, access: lineAccess };
 
-  // A hard deny (above) outranks everything. Then the destructive tier.
+  // A hard refusal (above; only under `sensitiveMode: 'deny'`) outranks
+  // everything. Then the destructive tier.
   if (DANGEROUS_BASH_PATTERN.test(expandedCommand)) {
     // Still an approval: the destructive-command rule does not decide what the
     // command does to its targets, so `matchedRule` stays `dangerous-bash`. The
@@ -1260,7 +1280,7 @@ function evaluateBashCommand(
     // stays in `matchedRule` (`dangerous-bash`). Consumers (approval
     // description, signal payload, TUI) key the hit block off `sensitive`, and
     // a dangerous command that hits `.ssh` must show that block too.
-    const hit = firstAsk?.matchedEntry !== undefined ? firstAsk : undefined;
+    const hit = sensitiveAsk ?? (firstAsk?.matchedEntry !== undefined ? firstAsk : undefined);
     return {
       decision: 'ask',
       matchedRule: 'dangerous-bash',
@@ -1291,7 +1311,7 @@ function evaluateBashCommand(
 
   // A redirection into a real file: the policy may well allow the target
   // (inside the workspace), but a redirected write is never silent.
-  if (redirections.writeTargets.length > 0 && !firstAsk) {
+  if (redirections.writeTargets.length > 0 && !firstAsk && !sensitiveAsk) {
     return {
       decision: 'ask',
       matchedRule: 'dynamic-shell',
@@ -1309,6 +1329,7 @@ function evaluateBashCommand(
     };
   }
 
+  if (sensitiveAsk) return sensitiveAsk;
   if (firstAsk) return firstAsk;
   if (firstAllow) return firstAllow;
   // No candidate to judge: the verdict is the historic one, but the line still
@@ -1324,24 +1345,32 @@ function evaluateBashCommand(
  * matched and never the canonical (possibly symlinked) target, so a refusal
  * discloses nothing the worker didn't already know.
  *
- * Write refusals get the "never writable" wording: they cannot be approved, so
- * the message states the boundary instead of inviting a retry.
+ * A sensitive hit is only refused when the user asked for that
+ * (`sensitiveMode: 'deny'`); the default is an approval. So the message says
+ * BOTH things: the boundary (it is not a retryable path problem, the rule
+ * outranks every allow) and WHY there was no prompt. Without the second half a
+ * worker cannot tell "denied, ask the controller for a different route" from
+ * "this user configured no prompts", and retries in a loop.
+ *
+ * `access` picks the direction wording; it defaults to the neutral phrasing, so
+ * a caller that does not know the direction stays disclosure-safe.
  */
 export function denyMessage(
   toolName: string,
   requestedPath?: string,
-  matchedRule?: WorkerMatchedRule,
+  access?: AccessMode,
 ): string {
-  const write = matchedRule === 'sensitive-list-write';
+  const write = access === 'write';
+  const why = '(a protected location; refused without asking — sensitiveMode is "deny")';
   if (toolName === 'bash') {
     return write
-      ? '[ERROR] bash: refusing to run this command — it would write to a path on the sensitive list (sensitive paths are never writable).'
-      : '[ERROR] bash: refusing to run this command — it touches a path on the sensitive list (a protected location).';
+      ? `[ERROR] bash: refusing to run this command — it would write to a path on the sensitive list ${why}.`
+      : `[ERROR] bash: refusing to run this command — it touches a path on the sensitive list ${why}.`;
   }
   const target = requestedPath ? ` "${requestedPath}"` : '';
   return write
-    ? `[ERROR] ${toolName}: refusing to write${target} — the path is on the sensitive list (sensitive paths are never writable).`
-    : `[ERROR] ${toolName}: refusing access to${target} — the path is on the sensitive list (a protected location).`;
+    ? `[ERROR] ${toolName}: refusing to write${target} — the path is on the sensitive list ${why}.`
+    : `[ERROR] ${toolName}: refusing access to${target} — the path is on the sensitive list ${why}.`;
 }
 
 /**
@@ -1365,6 +1394,6 @@ export function decideToolAccess(
   if (verdict.decision !== 'deny') return verdict;
   return {
     ...verdict,
-    message: denyMessage(toolName, typeof args.path === 'string' ? args.path : undefined, verdict.matchedRule),
+    message: denyMessage(toolName, typeof args.path === 'string' ? args.path : undefined, verdict.access),
   };
 }

@@ -572,11 +572,11 @@ export class ClaudeCodeWorker implements IWorkerInstance {
 
   /**
    * Route a Claude Code tool call through the SAME access policy a puppet
-   * worker uses (`decideToolAccess`). A sensitive WRITE is denied outright
-   * (no approval prompt), a sensitive READ asks with the matched entry named,
-   * an ambiguous target asks the controller and a path inside the allowed scope
-   * runs immediately. This closes the parity gap where the old regex-only gate
-   * let sensitive paths through silently.
+   * worker uses (`decideToolAccess`). A sensitive hit — read OR write — asks
+   * the controller with the matched entry named, a refusal only happens under
+   * `sensitiveMode: 'deny'`, an ambiguous target asks, and a path inside the
+   * allowed scope runs immediately. This closes the parity gap where the old
+   * regex-only gate let sensitive paths through silently.
    */
   private async handleCanUseTool(toolName: string, input: Record<string, unknown>): Promise<PermissionResult> {
     // Without signal context there is nowhere to route an approval, and the run
@@ -632,7 +632,8 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   }
 
   /**
-   * Refuse a call the policy hard-denied (sensitive write) and record it.
+   * Refuse a call the policy hard-denied (`sensitiveMode: 'deny'` on a
+   * sensitive hit) and record it.
    *
    * The worker receives the policy's disclosure-safe message (its own path
    * spelling, never the matched entry); the audit trail gets the metadata.
