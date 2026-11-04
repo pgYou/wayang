@@ -75,7 +75,7 @@ function makeEngine(opts: { permission?: PermissionConfig } = {}) {
     config: { providers: {}, controller: {}, worker: {} } as unknown as WayangConfig,
   });
   const signalQueue = new SignalQueue(ctx);
-  const engineOptions: TaskExecuteEngineOptions = { homeDir: home, permission: opts.permission };
+  const engineOptions: TaskExecuteEngineOptions = { userHome: home, permission: opts.permission };
   const engine = new TaskExecuteEngine(ctx, signalQueue, new SkillRegistry([]), engineOptions);
   return { engine, signalQueue, ctx };
 }
@@ -597,7 +597,7 @@ describe('worker permission gate — policy-backed decisions', () => {
         config: { providers: {}, controller: {}, worker: {} } as unknown as WayangConfig,
       });
       const signalQueue = new SignalQueue(ctx);
-      // NO homeDir option: the engine default must be os.homedir().
+      // NO userHome option: the engine default must be os.homedir().
       const engine = new TaskExecuteEngine(ctx, signalQueue, new SkillRegistry([]));
       const tools = await startTask(engine);
 

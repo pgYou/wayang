@@ -91,7 +91,7 @@ export interface WorkerAccessScope {
    * home so a tool opens exactly what a shell would, while this field decides
    * whether that path is inside the scope a worker may touch.
    */
-  homeDir: string;
+  userHome: string;
   /** The task's workspace: the tool cwd and this run's writable boundary. */
   workspace: string;
   /** Extra directories granted to this one task (`task.taskAllowedDirs`). */
@@ -183,7 +183,7 @@ export interface HomeExpansion {
  *   - THIS one is an IO semantic: `read_file('~/x')` and `cat ~/x` must open
  *     the same file, and the shell's anchor is the process environment —
  *     never a Wayang flag or the session layout.
- *   - The policy boundary (`WorkerAccessScope.homeDir`, renamed `userHome`):
+ *   - The policy boundary (`WorkerAccessScope.userHome`):
  *     WHO may read what. In production it is the same directory, but it is a
  *     separate decision input — a scope may anchor anywhere (tests inject
  *     temp dirs), and expansion must not follow it.
@@ -198,7 +198,7 @@ export function processHomeDir(): string {
  * Exported for the file tools (`read_file` onwards): the tool must open the
  * SAME path the permission gate judged, and both must match what a shell
  * would open for `~/x` / `$HOME/x`. That anchor is the process home — never
- * the policy boundary (`scope.homeDir`), which may differ (a Wayang run with
+ * the policy boundary (`scope.userHome`), which may differ (a Wayang run with
  * a custom root anchors its policy elsewhere while the worker's shell still
  * expands `~` to the real `$HOME`).
  *
@@ -1050,7 +1050,7 @@ function decidePath(
     path,
     access,
     cwd: scope.workspace,
-    userHome: scope.homeDir,
+    userHome: scope.userHome,
     taskWorkspace: scope.workspace,
     taskAllowedDirs: scope.taskAllowedDirs,
     configAllowedDirs: permission?.allowedDirs,

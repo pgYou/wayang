@@ -105,7 +105,7 @@ function fatal(err: unknown): never {
 if (input[0] === 'server') {
   serverMain({
     configPath,
-    homeDir: path.join(wayangRoot, '.wayang'),
+    dataDir: path.join(wayangRoot, '.wayang'),
     workspaceDir,
     session: flags.session ?? 'new',
     injectPreviousTasks: flags.injectPreviousTasks,
@@ -118,7 +118,7 @@ if (input[0] === 'server') {
 
   bootstrap({
     configPath,
-    homeDir: wayangRoot,
+    wayangRootDir: wayangRoot,
     workspaceDir,
     logLevel: flags.verbose ? 'debug' : 'info',
     new: flags.new,

@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 function scope(overrides: Partial<WorkerAccessScope> = {}): WorkerAccessScope {
-  return { homeDir: home, workspace: ws, ...overrides };
+  return { userHome: home, workspace: ws, ...overrides };
 }
 
 describe('evaluateBashAccess', () => {
@@ -1287,7 +1287,7 @@ describe('sensitive writes go through approval (0.8.4)', () => {
 
 /**
  * 0.8.4 semantic split: `~` EXPANSION anchors on the PROCESS home ($HOME) —
- * the same file a shell opens — while the POLICY BOUNDARY (scope.homeDir) is
+ * the same file a shell opens — while the POLICY BOUNDARY (scope.userHome) is
  * a separate decision input that may anchor elsewhere (an injected scope, a
  * custom wayang root in the old derivation). These cases pin the divergence:
  * expansion must NOT follow the boundary, and a path that lands outside the
@@ -1307,7 +1307,7 @@ describe('process-home expansion vs the policy boundary (0.8.4)', () => {
 
   /** Scope anchored at `home` (the suite's stand-in) while $HOME is elsewhere. */
   function divergentScope(): WorkerAccessScope {
-    return { homeDir: home, workspace: ws };
+    return { userHome: home, workspace: ws };
   }
 
   it('expandHome anchors on the process home, not on any injected value', () => {

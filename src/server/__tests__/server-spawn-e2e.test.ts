@@ -31,7 +31,7 @@ const HAS_BUILD = existsSync(CLI_PATH);
 
 let provider: FakeProvider;
 let root: string;
-let homeDir: string;
+let wayangRootDir: string;
 let workspaceDir: string;
 let configPath: string;
 
@@ -39,7 +39,7 @@ beforeAll(async () => {
   if (!HAS_BUILD) return;
   provider = await startFakeProvider();
   root = mkdtempSync(join(tmpdir(), 'wayang-spawn-e2e-'));
-  homeDir = join(root, 'home');
+  wayangRootDir = join(root, 'home');
   workspaceDir = join(root, 'workspace');
   configPath = join(root, 'config.json');
   writeFileSync(configPath, JSON.stringify({
@@ -79,7 +79,7 @@ async function spawnServer(extraArgs: string[] = []): Promise<SpawnedServer> {
     [
       CLI_PATH,
       'server',
-      '--wayang-root', homeDir,
+      '--wayang-root', wayangRootDir,
       '--workspace-dir', workspaceDir,
       '--config', configPath,
       '--log-level', 'silent',
@@ -185,7 +185,7 @@ describe.skipIf(!HAS_BUILD)('wayang server — spawn-level e2e', () => {
       [
         CLI_PATH,
         'server',
-        '--wayang-root', homeDir,
+        '--wayang-root', wayangRootDir,
         '--workspace-dir', workspaceDir,
         '--config', configPath,
         '--log-level', 'silent',
@@ -239,8 +239,8 @@ describe.skipIf(!HAS_BUILD)('wayang server — spawn-level e2e', () => {
     const srv = await spawnServer();
     try {
       // The server joins `.wayang` onto --wayang-root, so all state lands there.
-      expect(existsSync(join(homeDir, '.wayang', 'sessions', srv.ready.sessionId))).toBe(true);
-      expect(srv.ready.sessionDir.startsWith(join(homeDir, '.wayang'))).toBe(true);
+      expect(existsSync(join(wayangRootDir, '.wayang', 'sessions', srv.ready.sessionId))).toBe(true);
+      expect(srv.ready.sessionDir.startsWith(join(wayangRootDir, '.wayang'))).toBe(true);
     } finally {
       await srv.client.request(METHOD.SHUTDOWN).catch(() => { /* best effort */ });
       await Promise.race([srv.exited, wait(15_000)]);

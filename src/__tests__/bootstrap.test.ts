@@ -86,21 +86,21 @@ function mkWorkspace(name: string): string {
 
 // --- Tests ---
 
-describe('bootstrap — homeDir root semantics', () => {
+describe('bootstrap — wayangRootDir root semantics', () => {
   it('sessionless resume: finds sessions under <root>/.wayang and passes the ROOT to the server', async () => {
     writeSessionMeta('20260101-000000', { workspace: '/repo-a', createdAt: 1000 });
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-a',
     });
 
     // The regression: connectRemoteServer must receive the ROOT, not the
     // pre-joined <root>/.wayang — the server joins `.wayang` itself.
     const call = connectCall();
-    expect(call.homeDir).toBe(root);
-    expect(call.homeDir).not.toBe(join(root, '.wayang'));
+    expect(call.wayangRootDir).toBe(root);
+    expect(call.wayangRootDir).not.toBe(join(root, '.wayang'));
     expect(call.session).toEqual({ resume: '20260101-000000' });
     expect(call.injectPreviousTasks).toBe(true);
     expect(call.workspaceDir).toBe('/repo-a');
@@ -110,12 +110,12 @@ describe('bootstrap — homeDir root semantics', () => {
   it('sessionless with no prior sessions: starts a new session', async () => {
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-a',
     });
 
     const call = connectCall();
-    expect(call.homeDir).toBe(root);
+    expect(call.wayangRootDir).toBe(root);
     expect(call.session).toBe('new');
     expect(call.injectPreviousTasks).toBe(false);
   });
@@ -125,7 +125,7 @@ describe('bootstrap — homeDir root semantics', () => {
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-a',
       new: true,
     });
@@ -139,7 +139,7 @@ describe('bootstrap — homeDir root semantics', () => {
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-a',
       resume: '20260102-000000',
     });
@@ -168,7 +168,7 @@ describe('bootstrap — homeDir root semantics', () => {
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-c',
       resume: '20260102-100000',
     });
@@ -181,7 +181,7 @@ describe('bootstrap — homeDir root semantics', () => {
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-c',
       resume: '20260102-110000',
     });
@@ -217,7 +217,7 @@ describe('bootstrap — homeDir root semantics', () => {
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-c',
       resume: '',
     });
@@ -236,7 +236,7 @@ describe('bootstrap — homeDir root semantics', () => {
 
     await expect(bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-fallback',
       resume: '20260105-000000',
     })).rejects.toThrow('process.exit called');
@@ -252,7 +252,7 @@ describe('bootstrap — homeDir root semantics', () => {
   it('--resume <unknown-id>: dies with exit code 1', async () => {
     await expect(bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-a',
       resume: 'missing-session',
     })).rejects.toThrow('process.exit called');
@@ -271,7 +271,7 @@ describe('bootstrap — homeDir root semantics', () => {
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-a',
       resume: '20260103-000000',
     });
@@ -313,7 +313,7 @@ describe('bootstrap — homeDir root semantics', () => {
 
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-a',
       resume: sessionId,
     });
@@ -326,7 +326,7 @@ describe('bootstrap — homeDir root semantics', () => {
   it('forwards logLevel to the server spawn', async () => {
     await bootstrap({
       configPath: join(root, 'wayang.config.json'),
-      homeDir: root,
+      wayangRootDir: root,
       workspaceDir: '/repo-a',
       logLevel: 'debug',
     });

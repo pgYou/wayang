@@ -466,7 +466,7 @@ describe('normalizePath: deepest existing ancestor through symlinked parents', (
  */
 describe('decideAccess: anchor-independent sensitive segments', () => {
   it('asks (with the entry named) for a READ under a root that is NOT the injected home', () => {
-    // `outside` is a sibling of home — the injected homeDir does NOT contain it.
+    // `outside` is a sibling of home — the injected userHome does NOT contain it.
     const target = join(outside, '.ssh', 'id_rsa');
     const result = decideAccess({ path: target, access: 'read', userHome: home });
     expect(result.decision).toBe('ask');

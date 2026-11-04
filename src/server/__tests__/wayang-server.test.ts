@@ -16,7 +16,7 @@ import { startFakeProvider, isControllerRequest, type FakeProvider } from '@/__t
  */
 
 let provider: FakeProvider;
-let homeDir: string;
+let dataDir: string;
 let workspaceDir: string;
 let configPath: string;
 let exitSpy: ReturnType<typeof vi.spyOn>;
@@ -24,7 +24,7 @@ let exitSpy: ReturnType<typeof vi.spyOn>;
 beforeAll(async () => {
   provider = await startFakeProvider();
   const root = mkdtempSync(join(tmpdir(), 'wayang-server-test-'));
-  homeDir = join(root, 'home');
+  dataDir = join(root, 'home');
   workspaceDir = join(root, 'workspace');
   configPath = join(root, 'config.json');
   writeFileSync(configPath, JSON.stringify({
@@ -38,7 +38,7 @@ beforeAll(async () => {
 afterAll(async () => {
   exitSpy.mockRestore();
   await provider.close();
-  rmSync(homeDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true });
   rmSync(workspaceDir, { recursive: true, force: true });
   rmSync(configPath, { force: true });
 });
@@ -61,7 +61,7 @@ async function bootServer(): Promise<Booted> {
   void runWayangServer(
     {
       configPath,
-      homeDir,
+      dataDir,
       workspaceDir,
       session: { mode: 'new' },
       logLevel: 'silent',
@@ -167,7 +167,7 @@ describe('WayangServer over RPC', () => {
     const serverIn = new PassThrough();
     const serverOut = new PassThrough();
     await expect(runWayangServer(
-      { configPath, homeDir, workspaceDir, session: { mode: 'resume', sessionId: 'does-not-exist' }, logLevel: 'silent' },
+      { configPath, dataDir, workspaceDir, session: { mode: 'resume', sessionId: 'does-not-exist' }, logLevel: 'silent' },
       { stdin: serverIn, stdout: serverOut },
     )).rejects.toThrow(/not found/i);
   }, 10_000);

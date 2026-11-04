@@ -29,7 +29,7 @@ export interface BootstrapOptions {
    * so the same value can be forwarded to the server process. NEVER the OS
    * user home the permission policy anchors on — that is the process `$HOME`.
    */
-  homeDir: string;
+  wayangRootDir: string;
   /**
    * Workspace for this invocation: the initial workspace of a new session.
    * On resume it never rewrites the session's recorded workspaces — it only
@@ -149,7 +149,7 @@ function dedupeDisplayWorkspaces(refs: ReadonlyArray<WorkspaceRef>): WorkspaceRe
 export async function bootstrap(options: BootstrapOptions): Promise<void> {
   // Resolve the actual data dir once; forwarded as-is to the server spawn so
   // the server's `--wayang-root` (root semantics) does not double-join `.wayang`.
-  const wayangHome = path.join(options.homeDir, '.wayang');
+  const wayangHome = path.join(options.wayangRootDir, '.wayang');
 
   // Client-side load keeps interactive onboarding in the terminal; the
   // server reloads the (now persisted) config non-interactively.
@@ -229,7 +229,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
     configPath: options.configPath,
     // Pass the ROOT dir: the server's `--wayang-root` flag expects it and joins
     // `.wayang` itself. Passing the pre-joined dir caused a double join.
-    homeDir: options.homeDir,
+    wayangRootDir: options.wayangRootDir,
     workspaceDir,
     workspaces: sessionWorkspaces,
     session,

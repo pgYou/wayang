@@ -31,7 +31,7 @@ describe('loadControllerRules', () => {
     const { home, cwd, cleanup } = makeTree();
     try {
       writeFileSync(join(home, 'AGENTS.md'), 'HOME RULE: answer in Chinese.');
-      const rules = loadControllerRules({ homeDir: home, cwd });
+      const rules = loadControllerRules({ userHome: home, cwd });
 
       expect(rules).toContain('HOME RULE: answer in Chinese.');
       expect(rules).toContain(`from ${join(home, 'AGENTS.md')}`);
@@ -45,7 +45,7 @@ describe('loadControllerRules', () => {
     const { home, cwd, cleanup } = makeTree();
     try {
       writeFileSync(join(cwd, 'AGENTS.md'), 'CWD RULE: run npm run lint.');
-      const rules = loadControllerRules({ homeDir: home, cwd });
+      const rules = loadControllerRules({ userHome: home, cwd });
 
       expect(rules).toContain('CWD RULE: run npm run lint.');
       expect(rules).toContain(`from ${join(cwd, 'AGENTS.md')}`);
@@ -58,7 +58,7 @@ describe('loadControllerRules', () => {
   it('returns an empty string when neither file exists', () => {
     const { home, cwd, cleanup } = makeTree();
     try {
-      expect(loadControllerRules({ homeDir: home, cwd })).toBe('');
+      expect(loadControllerRules({ userHome: home, cwd })).toBe('');
     } finally {
       cleanup();
     }
@@ -70,7 +70,7 @@ describe('loadControllerRules', () => {
       writeFileSync(join(home, 'AGENTS.md'), 'HOME RULE: baseline.');
       writeFileSync(join(cwd, 'AGENTS.md'), 'CWD RULE: supplement.');
 
-      const rules = loadControllerRules({ homeDir: home, cwd });
+      const rules = loadControllerRules({ userHome: home, cwd });
       const homeAt = rules.indexOf(`from ${join(home, 'AGENTS.md')}`);
       const cwdAt = rules.indexOf(`from ${join(cwd, 'AGENTS.md')}`);
 
@@ -89,7 +89,7 @@ describe('loadControllerRules', () => {
     try {
       writeFileSync(join(home, 'AGENTS.md'), 'SHARED RULE: appears once.');
       // Starting wayang inside the home directory: same dir, same file.
-      const rules = loadControllerRules({ homeDir: home, cwd: home });
+      const rules = loadControllerRules({ userHome: home, cwd: home });
 
       const occurrences = rules.split(`from ${join(home, 'AGENTS.md')}`).length - 1;
       expect(occurrences).toBe(1);
@@ -105,7 +105,7 @@ describe('loadControllerRules', () => {
       const link = join(cwd, 'AGENTS.md');
       writeFileSync(join(home, 'AGENTS.md'), 'SHARED RULE: symlinked once.');
       symlinkSync(join(home, 'AGENTS.md'), link);
-      const rules = loadControllerRules({ homeDir: home, cwd });
+      const rules = loadControllerRules({ userHome: home, cwd });
 
       expect(rules.split('SHARED RULE: symlinked once.').length - 1).toBe(1);
     } finally {
@@ -122,7 +122,7 @@ describe('loadControllerRules', () => {
       writeFileSync(join(cwd, 'AGENTS.md'), second);
 
       const maxBytes = 150;
-      const rules = loadControllerRules({ homeDir: home, cwd, maxBytes });
+      const rules = loadControllerRules({ userHome: home, cwd, maxBytes });
 
       // First file survives untouched, second one is cut.
       expect(rules).toContain(first);
@@ -146,7 +146,7 @@ describe('loadControllerRules', () => {
       writeFileSync(join(cwd, 'AGENTS.md'), '补充规则：'.repeat(50));
 
       const maxBytes = Buffer.byteLength(homeText, 'utf8') + 7;
-      const rules = loadControllerRules({ homeDir: home, cwd, maxBytes });
+      const rules = loadControllerRules({ userHome: home, cwd, maxBytes });
 
       expect(rules).toContain(homeText);
       expect(rules).not.toContain('\uFFFD');
@@ -169,7 +169,7 @@ describe('loadControllerRules', () => {
       writeFileSync(join(home, 'AGENTS.md'), 'x'.repeat(500));
       writeFileSync(join(cwd, 'AGENTS.md'), 'y'.repeat(500));
       // Cap smaller than either file: only the first is loaded, cut short.
-      const rules = loadControllerRules({ homeDir: home, cwd, maxBytes: 100 });
+      const rules = loadControllerRules({ userHome: home, cwd, maxBytes: 100 });
 
       expect(rules).toContain(`from ${join(home, 'AGENTS.md')}`);
       expect(rules).not.toContain(`from ${join(cwd, 'AGENTS.md')}`);
@@ -187,7 +187,7 @@ describe('loadControllerRules', () => {
       writeFileSync(join(home, 'AGENTS.md'), '   \n\n\t\n');
       writeFileSync(join(cwd, 'AGENTS.md'), 'CWD RULE: only this one counts.');
 
-      const rules = loadControllerRules({ homeDir: home, cwd });
+      const rules = loadControllerRules({ userHome: home, cwd });
       expect(rules).not.toContain(join(home, 'AGENTS.md'));
       expect(rules).toContain('CWD RULE: only this one counts.');
     } finally {
@@ -210,7 +210,7 @@ describe('loadControllerRules', () => {
       }
       writeFileSync(join(cwd, 'AGENTS.md'), 'CWD RULE: still loaded.');
 
-      const rules = loadControllerRules({ homeDir: home, cwd });
+      const rules = loadControllerRules({ userHome: home, cwd });
       expect(rules).toContain('CWD RULE: still loaded.');
       if (enforced) expect(rules).not.toContain('HOME RULE: unreadable.');
     } finally {
@@ -223,11 +223,11 @@ describe('loadControllerRules', () => {
     const { home, cwd, cleanup } = makeTree();
     try {
       mkdirSync(join(home, 'AGENTS.md'));
-      // ENOTDIR: homeDir is a regular file, so <homeDir>/AGENTS.md cannot exist.
+      // ENOTDIR: userHome is a regular file, so <userHome>/AGENTS.md cannot exist.
       writeFileSync(join(cwd, 'AGENTS.md'), 'CWD RULE: survives a broken home path.');
 
-      expect(() => loadControllerRules({ homeDir: home, cwd })).not.toThrow();
-      const rules = loadControllerRules({ homeDir: join(home, 'AGENTS.md'), cwd });
+      expect(() => loadControllerRules({ userHome: home, cwd })).not.toThrow();
+      const rules = loadControllerRules({ userHome: join(home, 'AGENTS.md'), cwd });
       expect(rules).toContain('CWD RULE: survives a broken home path.');
     } finally {
       cleanup();
@@ -241,7 +241,7 @@ describe('loadControllerRules', () => {
     try {
       writeFileSync(join(home, 'AGENTS.md'), 'h'.repeat(20_000));
       writeFileSync(join(cwd, 'AGENTS.md'), 'c'.repeat(20_000));
-      const rules = loadControllerRules({ homeDir: home, cwd });
+      const rules = loadControllerRules({ userHome: home, cwd });
 
       // 40k of content exceeds 32KB: home complete (20k), cwd cut to the rest.
       expect(rules).toContain('h'.repeat(20_000));
@@ -257,7 +257,7 @@ describe('loadControllerRules', () => {
 describe('buildControllerSystemPrompt with rules', () => {
   it('omits the rules section when no rules file was found', () => {
     const skills = new SkillRegistry([], createMockCtx().logger);
-    const rules = loadControllerRules({ homeDir: '/nonexistent-home', cwd: '/nonexistent-cwd' });
+    const rules = loadControllerRules({ userHome: '/nonexistent-home', cwd: '/nonexistent-cwd' });
     const prompt = buildControllerSystemPrompt(createMockCtx(), skills, { rules });
 
     // No rules section when nothing was found — prompt unchanged.

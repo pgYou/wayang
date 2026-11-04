@@ -370,16 +370,16 @@ describe('ClaudeCodeWorker controller messaging', () => {
  * controller. Requests and audits use the same fields as the puppet middleware.
  */
 describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
-  let homeDir: string;
+  let userHome: string;
   let workspace: string;
 
   beforeEach(() => {
-    homeDir = mkdtempSync(join(tmpdir(), 'wayang-cc-perm-home-'));
+    userHome = mkdtempSync(join(tmpdir(), 'wayang-cc-perm-home-'));
     workspace = mkdtempSync(join(tmpdir(), 'wayang-cc-perm-ws-'));
     mockQuery.mockReset();
   });
   afterEach(() => {
-    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(userHome, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });
   });
 
@@ -388,15 +388,15 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
    * `permission` is the user-config section the engine would inject.
    */
   function makeWiredWorker(permission?: PermissionConfig) {
-    const ctx = createMockCtx({ sessionDir: homeDir, workspaceDir: workspace });
-    const worker = new ClaudeCodeWorker(config, homeDir, workspace, ctx, skills);
-    const signalQueue = new SignalQueue(createMockCtx({ sessionDir: homeDir, workspaceDir: workspace }));
+    const ctx = createMockCtx({ sessionDir: userHome, workspaceDir: workspace });
+    const worker = new ClaudeCodeWorker(config, userHome, workspace, ctx, skills);
+    const signalQueue = new SignalQueue(createMockCtx({ sessionDir: userHome, workspaceDir: workspace }));
     worker.setSignalContext({
       signalQueue,
       workerId: 'cw-perm',
       taskId: 't-perm',
       taskTitle: 'perm',
-      accessScope: { homeDir, workspace, permission },
+      accessScope: { userHome, workspace, permission },
     });
     return { worker, signalQueue };
   }
@@ -424,7 +424,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
-    const pending = canUseTool('Read', { file_path: join(homeDir, '.ssh', 'id_rsa') });
+    const pending = canUseTool('Read', { file_path: join(userHome, '.ssh', 'id_rsa') });
     await settle();
 
     const requests = permissionRequests(signalQueue);
@@ -446,7 +446,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
-    const pending = canUseTool('Write', { file_path: join(homeDir, '.aws', 'credentials') });
+    const pending = canUseTool('Write', { file_path: join(userHome, '.aws', 'credentials') });
     await settle();
 
     const requests = permissionRequests(signalQueue);
@@ -469,7 +469,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     const { worker, signalQueue } = makeWiredWorker({ sensitiveMode: 'deny' });
     const canUseTool = await captureCanUseTool(worker);
 
-    const verdict = await canUseTool('Write', { file_path: join(homeDir, '.aws', 'credentials') });
+    const verdict = await canUseTool('Write', { file_path: join(userHome, '.aws', 'credentials') });
     expect(verdict.behavior).toBe('deny');
     expect(String((verdict as any).message)).toContain('sensitive list');
     expect(permissionRequests(signalQueue)).toHaveLength(0);
@@ -479,7 +479,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
-    const pending = canUseTool('Read', { file_path: join(homeDir, '.ssh', 'id_rsa') });
+    const pending = canUseTool('Read', { file_path: join(userHome, '.ssh', 'id_rsa') });
     await settle();
     const payload = permissionRequests(signalQueue)[0].payload as any;
     worker.permissionHandler.resolvePermission(payload.requestId, true);
@@ -516,7 +516,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
-    const pending = canUseTool('Read', { file_path: join(homeDir, 'notes', 'other-project.txt') });
+    const pending = canUseTool('Read', { file_path: join(userHome, 'notes', 'other-project.txt') });
     await settle();
 
     const requests = permissionRequests(signalQueue);
@@ -534,7 +534,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
-    const pending = canUseTool('Bash', { command: `cat ${join(homeDir, '.ssh', 'id_rsa')}` });
+    const pending = canUseTool('Bash', { command: `cat ${join(userHome, '.ssh', 'id_rsa')}` });
     await settle();
     const requests = permissionRequests(signalQueue);
     expect(requests).toHaveLength(1);
@@ -549,7 +549,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
-    const pending = canUseTool('Bash', { command: `tee ${join(homeDir, '.ssh', 'authorized_keys')} x` });
+    const pending = canUseTool('Bash', { command: `tee ${join(userHome, '.ssh', 'authorized_keys')} x` });
     await settle();
     const requests = permissionRequests(signalQueue);
     expect(requests).toHaveLength(1);
@@ -568,7 +568,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     const { worker, signalQueue } = makeWiredWorker({ sensitiveMode: 'deny' });
     const canUseTool = await captureCanUseTool(worker);
 
-    const verdict = await canUseTool('Bash', { command: `tee ${join(homeDir, '.ssh', 'authorized_keys')} x` });
+    const verdict = await canUseTool('Bash', { command: `tee ${join(userHome, '.ssh', 'authorized_keys')} x` });
     expect(verdict.behavior).toBe('deny');
     expect(String((verdict as any).message)).toContain('sensitive list');
     expect(permissionRequests(signalQueue)).toHaveLength(0);
@@ -597,7 +597,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     const { worker, signalQueue } = makeWiredWorker();
     const canUseTool = await captureCanUseTool(worker);
 
-    const pending = canUseTool('Bash', { command: `sudo cat ${join(homeDir, '.ssh', 'id_rsa')}` });
+    const pending = canUseTool('Bash', { command: `sudo cat ${join(userHome, '.ssh', 'id_rsa')}` });
     await settle();
     const payload = permissionRequests(signalQueue)[0].payload as any;
     expect(payload.matchedRule).toBe('dangerous-bash');

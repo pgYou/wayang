@@ -88,7 +88,7 @@ function makeEngine(opts: { permission?: PermissionConfig } = {}) {
     config: { providers: {}, controller: {}, worker: {} } as unknown as WayangConfig,
   });
   const signalQueue = new SignalQueue(ctx);
-  const engineOptions: TaskExecuteEngineOptions = { homeDir: home, permission: opts.permission };
+  const engineOptions: TaskExecuteEngineOptions = { userHome: home, permission: opts.permission };
   const engine = new TaskExecuteEngine(ctx, signalQueue, new SkillRegistry([]), engineOptions);
   return { engine, signalQueue, ctx };
 }

@@ -105,14 +105,14 @@ function matchesWorkspace(meta: SessionMeta, normalizedTarget: string): boolean 
 }
 
 /**
- * Read every `sessions/<id>/meta.json` under `homeDir`.
+ * Read every `sessions/<id>/meta.json` under `dataDir`.
  *
  * Unreadable or malformed meta files are skipped rather than throwing: a
  * single corrupt session must not make the whole list unusable. Corrupt
  * session *content* is surfaced elsewhere; here we only need a browsable list.
  */
-function readEntriesFromDisk(homeDir: string): SessionEntry[] {
-  const sessionsDir = path.join(homeDir, 'sessions');
+function readEntriesFromDisk(dataDir: string): SessionEntry[] {
+  const sessionsDir = path.join(dataDir, 'sessions');
   let names: string[];
   try {
     names = fs.readdirSync(sessionsDir);
@@ -136,8 +136,8 @@ function readEntriesFromDisk(homeDir: string): SessionEntry[] {
   return sortNewestFirst(entries);
 }
 
-function buildCache(homeDir: string): CacheState {
-  const entries = readEntriesFromDisk(homeDir);
+function buildCache(dataDir: string): CacheState {
+  const entries = readEntriesFromDisk(dataDir);
   return {
     entries,
     byId: new Map(entries.map(e => [e.sessionId, e])),
@@ -148,11 +148,11 @@ function buildCache(homeDir: string): CacheState {
 class InMemorySessionIndex implements SessionIndex {
   private cache: CacheState | null = null;
 
-  constructor(private readonly homeDir: string) {}
+  constructor(private readonly dataDir: string) {}
 
   private ensureCache(): CacheState {
     if (!this.cache) {
-      this.cache = buildCache(this.homeDir);
+      this.cache = buildCache(this.dataDir);
     }
     return this.cache;
   }
@@ -212,9 +212,9 @@ class InMemorySessionIndex implements SessionIndex {
 }
 
 /**
- * Create a SessionIndex rooted at `homeDir` (the directory containing
+ * Create a SessionIndex rooted at `dataDir` (the directory containing
  * `sessions/`). The cache is populated lazily on first query.
  */
-export function createSessionIndex(homeDir: string): SessionIndex {
-  return new InMemorySessionIndex(homeDir);
+export function createSessionIndex(dataDir: string): SessionIndex {
+  return new InMemorySessionIndex(dataDir);
 }

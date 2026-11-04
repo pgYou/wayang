@@ -107,7 +107,7 @@ function makeGate(
   };
   const logger = createMockLogger();
   const grants = opts.grants ?? new ApprovalMemory();
-  const scope: WorkerAccessScope = { homeDir: home, workspace: ws, permission: opts.permission };
+  const scope: WorkerAccessScope = { userHome: home, workspace: ws, permission: opts.permission };
   const execute: Record<string, ReturnType<typeof vi.fn>> = {};
   const tools: Record<string, any> = {};
   for (const name of ['bash', ...FILE_TOOL_NAMES]) {

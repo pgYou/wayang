@@ -66,7 +66,7 @@ export interface ControllerToolDeps {
    * (0.8.3) because it holds wayang's own runtime data (sessions, audit logs,
    * worker temp files). This is NOT ~/.wayang; it is the home that contains it.
    */
-  homeDir?: string;
+  userHome?: string;
   /**
    * User-config permission section, injected into add_task so its
    * `sensitiveDirs` (and the deprecated `deniedDirs` alias) extend the built-in
@@ -153,7 +153,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
       workspaceDir: deps.workspaceDir,
       wayangDir: deps.wayangDir,
       generalWorkspaceDir: deps.generalWorkspaceDir,
-      homeDir: deps.homeDir,
+      userHome: deps.userHome,
       permissionConfig: deps.permissionConfig,
     }),
     list_tasks: listTasksTool({ listTasks: deps.listTasks }),
@@ -195,7 +195,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
     skip_reply: skipReplyTool(),
     read_notebook: readNotebookTool({ getNotebook: deps.getNotebook }),
     update_notebook: updateNotebookTool({ setNotebook: deps.setNotebook }),
-    search_files: searchFilesTool({ cwd: deps.cwd, homeDir: deps.homeDir }),
+    search_files: searchFilesTool({ cwd: deps.cwd, userHome: deps.userHome }),
     inquire: inquireTool({ inquire: deps.inquire }),
     chat_worker: chatWorkerTool({
       sendMessageToWorker: deps.sendMessageToWorker,

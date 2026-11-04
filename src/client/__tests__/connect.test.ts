@@ -76,7 +76,7 @@ afterEach(() => {
 function connect(options: Partial<Parameters<typeof connectRemoteServer>[0]> = {}) {
   return connectRemoteServer({
     configPath: '/fake/config.json',
-    homeDir: '/fake/root',
+    wayangRootDir: '/fake/root',
     workspaceDir: '/fake/workspace',
     session: 'new',
     readyTimeoutMs: 1_000,

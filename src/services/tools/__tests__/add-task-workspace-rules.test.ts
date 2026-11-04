@@ -27,7 +27,7 @@ async function exec(toolObj: any, args: any): Promise<string> {
   return toolObj.execute(args);
 }
 
-let homeDir: string;
+let userHome: string;
 let workspaceDir: string;
 let otherWorkspaceDir: string;
 
@@ -41,19 +41,19 @@ function makeTool(added: TaskDetail[] = [], deps: Record<string, unknown> = {}) 
   return addTaskTool({
     addTask: (t) => { added.push(t); return 'w-1'; },
     workspaceDir,
-    homeDir,
+    userHome,
     ...deps,
   });
 }
 
 beforeEach(() => {
-  homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-ws-rules-home-'));
-  workspaceDir = makeDir(homeDir, 'repo-a');
-  otherWorkspaceDir = makeDir(homeDir, 'repo-b');
+  userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-ws-rules-home-'));
+  workspaceDir = makeDir(userHome, 'repo-a');
+  otherWorkspaceDir = makeDir(userHome, 'repo-b');
 });
 
 afterEach(() => {
-  fs.rmSync(homeDir, { recursive: true, force: true });
+  fs.rmSync(userHome, { recursive: true, force: true });
 });
 
 describe('addTaskTool — workspace rules summary', () => {
@@ -137,7 +137,7 @@ describe('addTaskTool — workspace rules summary', () => {
   });
 
   it('reports a sensitive rules file as unavailable without reading it', async () => {
-    const sshDir = makeDir(homeDir, '.ssh');
+    const sshDir = makeDir(userHome, '.ssh');
     const secret = path.join(sshDir, 'id_rsa_notes.md');
     fs.writeFileSync(secret, 'TOP-SECRET-KEY-MATERIAL');
     // The rules path itself looks innocuous; only the symlink target is denied.
@@ -156,19 +156,19 @@ describe('addTaskTool — workspace rules summary', () => {
   it('reports unavailable (not "no rules") when the policy cannot be evaluated', async () => {
     fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), 'rules that must not be read unguarded');
 
-    const result = await exec(makeTool([], { homeDir: undefined }), { title: 'T', description: 'D' });
+    const result = await exec(makeTool([], { userHome: undefined }), { title: 'T', description: 'D' });
 
     expect(result).toContain('unavailable');
     expect(result).not.toContain('rules that must not be read unguarded');
   });
 
   it('honours configured sensitiveDirs for the rules read', async () => {
-    const vault = makeDir(homeDir, 'vault');
+    const vault = makeDir(userHome, 'vault');
     fs.writeFileSync(path.join(vault, 'AGENTS.md'), 'vault rules');
     const tool = addTaskTool({
       addTask: () => 'w-1',
       workspaceDir: vault,
-      homeDir,
+      userHome,
       permissionConfig: { sensitiveDirs: [vault] },
     });
 
@@ -217,7 +217,7 @@ describe('addTaskTool — workspace rules summary', () => {
     const tool = addTaskTool({
       addTask: () => undefined, // all slots busy → queued
       workspaceDir,
-      homeDir,
+      userHome,
     });
 
     const result = await exec(tool, { title: 'T', description: 'D' });

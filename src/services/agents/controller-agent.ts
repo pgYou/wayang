@@ -141,7 +141,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     // (0.8.3): it is wayang's own runtime data directory (sessions, audit
     // logs, worker temp files), and the sensitive list covers third-party
     // credentials only.
-    const homeDir = homedir();
+    const userHome = homedir();
     // The wayang DATA dir this session belongs to (workspace-registry lookups
     // key on it). Derived from the session layout — a data-dir concern, kept
     // separate from the user home above.
@@ -164,7 +164,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
     // never re-read between turns. Missing files yield an empty string, so the
     // prompt is unchanged when neither exists.
     const controllerRules = loadControllerRules({
-      homeDir,
+      userHome,
       cwd: ctx.workspaceDir || process.cwd(),
     });
 
@@ -195,7 +195,7 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       updateTask: (taskId, updates) => engine.updatePending(taskId, updates),
       queryMessages: (filter) => signalQueue.query(filter),
       cwd: ctx.workspaceDir,
-      homeDir,
+      userHome,
       // User-config permission section: add_task validates a task's allowedDirs
       // against the built-in sensitive list plus these configured
       // sensitiveDirs (the deprecated deniedDirs alias is merged in).

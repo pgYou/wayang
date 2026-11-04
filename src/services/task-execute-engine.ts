@@ -63,7 +63,7 @@ export interface TaskExecuteEngineOptions {
    * protects. Inject it explicitly in tests (which use temp home dirs) to
    * keep the boundary controlled.
    */
-  homeDir?: string;
+  userHome?: string;
   /**
    * User-config permission section (`allowedDirs` / `autoAllowRoots` /
    * `sensitiveDirs`, plus the deprecated `deniedDirs` alias and
@@ -152,7 +152,7 @@ export class TaskExecuteEngine implements Subscribable {
   /** Idle TTL (ms). Idle workers are disposed after this if not reused. */
   private readonly idleTimeoutMs: number;
   /** The user's home directory the path permission policy anchors on. */
-  private readonly homeDir: string;
+  private readonly userHome: string;
   /** User-config permission section applied to this run's worker tools. */
   private readonly permission?: PermissionConfig;
   /** Session-side hook: remember every workspace a task is accepted for. */
@@ -172,7 +172,7 @@ export class TaskExecuteEngine implements Subscribable {
     options: TaskExecuteEngineOptions = {},
   ) {
     this.logger = ctx.logger;
-    this.homeDir = options.homeDir ?? homedir();
+    this.userHome = options.userHome ?? homedir();
     this.permission = options.permission ?? ctx.config.permission;
     this.onTaskWorkspace = options.onTaskWorkspace;
     this.maxConcurrency = ctx.maxConcurrency;
@@ -1199,7 +1199,7 @@ export class TaskExecuteEngine implements Subscribable {
     // the per-task grant and the config section supplies user allow/sensitive
     // roots.
     const accessScope: WorkerAccessScope = {
-      homeDir: this.homeDir,
+      userHome: this.userHome,
       workspace,
       taskAllowedDirs: task.taskAllowedDirs,
       permission: this.permission,

@@ -54,7 +54,7 @@ export interface AddTaskToolDeps {
    * globally); when absent, a call that declares `allowedDirs` is rejected
    * because the boundary cannot be checked.
    */
-  homeDir?: string;
+  userHome?: string;
   /**
    * User-config permission section. Its `sensitiveDirs` (plus the deprecated
    * `deniedDirs` alias) extend the built-in sensitive list for `allowedDirs`
@@ -184,14 +184,14 @@ function resolveTaskAllowedDirs(
 ): { allowedDirs?: string[] } | { error: string } {
   if (requested === undefined || requested.length === 0) return {};
 
-  const homeDir = deps.homeDir;
-  if (!homeDir) {
+  const userHome = deps.userHome;
+  if (!userHome) {
     return {
       error: 'Cannot validate allowedDirs: the home directory is unknown in this context, so the task was NOT created.',
     };
   }
 
-  const home = normalizePath(homeDir);
+  const home = normalizePath(userHome);
   // Relative entries resolve against the task workspace (the same base the
   // policy uses), falling back to home when the workspace is unknown.
   const base = workspacePath !== undefined ? normalizePath(workspacePath, { base: home }) : home;
@@ -250,7 +250,7 @@ function withWorkspaceRules(
 ): string {
   const summary = buildWorkspaceRulesSummary({
     workspacePath,
-    homeDir: deps.homeDir,
+    userHome: deps.userHome,
     permissionConfig: deps.permissionConfig,
   });
   return summary === '' ? resultText : `${resultText}\n\n${summary}`;

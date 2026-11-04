@@ -146,7 +146,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private _runContext: { workerId: string; taskId: string; taskTitle: string; workerType?: string; emoji?: string } | null = null;
   /**
    * Shared permission policy scope for this run (workspace, task allowedDirs,
-   * homeDir, config). Provided by the engine via setSignalContext so the
+   * userHome, config). Provided by the engine via setSignalContext so the
    * canUseTool callback judges access exactly like a puppet worker's
    * permission middleware does. Null until wired; a fallback scope derived
    * from the worker's own directory is used when absent.
@@ -417,7 +417,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     /** Turn lineage attached to signals emitted by this worker. */
     turnLineage?: SignalTurnLineage;
     /**
-     * Shared permission policy scope (workspace / taskAllowedDirs / homeDir /
+     * Shared permission policy scope (workspace / taskAllowedDirs / userHome /
      * config). The engine supplies the exact scope it uses for puppet workers,
      * so canUseTool reaches the same allow/ask/deny verdicts. Omitted only by
      * direct construction (tests) — a scope derived from this worker's own
@@ -566,7 +566,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
    */
   private effectiveAccessScope(): WorkerAccessScope {
     if (this._accessScope) return this._accessScope;
-    return { homeDir: homedir(), workspace: this.workspaceDir };
+    return { userHome: homedir(), workspace: this.workspaceDir };
   }
 
   /**
