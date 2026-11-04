@@ -6,6 +6,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createMockLogger } from '@/__tests__/helpers';
 import {
+  auditAccessFor,
   operationForTool,
   recordPermissionAudit,
   verdictDetailSuffix,
@@ -102,6 +103,32 @@ describe('recordPermissionAudit', () => {
     expect(record.operation).toBe('write');
   });
 
+  /**
+   * #43: the judged DIRECTION is its own field. `operation` stays the tool
+   * category, so a bash command that ran as a read is still `exec` — without
+   * `access` the two cases below would be indistinguishable in the trail.
+   */
+  it('records the judged direction next to the tool-category operation (#43)', () => {
+    const logger = createMockLogger();
+    recordPermissionAudit(logger, {
+      decision: 'approved',
+      operation: 'exec',
+      access: 'read',
+      resolvedPath: '/home/u/.ssh/id_rsa',
+      taskId: 't-1',
+      toolName: 'bash',
+    });
+    const record = firstRecord(logger);
+    expect(record.operation).toBe('exec');
+    expect(record.access).toBe('read');
+  });
+
+  it('omits access when the caller has none (older call sites stay lean)', () => {
+    const logger = createMockLogger();
+    recordPermissionAudit(logger, { decision: 'approved', operation: 'exec', toolName: 'bash' });
+    expect(firstRecord(logger)).not.toHaveProperty('access');
+  });
+
   it('never emits content-like fields: only the metadata allowlist is written', () => {
     const logger = createMockLogger();
     // A caller passing extra fields (by cast) cannot smuggle content into the
@@ -109,6 +136,7 @@ describe('recordPermissionAudit', () => {
     recordPermissionAudit(logger, {
       decision: 'approved',
       operation: 'read',
+      access: 'read',
       resolvedPath: '/home/u/.ssh/id_rsa',
       taskId: 't-1',
       toolName: 'read_file',
@@ -117,7 +145,7 @@ describe('recordPermissionAudit', () => {
 
     const record = firstRecord(logger);
     expect(Object.keys(record).sort()).toEqual(
-      ['audit', 'decision', 'operation', 'resolvedPath', 'taskId', 'toolName', 'ts'].sort(),
+      ['access', 'audit', 'decision', 'operation', 'resolvedPath', 'taskId', 'toolName', 'ts'].sort(),
     );
     expect(JSON.stringify(record)).not.toContain('PRIVATE-KEY-MATERIAL');
     expect(JSON.stringify(record)).not.toContain('sk-live-123');
@@ -138,6 +166,19 @@ describe('operationForTool', () => {
     expect(operationForTool('write_file')).toBe('write');
     expect(operationForTool('edit_file')).toBe('write');
     expect(operationForTool('bash')).toBe('exec');
+  });
+});
+
+describe('auditAccessFor', () => {
+  it('passes a judged direction through unchanged', () => {
+    expect(auditAccessFor('read')).toBe('read');
+    expect(auditAccessFor('write')).toBe('write');
+  });
+
+  it('falls back to unknown when the policy never judged a candidate', () => {
+    // No path candidate, an unparsable command, an unrecognized tool.
+    expect(auditAccessFor(undefined)).toBe('unknown');
+    expect(auditAccessFor('unknown')).toBe('unknown');
   });
 });
 

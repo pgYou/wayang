@@ -3,6 +3,7 @@ import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { SignalTurnLineage } from '@/types/index';
 import { generateId } from '@/utils/id';
 import {
+  auditAccessFor,
   operationForTool,
   recordPermissionAudit,
   verdictDetailSuffix,
@@ -114,6 +115,7 @@ export function wrapWithPermissionMiddleware(
           recordPermissionAudit(deps.logger, {
             decision: 'hard-denied',
             operation: verdict.operation ?? operationForTool(toolName),
+            access: auditAccessFor(verdict.access),
             resolvedPath: verdict.resolvedPath,
             requestedPath: typeof args.path === 'string' ? args.path : undefined,
             matchedEntry: verdict.matchedEntry,
@@ -197,6 +199,7 @@ export function wrapWithPermissionMiddleware(
         recordPermissionAudit(deps.logger, {
           decision: result.approved ? 'approved' : 'denied',
           operation,
+          access: auditAccessFor(verdict.access),
           resolvedPath: verdict.resolvedPath,
           requestedPath: typeof args.path === 'string' ? args.path : undefined,
           matchedEntry: verdict.matchedEntry,

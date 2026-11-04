@@ -369,6 +369,8 @@ describe('wrapWithPermissionMiddleware', () => {
         audit: 'permission',
         decision: 'approved',
         operation: 'read',
+        // #43: the judged direction travels as its own field.
+        access: 'read',
         resolvedPath: '/home/u/.ssh/id_rsa',
         requestedPath: '~/.ssh/id_rsa',
         matchedEntry: '.ssh',
@@ -468,6 +470,7 @@ describe('wrapWithPermissionMiddleware', () => {
       expect(audits[0]).toMatchObject({
         decision: 'hard-denied',
         operation: 'write',
+        access: 'write',
         matchedEntry: '.ssh',
         matchedRule: 'sensitive-list-write',
         resolvedPath: '/home/u/.ssh/authorized_keys',
@@ -476,6 +479,85 @@ describe('wrapWithPermissionMiddleware', () => {
       });
       // No file content ever reaches the audit record.
       expect(JSON.stringify(audits[0])).not.toContain('SECRET-CONTENT');
+    });
+
+    /**
+     * #42 + #43 together: a dangerous bash command that hits the sensitive list
+     * keeps BOTH the hit and the danger in the approval description, and the
+     * audit says `exec` (tool category) with its own `access` direction.
+     */
+    it('keeps the sensitive hit of a dangerous bash ask, and audits exec + access', async () => {
+      const logger = createMockLogger();
+      const tools = mockTool('bash', 'ran');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['bash'],
+        // The shape `evaluateBashAccess` produces for `sudo cat ~/.ssh/id_rsa`.
+        decide: () => ({
+          decision: 'ask' as const,
+          matchedRule: 'dangerous-bash',
+          matchedEntry: '.ssh',
+          matchedSource: 'segment' as const,
+          resolvedPath: '/home/u/.ssh/id_rsa',
+          sensitive: true,
+          access: 'unknown' as const,
+        }),
+        describeCall: (_name, args) => `Execute shell command: ${args.command}`,
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      const pending = result.wrappedTools.bash.execute({ command: 'sudo cat ~/.ssh/id_rsa' });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+
+      // The approval names the danger AND the entry it hit.
+      expect(payload.description).toContain('rule: dangerous-bash');
+      expect(payload.description).toContain('hit: .ssh (segment)');
+      expect(payload.matchedRule).toBe('dangerous-bash');
+      expect(payload.matchedEntry).toBe('.ssh');
+
+      result.resolvePermission(payload.requestId, false, 'no');
+      await pending;
+
+      const audits = auditCalls(logger);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        decision: 'denied',
+        // Tool category stays exec; the direction is its own field.
+        operation: 'exec',
+        access: 'unknown',
+        matchedRule: 'dangerous-bash',
+        matchedEntry: '.ssh',
+        resolvedPath: '/home/u/.ssh/id_rsa',
+        toolName: 'bash',
+      });
+    });
+
+    it('records access: unknown when the verdict judged no direction', async () => {
+      const logger = createMockLogger();
+      const tools = mockTool('bash', 'ran');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['bash'],
+        decide: () => ({ decision: 'ask' as const, matchedRule: 'dynamic-shell', reason: 'could not parse' }),
+        describeCall: () => 'Execute shell command',
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      const pending = result.wrappedTools.bash.execute({ command: 'echo $((' });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+      result.resolvePermission(payload.requestId, false, 'no');
+      await pending;
+
+      const audit = auditCalls(logger)[0];
+      expect(audit).toMatchObject({ operation: 'exec', access: 'unknown', decision: 'denied' });
     });
   });
 });

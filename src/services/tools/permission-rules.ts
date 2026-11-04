@@ -116,11 +116,20 @@ export interface ToolAccessDecision {
   matchedEntry?: string;
   /** Which sensitive rule produced the hit (`segment`, `config-dir`, …). */
   matchedSource?: SensitiveMatchSource;
-  /** True exactly when the verdict came from the sensitive list. */
+  /**
+   * True when a sensitive-list entry was hit. For a sensitive verdict that IS
+   * the reason (`matchedRule: 'sensitive-list'`); a stronger rule can still
+   * raise the verdict — `dangerous-bash` sets this flag too, because the call
+   * touches the entry whether or not the danger rule also fired.
+   */
   sensitive?: boolean;
   /** Canonical (realpath-normalized) target the verdict was made about. */
   resolvedPath?: string;
-  /** How the target was judged: read / write / unknown (bash semantics). */
+  /**
+   * How the target was judged: read / write / unknown (bash semantics). On a
+   * command-level verdict this is the STRICTEST access its candidates justify
+   * (`write` > `read` > `unknown`) — see `commandAccess`.
+   */
   access?: AccessMode;
 }
 
@@ -307,6 +316,22 @@ function extractPathCandidates(segments: ShellSegment[]): BashCandidate[] {
     }
   }
   return candidates;
+}
+
+/**
+ * The access a whole command line is judged under: the STRICTEST access any of
+ * its candidates justifies (`write` > `read` > `unknown`), or `unknown` when
+ * the command yields no candidate at all. A command line is one unit of
+ * execution, so one write-capable candidate makes the line a write.
+ *
+ * Bash candidates are only ever `write` or `unknown` (a `cat` is never certain
+ * to read — see `BashCandidate`), so this collapses to "a write segment named a
+ * path"; `read` reaches this helper only through file-tool verdicts, which carry
+ * their own access. The audit trail records the result as its own `access`
+ * field, apart from the tool-category `operation` (bash → `exec`).
+ */
+function commandAccess(candidates: readonly BashCandidate[]): AccessMode {
+  return candidates.some((candidate) => candidate.access === 'write') ? 'write' : 'unknown';
 }
 
 /** Run one path past the shared policy with this run's boundary as context. */
@@ -605,9 +630,39 @@ function evaluateBashCommand(
     } else firstAllow ??= toToolDecision(verdict, candidate.access);
   }
 
+  // The command as a whole is audited under the STRICTEST access its candidates
+  // justify (see `commandAccess`); the verdict above still judged each
+  // candidate on its OWN access, so a `cat` next to a `tee` is not a write.
+  const lineAccess = commandAccess(candidates);
+  if (firstAsk) firstAsk = { ...firstAsk, access: lineAccess };
+  if (firstAllow) firstAllow = { ...firstAllow, access: lineAccess };
+
   // A hard deny (above) outranks everything. Then the destructive tier.
   if (DANGEROUS_BASH_PATTERN.test(expandedCommand)) {
-    return { decision: 'ask', matchedRule: 'dangerous-bash' };
+    // Still an approval: the destructive-command rule does not decide what the
+    // command does to its targets, so `matchedRule` stays `dangerous-bash`. The
+    // candidate sweep may ALREADY have found a sensitive hit (`sudo cat
+    // ~/.ssh/id_rsa` names `.ssh`) — dropping it would hide from the controller
+    // that the command is dangerous AND touches a credential directory, so the
+    // hit fields are carried over.
+    //
+    // Semantic choice for the conflicting flag: `sensitive` here means "this
+    // call touches a sensitive-list entry", while the ORIGIN of the verdict
+    // stays in `matchedRule` (`dangerous-bash`). Consumers (approval
+    // description, signal payload, TUI) key the hit block off `sensitive`, and
+    // a dangerous command that hits `.ssh` must show that block too.
+    const hit = firstAsk?.matchedEntry !== undefined ? firstAsk : undefined;
+    return {
+      decision: 'ask',
+      matchedRule: 'dangerous-bash',
+      access: lineAccess,
+      ...(hit !== undefined && {
+        matchedEntry: hit.matchedEntry,
+        matchedSource: hit.matchedSource,
+        resolvedPath: hit.resolvedPath,
+        sensitive: true,
+      }),
+    };
   }
 
   // Command substitution: the inner command is judged by the same rules

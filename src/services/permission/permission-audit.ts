@@ -9,7 +9,8 @@
  *   grep '"audit":"permission"' ~/.wayang/sessions/<id>/wayang.log
  *
  * The record carries METADATA only — canonical path, matched sensitive entry,
- * task/worker identity, operation, decision, timestamp. It never carries file
+ * task/worker identity, tool category (`operation`), judged direction
+ * (`access`), decision, timestamp. It never carries file
  * content, tool output or token values: an audit trail that quotes the secret
  * it protected is a second leak. `recordPermissionAudit` therefore builds the
  * object from an explicit field allowlist instead of forwarding caller-supplied
@@ -22,8 +23,22 @@
 
 import type { Logger } from '@/infra/logger';
 
-/** What the audited call would do with the target. */
+/**
+ * The tool CATEGORY the call belongs to (`bash` runs commands, file tools read
+ * or write one path). Deliberately NOT the direction of a single target — see
+ * `PermissionAccess` for that.
+ */
 export type PermissionOperation = 'read' | 'write' | 'exec';
+
+/**
+ * The access DIRECTION the policy actually judged the call under, recorded next
+ * to — never instead of — `operation`: a bash command is `operation: 'exec'`
+ * whatever it does to its arguments, while `access` says whether the verdict
+ * was reached as a read, a write, or without a usable candidate (`unknown`).
+ * Without it an audit of `cat ~/.ssh/id_rsa` and `tee ~/.ssh/x` looked
+ * identical.
+ */
+export type PermissionAccess = 'read' | 'write' | 'unknown';
 
 /**
  * The decision being recorded.
@@ -54,8 +69,14 @@ export interface PermissionAuditEntry {
   workerId?: string;
   /** Gated tool name (`read_file`, `bash`, …). */
   toolName?: string;
-  /** What the call would do with the target. */
+  /** Tool category of the call (`bash` → exec, file tools → read/write). */
   operation: PermissionOperation;
+  /**
+   * The direction the policy used (read / write / `unknown` when no candidate
+   * could be judged). Missing on records written before this field existed;
+   * every current call site passes it.
+   */
+  access?: PermissionAccess;
   /** The recorded verdict. */
   decision: PermissionAuditDecision;
   /** Set on `denied`: who/what ended the request. */
@@ -67,6 +88,17 @@ export function operationForTool(toolName: string): PermissionOperation {
   if (toolName === 'bash') return 'exec';
   if (toolName === 'read_file' || toolName === 'search_files' || toolName === 'search_content') return 'read';
   return 'write';
+}
+
+/**
+ * The `access` value for an audit record: the direction the policy used, or
+ * `unknown` when it never got one (no path candidate, an unparsable command, an
+ * unrecognized tool). Kept separate from `operationForTool`: the tool category
+ * and the judged direction answer different questions and must not overwrite
+ * each other.
+ */
+export function auditAccessFor(access: PermissionAccess | undefined): PermissionAccess {
+  return access ?? 'unknown';
 }
 
 /**
@@ -83,6 +115,7 @@ export function recordPermissionAudit(logger: Logger | undefined, entry: Permiss
       audit: 'permission',
       decision: entry.decision,
       operation: entry.operation,
+      ...(entry.access !== undefined && { access: entry.access }),
       ts: new Date().toISOString(),
       ...(entry.resolvedPath !== undefined && { resolvedPath: entry.resolvedPath }),
       ...(entry.requestedPath !== undefined && { requestedPath: entry.requestedPath }),
