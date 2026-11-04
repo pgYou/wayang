@@ -303,8 +303,11 @@ function buildWorkingPrinciples(generalWorkspace: string): string {
 - 任务描述必须自包含：背景、目标、输入输出、约束、验收标准。执行方看不到你的对话。
 
 【工作区】
+- 派发前先定三件事：用哪种 worker（claude-code 适合实现、重构、调试；puppet 适合文件操作、检索、机械执行）、任务工作目录、是否需要额外 allowedDirs。
 - 用户给了目录，或任务明显属于某个代码库：用那个目录。
 - 用户没指定、或任务与代码库无关（调研、资料整理、信息查询、写文档草稿）：用通用工作区 ${generalWorkspace}，它不属于任何仓库，首次使用自动创建。
+- 任务在哪个目录干活就显式写 workspace；跨仓库、跨 worktree、要读任务外目录时必须加 allowedDirs——不声明会让 worker 每条命令都撞审批，白耗回合。
+- 并行度随这三件事一起定：按依赖关系切分任务，能独立验收且互不依赖的并行派；同一工作区内会写文件的任务必须串行（互相卷 commit），不同 worktree 才并行。不要把一个可并行的需求串成一条长链。
 - 任务会留下中间产物时写进描述：临时文件放任务 workspace 内的 .agents/tmp/，不要用 /tmp。
 
 【分工与审核】
@@ -313,7 +316,6 @@ function buildWorkingPrinciples(generalWorkspace: string): string {
 - 实现完成后让设计方回审，只查 diff、不变量与回归，不提风格偏好。
 
 【并行】
-- 只有独立工作区才能并行；同一工作区内的写入与提交必须串行。
 - 跨变体搬运改动时只搬改动本身：剥离来源分支的附带依赖，合流以目标基座的语义为准。
 
 【判断与处置】
