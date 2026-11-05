@@ -74,6 +74,54 @@ describe('evaluateBashAccess', () => {
   });
 
   /**
+   * 0.8.4: the destructive tier and the path rules must read the SAME command
+   * position. The path rules already stripped `sudo` / `env` / `nohup` / `time`
+   * / `nice` / `ionice` / `command` / `exec` / `builtin` (and leading
+   * assignments), while the tier was a line-start regex — so `rm -rf x` asked
+   * and `nohup rm -rf x` fell through to `allow (no-path)`.
+   */
+  describe('the destructive tier sees through wrapper prefixes (0.8.4)', () => {
+    it.each([
+      'nohup rm -rf x',
+      'nice rm -rf x',
+      'nice -n 5 rm -rf x',
+      'ionice -c 3 rm -rf x',
+      'env FOO=1 rm -rf x',
+      'env -i rm -rf x',
+      'time rm -rf x',
+      'command rm -rf x',
+      'exec rm -rf x',
+      'builtin rm -rf x',
+      'nohup nice -n 5 env FOO=1 rm -rf x',
+      'FOO=1 rm -rf x',
+      'nohup chmod 777 x',
+      'nohup shutdown -h now',
+      'nohup kill -9 1234',
+      'nohup dd if=/dev/zero of=/dev/sda',
+      // A wrapper that is dangerous on its own, even with no command behind it.
+      'nohup sudo rm -rf x',
+      'nohup sudo -i',
+    ])('%s → ask (dangerous-bash)', (command) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dangerous-bash');
+    });
+
+    it('keeps the plain forms asking (the old regex cases are a subset)', () => {
+      for (const command of ['rm -rf x', 'sudo rm -rf x', 'echo hi && rm -rf x', 'cat x | sudo tee /etc/hosts']) {
+        expect(evaluateBashAccess(scope(), command).matchedRule).toBe('dangerous-bash');
+      }
+    });
+
+    it.each(['nohup echo hi', 'nice -n 5 ls -la', 'env FOO=1 ls', 'command -v rm', 'builtin -V rm', 'rmdir x'])(
+      '%s → not the destructive tier',
+      (command) => {
+        expect(evaluateBashAccess(scope(), command).matchedRule).not.toBe('dangerous-bash');
+      },
+    );
+  });
+
+  /**
    * #42: the destructive tier must not swallow the sensitive hit the candidate
    * sweep already found — a `sudo cat ~/.ssh/id_rsa` approval has to say BOTH
    * "dangerous command" and "touches .ssh".
@@ -496,6 +544,105 @@ describe('evaluateBashAccess', () => {
       const strict = evaluateBashAccess(scope({ permission: { sensitiveMode: 'deny' } }), 'tee ~/.ssh/authorized_keys "x');
       expect(strict.decision).toBe('deny');
       expect(strict.matchedRule).toBe('sensitive-list');
+    });
+  });
+
+  /**
+   * 0.8.4: `bash -c '…'` / `sh -c '…'` hide the real command behind a string
+   * argument. The outer line only shows `bash` — off the read-only table,
+   * yielding no path candidate — so `bash -c "cat ~/.ssh/id_rsa"` used to be an
+   * unconditional `allow (no-path)`. The script is now judged by the SAME rules
+   * as the line itself, recursively, and the stricter verdict wins.
+   */
+  describe('a shell -c script is judged by the same rules (0.8.4)', () => {
+    it.each([
+      ['bash -c "cat ~/.ssh/id_rsa"', 'sensitive-list'],
+      ['bash -lc "cat ~/.ssh/id_rsa"', 'sensitive-list'],
+      ['bash -ic "cat ~/.ssh/id_rsa"', 'sensitive-list'],
+      ['sh -c "cat ~/.ssh/id_rsa"', 'sensitive-list'],
+      ['dash -c "cat ~/.ssh/id_rsa"', 'sensitive-list'],
+      ['zsh -c "cat ~/.ssh/id_rsa"', 'sensitive-list'],
+      ['bash --command "cat ~/.ssh/id_rsa"', 'sensitive-list'],
+      ['bash -o pipefail -c "cat ~/.ssh/id_rsa"', 'sensitive-list'],
+      ['bash -lc "cp x ~/.aws/credentials"', 'sensitive-list'],
+      ['bash -c "cat $HOME/.ssh/id_rsa"', 'sensitive-list'],
+      ['bash -c "rm -rf /"', 'dangerous-bash'],
+      ['bash -c "cat /etc/hostname"', 'outside-all'],
+      ['sh -c "cat /etc/hostname"', 'outside-all'],
+    ])('%s → ask (%s)', (command, rule) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe(rule);
+    });
+
+    it('names the inner sensitive entry, so the approval is actionable', () => {
+      const verdict = evaluateBashAccess(scope(), 'bash -c "cat ~/.ssh/id_rsa"');
+      expect(verdict.matchedEntry).toBe('.ssh');
+      expect(verdict.sensitive).toBe(true);
+      expect(verdict.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
+      expect(verdict.access).toBe('read');
+      expect(verdict.reason).toContain('bash -c');
+    });
+
+    it('can be refused outright under sensitiveMode: deny', () => {
+      const strict = scope({ permission: { sensitiveMode: 'deny' } });
+      expect(evaluateBashAccess(strict, 'bash -c "cat ~/.ssh/id_rsa"').decision).toBe('deny');
+    });
+
+    it.each(['bash -c "ls -la"', 'sh -c "git status"', 'bash -c "cat notes.txt"', 'bash -lc "ls"'])(
+      '%s → allow (a read-only inner command changes nothing)',
+      (command) => {
+        expect(evaluateBashAccess(scope(), command).decision).toBe('allow');
+      },
+    );
+
+    it('follows nesting recursively (nested -c still asks)', () => {
+      const verdict = evaluateBashAccess(scope(), `bash -c "bash -c 'cat ~/.ssh/id_rsa'"`);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedEntry).toBe('.ssh');
+    });
+
+    it('asks past the depth limit instead of following it further', () => {
+      const nested = (levels: number): string => {
+        let command = 'cat ~/.ssh/id_rsa';
+        for (let i = 0; i < levels; i += 1) command = `bash -c ${JSON.stringify(command)}`;
+        return command;
+      };
+      // Five levels are followed (the innermost verdict is still the hit)…
+      expect(evaluateBashAccess(scope(), nested(5)).matchedEntry).toBe('.ssh');
+      // …the sixth only asks, naming the depth limit.
+      const tooDeep = evaluateBashAccess(scope(), nested(6));
+      expect(tooDeep.decision).toBe('ask');
+      expect(tooDeep.matchedRule).toBe('dynamic-shell');
+      expect(tooDeep.reason).toContain('nested deeper than');
+    });
+
+    it.each([
+      'bash -c "cat /etc/hostname',
+      `bash -c 'cat "x'`,
+      'bash -c "$CMD"',
+      'bash -c "$(cat script.txt)"',
+      'bash -c',
+    ])('%s → ask (the script cannot be judged statically)', (command) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dynamic-shell');
+    });
+
+    it('bash script.sh (no -c) keeps its behaviour: a script FILE is not read', () => {
+      // Unchanged by design — the file's contents are not part of the command
+      // line this gate judges (same scope as xargs / find -exec, issue #51).
+      expect(evaluateBashAccess(scope(), 'bash script.sh').decision).toBe('allow');
+      expect(evaluateBashAccess(scope(), 'bash script.sh ~/.ssh/id_rsa').matchedRule).toBe('sensitive-list');
+    });
+
+    it('a wrapped shell is still recognized (sudo bash -c …)', () => {
+      // `sudo` is caught by the destructive tier first — the point here is that
+      // the shell is found behind the wrapper too, so the verdict is an ask
+      // either way and never a silent allow.
+      const verdict = evaluateBashAccess(scope(), 'sudo bash -c "cat /etc/hostname"');
+      expect(verdict.decision).toBe('ask');
+      expect(['dangerous-bash', 'outside-all']).toContain(verdict.matchedRule);
     });
   });
 

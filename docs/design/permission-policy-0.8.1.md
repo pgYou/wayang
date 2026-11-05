@@ -7,6 +7,12 @@
 >
 > **0.8.4 新增**：任务级审批记忆（#46，C.7 的最小可用子集）已落地，见 C.9 —— 只记忆读方向、按规范化路径、按任务失效；写方向与敏感命中永远一次一批。开关 `permission.approvalMemory: 'task' | 'off'`（默认 `'task'`）。
 >
+> **0.8.4 对 PR3 的逐项对照**（PR3 只落地了一部分，未实现项统一由 #51 跟踪）：
+> - 已实现：显式只读命令表 + 段首判定（命令替换内部与顶层共用同一张表）；剥离 `sudo` / `env` / `nohup` / `time` / `nice` / `ionice` / `command` / `exec` / `builtin` 与前导变量赋值；git 子命令与 `branch -a` / `remote -v` 白名单；写动词 / 写 flag / 真实重定向优先判写；`sed` 脚本白名单（`-f`、可执行或可写脚本不判只读，记 `read-only-unverified`）；危险命令 tier 改为读同一个"命令位置"（`nohup rm -rf x` 与 `rm -rf x` 同判 `dangerous-bash`）；`bash -c` / `sh -c` / `dash -c` / `zsh -c` 的 `-c`（含 `-lc` / `-ic` / `--command`）脚本递归判定，深度上限与命令替换共用（5 层）。
+> - **未实现**（Refs #51）：`xargs` 内层命令递归；`find -exec` / `-execdir` / `-ok` / `-okdir` 内层命令递归；`eval` 递归；`cd` 跟踪；相对路径按跟踪后的 cwd 解析（`cat ../x` / `cat ../../.ssh/id_rsa` 仍不是候选）；`grep` / `rg` / `sed` / `awk` 的"模式参数不算路径"白名单。这几项在本版仍是 `allow(no-path)`，是已知的绕过面，不是已收口的行为。
+> - 与本 PR3 正文的偏差：本版没有引入 `matchedRule: 'read-only-command'` 这一层 allow 面——只读表只影响 `access` 方向与敏感列表可见性，没有路径候选的命令依旧是默认 `allow`（`no-path`）。
+> - 审计：0.8.4 起 `allowed` 也是一条决策记录（allow 快路径执行前写入），此前只记 ask 的批准/拒绝与硬拒，审计里读不出"门放行了这次调用"。
+>
 > 以下 0.8.1 的历史记录保持原样，不再逐句改写。
 
 ## A. 目标与非目标

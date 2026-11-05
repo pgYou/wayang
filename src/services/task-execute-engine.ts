@@ -40,7 +40,12 @@ import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { createWorkerTools } from '@/services/tools/index';
 import { askControllerTool } from '@/services/tools/ask-controller';
 import { wrapWithPermissionMiddleware, type PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
-import { FILE_TOOL_NAMES, decideToolAccess, type WorkerAccessScope } from '@/services/tools/permission-rules';
+import {
+  FILE_TOOL_NAMES,
+  decideToolAccess,
+  expandHome,
+  type WorkerAccessScope,
+} from '@/services/tools/permission-rules';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
 import { resolveApprovalMemory } from '@/infra/permission/permission-config';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
@@ -1288,12 +1293,27 @@ export class TaskExecuteEngine implements Subscribable {
         // ask). `deny` refuses here without ever emitting a permission_request;
         // both `deny` and every answered `ask` are audited (see the middleware).
         decide: (toolName, args) => decideToolAccess(accessScope, toolName, args),
-        describeCall: (toolName, args) => {
+        describeCall: (toolName, args, verdict) => {
           if (toolName === 'bash') return `Execute shell command: ${args.command}`;
           if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
             const rawPath = typeof args.path === 'string' ? args.path : '';
-            const resolved = rawPath ? resolve(workspace, rawPath) : workspace;
-            return `${toolName}: ${rawPath || '(workspace root)'} (resolved: ${resolved})`;
+            if (!rawPath) return `${toolName}: (workspace root) (resolved: ${workspace})`;
+            // The description must name the path the gate actually JUDGED, not
+            // one re-derived here: `resolve()` alone left `~` / `$HOME`
+            // unexpanded, so `read_file ~/.wayang.config.json` reached the
+            // controller (and the TUI) as `<workspace>/~/.wayang.config.json` —
+            // a path that does not exist and that nobody recognizes as their
+            // own config. Expansion goes through the SAME `expandHome` the gate
+            // uses, and the canonical target the policy resolved wins when the
+            // verdict carries one (it also normalizes symlinks).
+            const expanded = expandHome(rawPath);
+            if (expanded.unresolvable) {
+              // `~user` names another user's home and is deliberately NOT
+              // expanded (see `HomeExpansion`) — show what was asked for.
+              return `${toolName}: ${rawPath} (unresolved: another user's home cannot be expanded)`;
+            }
+            const target = verdict?.resolvedPath ?? resolve(workspace, expanded.path);
+            return `${toolName}: ${rawPath} (resolved: ${target})`;
           }
           return `${toolName}: ${JSON.stringify(args)}`;
         },

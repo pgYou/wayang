@@ -617,4 +617,74 @@ describe('worker permission gate — policy-backed decisions', () => {
       rmSync(procHome, { recursive: true, force: true });
     }
   });
+
+  /**
+   * 0.8.4: the approval description has to name the path the gate JUDGED. The
+   * describe callback used to re-derive it with `resolve(workspace, path)`,
+   * which left `~` / `$HOME` unexpanded — so `read_file ~/.wayang.config.json`
+   * reached the controller (and the TUI) as
+   * `<workspace>/~/.wayang.config.json`, a path that does not exist and that
+   * nobody recognizes as their own config.
+   */
+  it('14. the approval description resolves ~ / $HOME like the gate, and keeps relative paths', async () => {
+    const realHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const { engine, signalQueue } = makeEngine();
+      const tools = await startTask(engine);
+      // Distinct targets: an approval remembers its path for the rest of the
+      // task (issue #46), so reusing one would skip the next request entirely.
+      writeFileSync(join(home, 'tilde.txt'), 'TILDE');
+      writeFileSync(join(home, 'homevar.txt'), 'HOMEVAR');
+      writeFileSync(join(shared, 'r.txt'), 'REL');
+
+      // `~` — expanded to the process home, NOT resolved against the workspace.
+      const tilde = tools.read_file.execute({ path: '~/tilde.txt' });
+      await flush();
+      const tildeRequest = permissionRequests(signalQueue)[0];
+      expect(tildeRequest.description).toBe(`read_file: ~/tilde.txt (resolved: ${join(home, 'tilde.txt')})`);
+      expect(tildeRequest.description).not.toContain(`${taskWs}/~`);
+      engine.resolvePermission(tildeRequest.requestId, true);
+      expect(await tilde).toContain('TILDE');
+
+      // `$HOME` — same anchor, same expansion.
+      const homeVar = tools.read_file.execute({ path: '$HOME/homevar.txt' });
+      await flush();
+      const homeRequest = permissionRequests(signalQueue)[1];
+      expect(homeRequest.description).toBe(`read_file: $HOME/homevar.txt (resolved: ${join(home, 'homevar.txt')})`);
+      engine.resolvePermission(homeRequest.requestId, true);
+      expect(await homeVar).toContain('HOMEVAR');
+
+      // A relative path keeps its historical wording: resolved against the
+      // task workspace (the tool's cwd).
+      const relative = tools.read_file.execute({ path: '../shared/r.txt' });
+      await flush();
+      const relativeRequest = permissionRequests(signalQueue)[2];
+      expect(relativeRequest.description).toBe(
+        `read_file: ../shared/r.txt (resolved: ${join(home, 'shared', 'r.txt')})`,
+      );
+      engine.resolvePermission(relativeRequest.requestId, true);
+      expect(await relative).toContain('REL');
+    } finally {
+      process.env.HOME = realHome;
+    }
+  });
+
+  it('15. a ~user target keeps its spelling and says it cannot be expanded', async () => {
+    const { engine, signalQueue } = makeEngine();
+    const tools = await startTask(engine);
+
+    const pending = tools.read_file.execute({ path: '~root/.ssh/id_rsa' });
+    await flush();
+    const [request] = permissionRequests(signalQueue);
+    expect(request.matchedRule).toBe('home-other-user');
+    // The description keeps the spelling the caller used and says why it could
+    // not be resolved; the policy's own `reason` is appended after it.
+    expect(request.description).toContain(
+      "read_file: ~root/.ssh/id_rsa (unresolved: another user's home cannot be expanded)",
+    );
+    expect(request.description).not.toContain(`/root/.ssh`);
+    engine.resolvePermission(request.requestId, false, 'no');
+    expect(await pending).toContain('Permission denied');
+  });
 });

@@ -64,9 +64,16 @@ export interface PermissionMiddlewareConfig {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- args shape is tool-specific (public config surface; policy callbacks read fields defensively)
   decide: (toolName: string, args: any) => PermissionVerdict;
-  /** Generate a human-readable description of the tool call. */
+  /**
+   * Generate a human-readable description of the tool call.
+   *
+   * The `verdict` is passed along so the description can name the path the
+   * policy actually JUDGED (`verdict.resolvedPath`) instead of re-deriving one
+   * from the raw arguments — re-deriving is what used to print
+   * `<workspace>/~/.wayang.config.json` for `~/.wayang.config.json`.
+   */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- same as decide: tool-specific arg shape
-  describeCall: (toolName: string, args: any) => string;
+  describeCall: (toolName: string, args: any, verdict?: PermissionVerdict) => string;
 }
 
 export interface PermissionMiddlewareDeps {
@@ -217,7 +224,7 @@ export function wrapWithPermissionMiddleware(
 
         const requestId = generateId('perm');
         const operation = verdict.operation ?? operationForTool(toolName);
-        const baseDescription = config.describeCall(toolName, args);
+        const baseDescription = config.describeCall(toolName, args, verdict);
         // Surface a non-obvious escalation reason (command substitution,
         // output redirection, …) and — on a sensitive hit — the entry and rule
         // that fired, so the controller can judge the request without reading

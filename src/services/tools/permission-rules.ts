@@ -25,8 +25,12 @@
  *     `$HOME` / `${HOME}` first) and whether each candidate sits in a
  *     read-only, write-capable or unclassifiable command segment (see
  *     `READ_ONLY_COMMANDS` and `segmentAccess`),
- *   - the destructive-command heuristic, which stays a "ask the controller"
- *     tier on top of the policy (the policy only judges paths),
+ *   - the destructive-command heuristic, which stays an "ask the controller"
+ *     tier on top of the policy (the policy only judges paths) and is read at
+ *     the SAME command position the path rules use (wrapper prefixes stripped),
+ *     so `nohup rm -rf x` / `env FOO=1 rm -rf x` ask exactly like `rm -rf x`,
+ *   - a shell `-c` script (`bash -c`, `sh -lc`, `--command`), which is judged
+ *     recursively by these same rules instead of being seen as a bare `bash`,
  *   - escalation to `ask` when a target cannot be determined statically:
  *     `~user` (another user's home), command substitution, output redirection,
  *     and a read-only-table command that FAILED its own deferred condition
@@ -63,11 +67,24 @@ export const FILE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'search_
 const READ_ONLY_FILE_TOOLS: ReadonlySet<string> = new Set(['read_file', 'search_files', 'search_content']);
 
 /**
- * Bash commands matching these patterns always require controller approval.
- * Matches at command start or after shell operators (|, ;, &&) to reduce
- * false positives from quoted strings.
+ * Command words that always require controller approval, whatever their
+ * targets are: the destructive-command tier.
+ *
+ * Membership is judged on the command position `headCommand` computes — NOT on
+ * a line-start regex. The two used to disagree: the regex only matched a verb
+ * at the start of the line or right after `|` / `;` / `&&`, while the path
+ * rules already stripped wrapper prefixes, so `rm -rf x` asked and
+ * `nohup rm -rf x` / `nice rm -rf x` / `env FOO=1 rm -rf x` fell straight
+ * through to `allow (no-path)`. Reading the command position makes both paths
+ * agree by construction: whatever `cat ~/x` may be judged as, `rm ~/x` may be
+ * judged as `rm`.
+ *
+ * `rm` / `dd` / `kill` carry an arity or flag condition (see `isDangerousHead`),
+ * the rest are dangerous as soon as they are the command word.
  */
-const DANGEROUS_BASH_PATTERN = /(?:^|\||;|&&)\s*(?:rm\s|sudo\b|chmod\b|chown\b|mkfs\b|dd\s|shutdown\b|reboot\b|kill\s+-9)/;
+const DANGEROUS_HEAD_COMMANDS: ReadonlySet<string> = new Set([
+  'sudo', 'chmod', 'chown', 'mkfs', 'shutdown', 'reboot',
+]);
 
 /**
  * Matched rules beyond the policy's own set: the destructive-command tier and
@@ -814,22 +831,24 @@ const WRAPPER_OPTIONS_WITH_VALUE: ReadonlyMap<string, readonly string[]> = new M
 /** A leading shell variable assignment (`FOO=1`), not a command word. */
 const ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-/**
- * The command a segment actually runs: leading assignments skipped, wrapper
- * prefixes (with their own arguments) skipped, then the command word — plus the
- * words from that command on, so `git` can read its subcommand.
- *
- * `command -v x` / `builtin -V x` are queries, not launches, so the wrapper IS
- * the command word there (`command` is on the read-only table for that reason).
- * A segment with no command word at all — or with a command substitution in its
- * place — returns `undefined`, and the caller keeps the verdict `unknown`.
- */
-function headCommand(segment: ShellSegment): { command: string; words: string[] } | undefined {
+/** The word tokens of a segment, in source order (redirections dropped). */
+function segmentWords(segment: ShellSegment): string[] {
   const words: string[] = [];
   for (const token of segment.tokens) {
     if (token.kind === 'word') words.push(token.word.text);
   }
+  return words;
+}
 
+/**
+ * Index of the command word in `words`: leading assignments skipped, wrapper
+ * prefixes (with their own arguments) skipped. `words.length` when the segment
+ * has no command word (only wrappers and their options, e.g. `sudo -i`).
+ *
+ * Shared by `headCommand` and the destructive-command tier, so BOTH read the
+ * same command position — that is what keeps their verdicts aligned.
+ */
+function headIndex(words: readonly string[]): number {
   let i = 0;
   while (i < words.length) {
     if (ASSIGNMENT_PATTERN.test(words[i])) {
@@ -851,10 +870,63 @@ function headCommand(segment: ShellSegment): { command: string; words: string[] 
       i += withValue.includes(option) ? 2 : 1;
     }
   }
+  return i;
+}
 
+/**
+ * The command a segment actually runs: leading assignments skipped, wrapper
+ * prefixes (with their own arguments) skipped, then the command word — plus the
+ * words from that command on, so `git` can read its subcommand.
+ *
+ * `command -v x` / `builtin -V x` are queries, not launches, so the wrapper IS
+ * the command word there (`command` is on the read-only table for that reason).
+ * A segment with no command word at all — or with a command substitution in its
+ * place — returns `undefined`, and the caller keeps the verdict `unknown`.
+ */
+function headCommand(segment: ShellSegment): { command: string; words: string[] } | undefined {
+  const words = segmentWords(segment);
+  const i = headIndex(words);
   const command = words[i];
   if (command === undefined || command === CMDSUBST_PLACEHOLDER) return undefined;
   return { command, words: words.slice(i) };
+}
+
+/**
+ * Is this command word destructive? `words` starts AT the command word, so the
+ * arity / flag conditions (`rm` needs an operand, `kill` needs `-9`) are read
+ * from its own arguments — the same shape the old line-start regex matched.
+ */
+function isDangerousHead(command: string, words: readonly string[]): boolean {
+  if (DANGEROUS_HEAD_COMMANDS.has(command) || command.startsWith('mkfs.')) return true;
+  if (command === 'rm' || command === 'dd') return words.length > 1;
+  if (command === 'kill') return words.includes('-9');
+  return false;
+}
+
+/**
+ * Does this segment run a destructive command?
+ *
+ * Judged at the command position (`headIndex`), so a strip-able wrapper does
+ * not hide the verb: `nohup rm -rf x`, `nice -n 5 rm -rf x` and
+ * `env FOO=1 rm -rf x` are as dangerous as `rm -rf x`. A wrapper that is
+ * itself dangerous (`sudo rm …`) is caught through its own word, even when it
+ * leaves no command word behind (`sudo -i`), because the tier is about what
+ * the line can do, not about which word ends up last.
+ */
+function isDangerousSegment(segment: ShellSegment): boolean {
+  const words = segmentWords(segment);
+  const index = headIndex(words);
+  const head = words[index];
+  if (head === undefined || head === CMDSUBST_PLACEHOLDER) {
+    return words.some((word) => DANGEROUS_HEAD_COMMANDS.has(word) || word.startsWith('mkfs.'));
+  }
+  if (words.slice(0, index).includes('sudo')) return true;
+  return isDangerousHead(head, words.slice(index));
+}
+
+/** Does ANY segment of the command line run a destructive command? */
+function isDangerousCommandLine(segments: readonly ShellSegment[]): boolean {
+  return segments.some((segment) => isDangerousSegment(segment));
 }
 
 /**
@@ -1274,6 +1346,160 @@ function evaluateSubstitutions(
   return undefined;
 }
 
+/** Shells whose `-c` argument is a SCRIPT this gate has to judge itself. */
+const SHELL_COMMANDS: ReadonlySet<string> = new Set(['bash', 'sh', 'dash', 'zsh']);
+
+/** Shell options that consume the NEXT word, so it is not the script operand. */
+const SHELL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
+  '-o', '+o', '-O', '+O', '--rcfile', '--init-file',
+]);
+
+/**
+ * A command word that still carries an unexpanded variable (``$CMD``): the
+ * shell decides at run time what it runs, so it cannot be judged statically.
+ */
+const DYNAMIC_WORD_PATTERN = /^\$/;
+
+/** What a shell segment was asked to run with `-c` (see `shellScriptOf`). */
+interface ShellScript {
+  /** The shell itself (`bash`, `sh`, …) — named in the approval reason. */
+  shell: string;
+  /** The script text as written (the lexer already removed its quoting). */
+  script: string;
+}
+
+/**
+ * The `-c` script a segment runs, if it runs one.
+ *
+ * `bash -c 'cat ~/.ssh/id_rsa'` hides its real command behind a string
+ * argument: the outer line only shows `bash`, which is off the read-only table
+ * (→ `unknown`) and yields no path candidate, so the file access went unseen
+ * and the line was allowed. `-lc` / `-ic` / `-exc` are the same flag in a
+ * cluster and `--command` is the long spelling; all of them take the NEXT word
+ * as the script. The lexer already removed the quoting, so the script is the
+ * bare command text a shell would run.
+ *
+ * `bash script.sh` (no `-c`) deliberately returns nothing: a script FILE's
+ * contents are not part of the command line this gate judges, exactly like
+ * `xargs` and `find -exec` (see issue #51). Its verdict there stays as before.
+ */
+function shellScriptOf(segment: ShellSegment): ShellScript | 'missing-operand' | undefined {
+  const head = headCommand(segment);
+  if (head === undefined || !SHELL_COMMANDS.has(head.command)) return undefined;
+  const words = head.words;
+  for (let i = 1; i < words.length; i += 1) {
+    const word = words[i];
+    if (word === '--') return undefined; // everything after `--` is an operand
+    if (SHELL_OPTIONS_WITH_VALUE.has(word)) {
+      i += 1; // `bash -o pipefail -c '…'`: the option value is not an operand
+      continue;
+    }
+    if (word === '--command') {
+      const script = words[i + 1];
+      return script === undefined ? 'missing-operand' : { shell: head.command, script };
+    }
+    if (word.startsWith('--command=')) {
+      return { shell: head.command, script: word.slice('--command='.length) };
+    }
+    if (word.startsWith('--')) continue; // other long flags take no value here
+    // The first operand without a `-c` before it is the script FILE.
+    if (!word.startsWith('-')) return undefined;
+    if (word.slice(1).includes('c')) {
+      const script = words[i + 1];
+      return script === undefined ? 'missing-operand' : { shell: head.command, script };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Can the script be judged as written?
+ *
+ * `bash -c "$CMD"` and `bash -c "$(cat script.txt)"` hand the shell a string
+ * assembled at run time: recursing into the LITERAL text would prove nothing
+ * about what actually runs, so both escalate (fail closed) instead of being
+ * judged as the harmless words they spell.
+ */
+function isStaticallyKnownScript(script: string): boolean {
+  if (script.includes(CMDSUBST_PLACEHOLDER)) return false;
+  const tokenized = tokenizeShellLite(script);
+  if (!tokenized.ok) return true; // the recursion reports the parse failure
+  return tokenized.segments.every((segment) => {
+    const head = headCommand(segment);
+    return head === undefined || !DYNAMIC_WORD_PATTERN.test(head.command);
+  });
+}
+
+/**
+ * Decide the `-c` scripts of one command line by the SAME rules as the line
+ * itself (recursively, `depth + 1` — the limit is shared with command
+ * substitution, see `MAX_CMDSUBST_DEPTH`).
+ *
+ * The inner verdict is merged as the stricter of the two (`deny` > `ask` >
+ * `allow`): `deny` refuses the whole line, `ask` makes the whole line ask — and
+ * it keeps the INNER rule name, so an approval for `bash -c 'cat
+ * ~/.ssh/id_rsa'` still says `sensitive-list` / `.ssh` instead of a
+ * contentless "the shell command might do something".
+ *
+ * Returns `undefined` when nothing has to be escalated, so the outer line
+ * continues to be judged: a `bash -c 'ls -la'` next to a `cat /etc/hosts` must
+ * not silence the outer hit.
+ */
+function evaluateShellScripts(
+  scope: WorkerAccessScope,
+  segments: ShellSegment[],
+  depth: number,
+): ToolAccessDecision | undefined {
+  for (const segment of segments) {
+    const found = shellScriptOf(segment);
+    if (found === undefined) continue;
+    if (found === 'missing-operand') {
+      return {
+        decision: 'ask',
+        matchedRule: 'dynamic-shell',
+        reason: '`-c` was given without a script to judge',
+      };
+    }
+    if (depth + 1 > MAX_CMDSUBST_DEPTH) {
+      return {
+        decision: 'ask',
+        matchedRule: 'dynamic-shell',
+        reason: `\`${found.shell} -c\` nested deeper than ${MAX_CMDSUBST_DEPTH} levels`,
+      };
+    }
+    if (found.script.trim().length === 0) continue; // nothing to run
+    if (!isStaticallyKnownScript(found.script)) {
+      return {
+        decision: 'ask',
+        matchedRule: 'dynamic-shell',
+        reason: `the \`${found.shell} -c\` script is built at run time, so its command cannot be judged statically`,
+      };
+    }
+    const verdict = evaluateBashCommand(scope, found.script, depth + 1);
+    if (verdict.decision === 'deny') return verdict;
+    if (verdict.decision === 'ask') {
+      const detail = verdict.reason ?? (verdict.resolvedPath ? `target ${verdict.resolvedPath}` : verdict.matchedRule);
+      return {
+        decision: 'ask',
+        matchedRule: verdict.matchedRule,
+        reason: `\`${found.shell} -c\` script needs approval: ${detail}`,
+        // Carry the inner verdict through, so the approval request still names
+        // the path (and the sensitive entry) the inner command would touch —
+        // and the approval memory can reuse a grant for the same path.
+        ...(verdict.access !== undefined && { access: verdict.access }),
+        ...(verdict.resolvedPath !== undefined && { resolvedPath: verdict.resolvedPath }),
+        ...(verdict.matchedEntry !== undefined && {
+          matchedEntry: verdict.matchedEntry,
+          matchedSource: verdict.matchedSource,
+          sensitive: true,
+        }),
+        ...(verdict.askPaths !== undefined && { askPaths: verdict.askPaths }),
+      };
+    }
+  }
+  return undefined;
+}
+
 /**
  * Sensitive-hit sweep for a command the lexer rejected.
  *
@@ -1319,7 +1545,8 @@ function fallbackSensitiveHit(
  * `unknown` (which could not even reach that rule) to a named `read`.
  *
  * Ordering: a hard refusal (only reachable under `sensitiveMode: 'deny'`, from
- * the candidate sweep) → destructive-command tier → dynamic constructs (a
+ * the candidate sweep) → destructive-command tier → a shell `-c` script judged
+ * by these same rules (see `evaluateShellScripts`) → dynamic constructs (a
  * command substitution that is not read-only, an output redirection into a real
  * file, a command the lexer cannot parse) → the read-only-unverified
  * escalation (a table command that failed its deferred condition) → remaining
@@ -1439,8 +1666,10 @@ function evaluateBashCommand(
   if (firstAllow) firstAllow = { ...firstAllow, access: lineAccess };
 
   // A hard refusal (above; only under `sensitiveMode: 'deny'`) outranks
-  // everything. Then the destructive tier.
-  if (DANGEROUS_BASH_PATTERN.test(expandedCommand)) {
+  // everything. Then the destructive tier, read at the command position of
+  // every segment (see `isDangerousSegment`) — the same position the path rules
+  // use, so a wrapper prefix cannot launder the verb.
+  if (isDangerousCommandLine(segments)) {
     // Still an approval: the destructive-command rule does not decide what the
     // command does to its targets, so `matchedRule` stays `dangerous-bash`. The
     // candidate sweep may ALREADY have found a sensitive hit (`sudo cat
@@ -1466,6 +1695,12 @@ function evaluateBashCommand(
       }),
     };
   }
+
+  // A shell `-c` script is the real command: `bash -c 'cat ~/.ssh/id_rsa'` is
+  // judged as the `cat` it runs, not as the `bash` it spells. The inner verdict
+  // is merged as the stricter one (`deny` > `ask` > `allow`).
+  const shellScript = evaluateShellScripts(scope, segments, depth);
+  if (shellScript) return shellScript;
 
   // Command substitution: the inner command is judged by the same rules
   // (recursively), so `$(cat /etc/passwd)` asks for the path and
