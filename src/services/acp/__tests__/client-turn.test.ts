@@ -175,6 +175,59 @@ describe('AcpClient cancel path (§6)', () => {
       { jsonrpc: '2.0', id: 51, result: { outcome: { outcome: 'cancelled' } } },
     ]);
   });
+
+  it('onPermissionRequest teardown only detaches its own handler', async () => {
+    const seen: string[] = [];
+    const offFirst = client.onPermissionRequest(async (req) => {
+      seen.push(`first:${req.sessionId}`);
+      return { outcome: 'cancelled' };
+    });
+    const offSecond = client.onPermissionRequest(async (req) => {
+      seen.push(`second:${req.sessionId}`);
+      return { outcome: 'cancelled' };
+    });
+    // The first registration's teardown must not clear the second's handler.
+    offFirst();
+    transport.agentMessage(permissionRequest(82));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual(['second:s1']);
+    offSecond();
+    transport.agentMessage(permissionRequest(83));
+    await vi.advanceTimersByTimeAsync(0);
+    // No handler registered: answered cancelled (fail-closed), nothing crashes.
+    expect(seen).toEqual(['second:s1']);
+    expect(transport.clientMessages.find((m) => m.id === 83)).toEqual({
+      jsonrpc: '2.0',
+      id: 83,
+      result: { outcome: { outcome: 'cancelled' } },
+    });
+  });
+
+  it('falls back to sessionId "" when request_permission params.sessionId is not a string (fail-closed, no crash)', async () => {
+    const seen: Array<string | undefined> = [];
+    client.onPermissionRequest(async (req) => {
+      seen.push(req.sessionId);
+      return { outcome: 'cancelled' };
+    });
+    transport.agentMessage({
+      jsonrpc: '2.0',
+      id: 91,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 12345,
+        toolCall: { toolCallId: 't1', rawInput: { command: 'echo hi' } },
+        options: [{ optionId: 'allow', name: 'Once', kind: 'allow_once' }],
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual(['']);
+    // The response is still written — the request is answered, not dropped.
+    expect(transport.clientMessages.find((m) => m.id === 91)).toEqual({
+      jsonrpc: '2.0',
+      id: 91,
+      result: { outcome: { outcome: 'cancelled' } },
+    });
+  });
 });
 
 describe('AcpClient.close and transport failures', () => {
@@ -228,6 +281,25 @@ describe('AcpClient.close and transport failures', () => {
     await expectAcpError(prompt, 'cancelled');
   });
 
+  it('a code-0 exit with an in-flight turn settles the prompt as protocol-mismatch (unclean exit)', async () => {
+    const prompt = client.sessionPrompt('s1', blocks);
+    transport.simulateExit({ code: 0, signal: null, reason: 'crash', cancelled: false });
+    const err = await expectAcpError(prompt, 'protocol-mismatch');
+    expect(err.message).toContain('code 0');
+    expect(err.detail?.reason).toBe('agent 退出但回合未结束');
+    expect(err.userMessage).toContain('agent 退出但回合未结束');
+  });
+
+  it('a code-0 exit with no in-flight turn raises no error (only the standard fail-fast)', async () => {
+    const prompt = client.sessionPrompt('s1', blocks);
+    transport.agentMessage(response(1, { stopReason: 'end_turn' }));
+    await expect(prompt).resolves.toMatchObject({ stopReason: 'end_turn' });
+    transport.simulateExit({ code: 0, signal: null, reason: 'crash', cancelled: false });
+    // Nothing was in flight: the client closes without classifying anything as
+    // protocol-mismatch — the next request fails fast with the usual code.
+    await expectAcpError(client.sessionNew({ cwd: '/w', mcpServers: [] }), 'transport-closed');
+  });
+
   it('a fatal protocol error (e.g. framing) takes precedence over the later close settlement', async () => {
     const prompt = client.sessionPrompt('s1', blocks);
     transport.emitStreamError(new AcpError('protocol-mismatch', 'ndjson framing error: line exceeds 65536 bytes'));
@@ -238,12 +310,25 @@ describe('AcpClient.close and transport failures', () => {
     await expect(client.close('shutdown')).resolves.toMatchObject({ reason: 'shutdown' });
   });
 
-  it('a non-Acp stream error is counted without settling anything', async () => {
+  it('a non-Acp stream error converges pending prompts as transport-closed and closes with reason crash', async () => {
     const prompt = client.sessionPrompt('s1', blocks);
     transport.emitStreamError(new Error('EPIPE'));
+    const err = await expectAcpError(prompt, 'transport-closed');
+    expect(err.message).toContain('EPIPE');
     expect(client.stats.streamErrors).toBe(1);
-    transport.agentMessage(response(1, { stopReason: 'end_turn' }));
-    await expect(prompt).resolves.toMatchObject({ stopReason: 'end_turn' });
+    expect(transport.closeCalls).toEqual([{ sigtermWaitMs: 2_000, reason: 'crash' }]);
+  });
+
+  it('a non-Acp stream error converges a hanging prompt even when promptMs=0 (no orphaned timer handles)', async () => {
+    // promptMs defaults to 0: the agent never answers and no cancel timer is
+    // armed — the stream error is the only thing that can settle the turn.
+    const prompt = client.sessionPrompt('s1', blocks);
+    const assertion = expectAcpError(prompt, 'transport-closed');
+    transport.emitStreamError(new Error('read ECONNRESET'));
+    const err = await assertion; // settles on the error itself, not on any timer
+    expect(err.message).toContain('ECONNRESET');
+    expect(client.stats.streamErrors).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('promptMs cancel flow also cancels pending permissions mid-turn', async () => {

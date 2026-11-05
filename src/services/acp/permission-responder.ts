@@ -45,6 +45,11 @@ export class AcpPermissionResponder {
     this.handler = handler;
   }
 
+  /** Detach `handler` only while it is still the registered one (symmetric teardown for multiple registrations). */
+  clearIfCurrent(handler: PermissionHandler): void {
+    if (this.handler === handler) this.handler = null;
+  }
+
   /**
    * Handle one `session/request_permission` peer request: parse params, arm
    * the fail-closed timer, dispatch to the registered handler (or answer

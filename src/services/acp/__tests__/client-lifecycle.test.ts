@@ -89,9 +89,25 @@ describe('AcpClient.initialize', () => {
     const err = await assertion;
     expect(err.message).toContain('15000ms');
     expect(err.userMessage).toContain('握手超时');
+    expect(err.userMessage).toContain('15s 无 initialize 响应');
     expect(transport.closeCalls).toEqual([{ sigtermWaitMs: 2_000, reason: 'shutdown' }]);
     // After the transport is closed, further requests fail fast instead of hanging.
     await expectAcpError(client.sessionNew({ cwd: '/w', mcpServers: [] }), 'transport-closed');
+  });
+
+  it('counts a late initialize response as an unknown id without reviving pending', async () => {
+    const initialized = client.initialize();
+    const assertion = expectAcpError(initialized, 'handshake-timeout');
+    // Fire the timer synchronously and answer in the same tick — after the
+    // request is detached (timeout) but before initialize's catch path
+    // unsubscribes from the transport, exactly like an agent racing the timeout.
+    vi.advanceTimersByTime(15_000);
+    transport.agentMessage(response(1, HANDSHAKE_RESULT));
+    await assertion;
+    // The late response is dropped as unknown, and the request is not revived.
+    expect(client.stats.unknownResponseIds).toBe(1);
+    expect(transport.closeCalls).toEqual([{ sigtermWaitMs: 2_000, reason: 'shutdown' }]);
+    expect(transport.isClosed).toBe(true);
   });
 
   it('rejects a protocol version other than 1 as protocol-mismatch and closes', async () => {
@@ -99,6 +115,7 @@ describe('AcpClient.initialize', () => {
     transport.agentMessage(response(1, { ...HANDSHAKE_RESULT, protocolVersion: 2 }));
     const err = await expectAcpError(initialized, 'protocol-mismatch');
     expect(err.message).toContain('2');
+    expect(err.userMessage).toContain('版本 2');
     expect(transport.closeCalls[0].reason).toBe('shutdown');
   });
 

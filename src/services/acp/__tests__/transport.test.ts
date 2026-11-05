@@ -68,9 +68,19 @@ describe('StdioAcpTransport.start', () => {
     await transport.close({ sigtermWaitMs: 2_000, reason: 'shutdown' });
   });
 
-  it('maps ENOENT to AcpError(cli-missing)', async () => {
+  it('maps ENOENT to AcpError(cli-missing) with the errno summary in userMessage', async () => {
     const transport = new StdioAcpTransport(nodeAgentConfig([], { command: 'wayang-no-such-command-xyz' }));
-    await expect(transport.start()).rejects.toMatchObject({ code: 'cli-missing' });
+    const err = await transport.start().then(
+      () => {
+        throw new Error('expected start() to reject');
+      },
+      (failure) => failure,
+    );
+    expect(err).toBeInstanceOf(AcpError);
+    expect(err.code).toBe('cli-missing');
+    expect(err.message).toContain('ENOENT');
+    expect(err.userMessage).toContain('无法启动');
+    expect(err.userMessage).toContain('ENOENT');
   });
 
   itNonRoot('maps EACCES (non-executable file) to AcpError(cli-missing)', async () => {
@@ -78,6 +88,40 @@ describe('StdioAcpTransport.start', () => {
     writeFileSync(noExec, 'echo hi\n', { mode: 0o644 });
     const transport = new StdioAcpTransport(nodeAgentConfig([], { command: noExec }));
     await expect(transport.start()).rejects.toMatchObject({ code: 'cli-missing' });
+  });
+
+  it('a synchronous spawn throw marks the transport failed: a second start() rejects, close() still settles', async () => {
+    const transport = new StdioAcpTransport(nodeAgentConfig([], { command: null as unknown as string }));
+    const first = await transport.start().then(
+      () => {
+        throw new Error('expected start() to reject');
+      },
+      (failure) => failure,
+    );
+    expect(first).toBeInstanceOf(AcpError);
+    expect(first.code).toBe('cli-missing');
+    // The recorded failure rethrows instead of silently resolving.
+    const second = await transport.start().then(
+      () => {
+        throw new Error('expected the second start() to reject');
+      },
+      (failure) => failure,
+    );
+    expect(second).toBe(first);
+    const info = await transport.close({ sigtermWaitMs: 100, reason: 'shutdown' });
+    expect(info).toEqual({ code: null, signal: null, reason: 'shutdown', cancelled: false });
+  });
+
+  it('validates timeouts at construction: NaN waits throw protocol-mismatch (never skipping the SIGTERM rung)', () => {
+    let thrown: unknown;
+    try {
+      new StdioAcpTransport(nodeAgentConfig([], { timeouts: { ...DEFAULT_ACP_TIMEOUTS, sigtermWaitMs: Number.NaN } }));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(AcpError);
+    expect((thrown as AcpError).code).toBe('protocol-mismatch');
+    expect((thrown as AcpError).message).toContain('sigtermWaitMs');
   });
 
   // NOTE: ENOEXEC is not observable through node spawn on glibc: execvp

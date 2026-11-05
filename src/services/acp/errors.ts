@@ -21,6 +21,13 @@ export interface AcpErrorDetail {
   exit?: AcpExitInfo;
   rpc?: { code: number; message: string };
   stderrTail?: string[];
+  /**
+   * errno summary / mismatch cause / timeout seconds — the fields the frozen
+   * §4 templates interpolate. The protocol layer fills them at every
+   * construction site so `userMessage` is complete without a worker re-render.
+   */
+  reason?: string;
+  seconds?: number;
 }
 
 export interface AcpUserMessageContext {
@@ -123,6 +130,8 @@ export class AcpError extends Error {
       rpc: detail?.rpc,
       exit: detail?.exit,
       stderrTail: detail?.stderrTail,
+      reason: detail?.reason,
+      seconds: detail?.seconds,
     });
   }
 }
