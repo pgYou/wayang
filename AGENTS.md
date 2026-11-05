@@ -134,6 +134,25 @@ Config file (`~/.wayang.config.json` or `--config`): defines providers, controll
 - **Session persistence**: sessions are stored under `~/.wayang/` with JSONL conversation logs for crash recovery and resume (`--resume`).
 - **Context compaction**: ControllerAgent uses LLM-based summarization when context window fills up, with fallback to half-truncation.
 
+## 文件规模
+
+单体文件过长不只是可读性问题：worker（尤其第三方 agent）读取整篇时会超时或卡死，改造时改动面难以评估，review 也难。以下为标准：
+
+- **TS/TSX 源文件**：硬上限 500 行，建议 ≤300 行。超过 500 行必须在重构 issue 中登记并排期拆分。
+- **测试文件**：建议 ≤800 行，超过按模块拆：一个 `describe` 一个文件，共享夹具抽到独立 fixture 文件。
+- **文档**：硬上限 500 行，建议 ≤300 行。设计文档按「索引 + 分册」拆：索引页写目标、范围与分册目录，分册各管一个主题（协议、providers、实施计划等）。
+- **例外**：自动生成的文件（若存在）在文件头注释里注明豁免与生成来源，不受上述上限约束。
+
+自查：
+
+```bash
+find src -name "*.ts" -o -name "*.tsx" | grep -v __tests__ | xargs wc -l | sort -rn | head -20
+find src -path "*__tests__*" \( -name "*.ts" -o -name "*.tsx" \) | xargs wc -l | sort -rn | head -10
+find docs -name "*.md" | xargs wc -l | sort -rn | head -10
+```
+
+拆分遵循纯搬移原则：只移动与调整 import，不改行为；原路径 re-export 保持公开导出面兼容；一个文件一个提交，便于回滚与 review。
+
 ## Before Implementing, Confirm the Approach
 
 - **Stop and describe your planned approach in 2-3 sentences before making significant changes**, especially to core architecture, state management, or agent patterns.
