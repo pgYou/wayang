@@ -26,7 +26,7 @@
 - 敏感命中：`sensitive:true` + `matchedRule:'sensitive-list'`；`sensitiveMode` 默认 `'ask'` → 走审批；`'deny'` → 硬拒（唯一产生 `deny` 裁决的路径）。
 - 与冻结页冲突时以冻结页 §5 为准（冻结页开头已声明本层冲突裁决规则）。
 
-**权限桥的输入合并**（冻结页 §5 开头）：`request.params.toolCall` 与累积器里同 toolCallId 的事件**合并后判定**——实测请求里 toolCall 无 kind、无 title，rawInput 只有 `{command, description}`；首事件 rawInput 可为空（01 分册 §4 第 1 条）。判定永远基于合并结果，单事件判定是 bug。
+**权限桥的输入合并**（冻结页 §5 开头）：`request.params.toolCall` 与累积器里同 toolCallId 的事件**合并后判定**——实测（§9）：codebuddy 请求 toolCall 无 kind/title/name，rawInput 为 `{command,description}`（bash）或 `{file_path,content}`（Write）；opencode（注入权限闸后）请求 toolCall 为全量形状，rawInput 为 `{path,content}`。首事件 rawInput 可为空（01 分册 §4 第 1 条）。判定永远基于合并结果，单事件判定是 bug。
 
 ## 3. approval memory（issue #46，0.8.4 既有机制，ACP 直接接入）
 
@@ -66,3 +66,33 @@ client 在 `initialize` 里声明不支持 `fs/*`、`terminal/*`、`elicitation`
 ## 8. 信号载荷（复用现有通路，零新增类型）
 
 `ask` → 发 `permission_request` 信号（`PermissionRequestSignalPayload` 全字段）：`toolName = toolCall.name ?? kind`；`toolArgs = 合并后的 rawInput`（缺则 `{locations}`）；description 按现有格式（bash → `Execute shell command: <command>`、文件 → `<name>: <path>`）；`matchedRule` / `matchedEntry` / `matchedSource` / `resolvedPath` / `sensitive` / `access` / `operation` 从 verdict 投影。批准 → 选中 allow 选项；拒绝 → selectRejectOption + 审计 `denied` source `'controller'`；超时 → selectRejectOption + source `'timeout'`。`respond_permission` 工具零改动（§3）。
+
+## 9. 拒绝 → cancelled：回合收尾语义与请求形态（2026-11-05 复测，两家一致）
+
+### 9.1 拒绝也以 cancelled 收尾（stopReason 不再自证取消）
+
+**实测事实**：用户拒绝权限后，两家 agent 都让回合以 `stopReason:'cancelled'` 收尾——codebuddy 附 `_meta.codebuddy.ai/outcome:'PERMISSION_DENIED'` 与 `errorMessage` `"Permission denied for tool(s): unknown"`，距拒绝响应约 285ms；opencode 同为 `cancelled`。**因此 cancelled ≠ 用户取消**：单看 stopReason 无法区分「用户点了拒绝」与「用户取消了任务」。
+
+**映射规则（worker 层，收窄 02 分册 §4 的 cancelled 行与冻结页 §4）**——按**本回合拒绝次数**区分：
+
+| 本回合拒绝次数 | stopReason 'cancelled' 的归因 | WorkerResult |
+| --- | --- | --- |
+| ≥1（permission 审计已落 `denied`） | 权限被用户拒绝 | `failed('Permission denied by user: <tool>')` |
+| 0 | 用户/上层主动取消 | `failed('Aborted')`（引擎 `consumeCancelled` 既有路径） |
+
+拒绝发生在回合 settle 之前（审计先落 `denied` source `'controller'`），计数在收口时天然可得；`_meta` 厂商字段只作旁证，不作判据（01 分册 §4 第 5 条）。
+
+### 9.2 哪些工具会请求权限（实测触发面）
+
+- **codebuddy 2.180.0**：只对**有副作用的工具**发 `request_permission`——bash / Write 发，read / search 不发。后者由 agent 自治执行，wayang 侧裁决不可达（安全边界见 §7）。
+- **opencode 2.2.5**：默认权限全 allow（仅 `.env` 读取 ask）→ **不发任何请求**，权限桥被整体旁路（03 分册 §3.2）；**注入权限闸（ask-all）后**请求才出现，且每个工具执行都会 ask。`protocol.gatePermissions`（05 分册 §3，默认 true）控制注入。
+
+### 9.3 请求形态与选项（实测，进 permission-bridge 断言）
+
+| 维度 | codebuddy 2.180.0 | opencode 2.2.5（注入权限闸后） |
+| --- | --- | --- |
+| 请求 toolCall | 无 kind / title / name，判定靠合并累积器 + 形态推断 | 全量形状（`name:'write'`、`kind:'edit'`、`locations` 齐备） |
+| rawInput 键 | bash `{command,description}`；Write `{file_path,content}` | write `{path,content}`——**键名是 `path` 不是 `file_path`**，冻结页 §5 提取链已覆盖 |
+| 选项（optionId） | `allow_always('allow_always')` / `allow_once('allow')` / `reject_once('reject')`，`allow_always` 排第一 | `allow_once('once')` / `allow_always('always')` / `reject_once('reject')` |
+
+两家 optionId 字面值不同，再次印证 §5 铁律：**选择只按 kind**（allow_once > allow_always、reject_once > reject_always），代码里禁止对 optionId 字面值做比较或匹配。
