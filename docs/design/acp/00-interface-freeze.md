@@ -308,3 +308,20 @@ export function mapSessionUpdate(update: AcpSessionUpdate, acc: AcpToolAccumulat
 ```
 
 结论：initialize / session-new / prompt / request_permission / cancel 五项全部实测成功；本页标注「实测」的行为均来自本次输出。如实标注的未实测项：opencode 全链路（未安装）、codebuddy 的 authenticate 与 session/load、plan/notice/compaction 变体、mcpServers 注入、多回合中途消息（回合边界交付由 §8 fake 测试覆盖）。
+
+## 10. 实测勘误（2026-11-05 复测：codebuddy 2.180.0 + opencode 2.2.5）
+
+冻结正文（§1-§9）不作改动；以下为同日复测与冻结正文的差异清单，细节归位在分册。复测环境：codebuddy 2.180.0（`/usr/local/nodejs/bin/codebuddy`，别名 `cbc`）；opencode 2.2.5（npm 全局 `@opencode/cli`，Bun standalone 二进制；`opencode acp` 子命令存在，仅 `--login` 一个 flag）。两家 `initialize` 均返回 `protocolVersion:1`。
+
+| # | 冻结正文 | 复测结论 | 归位 |
+| --- | --- | --- | --- |
+| 1 | §2.3/§3：tool_call 首事件可 rawInput 空、kind 'other' | 2.180.0 首事件**同时**带 `input:{}` 与 `rawInput:{}`（`input` 是厂商键，应忽略）；同 id 全量重发修正 kind 不变，全量重发的 rawInput 新增 `timeout`。**opencode 首条 tool_call 即全量**（name/title/kind/status/locations/rawInput 齐备）——累积器 upsert/合并语义同时覆盖两种形态，接口签名不变 | 03 分册 §2.1/§3.1 |
+| 2 | §2.3 兜底行 / §3 表：忽略集合 | 2.180.0 回合实测 `config_option_update`×1（此前未观察到，属 §2.3 已列忽略集合，计数即可）；`session_info_update` 高达 50 条/回合，忽略集合在压力下工作正常 | 03 分册 §2.1 |
+| 3 | §4 `cancelled` 行：主动取消路径 | **用户拒绝权限也以 `stopReason:'cancelled'` 收尾**（codebuddy 附 `_meta.codebuddy.ai/outcome:'PERMISSION_DENIED'` 与 errorMessage `"Permission denied for tool(s): unknown"`，约 285ms；opencode 同）——cancelled ≠ 用户取消。worker 层按本回合拒绝次数区分：有拒绝 → `failed('Permission denied by user: <tool>')`；无拒绝 → `failed('Aborted')`。02 分册 §4 的 cancelled 行按此收窄 | 04 分册 §9.1 |
+| 4 | §5 输入合并：请求 toolCall 无 kind/title，rawInput {command,description} | 2.180.0 请求 toolCall 仍无 kind/title/name；rawInput 为 {command,description}（bash）或 {file_path,content}（Write）；**只对有副作用的工具发**（read/search 不发）。opencode（注入权限闸后）请求为全量形状（name/kind/locations 齐备），rawInput {path,content}——键名是 `path`；§5 提取链本就覆盖 | 04 分册 §9.2/§9.3 |
+| 5 | §5 optionId：allow / reject / allow_always | 2.180.0 为 allow_always('allow_always') / allow_once('allow') / reject_once('reject')；opencode 为 once / always / reject——再次印证 optionId 是任意串、只能按 kind 选 | 04 分册 §9.3 |
+| 6 | §6：cancel 后 45ms 返回、迟到 update 1 条 | 2.180.0：242ms 返回、迟到 3 条（收尾性质，trustUpdatesAfterCancel=true 保留写入）；opencode：20ms、迟到 2 条（false 丢弃计数）。两家 agent 均自行杀工具子进程；cancelGraceMs 默认（8000/5000）裕度仍足 | 03 分册 §2.1/§3.1 |
+| 7 | （冻结页未对 opencode 权限行为作假设） | **opencode 2.2.5 默认权限全 allow**（仅 .env 读取 ask）：不注入配置时对 bash 与文件写（含 workspace 外）从不发 request_permission，越界写静默落盘——权限桥被整体旁路。修复：注入 ask-all 权限闸（子进程 env `OPENCODE_CONFIG` 或 workspace 根 `opencode.json`，内容 `{"permissions":[{"action":"*","resource":"*","effect":"ask"}]}`），由新增配置 `protocol.gatePermissions`（默认 true）控制 | 03 分册 §3.2、05 分册 §3.1 |
+| 8 | §9 环境行（2.167.0） | 复测版本：codebuddy 2.180.0（§9 证据为 2.167.0，保留不动）。opencode 新增实测：authMethods 单项 `["Login with opencode"]`、agentInfo `{name:"OpenCode", version:"2.2.5"}`、session/new 键 `[sessionId, configOptions]` | 03 分册 §3.1 |
+
+验收口径补充：原 §8 用例 1-5 的 fake e2e 夹具（`e2e/fixtures/fake-acp-agent.cjs`）未交付，改以 opt-in 真机用例覆盖（`ACP_REAL_CODEBUDDY=1` / `ACP_REAL_OPENCODE=1`，默认跳过；另有默认常跑的受控 PATH cli-missing 用例）；是否补登 fake 夹具为待办，见 06 分册 §3/§5。
