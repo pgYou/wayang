@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.9.0 (2026-11-05)
+
+规划段：本版范围先以草案记录，实施完成后按实际交付校准。
+
+### ACP worker 适配层（Refs #25）
+
+- 计划新增 `src/services/acp/` 协议层：ndjson 上的 JSON-RPC，不引入新依赖。
+- 计划新增 `BaseAcpWorker` 骨架，以及 codebuddy / opencode 两个 provider 薄类。
+- 计划把 ACP permission 请求接入现有 approval 通路。
+- 计划环境就绪 fail-fast：缺少 CLI 时给出安装与认证步骤，不静默降级。
+
+### 大文件拆分（Refs #50）
+
+- 计划按纯搬移原则拆分 >500 行的源文件，用 re-export 保持导出面兼容。
+
+### 说明
+
+- 真人实测（codebuddy 登录态、opencode 安装）不在本版验收范围；provider 类标记 experimental，需在配置里显式开启。
+
 ## v0.8.4 (2026-11-05)
 
 ### 路径语义与 CLI
