@@ -1,5 +1,8 @@
 // --- Config ---
 
+import type { AcpTimeouts } from '@/services/acp/config';
+import type { AcpCapabilities } from '@/services/acp/types';
+
 /**
  * LLM tool-choice mode passed through to the provider (OpenAI `tool_choice`).
  * - 'auto': let the model decide. This is the default for puppet workers —
@@ -38,10 +41,37 @@ export interface ProviderConfig {
   contextWindowTokens?: number;
 }
 
+/**
+ * Implementation type identifiers for configured workers (05 booklet §1).
+ * `WORKER_TYPES` is the single source of truth: the dispatch switch cases,
+ * `validateConfig`'s allowed values, and error messages all reference it.
+ */
+export type WorkerType = 'claude-code' | 'codebuddy-acp' | 'opencode-acp';
+
+/** Allowed `workers.<id>.type` values — see `WorkerType` (05 §1). */
+export const WORKER_TYPES: readonly WorkerType[] = ['claude-code', 'codebuddy-acp', 'opencode-acp'];
+
+/**
+ * Protocol-level overrides for `*-acp` workers (05 §3). Field names align
+ * with the frozen `AcpTimeouts` (freeze page §2.1) — there is deliberately no
+ * second timeout vocabulary. Shape-compatible with the worker layer's
+ * `AcpProtocolOverrides` (asserted by tests; C2 must not fork it).
+ */
+export interface AcpProtocolConfig extends Partial<AcpTimeouts> {
+  /**
+   * Override the observed capabilities (permissionRequests / toolCalls) with
+   * honest values — no downgrade assumptions (05 §3).
+   */
+  capabilities?: Partial<Pick<AcpCapabilities, 'permissionRequests' | 'toolCalls'>>;
+}
+
 /** Third-party worker configuration. */
 export interface WorkerConfig {
-  /** Implementation type identifier (e.g. 'claude-code'). */
-  type: string;
+  /**
+   * Implementation type identifier — one of `WORKER_TYPES` (05 §1). Unknown
+   * values are rejected at config load by `validateConfig`, not at dispatch.
+   */
+  type: WorkerType;
   /** Whether this worker is enabled. Defaults to true. */
   enable?: boolean;
   /** Display emoji for quick visual identification. */
@@ -50,10 +80,27 @@ export interface WorkerConfig {
   description: string;
   /** Capability tags for task routing. */
   capabilities?: string[];
-  /** Max agent execution turns. */
+  /** Max agent execution turns. Ignored for `*-acp` (ACP has no turn cap). */
   maxTurns?: number;
-  /** Path to the worker CLI executable. Defaults to auto-detect. */
+  /** Path to the worker CLI executable (claude-code only). Defaults to auto-detect. */
   cliPath?: string;
+  // --- `*-acp` rows (05 §2). Rejected for `claude-code` (validateConfig rule 4). ---
+
+  /** Override the provider's ACP executable; must be resolvable from PATH. */
+  command?: string;
+  /** Override the provider's default args (`['--acp']` / `['acp']`). */
+  args?: string[];
+  /** Extra env merged over `process.env` for the child process (worker layer merges). */
+  env?: Record<string, string>;
+  /** Timeout / capability overrides; provider defaults apply when omitted. */
+  protocol?: AcpProtocolConfig;
+  /**
+   * `'client'` (default): wayang bridges `request_permission` through the
+   * shared permission bridge; `'agent'`: the agent owns its permissions — a
+   * request that still arrives is answered cancelled and audited, never
+   * silently allowed (04 booklet §6).
+   */
+  permissionMode?: 'client' | 'agent';
 }
 
 /**
@@ -165,6 +212,116 @@ export interface WayangConfig {
   logging?: LoggingConfig;
 }
 
+/** Whether `type` is one of the two ACP worker rows (05 §2). */
+function isAcpWorkerType(type: WorkerType): type is 'codebuddy-acp' | 'opencode-acp' {
+  return type === 'codebuddy-acp' || type === 'opencode-acp';
+}
+
+/** Timeout fields of `AcpProtocolConfig` (05 §3); `promptMs` alone allows 0. */
+const ACP_TIMEOUT_KEYS = ['handshakeMs', 'sessionNewMs', 'promptMs', 'permissionMs', 'cancelGraceMs', 'sigtermWaitMs'] as const;
+
+/** Allowed keys of `protocol.capabilities` (05 §3). */
+const ACP_CAPABILITY_KEYS = ['permissionRequests', 'toolCalls'] as const;
+
+/**
+ * Validate one `workers.<id>` row (05 §5). Returns the error message or null.
+ *
+ * Values arrive from `JSON.parse`, so every field is checked defensively —
+ * the `WorkerConfig` typing is what the config CLAIMS, not what it is.
+ * `enable: false` rows are validated too: a config error must not hide
+ * behind a disabled row (rule 7).
+ */
+function validateWorkerEntry(id: string, worker: WorkerConfig): string | null {
+  const at = `workers.${id}`;
+  if (typeof worker !== 'object' || worker === null) {
+    return `${at} must be an object`;
+  }
+
+  // Rule 1 + 2: type is required, 'puppet' gets its own message, unknown
+  // values list every allowed one.
+  const type = worker.type as string;
+  if (typeof type !== 'string' || type.length === 0) {
+    return `${at}.type is required (allowed: ${WORKER_TYPES.join(', ')})`;
+  }
+  if (type === 'puppet') {
+    return `${at}.type: puppet is a built-in worker type, do not declare it under workers`;
+  }
+  if (!(WORKER_TYPES as readonly string[]).includes(type)) {
+    return `${at}.type "${type}" is not supported (allowed: ${WORKER_TYPES.join(', ')})`;
+  }
+
+  // Rule 3: common field shapes.
+  if (typeof worker.description !== 'string' || worker.description.length === 0) {
+    return `${at}.description must be a non-empty string`;
+  }
+  if (worker.capabilities !== undefined && (!Array.isArray(worker.capabilities) || worker.capabilities.some((c) => typeof c !== 'string'))) {
+    return `${at}.capabilities must be an array of strings (got ${JSON.stringify(worker.capabilities)})`;
+  }
+  if (worker.emoji !== undefined && typeof worker.emoji !== 'string') {
+    return `${at}.emoji must be a string (got ${JSON.stringify(worker.emoji)})`;
+  }
+
+  // Rule 4: claude-code must not mix in the ACP launch semantics.
+  if (type === 'claude-code') {
+    for (const key of ['command', 'args', 'env', 'protocol'] as const) {
+      if (worker[key] !== undefined) {
+        return `${at}.${key} is not supported for type "claude-code" (claude-code uses cliPath)`;
+      }
+    }
+  }
+
+  // Rule 5: `*-acp` row shapes.
+  if (isAcpWorkerType(worker.type)) {
+    if (worker.command !== undefined && (typeof worker.command !== 'string' || worker.command.length === 0)) {
+      return `${at}.command must be a non-empty string (got ${JSON.stringify(worker.command)})`;
+    }
+    if (worker.args !== undefined && (!Array.isArray(worker.args) || worker.args.some((a) => typeof a !== 'string'))) {
+      return `${at}.args must be an array of strings (got ${JSON.stringify(worker.args)})`;
+    }
+    const env = worker.env;
+    if (env !== undefined && (typeof env !== 'object' || env === null || Array.isArray(env) || Object.values(env).some((v) => typeof v !== 'string'))) {
+      return `${at}.env must be a record of string to string (got ${JSON.stringify(env)})`;
+    }
+    const protocol = worker.protocol;
+    if (protocol !== undefined) {
+      if (typeof protocol !== 'object' || protocol === null || Array.isArray(protocol)) {
+        return `${at}.protocol must be an object (got ${JSON.stringify(protocol)})`;
+      }
+      const record = protocol as Record<string, unknown>;
+      for (const key of ACP_TIMEOUT_KEYS) {
+        const value = record[key];
+        if (value === undefined) continue;
+        const ok = typeof value === 'number' && Number.isFinite(value) && (key === 'promptMs' ? value >= 0 : value > 0);
+        if (!ok) {
+          return `${at}.protocol.${key} must be a ${key === 'promptMs' ? 'non-negative' : 'positive'} number (got ${JSON.stringify(value)})`;
+        }
+      }
+      const caps = record.capabilities;
+      if (caps !== undefined) {
+        if (typeof caps !== 'object' || caps === null || Array.isArray(caps)) {
+          return `${at}.protocol.capabilities must be an object (got ${JSON.stringify(caps)})`;
+        }
+        for (const [key, value] of Object.entries(caps as Record<string, unknown>)) {
+          if (!(ACP_CAPABILITY_KEYS as readonly string[]).includes(key)) {
+            return `${at}.protocol.capabilities.${key} is not a known capability (allowed: ${ACP_CAPABILITY_KEYS.join(', ')})`;
+          }
+          if (typeof value !== 'boolean') {
+            return `${at}.protocol.capabilities.${key} must be a boolean (got ${JSON.stringify(value)})`;
+          }
+        }
+      }
+    }
+  }
+
+  // Rule 6: permissionMode value (checked for every type).
+  const permissionMode = worker.permissionMode;
+  if (permissionMode !== undefined && permissionMode !== 'client' && permissionMode !== 'agent') {
+    return `${at}.permissionMode must be 'client' or 'agent' (got ${JSON.stringify(permissionMode)})`;
+  }
+
+  return null;
+}
+
 /** Validate required fields, return error message or null */
 export function validateConfig(config: WayangConfig): string | null {
   for (const [name, provider] of Object.entries(config.providers)) {
@@ -180,6 +337,13 @@ export function validateConfig(config: WayangConfig): string | null {
   if (!config.providers[cp]) return `controller.provider "${cp}" not found`;
   const wp = config.worker.provider;
   if (!config.providers[wp]) return `worker.provider "${wp}" not found`;
+  const workers = config.workers;
+  if (workers !== undefined && workers !== null) {
+    for (const [id, worker] of Object.entries(workers)) {
+      const err = validateWorkerEntry(id, worker);
+      if (err) return err;
+    }
+  }
   const permission = config.permission;
   if (permission !== undefined && permission !== null) {
     // `deniedDirs` is the deprecated alias of `sensitiveDirs`; both are read,
@@ -213,4 +377,26 @@ export function validateConfig(config: WayangConfig): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Collect non-fatal `workers` warnings (05 §4): `maxTurns` and `cliPath` have
+ * no effect on `*-acp` rows (ACP has no turn cap — the agent's own config
+ * decides; the executable is chosen via `command`). Existing configs must
+ * keep loading, so these warn instead of failing validation. The caller
+ * prints them once at config load.
+ */
+export function collectWorkerWarnings(config: WayangConfig): string[] {
+  const warnings: string[] = [];
+  for (const [id, worker] of Object.entries(config.workers ?? {})) {
+    if (typeof worker !== 'object' || worker === null) continue;
+    if (!isAcpWorkerType(worker.type)) continue;
+    if (worker.maxTurns !== undefined) {
+      warnings.push(`workers.${id}.maxTurns has no effect on type "${worker.type}" (ACP has no turn cap)`);
+    }
+    if (worker.cliPath !== undefined) {
+      warnings.push(`workers.${id}.cliPath has no effect on type "${worker.type}" (*-acp workers use "command")`);
+    }
+  }
+  return warnings;
 }
