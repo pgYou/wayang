@@ -3,6 +3,7 @@ import type { ExecException } from 'node:child_process';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
+import { expandHome } from './permission-rules';
 
 /** Quote a string for safe shell argument usage. */
 function shellQuote(s: string): string {
@@ -27,7 +28,10 @@ export function searchContentTool(deps: { cwd?: string }) {
         .describe('File pattern to include (e.g. "*.ts", "*.py")'),
     }),
     execute: safeExecute('search_content', async ({ query, path, include }) => {
-      const searchDir = path ? resolve(workspace, path) : workspace;
+      // `~` / `$HOME` expand against the PROCESS home — the same anchor the
+      // permission gate judges (`expandHome`), so the search runs on the path
+      // that was approved.
+      const searchDir = path ? resolve(workspace, expandHome(path).path) : workspace;
       const cmd = `grep -rn${include ? ` --include=${shellQuote(include)}` : ''} -- ${shellQuote(query)} ${shellQuote(searchDir)}`;
 
       try {

@@ -35,7 +35,7 @@ function createSupervisor(tempDir: string, configOverrides?: Partial<WayangConfi
   const sup = new Supervisor({
     config: makeConfig(configOverrides),
     workspaceDir: tempDir,
-    homeDir: tempDir,
+    dataDir: tempDir,
     logLevel: 'silent',
     resume,
   });
@@ -68,12 +68,12 @@ function makeStoredTask(id: string, overrides?: Partial<TaskDetail>): TaskDetail
  * workspace backfill.
  */
 function writeSession(
-  homeDir: string,
+  dataDir: string,
   sessionId: string,
   meta: Record<string, unknown>,
   tasks: TaskDetail[],
 ): { sessionId: string; sessionDir: string } {
-  const sessionDir = join(homeDir, 'sessions', sessionId);
+  const sessionDir = join(dataDir, 'sessions', sessionId);
   mkdirSync(sessionDir, { recursive: true });
   writeFileSync(
     join(sessionDir, 'meta.json'),
@@ -136,11 +136,11 @@ describe('Supervisor', () => {
       expect(sup.ctx.sessionDir).toContain(tempDir);
     });
 
-    it('should throw when homeDir missing for new session', () => {
+    it('should throw when dataDir missing for new session', () => {
       expect(() => new Supervisor({
         config: defaultConfig,
         workspaceDir: tempDir,
-      })).toThrow('homeDir is required');
+      })).toThrow('dataDir is required');
     });
 
     it('should create session from resume options', () => {

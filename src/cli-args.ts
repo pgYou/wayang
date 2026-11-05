@@ -34,6 +34,7 @@
  */
 
 import meow from 'meow';
+import { resolve } from 'node:path';
 
 export const CLI_HELP_TEXT = `
   Usage
@@ -45,7 +46,10 @@ export const CLI_HELP_TEXT = `
     $ wayang server                Run the headless logic process (RPC over stdio)
 
   Options
-    --home-dir <path>       Root directory for sessions and config (default: $HOME)
+    --wayang-root <path>    Wayang root directory: data lives at <path>/.wayang
+                            (sessions, audit, skills), config at
+                            <path>/.wayang.config.json (default: $HOME, i.e.
+                            ~/.wayang and ~/.wayang.config.json)
     --workspace-dir, -w     Working directory for tools (default: pwd)
                             Alias: --workspace.
                             New session: recorded as its initial workspace.
@@ -65,9 +69,16 @@ export const CLI_HELP_TEXT = `
 
   Deprecated
     --fresh                 Alias of --new (same behavior); use --new instead
+    --home-dir <path>       Alias of --wayang-root (same behavior); the name
+                            never meant the OS user home — use --wayang-root
 `;
 
 const CLI_FLAGS = {
+  wayangRoot: { type: 'string' },
+  // Deprecated alias of `--wayang-root` (its name was misleading: the flag
+  // never selected the OS user home, it relocated wayang's data root).
+  // Registered as its own key so the parser accepts it; the result is folded
+  // back into the root resolution (see `resolveWayangRoot`), with a warn.
   homeDir: { type: 'string' },
   // `aliases` is asserted mutable because meow types it as `string[]`; the
   // surrounding `as const` would otherwise make the array readonly.
@@ -89,7 +100,19 @@ const CLI_FLAGS = {
 } as const;
 
 export interface CliFlags {
-  /** Root dir for sessions/config; undefined → caller falls back to $HOME. */
+  /**
+   * `--wayang-root <path>`: the root wayang anchors its runtime state under —
+   * data at `<path>/.wayang` (sessions, audit, skills), config at
+   * `<path>/.wayang.config.json`. Undefined → caller falls back to `$HOME`.
+   * This NEVER selects the OS user home used by the permission policy or `~`
+   * expansion (that is always the process `$HOME`).
+   */
+  wayangRoot?: string;
+  /**
+   * `--home-dir <path>`: DEPRECATED alias of `--wayang-root` (identical
+   * semantics). Kept so existing invocations keep working; the CLI warns once
+   * when it is used, and `--wayang-root` wins when both are given.
+   */
   homeDir?: string;
   /** Working directory for tools; undefined → caller falls back to cwd. */
   workspaceDir?: string;
@@ -338,6 +361,7 @@ export function parseCliArgs(argv: readonly string[]): CliParseResult {
     status: 'ok',
     input: cli.input,
     flags: {
+      wayangRoot: readString(flags.wayangRoot),
       homeDir: readString(flags.homeDir),
       workspaceDir: readString(flags.workspaceDir),
       config: readString(flags.config),
@@ -358,6 +382,26 @@ export function parseCliArgs(argv: readonly string[]): CliParseResult {
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Resolve the wayang ROOT directory from the parsed flags.
+ *
+ * Precedence: `--wayang-root` > the deprecated `--home-dir` > `$HOME` (the
+ * historic `~` literal when HOME is unset, preserved verbatim). The root only
+ * ever relocates wayang's runtime state (data at `<root>/.wayang`, config at
+ * `<root>/.wayang.config.json`) — it has NO effect on the user home the
+ * permission policy and `~` expansion anchor on (always the process `$HOME`).
+ *
+ * `usedDeprecatedHomeDir` tells the caller to warn: the old name suggested it
+ * selected "the home directory", which it never did.
+ */
+export function resolveWayangRoot(
+  flags: Pick<CliFlags, 'wayangRoot' | 'homeDir'>,
+  env: { HOME?: string } = process.env,
+): { root: string; usedDeprecatedHomeDir: boolean } {
+  const raw = flags.wayangRoot ?? flags.homeDir ?? (env.HOME || '~');
+  return { root: resolve(raw), usedDeprecatedHomeDir: flags.homeDir !== undefined };
 }
 
 function buildMeow(argv: readonly string[]) {

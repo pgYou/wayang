@@ -12,14 +12,14 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureGeneralWorkspace, resolveGeneralWorkspace } from '@/infra/general-workspace';
 
-let homeDir: string;
+let dataDir: string;
 
 beforeEach(() => {
-  homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-general-ws-'));
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-general-ws-'));
 });
 
 afterEach(() => {
-  fs.rmSync(homeDir, { recursive: true, force: true });
+  fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
 /** A session directory following the documented `<wayangDir>/sessions/<id>` layout. */
@@ -29,13 +29,13 @@ function sessionDirFor(home: string): string {
 
 describe('resolveGeneralWorkspace', () => {
   it('resolves to <home>/.wayang/workspace for the default session layout', () => {
-    expect(resolveGeneralWorkspace({ sessionDir: sessionDirFor(homeDir) })).toBe(
-      path.join(homeDir, '.wayang', 'workspace'),
+    expect(resolveGeneralWorkspace({ sessionDir: sessionDirFor(dataDir) })).toBe(
+      path.join(dataDir, '.wayang', 'workspace'),
     );
   });
 
   it('follows a custom wayang dir (--home-dir style, no `.wayang` segment)', () => {
-    const custom = path.join(homeDir, 'wayang-data');
+    const custom = path.join(dataDir, 'wayang-data');
     expect(resolveGeneralWorkspace({ sessionDir: path.join(custom, 'sessions', 's-1') })).toBe(
       path.join(custom, 'workspace'),
     );
@@ -50,24 +50,24 @@ describe('resolveGeneralWorkspace', () => {
   });
 
   it('never touches the filesystem', () => {
-    const dir = resolveGeneralWorkspace({ sessionDir: sessionDirFor(homeDir) });
+    const dir = resolveGeneralWorkspace({ sessionDir: sessionDirFor(dataDir) });
     expect(fs.existsSync(dir)).toBe(false);
   });
 });
 
 describe('ensureGeneralWorkspace', () => {
   it('creates the directory and returns its path', () => {
-    const dir = ensureGeneralWorkspace({ sessionDir: sessionDirFor(homeDir) });
+    const dir = ensureGeneralWorkspace({ sessionDir: sessionDirFor(dataDir) });
 
-    expect(dir).toBe(path.join(homeDir, '.wayang', 'workspace'));
+    expect(dir).toBe(path.join(dataDir, '.wayang', 'workspace'));
     expect(fs.statSync(dir).isDirectory()).toBe(true);
   });
 
   it('is idempotent and keeps existing content', () => {
-    const first = ensureGeneralWorkspace({ sessionDir: sessionDirFor(homeDir) });
+    const first = ensureGeneralWorkspace({ sessionDir: sessionDirFor(dataDir) });
     fs.writeFileSync(path.join(first, 'notes.md'), 'kept');
 
-    const second = ensureGeneralWorkspace({ sessionDir: sessionDirFor(homeDir) });
+    const second = ensureGeneralWorkspace({ sessionDir: sessionDirFor(dataDir) });
 
     expect(second).toBe(first);
     expect(fs.readFileSync(path.join(second, 'notes.md'), 'utf-8')).toBe('kept');

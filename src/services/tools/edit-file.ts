@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
+import { expandHome } from './permission-rules';
 
 export function editFileTool(deps: { cwd?: string }) {
   const workspace = deps.cwd ?? process.cwd();
@@ -17,7 +18,10 @@ export function editFileTool(deps: { cwd?: string }) {
       new_string: z.string().describe('Replacement text'),
     }),
     execute: safeExecute('edit_file', async ({ path, old_string, new_string }) => {
-      const resolved = resolve(workspace, path);
+      // `~` / `$HOME` expand against the PROCESS home — the same anchor the
+      // permission gate judges (`expandHome`), so the edit lands on the path
+      // that was approved.
+      const resolved = resolve(workspace, expandHome(path).path);
       let content: string;
       try {
         content = readFileSync(resolved, 'utf-8');

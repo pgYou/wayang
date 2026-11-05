@@ -37,7 +37,7 @@ export interface E2ESetup {
   provider: FakeProvider;
   client: RpcClient;
   workspaceDir: string;
-  homeDir: string;
+  wayangRootDir: string;
   /** E2E root dir (holds home/, workspace/ and config.json); reusable across setups. */
   root: string;
   /** Session id reported by the server's ready notification. */
@@ -72,7 +72,7 @@ export async function setupE2E(script: ScriptEntry[], options: E2EOptions = {}):
   const provider = options.provider ?? await startFakeProvider(script);
 
   const root = options.root ?? mkdtempSync(join(tmpdir(), 'wayang-e2e-'));
-  const homeDir = join(root, 'home');
+  const wayangRootDir = join(root, 'home');
   const workspaceDir = join(root, 'workspace');
   const configPath = join(root, 'config.json');
   if (!options.root) {
@@ -88,7 +88,7 @@ export async function setupE2E(script: ScriptEntry[], options: E2EOptions = {}):
     CLI_ENTRY,
     'server',
     '--config', configPath,
-    '--home-dir', homeDir,
+    '--wayang-root', wayangRootDir,
     '--workspace-dir', workspaceDir,
     '--session', options.session ?? 'new',
     '--log-level', 'silent',
@@ -137,7 +137,7 @@ export async function setupE2E(script: ScriptEntry[], options: E2EOptions = {}):
     provider,
     client,
     workspaceDir,
-    homeDir,
+    wayangRootDir,
     root,
     sessionId: String(readyParams.sessionId ?? ''),
     sessionDir: String(readyParams.sessionDir ?? ''),

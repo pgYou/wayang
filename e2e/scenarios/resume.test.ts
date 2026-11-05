@@ -1,7 +1,8 @@
 /**
  * E2E: session resume across server process restarts.
  *
- * Regression guard for the `--home-dir` double-join bug: `--home-dir` has
+ * Regression guard for the root double-join bug: `--wayang-root` (deprecated
+ * alias `--home-dir`) has
  * ROOT semantics — the server joins `.wayang` itself, so sessions must live
  * under `<home>/.wayang/sessions`, and a second server process spawned the
  * way the TUI client does (same root, `--session resume:<id>`) must find and
@@ -36,7 +37,7 @@ describe('e2e: resume across server restarts', () => {
     await s1.waitFor('controller reply', (s) =>
       JSON.stringify(s.conversation).includes('Noted: alpha-marker.'));
 
-    // `--home-dir` is a root: sessions land in <root>/home/.wayang/sessions.
+    // `--wayang-root` is a root: sessions land in <root>/home/.wayang/sessions.
     // (The double-join regression put them under <root>/home/.wayang/.wayang.)
     const sessionDir = join(s1.root, 'home', '.wayang', 'sessions', s1.sessionId);
     expect(existsSync(join(sessionDir, 'meta.json'))).toBe(true);
@@ -48,7 +49,7 @@ describe('e2e: resume across server restarts', () => {
 
     // --- Server #2: same root, explicit resume — exactly what the TUI
     // client spawns after finding the session (bootstrap passes the ROOT
-    // as --home-dir and the server resolves .wayang itself). ---
+    // as --wayang-root and the server resolves .wayang itself). ---
     const s2 = await setupE2E([], { session: `resume:${sessionId}`, root, provider });
     setups.push(s2);
 

@@ -8,6 +8,8 @@ import { SkillRegistry } from '@/services/skills/registry';
 import { resolveSkillDirs } from '@/services/skills/skill-dir';
 import { readSessionUnfinishedTasks } from '@/infra/session-helpers';
 import { SessionLock } from '@/infra/session-lock';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { ConversationIndex, TurnView, WayangConfig } from '@/types/index';
 
 /** Parameters for Supervisor initialization. */
@@ -17,8 +19,12 @@ export interface SupervisorOptions {
   logLevel?: string;
   /** Resume a specific session. Omit for new session. */
   resume?: { sessionId: string; sessionDir: string };
-  /** Home directory for sessions storage. Required for new sessions. */
-  homeDir?: string;
+  /**
+   * Wayang data directory (`<wayangRootDir>/.wayang`) — sessions live under
+   * `<dataDir>/sessions`. Required for new sessions. NOT the OS user home the
+   * permission policy anchors on.
+   */
+  dataDir?: string;
   /**
    * Whether to inject a `previous_session_tasks` signal at resume when the
    * resumed session has unfinished tasks. Defaults to false — only the
@@ -53,11 +59,11 @@ export class Supervisor {
       this.sessionManager = SessionManager.resume(
         options.resume.sessionId,
         options.resume.sessionDir,
-        options.homeDir,
+        options.dataDir,
       );
     } else {
-      if (!options.homeDir) throw new Error('homeDir is required for new sessions');
-      this.sessionManager = SessionManager.create(options.homeDir, workspaceDir);
+      if (!options.dataDir) throw new Error('dataDir is required for new sessions');
+      this.sessionManager = SessionManager.create(options.dataDir, workspaceDir);
     }
 
     // Take ownership of the session directory BEFORE anything writes into it.
@@ -97,9 +103,11 @@ export class Supervisor {
     // Create services
     this.signalQueue = new SignalQueue(this.ctx);
 
-    // Shared skill registry (global + project + config dirs).
+    // Shared skill registry (global + project + config dirs). The global dir
+    // lives under the wayang DATA dir (follows `--wayang-root`), not the
+    // process home.
     this.skills = new SkillRegistry(
-      resolveSkillDirs(workspaceDir, config.skillsDirs),
+      resolveSkillDirs(options.dataDir ?? join(homedir(), '.wayang'), workspaceDir, config.skillsDirs),
       this.ctx.logger,
     );
 

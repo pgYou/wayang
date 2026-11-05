@@ -10,7 +10,7 @@ import { runWayangServer } from './wayang-server';
 export interface ServerMainOptions {
   configPath: string;
   /** Wayang home dir (the `~/.wayang` equivalent). */
-  homeDir: string;
+  dataDir: string;
   workspaceDir: string;
   /** `'new'` or `'resume:<sessionId>'`. */
   session: string;
@@ -32,7 +32,7 @@ export async function serverMain(options: ServerMainOptions): Promise<void> {
 
   await runWayangServer({
     configPath: options.configPath,
-    homeDir: options.homeDir,
+    dataDir: options.dataDir,
     workspaceDir: options.workspaceDir,
     session,
     injectPreviousTasks: options.injectPreviousTasks,

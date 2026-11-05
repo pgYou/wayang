@@ -7,9 +7,11 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  DEFAULT_APPROVAL_MEMORY,
   DEFAULT_SENSITIVE_MODE,
   mergeSensitiveDirs,
   resetDeprecatedPermissionKeysWarning,
+  resolveApprovalMemory,
   resolveSensitiveMode,
   warnDeprecatedPermissionKeys,
 } from '@/infra/permission/permission-config';
@@ -48,6 +50,17 @@ describe('resolveSensitiveMode', () => {
     expect(resolveSensitiveMode(undefined)).toBe('ask');
     expect(resolveSensitiveMode({})).toBe('ask');
     expect(resolveSensitiveMode({ sensitiveMode: 'deny' })).toBe('deny');
+  });
+});
+
+describe('resolveApprovalMemory', () => {
+  it("defaults to 'task' and honours the explicit switch", () => {
+    expect(DEFAULT_APPROVAL_MEMORY).toBe('task');
+    expect(resolveApprovalMemory(undefined)).toBe('task');
+    expect(resolveApprovalMemory({})).toBe('task');
+    expect(resolveApprovalMemory({ approvalMemory: 'off' })).toBe('off');
+    // Independent of the sensitive-list mode: the two switches do not couple.
+    expect(resolveApprovalMemory({ sensitiveMode: 'deny' })).toBe('task');
   });
 });
 
@@ -98,5 +111,17 @@ describe('validateConfig: permission section', () => {
 
   it('rejects an unknown sensitiveMode', () => {
     expect(validateConfig(baseConfig({ sensitiveMode: 'hard' }))).toContain('permission.sensitiveMode');
+  });
+
+  it("accepts approvalMemory: 'task' | 'off'", () => {
+    expect(validateConfig(baseConfig({ approvalMemory: 'task' }))).toBeNull();
+    expect(validateConfig(baseConfig({ approvalMemory: 'off' }))).toBeNull();
+  });
+
+  it('rejects an unknown approvalMemory with a named error', () => {
+    const error = validateConfig(baseConfig({ approvalMemory: 'session' }));
+    expect(error).toContain('permission.approvalMemory');
+    expect(error).toContain("'task' or 'off'");
+    expect(error).toContain('session');
   });
 });

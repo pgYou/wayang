@@ -144,8 +144,8 @@ describe('isWorkspaceMismatch', () => {
 });
 
 describe('selectSessionInteractive', () => {
-  function writeSession(homeDir: string, sessionId: string, meta: Partial<SessionMeta> & { workspace: string }) {
-    const sessionDir = join(homeDir, 'sessions', sessionId);
+  function writeSession(dataDir: string, sessionId: string, meta: Partial<SessionMeta> & { workspace: string }) {
+    const sessionDir = join(dataDir, 'sessions', sessionId);
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(
       join(sessionDir, 'meta.json'),

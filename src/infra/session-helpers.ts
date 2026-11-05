@@ -63,16 +63,16 @@ export function wayangDirForSessionDir(sessionDir: string): string | null {
   return path.basename(sessionsDir) === SESSIONS_DIRNAME ? path.dirname(sessionsDir) : null;
 }
 
-/** List all sessions under homeDir, sorted by creation date (newest first). */
-export function listSessions(homeDir: string, query: ListSessionsQuery = {}): SessionMeta[] {
-  return createSessionIndex(homeDir)
+/** List all sessions under dataDir, sorted by creation date (newest first). */
+export function listSessions(dataDir: string, query: ListSessionsQuery = {}): SessionMeta[] {
+  return createSessionIndex(dataDir)
     .list(query)
     .map(e => e.meta);
 }
 
 /** Get a specific session by ID. Returns null if not found. */
-export function getSession(homeDir: string, sessionId: string): { sessionId: string; sessionDir: string; meta: SessionMeta } | null {
-  return createSessionIndex(homeDir).get(sessionId);
+export function getSession(dataDir: string, sessionId: string): { sessionId: string; sessionDir: string; meta: SessionMeta } | null {
+  return createSessionIndex(dataDir).get(sessionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -304,17 +304,17 @@ function activityAtForEntry(entry: SessionEntry): number {
  * interactive picker keep their own semantics (`listSessions` is still
  * newest-created first).
  *
- * @param homeDir  Wayang home directory (contains sessions/)
+ * @param dataDir  Wayang home directory (contains sessions/)
  * @param workspaceDir  Workspace directory to match against
  * @param opts.includeArchived  Also rank archived sessions (default false).
  * @returns The most recently active matching session, or null if none exists.
  */
 export function getLatestSessionForWorkspace(
-  homeDir: string,
+  dataDir: string,
   workspaceDir: string,
   opts: { includeArchived?: boolean } = {},
 ): { sessionId: string; sessionDir: string; meta: SessionMeta } | null {
-  const candidates = createSessionIndex(homeDir).list({
+  const candidates = createSessionIndex(dataDir).list({
     workspace: workspaceDir,
     includeArchived: opts.includeArchived,
   });

@@ -55,7 +55,6 @@ import {
 } from '@/services/permission/permission-audit';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import type { SkillRegistry } from '@/services/skills/registry';
-import { basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
 /** Stream-close timeout for SDK MCP calls — must exceed the 5-min inquiry timeout. */
@@ -147,13 +146,13 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   private _runContext: { workerId: string; taskId: string; taskTitle: string; workerType?: string; emoji?: string } | null = null;
   /**
    * Shared permission policy scope for this run (workspace, task allowedDirs,
-   * homeDir, config). Provided by the engine via setSignalContext so the
+   * userHome, config). Provided by the engine via setSignalContext so the
    * canUseTool callback judges access exactly like a puppet worker's
    * permission middleware does. Null until wired; a fallback scope derived
    * from the worker's own directory is used when absent.
    */
   private _accessScope: WorkerAccessScope | null = null;
-  /** Session directory this worker belongs to (fallback homeDir derivation). */
+  /** Session directory this worker belongs to (workspace-registry lookup). */
   private readonly sessionDir: string;
   /** Turn lineage for permission-request signals emitted by this worker. */
   private _turnLineage: SignalTurnLineage = {};
@@ -418,7 +417,7 @@ export class ClaudeCodeWorker implements IWorkerInstance {
     /** Turn lineage attached to signals emitted by this worker. */
     turnLineage?: SignalTurnLineage;
     /**
-     * Shared permission policy scope (workspace / taskAllowedDirs / homeDir /
+     * Shared permission policy scope (workspace / taskAllowedDirs / userHome /
      * config). The engine supplies the exact scope it uses for puppet workers,
      * so canUseTool reaches the same allow/ask/deny verdicts. Omitted only by
      * direct construction (tests) — a scope derived from this worker's own
@@ -561,22 +560,22 @@ export class ClaudeCodeWorker implements IWorkerInstance {
    * Shared policy scope for this run. The engine injects the exact scope it
    * applies to puppet workers; when a worker is driven directly (tests), derive
    * a minimal scope from its own directory (no task allowedDirs / config — the
-   * conservative reading).
+   * conservative reading). The home anchor is ALWAYS the process home — never
+   * derived from the session layout: where wayang keeps its data has nothing
+   * to do with whose home the policy protects.
    */
   private effectiveAccessScope(): WorkerAccessScope {
     if (this._accessScope) return this._accessScope;
-    const wayangDir = wayangDirForSessionDir(this.sessionDir);
-    const homeDir = wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
-    return { homeDir, workspace: this.workspaceDir };
+    return { userHome: homedir(), workspace: this.workspaceDir };
   }
 
   /**
    * Route a Claude Code tool call through the SAME access policy a puppet
-   * worker uses (`decideToolAccess`). A sensitive WRITE is denied outright
-   * (no approval prompt), a sensitive READ asks with the matched entry named,
-   * an ambiguous target asks the controller and a path inside the allowed scope
-   * runs immediately. This closes the parity gap where the old regex-only gate
-   * let sensitive paths through silently.
+   * worker uses (`decideToolAccess`). A sensitive hit — read OR write — asks
+   * the controller with the matched entry named, a refusal only happens under
+   * `sensitiveMode: 'deny'`, an ambiguous target asks, and a path inside the
+   * allowed scope runs immediately. This closes the parity gap where the old
+   * regex-only gate let sensitive paths through silently.
    */
   private async handleCanUseTool(toolName: string, input: Record<string, unknown>): Promise<PermissionResult> {
     // Without signal context there is nowhere to route an approval, and the run
@@ -623,6 +622,17 @@ export class ClaudeCodeWorker implements IWorkerInstance {
       return { behavior: 'allow' };
     }
 
+    if (toolName.startsWith('mcp__wayang__')) {
+      // Wayang's OWN registered MCP server (ask_controller and friends):
+      // controller-facing tools, not filesystem IO — auto-allow so a worker
+      // can always reach its own controller. Without this the
+      // unrecognized-tool escalation below would gate ask_controller itself,
+      // and an approval request that can only be answered by calling the
+      // controller deadlocks the worker. Other servers' tools
+      // (`mcp__other__*`) keep falling through to that escalation.
+      return { behavior: 'allow' };
+    }
+
     // Unrecognized tool: we cannot prove it stays inside the allowed scope, so
     // do not silently allow — escalate to the controller.
     return this.requestPermission(toolName, input, {
@@ -632,7 +642,8 @@ export class ClaudeCodeWorker implements IWorkerInstance {
   }
 
   /**
-   * Refuse a call the policy hard-denied (sensitive write) and record it.
+   * Refuse a call the policy hard-denied (`sensitiveMode: 'deny'` on a
+   * sensitive hit) and record it.
    *
    * The worker receives the policy's disclosure-safe message (its own path
    * spelling, never the matched entry); the audit trail gets the metadata.

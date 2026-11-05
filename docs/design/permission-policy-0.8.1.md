@@ -3,6 +3,18 @@
 范围：issue #24 全部 + issue #35 的一小部分（敏感列表命中不再硬拒，改为触发 controller 审批）。
 基线：`release/0.8.1`，version 0.8.1。#35 的专用工具脱敏（原 Phase 3）与 OS 级隔离不在本轮。
 
+> **0.8.4 变更**：本文中「敏感命中的写方向 = 硬拒」的表述已被取代。写方向不再直接 `deny`，改为与读方向一样走 controller 审批（`ask`）；`matchedRule` 统一为 `sensitive-list`，读写方向由 `access` 字段区分。只有 `sensitiveMode: 'deny'` 仍然是"不问直接拒"。不变量改为：**敏感列表仍优先于一切 allow 规则，任何路径都不会因为敏感而被自动放行；但敏感命中不再"不可审批"**。
+>
+> **0.8.4 新增**：任务级审批记忆（#46，C.7 的最小可用子集）已落地，见 C.9 —— 只记忆读方向、按规范化路径、按任务失效；写方向与敏感命中永远一次一批。开关 `permission.approvalMemory: 'task' | 'off'`（默认 `'task'`）。
+>
+> **0.8.4 对 PR3 的逐项对照**（PR3 只落地了一部分，未实现项统一由 #51 跟踪）：
+> - 已实现：显式只读命令表 + 段首判定（命令替换内部与顶层共用同一张表）；剥离 `sudo` / `env` / `nohup` / `time` / `nice` / `ionice` / `command` / `exec` / `builtin` 与前导变量赋值；git 子命令与 `branch -a` / `remote -v` 白名单；写动词 / 写 flag / 真实重定向优先判写；`sed` 脚本白名单（`-f`、可执行或可写脚本不判只读，记 `read-only-unverified`）；危险命令 tier 改为读同一个"命令位置"（`nohup rm -rf x` 与 `rm -rf x` 同判 `dangerous-bash`）；`bash -c` / `sh -c` / `dash -c` / `zsh -c` 的 `-c`（含 `-lc` / `-ic` / `--command`）脚本递归判定，深度上限与命令替换共用（5 层）。
+> - **未实现**（Refs #51）：`xargs` 内层命令递归；`find -exec` / `-execdir` / `-ok` / `-okdir` 内层命令递归；`eval` 递归；`cd` 跟踪；相对路径按跟踪后的 cwd 解析（`cat ../x` / `cat ../../.ssh/id_rsa` 仍不是候选）；`grep` / `rg` / `sed` / `awk` 的"模式参数不算路径"白名单。这几项在本版仍是 `allow(no-path)`，是已知的绕过面，不是已收口的行为。
+> - 与本 PR3 正文的偏差：本版没有引入 `matchedRule: 'read-only-command'` 这一层 allow 面——只读表只影响 `access` 方向与敏感列表可见性，没有路径候选的命令依旧是默认 `allow`（`no-path`）。
+> - 审计：0.8.4 起 `allowed` 也是一条决策记录（allow 快路径执行前写入），此前只记 ask 的批准/拒绝与硬拒，审计里读不出"门放行了这次调用"。
+>
+> 以下 0.8.1 的历史记录保持原样，不再逐句改写。
+
 ## A. 目标与非目标
 
 ### 目标
@@ -378,6 +390,20 @@ subject 只有三种（都基于规范化路径）：
 - claude-code：`handleCanUseTool` 用同一个 gate 实例（engine 在 `wireWorker()` 里把 gate 与 `accessScope` 一起交给 `setSignalContext`），`PermissionResult` 由裁决映射（`allow` → `{behavior:'allow'}`，`deny` → `{behavior:'deny', message}`，`ask` → gate 内部走完审批后返回同样的三值）。
 - gate 由 engine 按 task 构造并注入（依赖 `ctx`、`signalQueue`、`grantStore`、`auditLog`、`metrics`），符合"依赖注入、不全局读取"的约定；两套 worker 拿到的必是同一个实例，因此口径不可能分叉。
 - 单元测试可以脱离 engine 直接构造 gate（注入假 SignalQueue），避免 e2e 才能验证审批语义。
+
+### C.9 任务级审批记忆（0.8.4 落地，#46）
+
+C.7 是 #44 的完整设计（once / task / session 三档作用域、目录级读 grant、命令模板 key、deny 记忆、metrics）。0.8.4 只落最小可用子集（#46），其余仍留在 #44：
+
+- **作用域只有 `task` 一档**：grant 绑定 `taskId`，任务进入终态（completed / failed / cancelled）即清空；不跨任务、不跨 session、不持久化（`--resume` 后为空）。
+- **key = `方向 + 规范化路径`**，只存读方向：`read:<resolvedPath>`。路径来自策略已算出的 `resolvedPath`（realpath 归一），不引入新的 bash 解析，也不使用整条命令串或命令模板。bash 的每个候选路径各自成一个 key（多候选命令需要全部已授予才复用，见 `ToolAccessDecision.askPaths`）。
+- **不做目录级读授权**：C.7 的 `read:dir:<dir>` 覆盖面更大但会放大授权，0.8.4 先按精确路径，等 #44 再讨论。
+- **不记忆**：写方向、`deny`、拒绝、任何敏感命中（含 `sensitiveMode: 'ask'` 下可审批的敏感读/写）。敏感路径永远一次一批。
+- **判定顺序**：policy → `allow` 直接执行 / `deny` 直接拒 → `ask` 且 `access === 'read'` 且非敏感且所有候选路径都在 grant 里 → 直接执行（审计 `decision: 'granted-by-memory'`，带原 `grantId`）→ 否则发 `permission_request`；批准后写入 grant，拒绝/超时/中断不写。
+- **开关**：`permission.approvalMemory: 'task' | 'off'`，默认 `'task'`；`'off'` 时完全不走记忆路径（不查、不写，行为与 0.8.3 一致）。
+- **清理**：`TaskExecuteEngine` 在终态转换处**直接调用** `ApprovalMemory.clearTask(taskId)`（`moveToHistory` 与 `cancel()` 的 pending 分支），不走 `LifecycleHooks`——grant 的存活期属于核心判定语义，不是外围副作用。
+- **实施位置**：`src/services/permission/approval-memory.ts`（store）、`permission-middleware.ts`（查/写）、`permission-audit.ts`（`granted-by-memory` + `grantId`）、`permission-rules.ts`（`askPaths`）、`types/config.ts` + `infra/permission/permission-config.ts`（开关与校验）。
+- **未覆盖**：claude-code worker 的 `canUseTool` 仍走自己的审批通道，不查 grant（随后续把两个入口合成一个 gate 时一并接入，见 C.8）。
 
 ## D. 验收标准
 

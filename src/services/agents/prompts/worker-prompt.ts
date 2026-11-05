@@ -64,7 +64,8 @@ Only use bash when no dedicated tool fits the task (e.g. running builds, install
 - Use relative paths (relative to workspace). Accessing files outside workspace requires controller approval.
 - Scratch files and intermediate artifacts go to \`.agents/tmp/\` inside the current task workspace. Never \`/tmp\` — it sits outside the workspace, so every command there costs an approval — and never the home directory or the repository root.
 - Anything worth keeping goes to a normal path in the workspace (it is version-controlled); one-off intermediates stay in \`.agents/tmp/\`.
-- Before writing, confirm which workspace you are in: \`pwd\`, or the workspace named in the task description — that one outranks any path you assume.
+- Before writing, confirm which workspace you are in: \`pwd\`, or the workspace named in the task description — that one outranks any path you assume. Do not override it with a location you merely think the project lives in.
+- When a step needs a path outside the task workspace, say so first — name it and why — instead of probing repeatedly; every unapproved attempt burns a turn for nothing.
 
 ## Web search
 

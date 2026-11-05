@@ -19,7 +19,7 @@ import type { TaskDetail } from '@/types/index';
 export interface WayangServerOptions {
   configPath: string;
   /** Wayang home dir (the `~/.wayang` equivalent, parent of `sessions/`). */
-  homeDir: string;
+  dataDir: string;
   workspaceDir: string;
   /** Session decision made by the client: new, or resume a specific id. */
   session: { mode: 'new' } | { mode: 'resume'; sessionId: string };
@@ -36,7 +36,7 @@ export async function runWayangServer(
 
   let resume: { sessionId: string; sessionDir: string } | undefined;
   if (options.session.mode === 'resume') {
-    const existing = getSession(options.homeDir, options.session.sessionId);
+    const existing = getSession(options.dataDir, options.session.sessionId);
     if (!existing) throw new Error(`Session "${options.session.sessionId}" not found.`);
     resume = { sessionId: existing.sessionId, sessionDir: existing.sessionDir };
   }
@@ -46,7 +46,7 @@ export async function runWayangServer(
     workspaceDir: options.workspaceDir,
     logLevel: options.logLevel,
     resume,
-    homeDir: options.homeDir,
+    dataDir: options.dataDir,
     injectPreviousTasks: options.injectPreviousTasks,
   });
 

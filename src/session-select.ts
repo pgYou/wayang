@@ -98,17 +98,17 @@ export function isWorkspaceMismatch(meta: SessionMeta, workspaceDir: string): bo
 /**
  * Show an interactive session picker.
  *
- * @param homeDir  Wayang home directory (contains sessions/)
+ * @param dataDir  Wayang home directory (contains sessions/)
  * @param workspaceDir  Current workspace directory (for filtering)
  * @param showAll  If true, show sessions from all workspaces
  * @returns Selected session info, or exits process on cancel/empty
  */
 export async function selectSessionInteractive(
-  homeDir: string,
+  dataDir: string,
   workspaceDir: string,
   showAll: boolean,
 ): Promise<{ sessionId: string; sessionDir: string; meta: SessionMeta }> {
-  const sessions = listSessions(homeDir, showAll ? {} : { workspace: workspaceDir });
+  const sessions = listSessions(dataDir, showAll ? {} : { workspace: workspaceDir });
 
   if (sessions.length === 0) {
     const scope = showAll ? 'any workspace' : `workspace ${workspaceDir}`;
@@ -131,7 +131,7 @@ export async function selectSessionInteractive(
     process.exit(0);
   }
 
-  const result = getSession(homeDir, selected);
+  const result = getSession(dataDir, selected);
   if (!result) {
     console.error(`Error: Session "${selected}" not found.`);
     process.exit(1);

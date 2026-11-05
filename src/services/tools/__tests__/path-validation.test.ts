@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writeFileTool } from '@/services/tools/write-file';
+import { editFileTool } from '@/services/tools/edit-file';
 import { readFileTool } from '@/services/tools/read-file';
 import { isPathWithin, normalizePath } from '@/infra/permission/policy';
 
@@ -92,13 +93,22 @@ describe('write_file path validation', () => {
 
 describe('read_file path validation', () => {
   let cwd: string;
+  let home: string;
+  let realHome: string | undefined;
 
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), 'wayang-test-'));
+    home = mkdtempSync(join(tmpdir(), 'wayang-home-'));
+    // `~` expansion anchors on the PROCESS home (os.homedir() reads $HOME on
+    // POSIX), so point $HOME at a temp dir for the duration of these tests.
+    realHome = process.env.HOME;
+    process.env.HOME = home;
   });
 
   afterEach(() => {
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+    process.env.HOME = realHome;
   });
 
   it('should read file within cwd', async () => {
@@ -106,5 +116,80 @@ describe('read_file path validation', () => {
     const tool = readFileTool({ cwd });
     const result = await exec(tool, { path: 'test.txt' });
     expect(result).toBe('1\thello');
+  });
+
+  /**
+   * 0.8.4: a leading `~` expands against the PROCESS home — the same file a
+   * shell opens for `cat ~/x` and the same path the permission gate judges.
+   * The old behavior (expand against the injected policy home) opened a
+   * DIFFERENT file than the worker's shell whenever the policy anchor did not
+   * match the process home.
+   */
+  it('expands a leading ~/ against the process home, not the workspace', async () => {
+    writeFileSync(join(home, 'x.txt'), 'from home', 'utf-8');
+    mkdirSync(join(home, 'nested'), { recursive: true });
+    writeFileSync(join(home, 'nested', 'y.txt'), 'nested', 'utf-8');
+    const tool = readFileTool({ cwd });
+    expect(await exec(tool, { path: '~/x.txt' })).toBe('1\tfrom home');
+    expect(await exec(tool, { path: '~/nested/y.txt' })).toBe('1\tnested');
+  });
+
+  it('expands $HOME/ and ${HOME}/ exactly like ~/', async () => {
+    writeFileSync(join(home, 'x.txt'), 'from home', 'utf-8');
+    const tool = readFileTool({ cwd });
+    expect(await exec(tool, { path: '$HOME/x.txt' })).toBe('1\tfrom home');
+    expect(await exec(tool, { path: '${HOME}/x.txt' })).toBe('1\tfrom home');
+  });
+
+  it('~user stays unexpanded (cannot be resolved safely)', async () => {
+    writeFileSync(join(home, 'x.txt'), 'from home', 'utf-8');
+    const tool = readFileTool({ cwd });
+    const result = await exec(tool, { path: '~someone/x.txt' });
+    // Not the home file: the unexpanded spelling resolves inside the
+    // workspace and fails, exactly as before.
+    expect(result).toContain('[ERROR]');
+    expect(result).not.toContain('from home');
+    expect(result).toContain(join(cwd, '~someone', 'x.txt'));
+  });
+});
+
+describe('write_file / edit_file ~/ expansion (process home)', () => {
+  let cwd: string;
+  let home: string;
+  let realHome: string | undefined;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'wayang-test-'));
+    home = mkdtempSync(join(tmpdir(), 'wayang-home-'));
+    realHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+    process.env.HOME = realHome;
+  });
+
+  /**
+   * The gate (evaluateFileAccess) expands `~` before judging, so the tool
+   * must operate on the SAME expanded path — otherwise an approval names
+   * `<home>/w.txt` while the tool writes a literal `~` directory inside the
+   * workspace.
+   */
+  it('write_file writes to the expanded process-home path, not a workspace literal', async () => {
+    const tool = writeFileTool({ cwd });
+    const result = await exec(tool, { path: '~/w.txt', content: 'hi' });
+    expect(result).toContain(join(home, 'w.txt'));
+    expect(existsSync(join(home, 'w.txt'))).toBe(true);
+    expect(existsSync(join(cwd, '~'))).toBe(false);
+  });
+
+  it('edit_file edits the expanded process-home path', async () => {
+    writeFileSync(join(home, 'e.txt'), 'old', 'utf-8');
+    const tool = editFileTool({ cwd });
+    const result = await exec(tool, { path: '~/e.txt', old_string: 'old', new_string: 'new' });
+    expect(result).toContain('Replaced');
+    expect(readFileSync(join(home, 'e.txt'), 'utf-8')).toBe('new');
   });
 });

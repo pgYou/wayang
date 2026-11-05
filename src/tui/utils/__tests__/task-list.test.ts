@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   TASK_LIST_DESCRIPTION_MAX_WIDTH,
   TASK_LIST_MAX_ITEMS,
+  TASK_LIST_RESULT_MAX_WIDTH,
   formatTaskList,
   formatTaskRow,
   isActiveTask,
@@ -313,6 +314,55 @@ describe('formatTaskRow', () => {
 
     expect(row).toBe('[completed] t-1: a b c');
   });
+
+  it('flattens a multi-line result onto the same row', () => {
+    // Worker reports arrive as free-form markdown: headings, indented bullets,
+    // tabbed code. Every line break here used to become a wrapped row.
+    const row = formatTaskRow(
+      makeTask({ description: 'fix it', result: 'done:\n\t- one\n\t- two\n\n### notes\r\nend' }),
+    );
+
+    expect(row).toBe('[completed] t-1: fix it → done: - one - two ### notes end');
+    expect(row).not.toContain('\n');
+    expect(row).not.toContain('\t');
+  });
+
+  it('caps a very long result at the result budget, counting display columns', () => {
+    // >1000 CJK chars = >2000 columns; must be cut to the 60-column budget.
+    const huge = '任务结果'.repeat(300);
+    expect(huge.length).toBeGreaterThan(1000);
+
+    const row = formatTaskRow(makeTask({ description: 'd', result: huge }));
+    const digest = row.slice(' → '.length + '[completed] t-1: d'.length);
+
+    expect(row).toContain(' → ');
+    expect(digest.endsWith('…')).toBe(true);
+    expect(stringWidth(digest)).toBeLessThanOrEqual(TASK_LIST_RESULT_MAX_WIDTH);
+    // Budget - 1 column for the ellipsis => 59 columns => 29 CJK chars + "…".
+    expect([...digest]).toHaveLength(30);
+  });
+
+  it('keeps a result that already fits verbatim, with no ellipsis', () => {
+    const task = makeTask({ description: 'd', result: 'ok' });
+
+    expect(formatTaskRow(task)).toBe('[completed] t-1: d → ok');
+    expect(formatTaskRow(task)).not.toContain('…');
+  });
+
+  it('appends no arrow when the result is empty or absent', () => {
+    expect(formatTaskRow(makeTask({ description: 'd', result: '' }))).toBe('[completed] t-1: d');
+    expect(formatTaskRow(makeTask({ description: 'd' }))).toBe('[completed] t-1: d');
+    // Whitespace-only collapses to nothing — a bare " → " would be noise.
+    expect(formatTaskRow(makeTask({ description: 'd', result: ' \n\t ' }))).toBe('[completed] t-1: d');
+    expect(formatTaskRow(makeTask({ description: 'd', result: '' }))).not.toContain(' → ');
+  });
+
+  it('honours an explicit result width without touching the description width', () => {
+    const task = makeTask({ description: 'd', result: 'abcdefghij' });
+
+    expect(formatTaskRow(task, { resultMaxWidth: 5 })).toBe('[completed] t-1: d → abcd…');
+    expect(formatTaskRow(task, { resultMaxWidth: 0 })).toBe('[completed] t-1: d');
+  });
 });
 
 describe('formatTaskList', () => {
@@ -400,5 +450,49 @@ describe('formatTaskList', () => {
     expect(lines[1]).toBe(`[completed] t-2: ${truncateForList(long)}`);
     expect(lines[1].endsWith('…')).toBe(true);
     expect(stringWidth(lines[1])).toBe(17 + TASK_LIST_DESCRIPTION_MAX_WIDTH);
+  });
+
+  it('keeps the whole list within maxItems + 1 rows when results are huge', () => {
+    // The real-world shape: a worker report of a few dozen KB with hundreds of
+    // lines, pasted verbatim into every completed task's result.
+    const fixture = Array.from(
+      { length: 420 },
+      (_, i) => `第 ${i} 行：worker 的最终报告，说明改了什么、跑了哪些门槛。`,
+    ).join('\n');
+    expect(Buffer.byteLength(fixture, 'utf8')).toBeGreaterThanOrEqual(32 * 1024);
+    expect(fixture.split('\n')).toHaveLength(420);
+
+    const tasks = Array.from({ length: 25 }, (_, i) => makeTask({ id: `t-${i}`, result: fixture }));
+
+    const output = formatTaskList(tasks);
+    const lines = output.split('\n');
+
+    // 20 rows + the trailing note: the result contributes columns, never rows.
+    expect(lines).toHaveLength(TASK_LIST_MAX_ITEMS + 1);
+    expect(lines.length).toBeLessThanOrEqual(TASK_LIST_MAX_ITEMS + 1);
+    expect(lines[TASK_LIST_MAX_ITEMS]).toBe('… 显示最近 20 / 共 25 条');
+    // ~32KB × 25 in, a few KB out — the digest is what keeps the panel alive.
+    expect(output.length).toBeLessThan(20 * 200);
+
+    for (const line of lines.slice(0, TASK_LIST_MAX_ITEMS)) {
+      expect(line).not.toContain('\n');
+      expect(line).not.toContain('\t');
+      expect(line.endsWith('…')).toBe(true);
+      // '[completed] t-24: ' = 18 columns, then description + ' → ' + result.
+      expect(stringWidth(line)).toBeLessThanOrEqual(
+        18 + TASK_LIST_DESCRIPTION_MAX_WIDTH + 3 + TASK_LIST_RESULT_MAX_WIDTH,
+      );
+    }
+  });
+
+  it('caps results under the 20-row budget even with no note line', () => {
+    const tasks = Array.from({ length: 5 }, (_, i) =>
+      makeTask({ id: `t-${i}`, result: 'a\nb\nc\nd\ne' }),
+    );
+
+    const lines = formatTaskList(tasks).split('\n');
+
+    expect(lines).toHaveLength(5);
+    expect(lines.every(line => line.includes(' → a b c d e'))).toBe(true);
   });
 });

@@ -7,8 +7,9 @@
  *
  *   allow → executes, NO permission_request
  *   ask   → permission_request, approval runs / rejection does not
- *   deny  → refused immediately, NO permission_request (sensitive WRITE, or
- *           `sensitiveMode: 'deny'`)
+ *   deny  → refused immediately, NO permission_request (`sensitiveMode: 'deny'`
+ *           on a sensitive hit only: under the default mode a sensitive hit —
+ *           read OR write — asks like anything else)
  *
  * The home directory is a temp dir injected into the engine, so the sensitive
  * list (`<home>/.ssh`, …) is exercised without touching the real user's home.
@@ -74,7 +75,7 @@ function makeEngine(opts: { permission?: PermissionConfig } = {}) {
     config: { providers: {}, controller: {}, worker: {} } as unknown as WayangConfig,
   });
   const signalQueue = new SignalQueue(ctx);
-  const engineOptions: TaskExecuteEngineOptions = { homeDir: home, permission: opts.permission };
+  const engineOptions: TaskExecuteEngineOptions = { userHome: home, permission: opts.permission };
   const engine = new TaskExecuteEngine(ctx, signalQueue, new SkillRegistry([]), engineOptions);
   return { engine, signalQueue, ctx };
 }
@@ -281,40 +282,101 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(audits[0]).toMatchObject({ decision: 'denied', matchedEntry: '.ssh', source: 'controller' });
   });
 
-  it('5c. a sensitive WRITE is refused outright — no permission_request, but an audit record', async () => {
+  /**
+   * 0.8.4: a sensitive WRITE is approvable. Even with the task granted the
+   * directory (`taskAllowedDirs: [.ssh]`) the sensitive rule outranks the
+   * grant, so the call asks — and, once approved, performs exactly the write
+   * the controller saw described.
+   */
+  it('5c. a sensitive WRITE asks once; approval performs it and is audited', async () => {
     const { engine, signalQueue, ctx } = makeEngine();
     const tools = await startTask(engine, { taskAllowedDirs: [join(home, '.ssh')] });
 
-    const output = await tools.write_file.execute({ path: join(home, '.ssh', 'new_key'), content: 'x' });
-    expect(output).toContain('[ERROR]');
-    expect(output).toContain('sensitive list');
-    expect(output).toContain('never writable');
-    expect(output).not.toContain('.ssh (');
+    const pending = tools.write_file.execute({ path: join(home, '.ssh', 'new_key'), content: 'x' });
+    await flush();
+
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].toolName).toBe('write_file');
+    expect(requests[0].matchedRule).toBe('sensitive-list');
+    expect(requests[0].matchedEntry).toBe('.ssh');
+    expect(requests[0].matchedSource).toBe('segment');
+    expect(requests[0].resolvedPath).toBe(join(home, '.ssh', 'new_key'));
+    expect(requests[0].access).toBe('write');
+    expect(requests[0].operation).toBe('write');
+    // The approval DESCRIPTION quotes the path and the hit, never the content
+    // (the raw `toolArgs` travel with the signal as before, so the controller
+    // can see what would happen).
+    expect(requests[0].description).toContain('hit: .ssh (segment)');
+    expect(requests[0].description).not.toContain('content');
+    // Nothing has been written yet.
     expect(existsSync(join(home, '.ssh', 'new_key'))).toBe(false);
-    // A hard deny must not become "ask": the signal count is the assertion.
-    expect(permissionRequests(signalQueue)).toHaveLength(0);
+
+    engine.resolvePermission(requests[0].requestId, true);
+    await pending;
+    expect(existsSync(join(home, '.ssh', 'new_key'))).toBe(true);
 
     const audits = auditRecords(ctx);
     expect(audits).toHaveLength(1);
     expect(audits[0]).toMatchObject({
-      decision: 'hard-denied',
+      decision: 'approved',
+      // `operation` is the tool category, `access` the judged direction.
       operation: 'write',
       access: 'write',
       matchedEntry: '.ssh',
-      matchedRule: 'sensitive-list-write',
+      matchedRule: 'sensitive-list',
+      resolvedPath: join(home, '.ssh', 'new_key'),
       taskId: 't1',
     });
   });
 
-  it('5d. sensitiveMode: deny restores the hard refusal for the same read', async () => {
+  it('5c2. a REJECTED sensitive write performs nothing', async () => {
+    const { engine, signalQueue, ctx } = makeEngine();
+    const tools = await startTask(engine, { taskAllowedDirs: [join(home, '.ssh')] });
+
+    const pending = tools.write_file.execute({ path: join(home, '.ssh', 'new_key'), content: 'x' });
+    await flush();
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+
+    engine.resolvePermission(requests[0].requestId, false, 'not in this task');
+    expect(await pending).toContain('Permission denied');
+    expect(existsSync(join(home, '.ssh', 'new_key'))).toBe(false);
+    expect(auditRecords(ctx)[0]).toMatchObject({
+      decision: 'denied',
+      operation: 'write',
+      access: 'write',
+      matchedEntry: '.ssh',
+      source: 'controller',
+    });
+  });
+
+  it('5d. sensitiveMode: deny refuses BOTH directions without asking', async () => {
     const { engine, signalQueue, ctx } = makeEngine({ permission: { sensitiveMode: 'deny' } });
     const tools = await startTask(engine);
 
-    const output = await tools.read_file.execute({ path: join(home, '.ssh', 'id_rsa') });
-    expect(output).toContain('[ERROR]');
-    expect(output).not.toContain('PRIVATE-KEY');
+    const read = await tools.read_file.execute({ path: join(home, '.ssh', 'id_rsa') });
+    expect(read).toContain('[ERROR]');
+    expect(read).not.toContain('PRIVATE-KEY');
+
+    const write = await tools.write_file.execute({ path: join(home, '.ssh', 'id_rsa'), content: 'x' });
+    expect(write).toContain('[ERROR]');
+    expect(write).toContain('sensitive list');
+    expect(write).toContain('refusing to write');
+    // Not a single request: the mode refuses instead of prompting.
     expect(permissionRequests(signalQueue)).toHaveLength(0);
-    expect(auditRecords(ctx)[0]).toMatchObject({ decision: 'hard-denied', operation: 'read' });
+
+    const audits = auditRecords(ctx);
+    expect(audits).toHaveLength(2);
+    expect(audits[0]).toMatchObject({ decision: 'hard-denied', operation: 'read', access: 'read', matchedRule: 'sensitive-list' });
+    expect(audits[1]).toMatchObject({
+      decision: 'hard-denied',
+      operation: 'write',
+      access: 'write',
+      matchedRule: 'sensitive-list',
+      matchedEntry: '.ssh',
+    });
+    expect(readFileSync(join(home, '.ssh', 'id_rsa'), 'utf-8')).not.toBe('x');
   });
 
   it('6. a symlink inside the workspace cannot smuggle a sensitive path', async () => {
@@ -335,18 +397,26 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(await pending).not.toContain('PRIVATE-KEY');
   });
 
-  it('7a. bash WRITING a sensitive path is refused as a whole, without asking', async () => {
+  it('7a. bash WRITING a sensitive path asks once, and a rejection keeps the key', async () => {
     const { engine, signalQueue, ctx } = makeEngine();
     const tools = await startTask(engine);
 
-    const output = await tools.bash.execute({ command: 'rm -rf ~/.ssh/id_rsa' });
-    expect(output).toContain('[ERROR]');
-    expect(output).toContain('sensitive list');
+    const pending = tools.bash.execute({ command: 'rm -rf ~/.ssh/id_rsa' });
+    await flush();
+
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].matchedEntry).toBe('.ssh');
+    expect(requests[0].access).toBe('write');
+    // The tool CATEGORY stays exec even though the direction is a write (#43).
+    expect(requests[0].operation).toBe('exec');
+
+    engine.resolvePermission(requests[0].requestId, false, 'no');
+    expect(await pending).toContain('[ERROR]');
     // The command never ran, so the key file is untouched.
     expect(existsSync(join(home, '.ssh', 'id_rsa'))).toBe(true);
-    expect(permissionRequests(signalQueue)).toHaveLength(0);
     expect(auditRecords(ctx)[0]).toMatchObject({
-      decision: 'hard-denied',
+      decision: 'denied',
       operation: 'exec',
       access: 'write',
       matchedEntry: '.ssh',
@@ -399,7 +469,9 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(auditRecords(ctx)[0]).toMatchObject({
       decision: 'denied',
       operation: 'exec',
-      access: 'unknown',
+      // #47: `sudo` is stripped before the read-only lookup, so the audit names
+      // the direction (`cat` reads) while the danger rule still asks.
+      access: 'read',
       matchedRule: 'dangerous-bash',
       matchedEntry: '.ssh',
       resolvedPath: join(home, '.ssh', 'id_rsa'),
@@ -424,16 +496,23 @@ describe('worker permission gate — policy-backed decisions', () => {
     await pending;
   });
 
-  it('7b. a mixed bash command is refused when ANY candidate is a sensitive write', async () => {
+  it('7b. a mixed bash command asks when ANY candidate is a sensitive write', async () => {
     const { engine, signalQueue } = makeEngine();
     const tools = await startTask(engine);
     writeFileSync(join(taskWs, 'ok.txt'), 'ok');
 
-    const output = await tools.bash.execute({ command: 'cat ok.txt && tee ~/.ssh/authorized_keys' });
+    const pending = tools.bash.execute({ command: 'cat ok.txt && tee ~/.ssh/authorized_keys' });
+    await flush();
+    const requests = permissionRequests(signalQueue);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].matchedEntry).toBe('.ssh');
+    expect(requests[0].access).toBe('write');
+
+    engine.resolvePermission(requests[0].requestId, false, 'no');
+    const output = await pending;
     expect(output).toContain('[ERROR]');
     expect(output).not.toContain('ok');
     expect(existsSync(join(home, '.ssh', 'authorized_keys'))).toBe(false);
-    expect(permissionRequests(signalQueue)).toHaveLength(0);
   });
 
   it('7b2. a mixed bash command of READS asks once instead of refusing', async () => {
@@ -469,7 +548,7 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(output).toContain('localhost');
   });
 
-  it('8. without task allowedDirs the boundary is unchanged (workspace allow / outside ask / sensitive split)', async () => {
+  it('8. without task allowedDirs the boundary is unchanged (workspace allow / outside ask / sensitive ask)', async () => {
     const { engine, signalQueue } = makeEngine();
     const tools = await startTask(engine); // no taskAllowedDirs
 
@@ -488,10 +567,174 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(await pending).toContain('Permission denied');
     expect(existsSync(join(shared, 'created.txt'))).toBe(false);
 
-    // a sensitive WRITE → hard deny, still without a request
-    expect(
-      await tools.write_file.execute({ path: join(home, '.ssh', 'id_rsa'), content: 'x' }),
-    ).toContain('sensitive list');
-    expect(permissionRequests(signalQueue)).toHaveLength(1); // still just the write request
+    // a sensitive WRITE → asks, and it is a SECOND request (the grant above is
+    // irrelevant: the sensitive rule outranks it)
+    const sensitive = tools.write_file.execute({ path: join(home, '.ssh', 'id_rsa'), content: 'x' });
+    await flush();
+    const sensitiveRequests = permissionRequests(signalQueue);
+    expect(sensitiveRequests).toHaveLength(2);
+    expect(sensitiveRequests[1].matchedEntry).toBe('.ssh');
+    expect(sensitiveRequests[1].access).toBe('write');
+    engine.resolvePermission(sensitiveRequests[1].requestId, false, 'no');
+    expect(await sensitive).toContain('Permission denied');
+    expect(readFileSync(join(home, '.ssh', 'id_rsa'), 'utf-8')).toBe('PRIVATE-KEY');
+  });
+
+  it('13. the boundary anchors on the process home, never on the session layout (0.8.4)', async () => {
+    // The session dir sits under a CUSTOM root (`<home>` here stands in for
+    // what `--wayang-root` produces) while $HOME points elsewhere. The old
+    // derivation reverse-engineered "the user's home" from the session dir
+    // and got the custom root — so the read boundary followed the flag. The
+    // engine must anchor on the PROCESS home instead.
+    const procHome = mkdtempSync(join(tmpdir(), 'wayang-perm-engine-proc-'));
+    const realHome = process.env.HOME;
+    process.env.HOME = procHome;
+    try {
+      writeFileSync(join(procHome, 'z.cfg'), 'PROC-HOME-CONTENT');
+      const ctx = createMockCtx({
+        sessionDir: join(home, '.wayang', 'sessions', 's1'),
+        workspaceDir: taskWs,
+        config: { providers: {}, controller: {}, worker: {} } as unknown as WayangConfig,
+      });
+      const signalQueue = new SignalQueue(ctx);
+      // NO userHome option: the engine default must be os.homedir().
+      const engine = new TaskExecuteEngine(ctx, signalQueue, new SkillRegistry([]));
+      const tools = await startTask(engine);
+
+      // Reading a PROCESS-home file: the boundary is the process home, so
+      // the verdict is the narrowed read-within-home ask (NOT outside-all,
+      // which is what the old session-derived boundary produced).
+      const pending = tools.read_file.execute({ path: join(procHome, 'z.cfg') });
+      await flush();
+      const requests = permissionRequests(signalQueue);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].matchedRule).toBe('read-within-home');
+
+      engine.resolvePermission(requests[0].requestId, true);
+      expect(await pending).toContain('PROC-HOME-CONTENT');
+    } finally {
+      process.env.HOME = realHome;
+      rmSync(procHome, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * 0.8.4: the approval description has to name the path the gate JUDGED. The
+   * describe callback used to re-derive it with `resolve(workspace, path)`,
+   * which left `~` / `$HOME` unexpanded — so `read_file ~/.wayang.config.json`
+   * reached the controller (and the TUI) as
+   * `<workspace>/~/.wayang.config.json`, a path that does not exist and that
+   * nobody recognizes as their own config.
+   */
+  it('14. the approval description resolves ~ / $HOME like the gate, and keeps relative paths', async () => {
+    const realHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const { engine, signalQueue } = makeEngine();
+      const tools = await startTask(engine);
+      // Distinct targets: an approval remembers its path for the rest of the
+      // task (issue #46), so reusing one would skip the next request entirely.
+      writeFileSync(join(home, 'tilde.txt'), 'TILDE');
+      writeFileSync(join(home, 'homevar.txt'), 'HOMEVAR');
+      writeFileSync(join(shared, 'r.txt'), 'REL');
+
+      // `~` — expanded to the process home, NOT resolved against the workspace.
+      const tilde = tools.read_file.execute({ path: '~/tilde.txt' });
+      await flush();
+      const tildeRequest = permissionRequests(signalQueue)[0];
+      expect(tildeRequest.description).toBe(`read_file: ~/tilde.txt (resolved: ${join(home, 'tilde.txt')})`);
+      expect(tildeRequest.description).not.toContain(`${taskWs}/~`);
+      engine.resolvePermission(tildeRequest.requestId, true);
+      expect(await tilde).toContain('TILDE');
+
+      // `$HOME` — same anchor, same expansion.
+      const homeVar = tools.read_file.execute({ path: '$HOME/homevar.txt' });
+      await flush();
+      const homeRequest = permissionRequests(signalQueue)[1];
+      expect(homeRequest.description).toBe(`read_file: $HOME/homevar.txt (resolved: ${join(home, 'homevar.txt')})`);
+      engine.resolvePermission(homeRequest.requestId, true);
+      expect(await homeVar).toContain('HOMEVAR');
+
+      // A relative path keeps its historical wording: resolved against the
+      // task workspace (the tool's cwd).
+      const relative = tools.read_file.execute({ path: '../shared/r.txt' });
+      await flush();
+      const relativeRequest = permissionRequests(signalQueue)[2];
+      expect(relativeRequest.description).toBe(
+        `read_file: ../shared/r.txt (resolved: ${join(home, 'shared', 'r.txt')})`,
+      );
+      engine.resolvePermission(relativeRequest.requestId, true);
+      expect(await relative).toContain('REL');
+    } finally {
+      process.env.HOME = realHome;
+    }
+  });
+
+  it('15. a ~user target keeps its spelling and says it cannot be expanded', async () => {
+    const { engine, signalQueue } = makeEngine();
+    const tools = await startTask(engine);
+
+    const pending = tools.read_file.execute({ path: '~root/.ssh/id_rsa' });
+    await flush();
+    const [request] = permissionRequests(signalQueue);
+    expect(request.matchedRule).toBe('home-other-user');
+    // The description keeps the spelling the caller used and says why it could
+    // not be resolved; the policy's own `reason` is appended after it.
+    expect(request.description).toContain(
+      "read_file: ~root/.ssh/id_rsa (unresolved: another user's home cannot be expanded)",
+    );
+    expect(request.description).not.toContain(`/root/.ssh`);
+    engine.resolvePermission(request.requestId, false, 'no');
+    expect(await pending).toContain('Permission denied');
+  });
+
+  /**
+   * 0.8.4: an `allow` verdict is a decision too, and it was the only one
+   * missing from the trail — the audit could not tell "the gate allowed this"
+   * from "the gate never saw this call".
+   */
+  it('16. an allowed call writes one decision=allowed record and still runs', async () => {
+    const { engine, signalQueue, ctx } = makeEngine();
+    const tools = await startTask(engine);
+
+    expect(await tools.read_file.execute({ path: (writeFileSync(join(taskWs, 'a.txt'), 'hello'), 'a.txt') })).toContain('hello');
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
+
+    const audits = auditRecords(ctx);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      audit: 'permission',
+      decision: 'allowed',
+      operation: 'read',
+      access: 'read',
+      taskId: 't1',
+      toolName: 'read_file',
+    });
+    expect(typeof audits[0].ts).toBe('string');
+    // Metadata only: the record names the tool and the task, never content.
+    expect(JSON.stringify(audits[0])).not.toContain('hello');
+  });
+
+  it('17. an allowed bash call is audited with its judged direction, never the command text', async () => {
+    const { engine, signalQueue, ctx } = makeEngine();
+    const tools = await startTask(engine);
+
+    const output = await tools.bash.execute({ command: 'echo allowed-sentinel' });
+    expect(output).toContain('allowed-sentinel');
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
+
+    const audits = auditRecords(ctx);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      decision: 'allowed',
+      operation: 'exec',
+      access: 'read',
+      matchedRule: 'no-path',
+      taskId: 't1',
+      toolName: 'bash',
+    });
+    // The command line is content: the allow path does not quote it.
+    expect(JSON.stringify(audits[0])).not.toContain('allowed-sentinel');
+    expect(audits[0]).not.toHaveProperty('requestedPath');
   });
 });
