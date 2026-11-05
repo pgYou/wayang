@@ -348,12 +348,24 @@ const HARD_CONSTRAINTS = section('Hard constraints',
 // Dynamic section (injected per call)
 // ---------------------------------------------------------------------------
 
+/**
+ * Semantics hint appended to `*-acp` rows (05 §7) — the only place the
+ * controller prompt learns what an external ACP agent is: no update_progress
+ * / done tools (turns end by themselves), messages land at turn boundaries,
+ * permissions still surface as requests. Unconfigured ACP types are simply
+ * never listed (the loop walks the config only).
+ */
+const ACP_WORKER_HINT =
+  'external ACP agent: no update_progress/done tools (it ends each turn by itself); chat_worker messages are delivered at its next turn boundary; sensitive operations still surface as permission requests you must answer; it needs its CLI installed and logged in — a missing CLI fails the task fast with an install hint';
+
 function buildWorkerList(workers?: Record<string, WorkerConfig>): string {
   const lines: string[] = [`- \`puppet\` — ${PUPPET_DEFAULTS.description} [${PUPPET_DEFAULTS.capabilities.join(', ')}]`];
   if (workers) {
     for (const [id, config] of Object.entries(workers)) {
       const caps = config.capabilities?.length ? ` [${config.capabilities.join(', ')}]` : '';
-      lines.push(`- \`${id}\` — ${config.description}${caps}`);
+      // `[acp:<provider>]` tag: 'codebuddy-acp' → '[acp:codebuddy]' (05 §7).
+      const acp = config.type.endsWith('-acp') ? ` [acp:${config.type.slice(0, -'-acp'.length)}] — ${ACP_WORKER_HINT}` : '';
+      lines.push(`- \`${id}\` — ${config.description}${caps}${acp}`);
     }
   }
   return section('Available workers', lines.join('\n'));
