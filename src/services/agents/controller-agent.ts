@@ -15,6 +15,7 @@ import type { Subscribable } from '@/infra/state/subscribable';
 import { generateText } from 'ai';
 import type { ToolSet } from 'ai';
 import { buildSummaryInput } from './utils/summarizer-input';
+import { buildLlmCallStartPayload, debugLoggingEnabled } from './utils/llm-call-logging';
 
 import {
   SUMMARIZER_SYSTEM_PROMPT,
@@ -105,8 +106,16 @@ export class ControllerAgent extends BaseAgent implements Subscribable {
       provider.contextWindowTokens,
     );
     this.setHooks({
-      beforeLLM: ({ messages }) => {
-        this.logger.debug({ messages }, 'LLM call start');
+      beforeLLM: ({ messageCount, messages }) => {
+        // Zero-cost when DEBUG is off (issue #52): the level check precedes
+        // any payload work, so a disabled level never walks the messages.
+        // Default payload is metadata only (model / message count / token
+        // estimate); WAYANG_LOG_PROMPTS=1 adds the full sanitized messages.
+        if (!debugLoggingEnabled(this.logger)) return;
+        this.logger.debug(
+          buildLlmCallStartPayload(messages, messageCount, this.provider.modelName),
+          'LLM call start',
+        );
       },
       afterLLM: ({ step, usage, durationMs }) => {
         this.logger.info({ agent: 'controller', step, usage, durationMs }, 'LLM call done');

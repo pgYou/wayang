@@ -97,7 +97,19 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     tools: Record<string, any>,
     onProgress?: (msg: string) => void,
   ): Promise<WorkerResult> {
-    this.logger.debug({ task }, 'WorkerAgent run called');
+    // Digest only (issue #52 hygiene): the full TaskDetail carries absolute
+    // paths (workspace.path, taskAllowedDirs) and result/error text that must
+    // not land in the log file. Path identity goes out as the registry slug.
+    this.logger.debug(
+      {
+        taskId: task.id,
+        title: task.title,
+        priority: task.priority,
+        multiStage: task.multiStage ?? false,
+        ...(task.workspace && { workspace: task.workspace.slug }),
+      },
+      'WorkerAgent run called',
+    );
     // Set task info in state
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
 

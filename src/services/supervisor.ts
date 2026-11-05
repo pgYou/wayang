@@ -71,7 +71,7 @@ export class Supervisor {
     // a second process would append to concurrently, and a new session must not
     // be reopened by another process either. Acquiring here (rather than in
     // restore()/start()) means a conflict aborts construction before the log
-    // sink below opens <sessionDir>/wayang.log from a worker thread.
+    // sink below opens <sessionDir>/wayang.log.
     // Throws SessionLockedError carrying the holder's pid/startedAt/session dir.
     this.sessionLock = new SessionLock(this.sessionManager.sessionDir);
     const lockResult = this.sessionLock.acquire();
@@ -264,11 +264,11 @@ export class Supervisor {
 
     this.ctx.logger.info('Supervisor shutdown complete');
 
-    // Close the log sink last: everything above may still log, and this
-    // waits for the pino transport worker thread to flush and exit. Before
-    // this, that worker kept opening <sessionDir>/wayang.log for a while
-    // after construction (even at level 'silent'), racing with anything
-    // that cleans the session directory once shutdown() returns.
+    // Close the log sink last: everything above may still log, and this ends
+    // the sink (pino-pretty on the main thread, size-rotating file — issue
+    // #52) so nothing writes <sessionDir>/wayang.log* once shutdown()
+    // returns. Log calls racing past this point are dropped by the sink's
+    // no-op error listeners instead of crashing the exit flow.
     await this.ctx.closeLogger();
   }
 }

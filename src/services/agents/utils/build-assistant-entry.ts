@@ -4,6 +4,7 @@ import { EEntryType } from '@/types/index';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import type { RecordedToolCall } from './tool-call-recorder';
+import { clampToolOutput } from './tool-output-clamp';
 
 /** Optional inputs the entry builder cannot derive from the SDK event alone. */
 export interface BuildAssistantEntryExtras {
@@ -105,17 +106,17 @@ export function buildAssistantEntry(
     results.push(
       ...event.toolResults.map((tr) => {
         // SDK OnStepFinishEvent type incomplete: the raw output is omitted
-        // from the declared type.
+        // from the declared type. Write-layer fallback clamp (issue #53): the
+        // tool layer's own truncation stays first; this bounds whatever
+        // slipped past it (unwrapped tools, raised caps).
         const output = (tr as { output?: unknown }).output;
+        const value = typeof output === 'string' ? output : JSON.stringify(output ?? '');
         return withRecordMeta({
           toolCallId: tr.toolCallId,
           toolName: tr.toolName,
           output: {
             type: 'text' as const,
-            value:
-              typeof output === 'string'
-                ? output
-                : JSON.stringify(output ?? ''),
+            value: clampToolOutput(value),
           },
         });
       }),
@@ -125,17 +126,19 @@ export function buildAssistantEntry(
   // Tool errors from SDK input validation failures (e.g. zod schema mismatch).
   // SDK produces type: "tool-error" chunks that are NOT included in event.toolResults.
   // SDK OnStepFinishEvent type incomplete: tool-error parts arrive in a
-  // `content` array the declared type omits.
+  // `content` array the declared type omits. Error text goes through the same
+  // write-layer clamp (issue #53) as normal results.
   const content = (event as { content?: unknown }).content;
   if (Array.isArray(content)) {
     for (const part of content) {
       if (part.type === 'tool-error' && part.toolCallId) {
+        const errorText = part.error?.message ?? part.error ?? 'Tool input validation failed';
         results.push(withRecordMeta({
           toolCallId: part.toolCallId,
           toolName: part.toolName ?? 'unknown',
           output: {
             type: 'text' as const,
-            value: part.error?.message ?? part.error ?? 'Tool input validation failed',
+            value: clampToolOutput(typeof errorText === 'string' ? errorText : String(errorText)),
           },
           isError: true,
           status: 'failed',

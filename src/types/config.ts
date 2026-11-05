@@ -118,6 +118,20 @@ export interface PermissionConfig {
   approvalMemory?: ApprovalMemoryMode;
 }
 
+/**
+ * Session log rotation policy (issue #52). All fields optional — omitted
+ * keeps the defaults. The log file (`<sessionDir>/wayang.log`) rotates by
+ * size; rotated files are kept as `wayang.log.1` … `wayang.log.N`, oldest
+ * dropped. Total disk used by logs is bounded at roughly
+ * `maxFileSizeBytes × (maxFiles + 1)`.
+ */
+export interface LoggingConfig {
+  /** Max bytes the active log file may reach before rotation. Defaults to 10MB. */
+  maxFileSizeBytes?: number;
+  /** Number of rotated log files to retain. Defaults to 3. */
+  maxFiles?: number;
+}
+
 export interface WayangConfig {
   providers: Record<string, ProviderConfig>;
   controller: { provider: string };
@@ -147,6 +161,8 @@ export interface WayangConfig {
   signalWindowSize?: number;
   /** Path permission policy. Optional — the defaults apply when omitted. */
   permission?: PermissionConfig;
+  /** Session log rotation policy. Optional — the defaults apply when omitted. */
+  logging?: LoggingConfig;
 }
 
 /** Validate required fields, return error message or null */
@@ -183,6 +199,17 @@ export function validateConfig(config: WayangConfig): string | null {
     const approvalMemory = permission.approvalMemory;
     if (approvalMemory !== undefined && approvalMemory !== 'task' && approvalMemory !== 'off') {
       return `permission.approvalMemory must be 'task' or 'off' (got ${JSON.stringify(approvalMemory)})`;
+    }
+  }
+  const logging = config.logging;
+  if (logging !== undefined && logging !== null) {
+    const size = logging.maxFileSizeBytes;
+    if (size !== undefined && !(Number.isInteger(size) && size > 0)) {
+      return `logging.maxFileSizeBytes must be a positive integer (got ${JSON.stringify(size)})`;
+    }
+    const files = logging.maxFiles;
+    if (files !== undefined && !(Number.isInteger(files) && files > 0)) {
+      return `logging.maxFiles must be a positive integer (got ${JSON.stringify(files)})`;
     }
   }
   return null;
