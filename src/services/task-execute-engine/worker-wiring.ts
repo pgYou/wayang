@@ -3,7 +3,11 @@
 // WorkerTrackingEngine.
 
 import type { IWorkerInstance, TaskDetail } from '@/types/index';
-import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
+import type { SignalTurnLineage } from '@/types/index';
+import type { ApprovalMemoryMode } from '@/types/config';
+import type { SignalQueue } from '@/services/signal/signal-queue';
+import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
+import type { ApprovalMemory } from '@/services/permission/approval-memory';
 import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { createWorkerTools } from '@/services/tools/index';
 import { askControllerTool } from '@/services/tools/ask-controller';
@@ -24,6 +28,40 @@ import type { WorkerInquiryResolution } from './types';
 
 /** How long a worker waits for a controller answer before continuing on its own. */
 const INQUIRY_TIMEOUT_MS = 300_000;
+
+/**
+ * Engine-side view of the optional worker members `wireWorker` drives (freeze
+ * §7 ②). Detected by MEMBER PRESENCE, not instanceof: every worker type that
+ * implements the surface (ClaudeCodeWorker, the ACP skeleton) gets wired the
+ * same way, and the engine stays free of concrete worker imports. Workers
+ * without a member are simply skipped — e.g. ACP workers have no inquiry
+ * channel (02 §6 `inquiry: false`), so `setInquirySupport` never fires there.
+ */
+type InquiryCapableWorker = IWorkerInstance & {
+  setInquirySupport?: (ask: (question: string, context?: string) => Promise<string>) => void;
+};
+
+/** `setSignalContext` deps as the engine builds them (freeze §7 ② / 04 §3). */
+interface SignalContextDeps {
+  signalQueue: SignalQueue;
+  workerId: string;
+  taskId: string;
+  taskTitle: string;
+  workerType?: string;
+  emoji?: string;
+  turnLineage?: SignalTurnLineage;
+  accessScope?: WorkerAccessScope;
+  /** Task-scoped approval-memory store (#46) — reaches the worker's own permission path. */
+  grants?: ApprovalMemory;
+  /** Whether grants are remembered at all (`permission.approvalMemory`). */
+  approvalMemory?: ApprovalMemoryMode;
+}
+
+type SignalContextCapableWorker = IWorkerInstance & {
+  setSignalContext?: (deps: SignalContextDeps) => void;
+  /** Resolve controller answers for this worker's permission requests. */
+  permissionHandler?: PermissionMiddlewareResult;
+};
 
 export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
   /**
@@ -125,10 +163,12 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
         }
       : {};
 
-    // Third-party workers get ask_controller through their own channel
-    // (ClaudeCodeWorker exposes it as an in-process SDK MCP tool).
-    if (worker instanceof ClaudeCodeWorker) {
-      worker.setInquirySupport(askAndWait);
+    // Third-party workers get ask_controller through their own channel when
+    // they expose one (ClaudeCodeWorker: in-process SDK MCP tool; ACP workers
+    // expose none — 02 §6 — and are skipped by the probe).
+    const inquiryCapable = worker as InquiryCapableWorker;
+    if (typeof inquiryCapable.setInquirySupport === 'function') {
+      inquiryCapable.setInquirySupport(askAndWait);
     }
 
     // Apply permission middleware for puppet workers
@@ -185,11 +225,13 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
       this.permissionResolvers.set(workerId, middleware);
     }
 
-    // Wire signal context for ClaudeCodeWorker (canUseTool + acceptMessage).
-    // The SAME access scope used for puppet workers is handed over, so
-    // canUseTool reaches identical allow/ask/deny verdicts.
-    if (worker instanceof ClaudeCodeWorker) {
-      worker.setSignalContext({
+    // Wire signal context for workers that expose it (ClaudeCodeWorker's
+    // canUseTool + acceptMessage, the ACP skeleton's permission bridge).
+    // The SAME access scope used for puppet workers is handed over, so both
+    // reach identical allow/ask/deny verdicts.
+    const signalCapable = worker as SignalContextCapableWorker;
+    if (typeof signalCapable.setSignalContext === 'function') {
+      signalCapable.setSignalContext({
         signalQueue: this.signalQueue,
         workerId,
         taskId: task.id,
@@ -198,8 +240,18 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
         emoji: workerMeta.emoji,
         turnLineage: this.workerLineage(workerId),
         accessScope,
+        // Task-scoped approval memory (#46), same store/mode the puppet
+        // middleware above gets — the ACP permission bridge consumes them
+        // (04 §3); ClaudeCodeWorker currently ignores the two extras.
+        grants: this.approvalGrants,
+        approvalMemory: resolveApprovalMemory(this.permission),
       });
-      this.permissionResolvers.set(workerId, worker.permissionHandler);
+    }
+    // Controller answers flow back through the worker's own resolver
+    // (respond_permission → resolvePermission) — registered for ACP workers
+    // exactly like it was for ClaudeCodeWorker.
+    if (signalCapable.permissionHandler) {
+      this.permissionResolvers.set(workerId, signalCapable.permissionHandler);
     }
 
     return tools;
