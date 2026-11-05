@@ -16,6 +16,13 @@
  * object from an explicit field allowlist instead of forwarding caller-supplied
  * extras.
  *
+ * That stance holds for `allowed` too, which is written on the policy's allow
+ * fast path: the DECISION is observable (which rule allowed it, which path it
+ * judged, which tool and task), the CONTENT is not. An allowing record names no
+ * command text — a bash line that allowed records its judged target (if any),
+ * never the command string — so "the gate decided" and "here is what the worker
+ * ran" stay separate questions.
+ *
  * This is deliberately NOT a conversation transcript: audit records never enter
  * the worker/controller context (they would eat the context budget and pollute
  * business output).
@@ -42,6 +49,12 @@ export type PermissionAccess = 'read' | 'write' | 'unknown';
 
 /**
  * The decision being recorded.
+ * - `allowed`      — the policy allowed the call outright: no controller was
+ *                    asked, the tool ran immediately. The majority decision on
+ *                    the happy path, and the one that made the trail look
+ *                    incomplete when only the asks were recorded: "the gate
+ *                    never saw this call" and "the gate allowed it" are
+ *                    different stories about the same silence.
  * - `approved`     — the controller approved an `ask` verdict
  * - `denied`       — the controller refused (or the request timed out / aborted)
  * - `hard-denied`  — the policy refused without asking (`sensitiveMode: 'deny'`
@@ -53,6 +66,7 @@ export type PermissionAccess = 'read' | 'write' | 'unknown';
  *                    sensitive hit always ask again.
  */
 export type PermissionAuditDecision =
+  | 'allowed'
   | 'approved'
   | 'denied'
   | 'hard-denied'

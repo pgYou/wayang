@@ -687,4 +687,54 @@ describe('worker permission gate — policy-backed decisions', () => {
     engine.resolvePermission(request.requestId, false, 'no');
     expect(await pending).toContain('Permission denied');
   });
+
+  /**
+   * 0.8.4: an `allow` verdict is a decision too, and it was the only one
+   * missing from the trail — the audit could not tell "the gate allowed this"
+   * from "the gate never saw this call".
+   */
+  it('16. an allowed call writes one decision=allowed record and still runs', async () => {
+    const { engine, signalQueue, ctx } = makeEngine();
+    const tools = await startTask(engine);
+
+    expect(await tools.read_file.execute({ path: (writeFileSync(join(taskWs, 'a.txt'), 'hello'), 'a.txt') })).toContain('hello');
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
+
+    const audits = auditRecords(ctx);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      audit: 'permission',
+      decision: 'allowed',
+      operation: 'read',
+      access: 'read',
+      taskId: 't1',
+      toolName: 'read_file',
+    });
+    expect(typeof audits[0].ts).toBe('string');
+    // Metadata only: the record names the tool and the task, never content.
+    expect(JSON.stringify(audits[0])).not.toContain('hello');
+  });
+
+  it('17. an allowed bash call is audited with its judged direction, never the command text', async () => {
+    const { engine, signalQueue, ctx } = makeEngine();
+    const tools = await startTask(engine);
+
+    const output = await tools.bash.execute({ command: 'echo allowed-sentinel' });
+    expect(output).toContain('allowed-sentinel');
+    expect(permissionRequests(signalQueue)).toHaveLength(0);
+
+    const audits = auditRecords(ctx);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      decision: 'allowed',
+      operation: 'exec',
+      access: 'read',
+      matchedRule: 'no-path',
+      taskId: 't1',
+      toolName: 'bash',
+    });
+    // The command line is content: the allow path does not quote it.
+    expect(JSON.stringify(audits[0])).not.toContain('allowed-sentinel');
+    expect(audits[0]).not.toHaveProperty('requestedPath');
+  });
 });

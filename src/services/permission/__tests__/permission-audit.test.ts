@@ -185,6 +185,44 @@ describe('recordPermissionAudit', () => {
     });
   });
 
+  /**
+   * 0.8.4: the policy's ALLOW fast path is a decision too, and it used to
+   * leave no trace at all — the trail could not tell "the gate allowed this"
+   * from "the gate never saw this call".
+   */
+  it('records an allowed decision (the allow fast path) with metadata only', () => {
+    const logger = createMockLogger();
+    recordPermissionAudit(logger, {
+      decision: 'allowed',
+      operation: 'exec',
+      access: 'read',
+      matchedRule: 'no-path',
+      resolvedPath: '/ws/src/cli.ts',
+      taskId: 't-1',
+      workerId: 'w-1',
+      toolName: 'bash',
+    });
+
+    const record = firstRecord(logger);
+    expect(record).toMatchObject({
+      audit: 'permission',
+      decision: 'allowed',
+      operation: 'exec',
+      access: 'read',
+      matchedRule: 'no-path',
+      resolvedPath: '/ws/src/cli.ts',
+      taskId: 't-1',
+      workerId: 'w-1',
+      toolName: 'bash',
+    });
+    expect(typeof record.ts).toBe('string');
+    // Same field allowlist as every other decision: no content, no command
+    // text, no tool output.
+    expect(Object.keys(record).sort()).toEqual(
+      ['access', 'audit', 'decision', 'matchedRule', 'operation', 'resolvedPath', 'taskId', 'toolName', 'ts', 'workerId'].sort(),
+    );
+  });
+
   it('omits grantId on every other decision (only a reuse has one to name)', () => {
     const logger = createMockLogger();
     recordPermissionAudit(logger, { decision: 'approved', operation: 'read', toolName: 'read_file' });

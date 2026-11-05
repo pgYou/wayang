@@ -165,8 +165,24 @@ export function wrapWithPermissionMiddleware(
       execute: async (args: Record<string, unknown>, options?: unknown) => {
         const verdict = config.decide(toolName, args);
 
-        // Fast path: the policy allows this specific call outright.
+        // Fast path: the policy allows this specific call outright. It is still
+        // a DECISION, so it is audited like every other one — recording only
+        // the asks made the trail read as if the gate had never seen the call
+        // it allowed. Metadata only, exactly like the other records: rule,
+        // judged direction, canonical path, tool/task/worker identity. The
+        // command text is NOT recorded (this module's stance): the decision is
+        // observable, the content is not.
         if (verdict.decision === 'allow') {
+          recordPermissionAudit(deps.logger, {
+            decision: 'allowed',
+            operation: verdict.operation ?? operationForTool(toolName),
+            access: auditAccessFor(verdict.access),
+            resolvedPath: verdict.resolvedPath,
+            matchedRule: verdict.matchedRule,
+            taskId: deps.taskId,
+            workerId: deps.workerId,
+            toolName,
+          });
           return originalExecute(args, options);
         }
 

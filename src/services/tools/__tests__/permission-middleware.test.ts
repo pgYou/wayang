@@ -619,5 +619,75 @@ describe('wrapWithPermissionMiddleware', () => {
       const audit = auditCalls(logger)[0];
       expect(audit).toMatchObject({ operation: 'exec', access: 'unknown', decision: 'denied' });
     });
+
+    /**
+     * 0.8.4: the allow fast path runs the tool without asking, and it now
+     * writes one `allowed` record first — otherwise the trail reads as if the
+     * gate never saw the calls it allowed.
+     */
+    it('records an ALLOWED call (no request, tool still runs)', async () => {
+      const logger = createMockLogger();
+      const tools = mockTool('bash', 'ran');
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['bash'],
+        decide: () => ({ decision: 'allow' as const, matchedRule: 'no-path', access: 'read' as const }),
+        describeCall: () => 'Execute shell command',
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      await expect(result.wrappedTools.bash.execute({ command: 'ls -la' })).resolves.toBe('ran');
+      // Nothing was asked of the controller…
+      expect(queue.enqueue).not.toHaveBeenCalled();
+      expect(tools.bash.execute).toHaveBeenCalledTimes(1);
+      // …and exactly one decision was recorded.
+      const audits = auditCalls(logger);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        decision: 'allowed',
+        operation: 'exec',
+        access: 'read',
+        matchedRule: 'no-path',
+        taskId: 't1',
+        workerId: 'w1',
+        toolName: 'bash',
+      });
+      expect(typeof audits[0].ts).toBe('string');
+      // The stance of this module holds on the allow path too: the decision is
+      // observable, the CONTENT (here: the command line) is not recorded.
+      expect(JSON.stringify(audits[0])).not.toContain('ls -la');
+      expect(audits[0]).not.toHaveProperty('requestedPath');
+    });
+
+    it('records one ALLOWED decision per call, without touching the ask records', async () => {
+      const logger = createMockLogger();
+      const tools = { ...mockTool('bash', 'ran'), ...mockTool('read_file', 'content') };
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['bash', 'read_file'],
+        decide: (toolName) =>
+          toolName === 'bash'
+            ? { decision: 'allow' as const, matchedRule: 'no-path', access: 'read' as const }
+            : sensitiveAsk(),
+        describeCall: () => 'call',
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+        logger,
+      });
+
+      await result.wrappedTools.bash.execute({ command: 'ls' });
+      const pending = result.wrappedTools.read_file.execute({ path: '/home/u/.ssh/id_rsa' });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+      result.resolvePermission(payload.requestId, false, 'no');
+      await pending;
+
+      expect(auditCalls(logger).map((record) => record.decision)).toEqual(['allowed', 'denied']);
+    });
   });
 });
