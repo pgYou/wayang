@@ -1,4 +1,4 @@
-# 会话数据目录与日志体积（Refs #52）
+# 会话数据目录与日志体积（Refs #52 / #53）
 
 > 状态：已实施（分支 `fix/log-hygiene`，基于 origin/release/0.9.0）。
 > 范围：日志轮转、prompt 落盘开关。本文回答两个问题：数据目录里有什么、各文件会涨到多大。
@@ -14,7 +14,7 @@
 | 文件 | 内容 | 增长模型 | 上限 |
 | --- | --- | --- | --- |
 | `wayang.log`（+ `.1` … `.N`） | 运行日志（pino，pretty 单行格式） | 默认只记元数据：每轮 LLM 调用一条 `LLM call start`（模型 / 消息条数 / token 估算）+ 一条 `LLM call done`，加上任务调度 / 审计类 INFO 行 | 按大小轮转，默认 10MB × 保留 3 份（见下） |
-| `conversation.jsonl` | controller 对话（append-only） | 每回合一条 entry；工具结果在工具层截断（8000 字符） | 无轮转（历史不可重写） |
+| `conversation.jsonl` | controller 对话（append-only） | 每回合一条 entry；工具结果双层截断（工具层 + 写入层兜底，见 §3） | 无轮转（历史不可重写）；单条工具结果 ≤ `TOOL_OUTPUT_MAX_CHARS`（默认 20000 字符） |
 | `workers/<workerId>/conversation.jsonl` | 各 worker 对话（append-only） | 同上 | 同上 |
 | `runtime-state.json` / `tasks.json` / `signals.jsonl` 等 | 状态快照 | 随任务数线性 | — |
 
@@ -42,11 +42,21 @@
 
 日志总体积上界 ≈ `maxFileSizeBytes × (maxFiles + 1)`，默认 ≈ 40MB。
 
-## 3. `--resume` 与日志的关系
+## 3. transcript：写入层统一截断兜底（#53）
+
+工具层截断（puppet 工具 8000 字符、claude-code worker 2000 字符）仍是第一道；新增**写入层兜底**：任何写入 `conversation.jsonl` 的工具结果（`buildAssistantEntry` 与 claude 工具记录两条路径）超过 `TOOL_OUTPUT_MAX_CHARS`（默认 20000 字符，环境变量 `WAYANG_TOOL_OUTPUT_MAX_CHARS` 可调）时，保留头尾并标注省略量，例如：
+
+```
+<前 70% 内容>… [omitted 812345 of 836525 chars] …<后 20% 内容>
+```
+
+即使某工具新增时忘记包 `safeExecute`、或 `read-worker-conversation` 抬高了单次返回上限，transcript 与后续回放的上下文也不会被单条巨量输出撑爆。
+
+## 4. `--resume` 与日志的关系
 
 resume 只读 `conversation.jsonl` / `runtime-state.json` / `tasks.json` / `signals*`，**从不读 `wayang.log`**；日志轮转也不触碰任何 conversation / 状态文件。因此日志治理不影响恢复流程（有测试覆盖：轮转发生后 restore 正常读全量历史）。
 
-## 4. 典型 1 小时会话的体积估算（#52 验收）
+## 5. 典型 1 小时会话的体积估算（#52 验收）
 
 以实测会话 `20261104-195156-nsvg`（15.2h）为基线：112 次 LLM 调用、360 条 controller 条目、23 个 worker。改动前 `wayang.log` 平均 ~2.7MB/h（其中 DEBUG prompt dump 占 78%）。改动后：
 
