@@ -1,5 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { validateConfig, collectWorkerWarnings, WORKER_TYPES, type WayangConfig, type WorkerConfig } from '@/types/config';
+import type { AcpProtocolConfig } from '@/types/config';
+import type { AcpProtocolOverrides } from '@/services/agents/acp/base-acp-worker';
+
+// Compile-time lock (05 §3): the config layer's AcpProtocolConfig and the
+// worker layer's AcpProtocolOverrides must stay mutually assignable — these
+// are two names for ONE shape; a fork here is a wiring bug. A mismatch fails
+// `npm run lint` (the Expect<> aliases below), not just this suite.
+type Expect<T extends true> = T;
+type _ConfigShapeMatchesWorker = Expect<AcpProtocolConfig extends AcpProtocolOverrides ? true : false>;
+type _WorkerShapeMatchesConfig = Expect<AcpProtocolOverrides extends AcpProtocolConfig ? true : false>;
+
+describe('AcpProtocolConfig shape lock (05 §3)', () => {
+  it('stays shape-identical to the worker layer\'s AcpProtocolOverrides (compile-time lock)', () => {
+    // Runtime mirror of the type-level assertions above.
+    const lock: [_ConfigShapeMatchesWorker, _WorkerShapeMatchesConfig] = [true, true];
+    expect(lock).toEqual([true, true]);
+  });
+});
 
 /** Fresh minimal valid config per call — no shared mutable fixture. */
 function makeConfig(contextWindowTokens?: unknown): WayangConfig {
