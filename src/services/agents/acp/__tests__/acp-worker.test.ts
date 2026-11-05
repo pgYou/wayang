@@ -10,7 +10,8 @@
  *   runtimeState.acp.pid + audit transport:'acp';
  * - stopReason mapping: end_turn → completed (summary = last agent text),
  *   refusal → failed with the agent-error wording, cancelled → failed
- *   'Aborted';
+ *   'Aborted' — EXCEPT when the controller denied a permission during the
+ *   turn (#25, measured opencode): then 'Permission denied by user: <tool>';
  * - cancel: late updates differ per stopPolicy — trustUpdatesAfterCancel
  *   true keeps them in the transcript, false drops + counts;
  * - readiness attribution: an auth keyword on stderr during session/new
@@ -438,6 +439,106 @@ describe('BaseAcpWorker: cancel and late updates (frozen §6)', () => {
     // The cleanup settlement left an audit trail: denied, source 'aborted'.
     const audits = worker.auditRecords();
     expect(audits.some((record) => record.decision === 'denied' && record.source === 'aborted')).toBe(true);
+  });
+});
+
+describe('BaseAcpWorker: permission denial semantics (#25)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'acp-worker-test-'));
+  });
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  /** Sensitive execute + permission request, same measured shape as the e2e case. */
+  function sendSensitivePermissionRequest(worker: TestAcpWorker, requestId: number): void {
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-d1', title: 'Bash', kind: 'other', status: 'in_progress', rawInput: {} });
+    sendUpdate(worker, { sessionUpdate: 'tool_call_update', toolCallId: 'tc-d1', rawInput: { command: 'cat /home/test-user/.ssh/id_rsa' } });
+    sendUpdate(worker, {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'tc-d1',
+      title: 'cat sensitive',
+      kind: 'execute',
+      status: 'pending',
+      rawInput: { command: 'cat /home/test-user/.ssh/id_rsa' },
+    });
+    sendPermissionRequest(worker, requestId, { toolCallId: 'tc-d1', rawInput: { command: 'cat /home/test-user/.ssh/id_rsa' } }, [
+      { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject', name: 'Reject once', kind: 'reject_once' },
+    ]);
+  }
+
+  it('a controller denial maps a cancelled turn to failed "Permission denied by user: <tool>"', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext({
+      signalQueue: queue as any,
+      workerId: 'w-deny1',
+      taskId: TASK.id,
+      taskTitle: TASK.title,
+      workerType: 'codebuddy-acp',
+      accessScope: SCOPE,
+      grants: new ApprovalMemory(),
+      approvalMemory: 'task',
+    });
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 502);
+    expect(queue.signals).toHaveLength(1);
+    const payload = queue.signals[0].payload;
+
+    // The controller DENIES (respond_permission approved=false).
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'too dangerous')).toBe(true);
+    await worker.transport.waitForClientOutput(4);
+    expect(worker.transport.clientMessages[3]).toMatchObject({
+      id: 502,
+      result: { outcome: { outcome: 'selected', optionId: 'reject' } },
+    });
+
+    // opencode ends the turn as 'cancelled' on a rejected permission
+    // (measured #25) — the denial, not a user abort, is the cause.
+    respondTo(worker.transport, 2, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('Permission denied by user: execute');
+  });
+
+  it('a denial from an EARLIER turn does not relabel a later real cancel (per-turn ledger)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext({
+      signalQueue: queue as any,
+      workerId: 'w-deny2',
+      taskId: TASK.id,
+      taskTitle: TASK.title,
+      workerType: 'codebuddy-acp',
+      accessScope: SCOPE,
+      grants: new ApprovalMemory(),
+      approvalMemory: 'task',
+    });
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    // Queue a controller message so turn 1's end_turn opens turn 2.
+    worker.acceptMessage('status?');
+
+    // Turn 1: the controller denies, but the agent ends the turn gracefully.
+    sendSensitivePermissionRequest(worker, 503);
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false)).toBe(true);
+    await worker.transport.waitForClientOutput(4);
+    respondTo(worker.transport, 2, { stopReason: 'end_turn' });
+
+    // Turn 2 opens (line 5: the second session/prompt), then a REAL cancel
+    // arrives mid-turn — the turn-1 denial must not relabel it.
+    await worker.transport.waitForClientOutput(5);
+    worker.abort();
+    respondTo(worker.transport, 4, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result).toEqual({ status: 'failed', error: 'Aborted' });
   });
 });
 

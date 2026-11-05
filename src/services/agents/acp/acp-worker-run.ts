@@ -55,6 +55,8 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     this._handshake = null;
     this._sawToolCall = false;
     this._sawPermissionRequest = false;
+    this._deniedPermissions = 0;
+    this._lastDeniedToolName = undefined;
     this._accumulator = createAcpToolAccumulator();
     this._turnWriter.reset();
 
@@ -180,6 +182,10 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
         }
 
         while (!this.abortController.signal.aborted) {
+          // Per-turn denial ledger (#25): a 'cancelled' turn is a denial
+          // consequence only if the controller denied during THIS turn.
+          this._deniedPermissions = 0;
+          this._lastDeniedToolName = undefined;
           const result: AcpTurnResult = await client.sessionPrompt(sessionId, [{ type: 'text', text: promptText }]);
           this._resultReceived = true;
           this.settleTurn();
@@ -196,13 +202,20 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           }
           // cancelled / max_tokens / max_turn_requests / refusal (02 §4).
           this._inputClosed = true;
-          this._terminalResult =
-            result.stopReason === 'cancelled'
-              ? { status: 'failed', error: 'Aborted' }
-              : {
-                  status: 'failed',
-                  error: acpUserMessage('agent-error', { provider: this.config.type, stopReason: result.stopReason }),
-                };
+          if (result.stopReason === 'cancelled') {
+            // #25 (measured, opencode 2.2.5): a rejected permission request
+            // also ends the turn as 'cancelled'. A controller denial in THIS
+            // turn means the user refused — anything else is a real abort.
+            this._terminalResult =
+              this._deniedPermissions > 0
+                ? { status: 'failed', error: `Permission denied by user: ${this._lastDeniedToolName ?? 'unknown'}` }
+                : { status: 'failed', error: 'Aborted' };
+          } else {
+            this._terminalResult = {
+              status: 'failed',
+              error: acpUserMessage('agent-error', { provider: this.config.type, stopReason: result.stopReason }),
+            };
+          }
           break;
         }
       } finally {

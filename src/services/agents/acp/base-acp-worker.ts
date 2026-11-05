@@ -181,6 +181,13 @@ export abstract class BaseAcpWorker {
 
   // --- Permission plumbing (same shape as ClaudeCodeWorker.permissionHandler) ---
   protected readonly _pendingPermissions = new BlockingRequestMap<AcpPermissionAnswer>();
+  /**
+   * Controller-issued permission denials in the CURRENT turn (#25): the run
+   * layer resets this at every turn boundary and reads it when a turn ends
+   * 'cancelled' — a denial means the user refused, not that the run aborted.
+   */
+  protected _deniedPermissions = 0;
+  protected _lastDeniedToolName: string | undefined;
   readonly permissionHandler: PermissionMiddlewareResult = {
     resolvePermission: (requestId: string, approved: boolean, reason?: string) =>
       this._pendingPermissions.resolve(requestId, { approved, reason }),
@@ -272,9 +279,16 @@ export abstract class BaseAcpWorker {
         logger: this.logger,
         provider: this.config.type,
         permissionMs: acpCtx.permissionMs,
+        onControllerDenial: (toolName) => this.notePermissionDenial(toolName),
       },
       this._pendingPermissions,
     )(req);
+  }
+
+  /** Bridge callback (#25): the controller actively denied a permission in the current turn. */
+  protected notePermissionDenial(toolName: string): void {
+    this._deniedPermissions += 1;
+    this._lastDeniedToolName = toolName;
   }
 
   /** 3) Error normalization: fold a phase failure into an AcpError. Default: AcpErrors pass, everything else is agent-error. */
