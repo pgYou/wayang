@@ -256,7 +256,9 @@ export class AcpClient {
   /** The handler must return an outcome; the client writes the JSON-RPC response. */
   onPermissionRequest(handler: (req: AcpPermissionRequest) => Promise<AcpPermissionOutcome>): () => void {
     this.permissionResponder.setHandler(handler);
-    return () => this.permissionResponder.setHandler(null);
+    // Only detach THIS registration: a later registration must survive an
+    // earlier teardown (no unconditional setHandler(null)).
+    return () => this.permissionResponder.clearIfCurrent(handler);
   }
 
   /** Delegates to transport.close after settling pending: permissions → cancelled, requests → AcpError (cancel path → 'cancelled'). */

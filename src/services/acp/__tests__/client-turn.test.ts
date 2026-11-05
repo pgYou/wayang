@@ -175,6 +175,59 @@ describe('AcpClient cancel path (§6)', () => {
       { jsonrpc: '2.0', id: 51, result: { outcome: { outcome: 'cancelled' } } },
     ]);
   });
+
+  it('onPermissionRequest teardown only detaches its own handler', async () => {
+    const seen: string[] = [];
+    const offFirst = client.onPermissionRequest(async (req) => {
+      seen.push(`first:${req.sessionId}`);
+      return { outcome: 'cancelled' };
+    });
+    const offSecond = client.onPermissionRequest(async (req) => {
+      seen.push(`second:${req.sessionId}`);
+      return { outcome: 'cancelled' };
+    });
+    // The first registration's teardown must not clear the second's handler.
+    offFirst();
+    transport.agentMessage(permissionRequest(82));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual(['second:s1']);
+    offSecond();
+    transport.agentMessage(permissionRequest(83));
+    await vi.advanceTimersByTimeAsync(0);
+    // No handler registered: answered cancelled (fail-closed), nothing crashes.
+    expect(seen).toEqual(['second:s1']);
+    expect(transport.clientMessages.find((m) => m.id === 83)).toEqual({
+      jsonrpc: '2.0',
+      id: 83,
+      result: { outcome: { outcome: 'cancelled' } },
+    });
+  });
+
+  it('falls back to sessionId "" when request_permission params.sessionId is not a string (fail-closed, no crash)', async () => {
+    const seen: Array<string | undefined> = [];
+    client.onPermissionRequest(async (req) => {
+      seen.push(req.sessionId);
+      return { outcome: 'cancelled' };
+    });
+    transport.agentMessage({
+      jsonrpc: '2.0',
+      id: 91,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 12345,
+        toolCall: { toolCallId: 't1', rawInput: { command: 'echo hi' } },
+        options: [{ optionId: 'allow', name: 'Once', kind: 'allow_once' }],
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual(['']);
+    // The response is still written — the request is answered, not dropped.
+    expect(transport.clientMessages.find((m) => m.id === 91)).toEqual({
+      jsonrpc: '2.0',
+      id: 91,
+      result: { outcome: { outcome: 'cancelled' } },
+    });
+  });
 });
 
 describe('AcpClient.close and transport failures', () => {
