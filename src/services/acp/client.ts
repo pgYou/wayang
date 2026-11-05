@@ -176,6 +176,7 @@ export class AcpClient {
         () =>
           new AcpError('handshake-timeout', `initialize: no response within ${this.timeouts.handshakeMs}ms`, {
             stderrTail: this.transport.stderrTail(),
+            seconds: Math.ceil(this.timeouts.handshakeMs / 1000),
           }),
       );
       this.handshake = parseHandshake(raw);
@@ -211,7 +212,9 @@ export class AcpClient {
     );
     const sessionId = (raw as { sessionId?: unknown } | null)?.sessionId;
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
-      throw new AcpError('protocol-mismatch', 'session/new response is missing sessionId');
+      throw new AcpError('protocol-mismatch', 'session/new response is missing sessionId', {
+        reason: 'session/new 响应缺少 sessionId',
+      });
     }
     return { sessionId };
   }
@@ -374,6 +377,7 @@ export class AcpClient {
         new AcpError(
           'protocol-mismatch',
           `${this.nonJsonStreak} consecutive non-JSON stdout lines (limit ${this.nonJsonLimit})${detail ? `; first: ${detail}` : ''}`,
+          { reason: `${this.nonJsonStreak} 行非 JSON` },
         ),
       );
     }
@@ -420,6 +424,7 @@ export class AcpClient {
         new AcpError(
           'protocol-mismatch',
           `${this.unknownVariantStreak} consecutive unknown sessionUpdate variants (limit ${this.unknownVariantLimit}); last: ${variant}`,
+          { reason: `连续 ${this.unknownVariantStreak} 个未知 sessionUpdate 变体` },
         ),
       );
     }
@@ -467,18 +472,27 @@ export class AcpClient {
   private handleTransportClose(info: AcpExitInfo): void {
     if (this.closedInfo) return;
     this.closedInfo = info;
-    const error =
-      this.fatalError ??
-      (info.cancelled
-        ? new AcpError('cancelled', 'agent process closed on the cancel path', {
-            exit: info,
-            stderrTail: this.transport.stderrTail(),
-          })
-        : new AcpError('transport-closed', `agent process exited (code=${info.code ?? 'null'} signal=${info.signal ?? 'null'})`, {
-            exit: info,
-            stderrTail: this.transport.stderrTail(),
-          }));
-    this.settleEverything(error);
+    this.settleEverything(this.fatalError ?? this.closeError(info));
+  }
+
+  /**
+   * §4: exit code 0 with an unsettled turn is an unclean exit — a protocol
+   * violation — not a crash. Every other exit code stays transport-closed.
+   */
+  private closeError(info: AcpExitInfo): AcpError {
+    const stderrTail = this.transport.stderrTail();
+    if (info.cancelled) {
+      return new AcpError('cancelled', 'agent process closed on the cancel path', { exit: info, stderrTail });
+    }
+    if (info.code === 0 && this.activePrompts.size > 0) {
+      return new AcpError('protocol-mismatch', 'agent exited with code 0 while a session/prompt turn is still in flight', {
+        reason: 'agent 退出但回合未结束',
+      });
+    }
+    return new AcpError('transport-closed', `agent process exited (code=${info.code ?? 'null'} signal=${info.signal ?? 'null'})`, {
+      exit: info,
+      stderrTail,
+    });
   }
 
   private handleTransportError(err: Error): void {
@@ -486,7 +500,12 @@ export class AcpClient {
       this.tripFatal(err);
       return;
     }
+    // §4 fail-closed: an unknown transport-layer stream error still converges
+    // every pending request (as transport-closed) and kills the process — a
+    // counted-but-ignored error would leave promptMs=0 turns hanging forever.
     this.statsValue.streamErrors += 1;
+    this.tripFatal(new AcpError('transport-closed', `transport stream error: ${err.message}`));
+    this.transport.close({ sigtermWaitMs: this.timeouts.sigtermWaitMs, reason: 'crash' }).catch(() => undefined);
   }
 
   private tripFatal(err: AcpError): void {

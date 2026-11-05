@@ -228,6 +228,25 @@ describe('AcpClient.close and transport failures', () => {
     await expectAcpError(prompt, 'cancelled');
   });
 
+  it('a code-0 exit with an in-flight turn settles the prompt as protocol-mismatch (unclean exit)', async () => {
+    const prompt = client.sessionPrompt('s1', blocks);
+    transport.simulateExit({ code: 0, signal: null, reason: 'crash', cancelled: false });
+    const err = await expectAcpError(prompt, 'protocol-mismatch');
+    expect(err.message).toContain('code 0');
+    expect(err.detail?.reason).toBe('agent 退出但回合未结束');
+    expect(err.userMessage).toContain('agent 退出但回合未结束');
+  });
+
+  it('a code-0 exit with no in-flight turn raises no error (only the standard fail-fast)', async () => {
+    const prompt = client.sessionPrompt('s1', blocks);
+    transport.agentMessage(response(1, { stopReason: 'end_turn' }));
+    await expect(prompt).resolves.toMatchObject({ stopReason: 'end_turn' });
+    transport.simulateExit({ code: 0, signal: null, reason: 'crash', cancelled: false });
+    // Nothing was in flight: the client closes without classifying anything as
+    // protocol-mismatch — the next request fails fast with the usual code.
+    await expectAcpError(client.sessionNew({ cwd: '/w', mcpServers: [] }), 'transport-closed');
+  });
+
   it('a fatal protocol error (e.g. framing) takes precedence over the later close settlement', async () => {
     const prompt = client.sessionPrompt('s1', blocks);
     transport.emitStreamError(new AcpError('protocol-mismatch', 'ndjson framing error: line exceeds 65536 bytes'));
@@ -238,12 +257,25 @@ describe('AcpClient.close and transport failures', () => {
     await expect(client.close('shutdown')).resolves.toMatchObject({ reason: 'shutdown' });
   });
 
-  it('a non-Acp stream error is counted without settling anything', async () => {
+  it('a non-Acp stream error converges pending prompts as transport-closed and closes with reason crash', async () => {
     const prompt = client.sessionPrompt('s1', blocks);
     transport.emitStreamError(new Error('EPIPE'));
+    const err = await expectAcpError(prompt, 'transport-closed');
+    expect(err.message).toContain('EPIPE');
     expect(client.stats.streamErrors).toBe(1);
-    transport.agentMessage(response(1, { stopReason: 'end_turn' }));
-    await expect(prompt).resolves.toMatchObject({ stopReason: 'end_turn' });
+    expect(transport.closeCalls).toEqual([{ sigtermWaitMs: 2_000, reason: 'crash' }]);
+  });
+
+  it('a non-Acp stream error converges a hanging prompt even when promptMs=0 (no orphaned timer handles)', async () => {
+    // promptMs defaults to 0: the agent never answers and no cancel timer is
+    // armed — the stream error is the only thing that can settle the turn.
+    const prompt = client.sessionPrompt('s1', blocks);
+    const assertion = expectAcpError(prompt, 'transport-closed');
+    transport.emitStreamError(new Error('read ECONNRESET'));
+    const err = await assertion; // settles on the error itself, not on any timer
+    expect(err.message).toContain('ECONNRESET');
+    expect(client.stats.streamErrors).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('promptMs cancel flow also cancels pending permissions mid-turn', async () => {
