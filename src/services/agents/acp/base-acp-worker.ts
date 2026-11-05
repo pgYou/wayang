@@ -1,0 +1,413 @@
+/**
+ * BaseAcpWorker — the ACP-generic worker skeleton, part 1: hook types, shared
+ * attribution helpers, the per-run fields and the `IWorkerInstance` surface
+ * (02 booklet §2). The run()/abort() lifecycle lives in `acp-worker-run.ts`
+ * (same layering as claude-code-worker/); provider classes extend that.
+ *
+ * The public surface matches ClaudeCodeWorker (setSignalContext /
+ * permissionHandler / acceptMessage / getLiveStatus / …) so the engine treats
+ * an ACP worker as just another IWorkerInstance. Providers override only the
+ * five hooks — buildLaunch / mapPermission(default: shared bridge) /
+ * normalizeError(default: pass-through) / isReady / stopPolicy — and the
+ * skeleton never branches on a provider name.
+ */
+
+import type { WorkerResult } from '@/types/index';
+import type { TaskDetail } from '@/types/task';
+import type { WorkerConfig, ApprovalMemoryMode } from '@/types/config';
+import type { WorkerLiveStatus } from '@/types/worker';
+import type { Logger } from '@/infra/logger';
+import type { StateEvent } from '@/infra/state/base-state';
+import type { ConversationEntry, SignalTurnLineage } from '@/types/index';
+import { accessSync, constants } from 'node:fs';
+import { join } from 'node:path';
+import { WorkerState } from '../worker-state';
+import { type TurnEnvelope, applyTurnEnvelope } from '../utils/entry-envelope';
+import { generateId } from '@/utils/id';
+import { SystemContext } from '@/infra/system-context';
+import { wayangDirForSessionDir } from '@/infra/session-helpers';
+import { resolveWorkspaceRef } from '@/infra/workspace-registry';
+import type { WorkspaceRef } from '@/infra/workspace-registry';
+import type { SignalQueue } from '@/services/signal/signal-queue';
+import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
+import type { WorkerAccessScope } from '@/services/tools/permission-rules';
+import { ApprovalMemory } from '@/services/permission/approval-memory';
+import { BlockingRequestMap } from '@/infra/blocking-requests';
+import type { SkillRegistry } from '@/services/skills/registry';
+import { AcpError, acpUserMessage } from '@/services/acp/errors';
+import { AUTH_STDERR_PATTERN } from '@/services/acp/codec';
+import { type AcpTimeouts, type AcpLaunchConfig } from '@/services/acp/config';
+import type { AcpCapabilities, AcpHandshake, AcpPermissionOutcome, AcpPermissionRequest } from '@/services/acp/types';
+import { buildAcpCapabilities } from '@/services/acp/client';
+import { createAcpToolAccumulator, type AcpToolAccumulator } from './event-mapper';
+import { createAcpPermissionBridge, type AcpPermissionAnswer } from './permission-bridge';
+import { AcpTurnWriter } from './acp-turn-writer';
+
+// --- Hook types (frozen §2 / 02 §2) ---
+
+/** Stop strategy: cancel grace, SIGTERM→SIGKILL gap, late-update trust (02 §2). */
+export interface AcpStopPolicy {
+  /** Grace after session/cancel waiting for the turn to settle; then SIGTERM. */
+  cancelGraceMs: number;
+  /** How long after SIGTERM before SIGKILL. */
+  sigtermWaitMs: number;
+  /** Whether session/updates arriving AFTER a cancel are still trusted (frozen §6.4). */
+  trustUpdatesAfterCancel: boolean;
+}
+
+/** Input the isReady hook judges from. */
+export interface AcpReadyContext {
+  handshake: AcpHandshake;
+  /** When the judgement runs: right after the handshake, or after session/new failed. */
+  phase: 'handshake' | 'session-new';
+  /** The original failure for phase 'session-new' (timeout / JSON-RPC error). */
+  error?: unknown;
+  /** transport.stderrTail() — for keyword attribution. */
+  stderrTail: string[];
+}
+
+/** Result of the isReady hook (frozen §2.5: `message` is display-ready). */
+export interface AcpReadiness {
+  ready: boolean;
+  /** 0.9.0's only post-handshake attribution need is the login state. */
+  kind?: 'auth-required';
+  message?: string;
+}
+
+/** 05 §3 protocol overrides as the worker layer reads them (C2 lands them in WorkerConfig). */
+export interface AcpProtocolOverrides extends Partial<AcpTimeouts> {
+  capabilities?: Partial<Pick<AcpCapabilities, 'permissionRequests' | 'toolCalls'>>;
+  /** opencode only: inject the ask-all permission gate (default true). See `AcpProtocolConfig`. */
+  gatePermissions?: boolean;
+}
+
+/** 05 §2 `*-acp` config row fields (C2 lands them in WorkerConfig). */
+export interface AcpWorkerUserConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  protocol?: AcpProtocolOverrides;
+  permissionMode?: 'client' | 'agent';
+}
+
+/** What the buildLaunch hook receives (env already merged with process.env, frozen §2.1). */
+export interface AcpWorkerEnvView {
+  env: Record<string, string>;
+  command?: string;
+  args?: readonly string[];
+  timeouts: AcpTimeouts;
+  cwd: string;
+}
+
+/** Context the default mapPermission implementation needs (assembled per run). */
+export interface AcpPermissionContext {
+  accumulator: AcpToolAccumulator;
+  scope: WorkerAccessScope;
+  signalQueue: SignalQueue;
+  runContext: { workerId: string; taskId: string; taskTitle: string; workerType?: string; emoji?: string };
+  turnLineage?: SignalTurnLineage;
+  grants: ApprovalMemory;
+  approvalMemory: ApprovalMemoryMode;
+  permissionMs?: number;
+}
+
+// --- Shared helpers ---
+
+/** Locate an executable: paths are checked directly, bare names on PATH. */
+export function findExecutableOnPath(command: string): string | undefined {
+  const candidates = command.includes('/')
+    ? [command]
+    : (process.env.PATH ?? '')
+        .split(':')
+        .map((dir) => (dir ? join(dir, command) : ''));
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Shared session-new attribution for providers whose isReady covers the login
+ * state (codebuddy measured 03 §2.2; opencode same shape, unmeasured): an
+ * auth-required error from the protocol layer, or an auth keyword on stderr,
+ * is attributed as auth-required; everything else stays on its original path.
+ */
+export function authAttributingReadiness(
+  ctx: AcpReadyContext,
+  opts: { provider: string; command?: string },
+): AcpReadiness {
+  if (ctx.phase === 'handshake') {
+    return { ready: ctx.handshake.protocolVersion === 1 };
+  }
+  const authMethods = ctx.handshake.authMethods.map((method) => method.name).filter((name) => name.length > 0);
+  const authRequired = (): AcpReadiness => ({
+    ready: false,
+    kind: 'auth-required',
+    message: acpUserMessage('auth-required', { provider: opts.provider, command: opts.command, authMethods }),
+  });
+  if (ctx.error instanceof AcpError && ctx.error.code === 'auth-required') return authRequired();
+  // stderr keyword short-circuit: judge on the hit, do not wait for the timeout.
+  if (ctx.stderrTail.some((line) => AUTH_STDERR_PATTERN.test(line))) return authRequired();
+  return { ready: true };
+}
+
+// --- The skeleton (fields, hooks, IWorkerInstance surface) ---
+// `implements IWorkerInstance` lands on AcpWorkerRun (the layer that owns
+// run/abort), mirroring the claude-code-worker layering.
+export abstract class BaseAcpWorker {
+  readonly id: string;
+  protected readonly config: WorkerConfig;
+  protected readonly state: WorkerState;
+  readonly workspaceDir: string;
+  /** Wayang session directory (provider hooks write per-run side files here, e.g. the opencode gate). */
+  protected readonly sessionDir: string;
+  protected readonly logger: Logger;
+  protected readonly abortController = new AbortController();
+  protected _terminalResult: WorkerResult | null = null;
+  protected _streamEnded = false;
+  /** stopReason of the in-flight/last turn has arrived (getLiveStatus). */
+  protected _resultReceived = false;
+
+  // --- Controller messaging (turn-boundary delivery) ---
+  protected _messageQueue: string[] = [];
+  protected _runInFlight = false;
+  protected _inputClosed = false;
+
+  // --- Permission plumbing (same shape as ClaudeCodeWorker.permissionHandler) ---
+  protected readonly _pendingPermissions = new BlockingRequestMap<AcpPermissionAnswer>();
+  /**
+   * Controller-issued permission denials in the CURRENT turn (#25): the run
+   * layer resets this at every turn boundary and reads it when a turn ends
+   * 'cancelled' — a denial means the user refused, not that the run aborted.
+   */
+  protected _deniedPermissions = 0;
+  protected _lastDeniedToolName: string | undefined;
+  readonly permissionHandler: PermissionMiddlewareResult = {
+    resolvePermission: (requestId: string, approved: boolean, reason?: string) =>
+      this._pendingPermissions.resolve(requestId, { approved, reason }),
+    cleanup: () => {
+      this._pendingPermissions.cleanupAll(() => ({ approved: false, reason: 'Worker aborted' }));
+    },
+    wrappedTools: {}, // not used for ACP workers
+  };
+
+  // --- Signal context, set by the engine before run() ---
+  protected _signalQueue: SignalQueue | null = null;
+  protected _runContext: { workerId: string; taskId: string; taskTitle: string; workerType?: string; emoji?: string } | null = null;
+  protected _accessScope: WorkerAccessScope | null = null;
+  protected _turnLineage: SignalTurnLineage = {};
+  protected _grants: ApprovalMemory = new ApprovalMemory();
+  protected _approvalMemory: ApprovalMemoryMode = 'task';
+  protected _currentTurnEnv: TurnEnvelope | null = null;
+
+  // --- Progress debounce ---
+  protected _progressTimer: ReturnType<typeof setTimeout> | null = null;
+  protected _pendingProgress: string | null = null;
+
+  // --- ACP runtime (per run) ---
+  protected _accumulator: AcpToolAccumulator = createAcpToolAccumulator();
+  protected readonly _turnWriter: AcpTurnWriter;
+  /** The run's client (spawned in run(), closed in its finally). */
+  protected _client: import('@/services/acp/client').AcpClient | null = null;
+  protected _sessionId: string | null = null;
+  /** Set the moment a cancel goes out — gates late updates (frozen §6.4). */
+  protected _cancelledAt: number | null = null;
+  protected _discardedAfterCancel = 0;
+  /** cancelGraceMs timer armed by abort() (frozen §6.3). */
+  protected _cancelGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Rejects session/new on an auth-keyword stderr line (03 §2.2 short-circuit). */
+  protected _sessionAuthHit: ((line: string) => void) | null = null;
+  /** Ring buffer of recent stderr lines (attribution, 02 §3 step 6). */
+  protected _stderrLines: string[] = [];
+  protected _handshake: AcpHandshake | null = null;
+  protected _launchCommand: string | undefined;
+  /** Capability observation (02 §6): what this run actually saw. */
+  protected _sawToolCall = false;
+  protected _sawPermissionRequest = false;
+
+  protected readonly ctx: SystemContext;
+  protected readonly skills: SkillRegistry;
+  private readonly workspaceRef?: WorkspaceRef;
+
+  constructor(
+    config: WorkerConfig,
+    sessionDir: string,
+    workspaceDir: string,
+    ctx: SystemContext,
+    skills: SkillRegistry,
+  ) {
+    this.id = generateId('aw');
+    this.ctx = ctx;
+    this.config = config;
+    this.workspaceDir = workspaceDir;
+    this.sessionDir = sessionDir;
+    this.logger = ctx.logger;
+    this.skills = skills;
+    this.workspaceRef = resolveWorkspaceRef(wayangDirForSessionDir(sessionDir), workspaceDir);
+    this.state = new WorkerState(sessionDir, this.id, ctx.logger, this.workspaceRef);
+    this._turnWriter = new AcpTurnWriter(
+      (entry) => this.state.append('conversation', applyTurnEnvelope(entry, this._currentTurnEnv ?? undefined)),
+      ctx.sessionId,
+    );
+  }
+
+  // --- Five hooks (02 §2) ---
+
+  /** 1) Launch: command/args (user overrides win), env merged, cwd. Missing CLI is preflighted by the skeleton. */
+  protected abstract buildLaunch(env: AcpWorkerEnvView): AcpLaunchConfig;
+
+  /**
+   * 2) Permission: the default implementation walks the shared bridge
+   * (04 booklet); providers override only when they must not.
+   */
+  protected mapPermission(req: AcpPermissionRequest, acpCtx: AcpPermissionContext): Promise<AcpPermissionOutcome> {
+    return createAcpPermissionBridge(
+      {
+        accumulator: acpCtx.accumulator,
+        scope: acpCtx.scope,
+        signalQueue: acpCtx.signalQueue,
+        runContext: acpCtx.runContext,
+        turnLineage: acpCtx.turnLineage,
+        grants: acpCtx.grants,
+        approvalMemory: acpCtx.approvalMemory,
+        logger: this.logger,
+        provider: this.config.type,
+        permissionMs: acpCtx.permissionMs,
+        onControllerDenial: (toolName) => this.notePermissionDenial(toolName),
+      },
+      this._pendingPermissions,
+    )(req);
+  }
+
+  /** Bridge callback (#25): the controller actively denied a permission in the current turn. */
+  protected notePermissionDenial(toolName: string): void {
+    this._deniedPermissions += 1;
+    this._lastDeniedToolName = toolName;
+  }
+
+  /** 3) Error normalization: fold a phase failure into an AcpError. Default: AcpErrors pass, everything else is agent-error. */
+  protected normalizeError(err: unknown, _phase: 'handshake' | 'session-new' | 'prompt'): AcpError {
+    if (err instanceof AcpError) return err;
+    return new AcpError('agent-error', err instanceof Error ? err.message : String(err));
+  }
+
+  /** 4) Readiness: default only trusts protocolVersion === 1 (the client already rejects other versions). */
+  protected isReady(ctx: AcpReadyContext): AcpReadiness {
+    if (ctx.handshake.protocolVersion === 1) return { ready: true };
+    return { ready: false, message: acpUserMessage('protocol-mismatch', { command: this._launchCommand }) };
+  }
+
+  /** 5) Stop strategy — provider values (03 booklet). */
+  protected abstract stopPolicy(): AcpStopPolicy;
+
+  // --- IWorkerInstance surface (aligned with ClaudeCodeWorker) ---
+
+  /** Wire signal context. Called by the engine before run(); grants/approvalMemory are the 04 §3 additions. */
+  setSignalContext(deps: {
+    signalQueue: SignalQueue;
+    workerId: string;
+    taskId: string;
+    taskTitle: string;
+    workerType?: string;
+    emoji?: string;
+    turnLineage?: SignalTurnLineage;
+    accessScope?: WorkerAccessScope;
+    grants?: ApprovalMemory;
+    approvalMemory?: ApprovalMemoryMode;
+  }): void {
+    this._signalQueue = deps.signalQueue;
+    this._runContext = deps;
+    this._turnLineage = deps.turnLineage ?? {};
+    this._accessScope = deps.accessScope ?? null;
+    this._grants = deps.grants ?? new ApprovalMemory();
+    this._approvalMemory = deps.approvalMemory ?? 'task';
+  }
+
+  getState(): WorkerState {
+    return this.state;
+  }
+
+  getLiveStatus(): WorkerLiveStatus {
+    return { resultReceived: this._resultReceived, streamEnded: this._streamEnded };
+  }
+
+  getConversation(): ConversationEntry[] {
+    return this.state.get<ConversationEntry[]>('conversation') ?? [];
+  }
+
+  subscribe(path: string, callback: (event: StateEvent) => void): () => void {
+    return this.state.on(path, callback);
+  }
+
+  getSnapshot<T>(path: string): T {
+    return this.state.get(path);
+  }
+
+  /**
+   * Queue a controller message for delivery at the next TURN boundary (ACP has
+   * no mid-turn injection — 01 §2.4). Returns false once the run's input has
+   * closed; idle multi-stage workers keep accepting (folded into the next
+   * stage's opening prompt).
+   */
+  acceptMessage(message: string): boolean {
+    if (this.abortController.signal.aborted) return false;
+    if (this._runInFlight && this._inputClosed) return false;
+    this._messageQueue.push(message);
+    this.logger.info({ workerId: this.id }, 'Controller message accepted');
+    return true;
+  }
+
+  pendingMessages(): string[] {
+    return [...this._messageQueue];
+  }
+
+  /** Stable capability view (02 §6): observed-this-run, overridable by config. */
+  getCapabilities(): AcpCapabilities | null {
+    if (!this._handshake) return null;
+    const overrides = this.acpUserConfig().protocol?.capabilities;
+    return buildAcpCapabilities(this.config.type, this._handshake, {
+      toolCalls: overrides?.toolCalls ?? this._sawToolCall,
+      permissionRequests: overrides?.permissionRequests ?? this._sawPermissionRequest,
+    });
+  }
+
+  // --- Shared internals ---
+
+  /** The `*-acp` config row as this worker reads it (fields land in WorkerConfig with C2). */
+  protected acpUserConfig(): AcpWorkerUserConfig {
+    return this.config as WorkerConfig & AcpWorkerUserConfig;
+  }
+
+  /** Turn identity: one worker run = one turn (aligned with the claude-code worker). */
+  protected buildTurnEnv(task: TaskDetail & { workerId: string }): TurnEnvelope {
+    const workspaceSlug = task.workspace?.slug ?? this.workspaceRef?.slug;
+    const rootTurnId = task.rootTurnId ?? task.turnId;
+    return {
+      turnId: task.executionTurnId ?? generateId('turn'),
+      ...(rootTurnId !== undefined && { rootTurnId }),
+      causationId: task.id,
+      actor: { kind: 'worker', id: task.workerId, taskId: task.id },
+      ...(workspaceSlug !== undefined && { workspaceSlug }),
+    };
+  }
+
+  /** Merge keys into runtimeState.acp (pid/command/provider, plan, usage). */
+  protected recordAcpRuntime(fields: Record<string, unknown>): void {
+    const prev = this.state.get<Record<string, unknown>>('runtimeState') ?? {};
+    this.state.set('runtimeState', { ...prev, acp: { ...((prev.acp as Record<string, unknown>) ?? {}), ...fields } });
+  }
+
+  protected clearPendingProgress(): void {
+    if (this._progressTimer) {
+      clearTimeout(this._progressTimer);
+      this._progressTimer = null;
+    }
+    this._pendingProgress = null;
+  }
+}

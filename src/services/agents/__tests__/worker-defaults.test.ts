@@ -41,7 +41,7 @@ describe('getWorkerMeta', () => {
   it('should return fallback emoji for worker without emoji config', () => {
     const configs: Record<string, WorkerConfig> = {
       'basic': {
-        type: 'basic',
+        type: 'claude-code',
         description: 'Basic worker',
       },
     };
@@ -55,5 +55,31 @@ describe('getWorkerMeta', () => {
     const meta = getWorkerMeta('unknown');
     expect(meta.label).toBe('unknown');
     expect(meta.emoji).toBe('\u{1F916}');
+  });
+
+  it('should return the provider-default emoji for an ACP worker without emoji config', () => {
+    const configs: Record<string, WorkerConfig> = {
+      codebuddy: { type: 'codebuddy-acp', description: 'CodeBuddy' },
+      opencode: { type: 'opencode-acp', description: 'OpenCode' },
+    };
+
+    expect(getWorkerMeta('codebuddy', configs).emoji).toBe('\u{1F427}'); // 🐧
+    expect(getWorkerMeta('opencode', configs).emoji).toBe('\u{1F989}'); // 🦉
+  });
+
+  it('should let a configured emoji win over the ACP provider default', () => {
+    const configs: Record<string, WorkerConfig> = {
+      codebuddy: { type: 'codebuddy-acp', description: 'CodeBuddy', emoji: '\u{1F9E0}' },
+    };
+
+    expect(getWorkerMeta('codebuddy', configs).emoji).toBe('\u{1F9E0}');
+  });
+
+  it('should keep the generic fallback for a claude-code worker without emoji', () => {
+    const configs: Record<string, WorkerConfig> = {
+      'claude-code': { type: 'claude-code', description: 'Coding assistant' },
+    };
+
+    expect(getWorkerMeta('claude-code', configs).emoji).toBe('\u{1F916}'); // 🤖
   });
 });

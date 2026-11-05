@@ -12,11 +12,13 @@
  *
  * Storage-sized truncation lives here too: worker transcripts are long-lived
  * audit records, and tool results (bash output, file dumps) can dwarf
- * everything else in a step.
+ * everything else in a step. The per-worker caps are the first line; the
+ * shared `clampToolOutput` (issue #53) is the outer fallback bound.
  */
 
 import type { ToolCallRecord, ToolResultRecord } from '@/types/index';
 import { toolPayloadText } from './estimate-tokens';
+import { clampToolOutput } from './tool-output-clamp';
 
 /**
  * Cap for a stored tool RESULT (chars). Keeps the informative head of a
@@ -124,7 +126,12 @@ export function toolResultBlockToRecord(
     toolName,
     output: {
       type: 'text' as const,
-      value: truncateForStorage(flattenToolResultContent(block.content), CLAUDE_TOOL_RESULT_STORE_CHARS),
+      // Own cap first (claude's storage budget), then the unified write-layer
+      // clamp as the outer bound (issue #53): normally a no-op — it only
+      // bites if the per-worker cap were ever raised past it.
+      value: clampToolOutput(
+        truncateForStorage(flattenToolResultContent(block.content), CLAUDE_TOOL_RESULT_STORE_CHARS),
+      ),
     },
     ...(isError && { isError: true, errorType: 'ToolError' }),
     status: isError ? 'failed' : 'succeeded',

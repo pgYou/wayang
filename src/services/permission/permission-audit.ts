@@ -114,6 +114,16 @@ export interface PermissionAuditEntry {
    * one inherited, not what was read.
    */
   grantId?: string;
+  /**
+   * Transport the gated call arrived on. Only ACP workers set it (`'acp'`);
+   * records without the field are the pre-ACP format (ACP extension, 04 §4).
+   */
+  transport?: 'acp';
+  /**
+   * Provider label of the ACP worker (`config.type`, e.g. `'codebuddy-acp'`).
+   * Lets the trail be split per provider without touching the shared format.
+   */
+  provider?: string;
 }
 
 /** Operation implied by a gated tool name (`bash` runs commands). */
@@ -160,6 +170,8 @@ export function recordPermissionAudit(logger: Logger | undefined, entry: Permiss
       ...(entry.toolName !== undefined && { toolName: entry.toolName }),
       ...(entry.source !== undefined && { source: entry.source }),
       ...(entry.grantId !== undefined && { grantId: entry.grantId }),
+      ...(entry.transport !== undefined && { transport: entry.transport }),
+      ...(entry.provider !== undefined && { provider: entry.provider }),
     },
     'permission audit',
   );
