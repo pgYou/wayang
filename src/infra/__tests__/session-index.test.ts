@@ -16,10 +16,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createSessionIndex } from '@/infra/session-index';
 import type { SessionMeta } from '@/infra/session-helpers';
 
-let homeDir: string;
+let dataDir: string;
 
 function writeMeta(sessionId: string, overrides: Partial<SessionMeta> = {}): void {
-  const sessionDir = path.join(homeDir, 'sessions', sessionId);
+  const sessionDir = path.join(dataDir, 'sessions', sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
   const meta: SessionMeta = {
     sessionId,
@@ -33,11 +33,11 @@ function writeMeta(sessionId: string, overrides: Partial<SessionMeta> = {}): voi
 }
 
 beforeEach(() => {
-  homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-index-'));
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-index-'));
 });
 
 afterEach(() => {
-  fs.rmSync(homeDir, { recursive: true, force: true });
+  fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
 describe('SessionIndex — list', () => {
@@ -46,12 +46,12 @@ describe('SessionIndex — list', () => {
     writeMeta('newest', { createdAt: 3000 });
     writeMeta('mid', { createdAt: 2000 });
 
-    const ids = createSessionIndex(homeDir).list().map(e => e.sessionId);
+    const ids = createSessionIndex(dataDir).list().map(e => e.sessionId);
     expect(ids).toEqual(['newest', 'mid', 'old']);
   });
 
   it('returns empty array when sessions/ does not exist', () => {
-    expect(createSessionIndex(homeDir).list()).toEqual([]);
+    expect(createSessionIndex(dataDir).list()).toEqual([]);
   });
 
   it('filters by workspace', () => {
@@ -59,7 +59,7 @@ describe('SessionIndex — list', () => {
     writeMeta('a2', { workspace: '/repo-a', createdAt: 2000 });
     writeMeta('b1', { workspace: '/repo-b', createdAt: 3000 });
 
-    const ids = createSessionIndex(homeDir).list({ workspace: '/repo-a' }).map(e => e.sessionId);
+    const ids = createSessionIndex(dataDir).list({ workspace: '/repo-a' }).map(e => e.sessionId);
     expect(ids).toEqual(['a2', 'a1']);
   });
 
@@ -67,33 +67,33 @@ describe('SessionIndex — list', () => {
     writeMeta('visible', { createdAt: 2000 });
     writeMeta('hidden', { createdAt: 1000, archived: true });
 
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     expect(index.list().map(e => e.sessionId)).toEqual(['visible']);
     expect(index.list({ includeArchived: true }).map(e => e.sessionId)).toEqual(['visible', 'hidden']);
   });
 
   it('treats absent archived flag as not archived (legacy meta.json)', () => {
     writeMeta('legacy', { createdAt: 1000 });
-    const raw = JSON.parse(fs.readFileSync(path.join(homeDir, 'sessions', 'legacy', 'meta.json'), 'utf-8'));
+    const raw = JSON.parse(fs.readFileSync(path.join(dataDir, 'sessions', 'legacy', 'meta.json'), 'utf-8'));
     expect('archived' in raw).toBe(false);
 
-    expect(createSessionIndex(homeDir).list().map(e => e.sessionId)).toEqual(['legacy']);
+    expect(createSessionIndex(dataDir).list().map(e => e.sessionId)).toEqual(['legacy']);
   });
 
   it('resolves sessionDir alongside meta', () => {
     writeMeta('s1', { createdAt: 1000 });
-    const entry = createSessionIndex(homeDir).list()[0];
-    expect(entry.sessionDir).toBe(path.join(homeDir, 'sessions', 's1'));
+    const entry = createSessionIndex(dataDir).list()[0];
+    expect(entry.sessionDir).toBe(path.join(dataDir, 'sessions', 's1'));
   });
 
   it('skips malformed meta.json without failing the whole list', () => {
     writeMeta('good', { createdAt: 2000 });
-    const brokenDir = path.join(homeDir, 'sessions', 'broken');
+    const brokenDir = path.join(dataDir, 'sessions', 'broken');
     fs.mkdirSync(brokenDir, { recursive: true });
     fs.writeFileSync(path.join(brokenDir, 'meta.json'), '{ not valid json');
 
     writeMeta('good2', { createdAt: 3000 });
-    expect(createSessionIndex(homeDir).list().map(e => e.sessionId)).toEqual(['good2', 'good']);
+    expect(createSessionIndex(dataDir).list().map(e => e.sessionId)).toEqual(['good2', 'good']);
   });
 });
 
@@ -105,15 +105,15 @@ describe('SessionIndex — pagination', () => {
   });
 
   it('honours limit', () => {
-    expect(createSessionIndex(homeDir).list({ limit: 2 }).map(e => e.sessionId)).toEqual(['s3', 's2']);
+    expect(createSessionIndex(dataDir).list({ limit: 2 }).map(e => e.sessionId)).toEqual(['s3', 's2']);
   });
 
   it('treats limit 0 as empty', () => {
-    expect(createSessionIndex(homeDir).list({ limit: 0 })).toEqual([]);
+    expect(createSessionIndex(dataDir).list({ limit: 0 })).toEqual([]);
   });
 
   it('cursor is exclusive: resumes after the given sessionId', () => {
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     const page1 = index.list({ limit: 2 }).map(e => e.sessionId);
     expect(page1).toEqual(['s3', 's2']);
 
@@ -122,20 +122,20 @@ describe('SessionIndex — pagination', () => {
   });
 
   it('unknown cursor is ignored rather than returning nothing', () => {
-    expect(createSessionIndex(homeDir).list({ cursor: 'does-not-exist' })).toHaveLength(3);
+    expect(createSessionIndex(dataDir).list({ cursor: 'does-not-exist' })).toHaveLength(3);
   });
 });
 
 describe('SessionIndex — get / latestForWorkspace', () => {
   it('get resolves an existing session', () => {
     writeMeta('s1', { createdAt: 1000 });
-    const entry = createSessionIndex(homeDir).get('s1');
+    const entry = createSessionIndex(dataDir).get('s1');
     expect(entry?.sessionId).toBe('s1');
     expect(entry?.meta.workspace).toBe('/repo-a');
   });
 
   it('get returns null for unknown session', () => {
-    expect(createSessionIndex(homeDir).get('nope')).toBeNull();
+    expect(createSessionIndex(dataDir).get('nope')).toBeNull();
   });
 
   it('latestForWorkspace picks the newest matching session', () => {
@@ -143,7 +143,7 @@ describe('SessionIndex — get / latestForWorkspace', () => {
     writeMeta('a-new', { workspace: '/repo-a', createdAt: 2000 });
     writeMeta('b-new', { workspace: '/repo-b', createdAt: 3000 });
 
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     expect(index.latestForWorkspace('/repo-a')?.sessionId).toBe('a-new');
     expect(index.latestForWorkspace('/repo-b')?.sessionId).toBe('b-new');
     expect(index.latestForWorkspace('/repo-c')).toBeNull();
@@ -153,7 +153,7 @@ describe('SessionIndex — get / latestForWorkspace', () => {
     writeMeta('a-archived', { workspace: '/repo-a', createdAt: 2000, archived: true });
     writeMeta('a-open', { workspace: '/repo-a', createdAt: 1000 });
 
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     expect(index.latestForWorkspace('/repo-a')?.sessionId).toBe('a-open');
     expect(index.latestForWorkspace('/repo-a', { includeArchived: true })?.sessionId).toBe('a-archived');
   });
@@ -162,23 +162,23 @@ describe('SessionIndex — get / latestForWorkspace', () => {
 describe('SessionIndex — cache behaviour', () => {
   it('does not write any index file to disk', () => {
     writeMeta('s1', { createdAt: 1000 });
-    const before = fs.readdirSync(homeDir).sort();
+    const before = fs.readdirSync(dataDir).sort();
 
-    createSessionIndex(homeDir).list();
+    createSessionIndex(dataDir).list();
 
-    expect(fs.readdirSync(homeDir).sort()).toEqual(before);
+    expect(fs.readdirSync(dataDir).sort()).toEqual(before);
     // sessions/ contains only session dirs, no shared index artifact
-    const sessionsDirEntries = fs.readdirSync(path.join(homeDir, 'sessions'));
+    const sessionsDirEntries = fs.readdirSync(path.join(dataDir, 'sessions'));
     expect(sessionsDirEntries).toEqual(['s1']);
   });
 
   it('upsert adds an entry without touching disk', () => {
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     expect(index.list()).toEqual([]);
 
     const entry = {
       sessionId: 's1',
-      sessionDir: path.join(homeDir, 'sessions', 's1'),
+      sessionDir: path.join(dataDir, 'sessions', 's1'),
       meta: {
         sessionId: 's1',
         workspace: '/repo-a',
@@ -190,14 +190,14 @@ describe('SessionIndex — cache behaviour', () => {
     index.upsert(entry);
 
     expect(index.get('s1')?.sessionId).toBe('s1');
-    expect(fs.existsSync(path.join(homeDir, 'sessions'))).toBe(false);
+    expect(fs.existsSync(path.join(dataDir, 'sessions'))).toBe(false);
   });
 
   it('upsert replaces an existing entry and keeps sort order', () => {
     writeMeta('s1', { createdAt: 1000 });
     writeMeta('s2', { createdAt: 2000 });
 
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     const target = index.get('s1')!;
     index.upsert({ ...target, meta: { ...target.meta, createdAt: 5000 } });
 
@@ -206,7 +206,7 @@ describe('SessionIndex — cache behaviour', () => {
 
   it('invalidates so sessions created by other processes become visible', () => {
     writeMeta('s1', { createdAt: 1000 });
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     expect(index.list()).toHaveLength(1);
 
     // Simulate another CLI instance creating a session.
@@ -229,7 +229,7 @@ describe('SessionIndex — workspace matching (multi-workspace + normalization)'
       createdAt: 1000,
     });
 
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     expect(index.list({ workspace: '/repo-a' }).map(e => e.sessionId)).toEqual(['multi']);
     expect(index.list({ workspace: '/repo-b' }).map(e => e.sessionId)).toEqual(['multi']);
     expect(index.list({ workspace: '/repo-c' })).toEqual([]);
@@ -241,15 +241,15 @@ describe('SessionIndex — workspace matching (multi-workspace + normalization)'
 
   it('falls back to the single workspace field for legacy meta without workspaces', () => {
     writeMeta('legacy', { workspace: '/repo-a', createdAt: 1000 });
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     expect(index.list({ workspace: '/repo-a' }).map(e => e.sessionId)).toEqual(['legacy']);
     expect(index.list({ workspace: '/repo-b' })).toEqual([]);
   });
 
   it('normalizes symlink spellings on both sides of the comparison', () => {
-    const real = path.join(homeDir, 'real-repo');
+    const real = path.join(dataDir, 'real-repo');
     fs.mkdirSync(real, { recursive: true });
-    const alias = path.join(homeDir, 'alias-repo');
+    const alias = path.join(dataDir, 'alias-repo');
     fs.symlinkSync(real, alias);
 
     // Stored as the real path, queried through the symlink.
@@ -259,7 +259,7 @@ describe('SessionIndex — workspace matching (multi-workspace + normalization)'
     // Stored with a trailing slash, queried without one.
     writeMeta('stored-slash', { workspace: `${real}/`, createdAt: 3000 });
 
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     expect(index.list({ workspace: alias }).map(e => e.sessionId).sort()).toEqual(
       ['stored-alias', 'stored-real', 'stored-slash'],
     );
@@ -276,7 +276,7 @@ describe('SessionIndex — workspace matching (multi-workspace + normalization)'
     writeMeta('newer', { workspace: '/repo-a', createdAt: 3000, lastActiveAt: 3000 });
     writeMeta('middle', { workspace: '/repo-a', createdAt: 2000, lastActiveAt: 2000 });
 
-    const index = createSessionIndex(homeDir);
+    const index = createSessionIndex(dataDir);
     expect(index.list({ workspace: '/repo-a' }).map(e => e.sessionId)).toEqual(['newer', 'middle', 'older']);
     expect(index.latestForWorkspace('/repo-a')?.sessionId).toBe('newer');
   });

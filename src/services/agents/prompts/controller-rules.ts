@@ -9,7 +9,7 @@
  *
  * This module reads at most two files, once at startup:
  *
- *   1. `<homeDir>/AGENTS.md` — user-wide baseline
+ *   1. `<userHome>/AGENTS.md` — user-wide baseline
  *   2. `<cwd>/AGENTS.md`     — project rules, applied after the baseline
  *
  * Order encodes precedence: the cwd rules come last and win on conflict, and
@@ -42,7 +42,7 @@ export const CONTROLLER_RULES_MAX_BYTES = 32 * 1024;
 
 export interface ControllerRulesOptions {
   /** User home directory — rules here are the baseline. */
-  homeDir: string;
+  userHome: string;
   /** Startup working directory — rules here come last and take precedence. */
   cwd: string;
   /** Override the total content cap (UTF-8 bytes). Defaults to 32KB. */
@@ -71,7 +71,7 @@ export function loadControllerRules(opts: ControllerRulesOptions): string {
   // starting wayang inside the home directory makes both lookups hit the same
   // file, which must be loaded once.
   const files: RuleFile[] = [];
-  for (const dir of [opts.homeDir, opts.cwd]) {
+  for (const dir of [opts.userHome, opts.cwd]) {
     if (!dir) continue;
     const file = readRulesFile(dir);
     if (!file) continue;

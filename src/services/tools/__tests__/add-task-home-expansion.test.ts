@@ -15,9 +15,10 @@ import type { TaskDetail } from '@/types/index';
 import { addTaskTool } from '@/services/tools/add-task';
 import { normalizeWorkspacePath } from '@/infra/workspace-registry';
 
-let homeDir: string;
+let userHome: string;
 let workspaceDir: string;
 let generalWorkspaceDir: string;
+let realHome: string | undefined;
 
 function makeDir(base: string, name: string): string {
   const dir = path.join(base, name);
@@ -26,13 +27,18 @@ function makeDir(base: string, name: string): string {
 }
 
 beforeEach(() => {
-  homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-addtask-home-'));
-  workspaceDir = makeDir(homeDir, 'repo');
-  generalWorkspaceDir = path.join(homeDir, '.wayang', 'workspace');
+  userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-addtask-home-'));
+  workspaceDir = makeDir(userHome, 'repo');
+  generalWorkspaceDir = path.join(userHome, '.wayang', 'workspace');
+  // `~` / `$HOME` expand against the PROCESS home (os.homedir() reads $HOME
+  // on POSIX), so point $HOME at the temp home these tests declare.
+  realHome = process.env.HOME;
+  process.env.HOME = userHome;
 });
 
 afterEach(() => {
-  fs.rmSync(homeDir, { recursive: true, force: true });
+  fs.rmSync(userHome, { recursive: true, force: true });
+  process.env.HOME = realHome;
 });
 
 async function exec(toolObj: any, args: any): Promise<string> {
@@ -43,8 +49,8 @@ function makeTool(added: TaskDetail[]) {
   return addTaskTool({
     addTask: (t) => { added.push(t); return 'w-1'; },
     workspaceDir,
-    wayangDir: path.join(homeDir, '.wayang'),
-    homeDir,
+    wayangDir: path.join(userHome, '.wayang'),
+    userHome,
     generalWorkspaceDir,
   });
 }
@@ -57,7 +63,7 @@ describe('addTaskTool — home expansion in a declared workspace', () => {
     const result = await exec(tool, { title: 'T', description: 'D', workspace: '~' });
 
     expect(result).toContain('added');
-    expect(added[0].workspace?.path).toBe(normalizeWorkspacePath(homeDir));
+    expect(added[0].workspace?.path).toBe(normalizeWorkspacePath(userHome));
   });
 
   it('expands "~/…" to an absolute path under home and creates it', async () => {
@@ -89,7 +95,7 @@ describe('addTaskTool — home expansion in a declared workspace', () => {
   });
 
   it('leaves an existing absolute path as it is', async () => {
-    const existing = makeDir(homeDir, 'notes');
+    const existing = makeDir(userHome, 'notes');
     const added: TaskDetail[] = [];
     const tool = makeTool(added);
 
@@ -101,7 +107,7 @@ describe('addTaskTool — home expansion in a declared workspace', () => {
   });
 
   it('creates a missing absolute workspace instead of falling back to the default', async () => {
-    const missing = path.join(homeDir, 'fresh-dir', 'nested');
+    const missing = path.join(userHome, 'fresh-dir', 'nested');
     const added: TaskDetail[] = [];
     const tool = makeTool(added);
 
@@ -116,7 +122,7 @@ describe('addTaskTool — home expansion in a declared workspace', () => {
 
   it('rejects a "~user" form: no task is created', async () => {
     const addTask = vi.fn((_t: TaskDetail) => 'w-1');
-    const tool = addTaskTool({ addTask, workspaceDir, homeDir, generalWorkspaceDir });
+    const tool = addTaskTool({ addTask, workspaceDir, userHome, generalWorkspaceDir });
 
     const result = await exec(tool, { title: 'T', description: 'D', workspace: '~someone/notes' });
 
@@ -126,10 +132,10 @@ describe('addTaskTool — home expansion in a declared workspace', () => {
   });
 
   it('reports a clear error when the directory cannot be created (path blocked by a file)', async () => {
-    const blocked = path.join(homeDir, 'blocker');
+    const blocked = path.join(userHome, 'blocker');
     fs.writeFileSync(blocked, 'not a directory');
     const addTask = vi.fn((_t: TaskDetail) => 'w-1');
-    const tool = addTaskTool({ addTask, workspaceDir, homeDir, generalWorkspaceDir });
+    const tool = addTaskTool({ addTask, workspaceDir, userHome, generalWorkspaceDir });
 
     const result = await exec(tool, { title: 'T', description: 'D', workspace: path.join(blocked, 'sub') });
 

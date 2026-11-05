@@ -58,7 +58,7 @@ describe('searchFilesTool', () => {
 });
 
 /**
- * The read gate. These cases pass `homeDir`, which switches on
+ * The read gate. These cases pass `userHome`, which switches on
  * `decideAccess({ access: 'read', ... })`: reads must stay inside home, and
  * the sensitive list (~/.ssh, ~/.aws, ~/.npmrc, …) wins over "inside home" —
  * while wayang's own paths (~/.wayang and ~/.wayang.config.json) have been
@@ -67,6 +67,7 @@ describe('searchFilesTool', () => {
 describe('searchFilesTool read boundary', () => {
   let home: string;
   let workspace: string;
+  let realHome: string | undefined;
 
   beforeEach(() => {
     // Layout: home/{project/src,a.ts ; documents/note.md ; .ssh/id_rsa ; .wayang/}
@@ -79,26 +80,31 @@ describe('searchFilesTool read boundary', () => {
     mkdirSync(join(home, '.ssh'), { recursive: true });
     writeFileSync(join(home, '.ssh', 'id_rsa'), 'secret', 'utf-8');
     mkdirSync(join(home, '.wayang'), { recursive: true });
+    // `~` expands against the PROCESS home (os.homedir() reads $HOME on
+    // POSIX), so point $HOME at the temp home for the tilde cases.
+    realHome = process.env.HOME;
+    process.env.HOME = home;
   });
 
   afterEach(() => {
     rmSync(home, { recursive: true, force: true });
+    process.env.HOME = realHome;
   });
 
   it('allows an ordinary directory inside home', async () => {
-    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const tool = searchFilesTool({ cwd: workspace, userHome: home });
     const result = await exec(tool, { pattern: '**/*.ts' });
     expect(result).toContain('src/a.ts');
   });
 
   it('allows reading a sibling directory inside home (outside the workspace)', async () => {
-    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const tool = searchFilesTool({ cwd: workspace, userHome: home });
     const result = await exec(tool, { pattern: '**/*.md', path: join(home, 'documents') });
     expect(result).toContain('note.md');
   });
 
   it('refuses a sensitive path (~/.ssh) without reading any files', async () => {
-    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const tool = searchFilesTool({ cwd: workspace, userHome: home });
     const result = await exec(tool, { pattern: '**/*', path: join(home, '.ssh') });
     // Sensitive-list wording, and no leaked file listing from the protected dir.
     // (This reader has no approval channel, so the policy's `ask` is a refusal.)
@@ -108,14 +114,14 @@ describe('searchFilesTool read boundary', () => {
 
   it('allows reading the wayang data dir (~/.wayang) — released in 0.8.3', async () => {
     writeFileSync(join(home, '.wayang', 'note.txt'), 'scratch', 'utf-8');
-    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const tool = searchFilesTool({ cwd: workspace, userHome: home });
     const result = await exec(tool, { pattern: '**/*', path: join(home, '.wayang') });
     expect(result).not.toContain('sensitive list');
     expect(result).toContain('note.txt');
   });
 
   it('refuses a path outside home with a message distinct from the sensitive list', async () => {
-    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const tool = searchFilesTool({ cwd: workspace, userHome: home });
     const result = await exec(tool, { pattern: '**/*', path: '/etc' });
     expect(result).toContain('outside the home boundary');
     expect(result).not.toContain('sensitive list');
@@ -125,7 +131,7 @@ describe('searchFilesTool read boundary', () => {
     // home/innocent -> home/.ssh ; requesting home/innocent/<missing> must
     // canonicalize via the existing ancestor and still hit the sensitive list.
     symlinkSync(join(home, '.ssh'), join(home, 'innocent'));
-    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const tool = searchFilesTool({ cwd: workspace, userHome: home });
     const result = await exec(tool, {
       pattern: '**/*',
       path: join(home, 'innocent', 'nonexistent_key'),
@@ -134,8 +140,29 @@ describe('searchFilesTool read boundary', () => {
   });
 
   it('resolves a relative path against the workspace and allows it inside home', async () => {
-    const tool = searchFilesTool({ cwd: workspace, homeDir: home });
+    const tool = searchFilesTool({ cwd: workspace, userHome: home });
     const result = await exec(tool, { pattern: '**/*.ts', path: 'src' });
     expect(result).toContain('a.ts');
+  });
+
+  it('expands a leading ~/ against the process home, then judges that path', async () => {
+    const tool = searchFilesTool({ cwd: workspace, userHome: home });
+    const result = await exec(tool, { pattern: '**/*.md', path: '~/documents' });
+    expect(result).toContain('note.md');
+  });
+
+  it('a ~/ path expanding outside the boundary is refused, never silently searched', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'wayang-search-other-'));
+    try {
+      // $HOME points elsewhere while the gate anchors at the temp home: the
+      // expanded path lands OUTSIDE the boundary and must be refused.
+      process.env.HOME = other;
+      const tool = searchFilesTool({ cwd: workspace, userHome: home });
+      const result = await exec(tool, { pattern: '**/*.md', path: '~/documents' });
+      expect(result).toContain('outside the home boundary');
+    } finally {
+      process.env.HOME = home;
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 });

@@ -83,7 +83,7 @@ describe('recordPermissionAudit', () => {
     expect(firstRecord(logger).source).toBe('timeout');
   });
 
-  it('records a hard refusal (sensitive write)', () => {
+  it('records a hard refusal (sensitive hit under sensitiveMode: deny)', () => {
     const logger = createMockLogger();
     recordPermissionAudit(logger, {
       decision: 'hard-denied',
@@ -92,14 +92,14 @@ describe('recordPermissionAudit', () => {
       requestedPath: '~/.ssh/authorized_keys',
       matchedEntry: '.ssh',
       matchedSource: 'segment',
-      matchedRule: 'sensitive-list-write',
+      matchedRule: 'sensitive-list',
       taskId: 't-2',
       workerId: 'w-9',
       toolName: 'write_file',
     });
     const record = firstRecord(logger);
     expect(record.decision).toBe('hard-denied');
-    expect(record.matchedRule).toBe('sensitive-list-write');
+    expect(record.matchedRule).toBe('sensitive-list');
     expect(record.operation).toBe('write');
   });
 
@@ -149,6 +149,84 @@ describe('recordPermissionAudit', () => {
     );
     expect(JSON.stringify(record)).not.toContain('PRIVATE-KEY-MATERIAL');
     expect(JSON.stringify(record)).not.toContain('sk-live-123');
+  });
+
+  /**
+   * #46: a call let through by the task approval memory is not an approval —
+   * it is a REUSE of an earlier one, and the trail has to say which. The
+   * granted-by-memory record therefore carries `grantId` (and nothing about
+   * what was read).
+   */
+  it('records granted-by-memory with the grantId that covered the call (#46)', () => {
+    const logger = createMockLogger();
+    recordPermissionAudit(logger, {
+      decision: 'granted-by-memory',
+      grantId: 'grant-1-abc',
+      operation: 'read',
+      access: 'read',
+      resolvedPath: '/home/u/.zshrc',
+      matchedRule: 'read-within-home',
+      taskId: 't-1',
+      workerId: 'w-1',
+      toolName: 'read_file',
+    });
+
+    const record = firstRecord(logger);
+    expect(record).toMatchObject({
+      decision: 'granted-by-memory',
+      grantId: 'grant-1-abc',
+      operation: 'read',
+      access: 'read',
+      resolvedPath: '/home/u/.zshrc',
+      matchedRule: 'read-within-home',
+      taskId: 't-1',
+      workerId: 'w-1',
+      toolName: 'read_file',
+    });
+  });
+
+  /**
+   * 0.8.4: the policy's ALLOW fast path is a decision too, and it used to
+   * leave no trace at all — the trail could not tell "the gate allowed this"
+   * from "the gate never saw this call".
+   */
+  it('records an allowed decision (the allow fast path) with metadata only', () => {
+    const logger = createMockLogger();
+    recordPermissionAudit(logger, {
+      decision: 'allowed',
+      operation: 'exec',
+      access: 'read',
+      matchedRule: 'no-path',
+      resolvedPath: '/ws/src/cli.ts',
+      taskId: 't-1',
+      workerId: 'w-1',
+      toolName: 'bash',
+    });
+
+    const record = firstRecord(logger);
+    expect(record).toMatchObject({
+      audit: 'permission',
+      decision: 'allowed',
+      operation: 'exec',
+      access: 'read',
+      matchedRule: 'no-path',
+      resolvedPath: '/ws/src/cli.ts',
+      taskId: 't-1',
+      workerId: 'w-1',
+      toolName: 'bash',
+    });
+    expect(typeof record.ts).toBe('string');
+    // Same field allowlist as every other decision: no content, no command
+    // text, no tool output.
+    expect(Object.keys(record).sort()).toEqual(
+      ['access', 'audit', 'decision', 'matchedRule', 'operation', 'resolvedPath', 'taskId', 'toolName', 'ts', 'workerId'].sort(),
+    );
+  });
+
+  it('omits grantId on every other decision (only a reuse has one to name)', () => {
+    const logger = createMockLogger();
+    recordPermissionAudit(logger, { decision: 'approved', operation: 'read', toolName: 'read_file' });
+    expect(firstRecord(logger)).not.toHaveProperty('grantId');
   });
 
   it('is a no-op without a logger (auditing never breaks the tool path)', () => {

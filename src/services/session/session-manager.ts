@@ -31,10 +31,10 @@ export class SessionManager {
   }
 
   /** Create a new session: generates ID, initializes meta via WayangState (auto mkdir + write). */
-  static create(homeDir: string, workspaceDir: string): SessionManager {
+  static create(dataDir: string, workspaceDir: string): SessionManager {
     const sessionId = `${formatTimestamp()}-${Math.random().toString(36).slice(2, 6)}`;
-    const sessionDir = path.join(homeDir, 'sessions', sessionId);
-    const mgr = new SessionManager(sessionId, sessionDir, false, homeDir);
+    const sessionDir = path.join(dataDir, 'sessions', sessionId);
+    const mgr = new SessionManager(sessionId, sessionDir, false, dataDir);
 
     // Initialize meta via state — persistence layer handles mkdir + write.
     // `workspace` (single value) stays for older readers; `workspaces` carries
@@ -42,7 +42,7 @@ export class SessionManager {
     mgr.state.set('meta', {
       sessionId,
       workspace: workspaceDir,
-      workspaces: [resolveWorkspaceRef(homeDir, workspaceDir)],
+      workspaces: [resolveWorkspaceRef(dataDir, workspaceDir)],
       firstInput: null,
       createdAt: Date.now(),
       lastActiveAt: Date.now(),

@@ -154,7 +154,7 @@ async function bootServer(): Promise<Booted> {
   void runWayangServer(
     {
       configPath,
-      homeDir: join(tempRoot, 'home'),
+      dataDir: join(tempRoot, 'home'),
       workspaceDir: join(tempRoot, 'workspace'),
       session: { mode: 'new' },
       logLevel: 'silent',

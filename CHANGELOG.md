@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.8.4 (2026-11-05)
+
+### 路径语义与 CLI
+
+- `~` 展开与读策略边界拆分（#47）：`~` / `$HOME` 的展开结果恒与 shell 一致（锚定进程 `$HOME`），权限边界（敏感列表与 read-within-home 的锚点）是另一个概念——生产环境二者同为用户主目录，但策略锚点可注入（测试），展开绝不跟随它。此前二者共用「策略 homeDir」展开，当锚点偏离进程 `$HOME` 时，`read_file('~/x')` 打开的文件与 `cat ~/x` 不同，权限门裁决的也是另一条路径。
+- 删除「从 sessionDir 反推用户主目录」的逻辑（#47）：engine、controller agent 与 Claude Code worker 三处均改为直接取进程 `$HOME`。此前 `--home-dir` 指向自定义目录时，反推出的「用户主目录」等于该目录，读边界与敏感列表全部锚在错误的位置。
+- 统一 `~` 展开器：read_file / write_file / edit_file / search_files / search_content / add_task 的 workspace 声明全部走同一个 `expandHome`（锚定进程 `$HOME`），`$HOME` / `${HOME}` 前缀同样展开，`~user` 仍不展开（无法安全解析，门按 `home-other-user` 询问）。bash 侧 `$HOME` 替换与候选展开同样改锚进程 `$HOME`，`cat ~/x` 与 `cat $HOME/x` 在裁决上等价。
+- CLI：`--home-dir` 更名 `--wayang-root`（默认 `~`，即 `$HOME`），语义不变——它是 wayang 运行时状态的根目录（数据在 `<root>/.wayang`，配置在 `<root>/.wayang.config.json`），从来不是操作系统用户主目录。`--home-dir` 保留为弃用别名，使用时警告一次；两者同时给出时 `--wayang-root` 优先。
+- 全局技能目录跟随 wayang 数据目录（`<wayang-root>/.wayang/skills`，默认 `~/.wayang/skills`），不再硬编码进程主目录。
+- Claude Code worker 自动放行 wayang 自家 MCP server 的工具（`mcp__wayang__*`，如 ask_controller）：它们是面向 controller 的工具而非文件 IO，若被「未识别工具」分支拦下，需要 controller 审批才能调用的 ask_controller 会死锁。其它 server 的 MCP 工具（`mcp__other__*`）仍按未识别工具询问。
+
+### 权限
+
+- bash 只读命令分类（#47）：引入显式只读命令表，段首命令命中即判 read，命令替换内部与顶层共用同一张表。判定前剥离 sudo / env / nohup / time / nice / ionice / command / exec / builtin 等前缀与前导变量赋值；git 只放行 status、log、diff、show、rev-parse、ls-files、blame、grep、describe、shortlog 与 branch -a / remote -v。写动词、写 flag、真实重定向仍优先判写；不在表内一律 unknown。这里的 fail-closed 是**方向口径**上的，不产生审批：unknown 只表示「方向未知」——它不吃 read-within-home、敏感命中仍按读判，本身既不是 ask 也不是 deny；没有任何路径候选的命令（`ls -la`、`npm test`、`git status`）照旧默认 `allow`（`matchedRule: 'no-path'`）。唯一会因此升级成 ask 的是「命中只读表、但该表声明的延迟条件无法验证」（`sed -f`、脚本里可执行或可写），记 `read-only-unverified`。
+- 危险命令 tier 与路径判定口径统一：危险关键词（rm / sudo / chmod / chown / mkfs / dd / shutdown / reboot / kill -9）改为在「命令位置」判定，不再用行首正则。此前 `rm -rf x` 走 `ask(dangerous-bash)`，而 `nohup rm -rf x` / `nice rm -rf x` / `env FOO=1 rm -rf x` 因为正则不认 wrapper 前缀落到 `allow(no-path)`——现在两条路径读同一个命令词，`sudo rm -rf x` 仍 `ask`。
+- `bash -c` / `sh -c` 内层命令递归判定：识别 bash / sh / dash / zsh 的 `-c`（含 `-lc` / `-ic` 组合与 `--command`），取脚本文本递归走同一套规则，结果按更严格者合并（deny > ask > allow）并保留内层命中条目与方向：`bash -c "cat ~/.ssh/id_rsa"` → `ask(sensitive-list)`、`bash -c "rm -rf /"` → `ask(dangerous-bash)`、`bash -c "cat /etc/hostname"` → `ask(outside-all)`、`bash -c "ls -la"` → `allow`。深度上限与命令替换共用（5 层），超限、引号不闭合、脚本由变量或命令替换拼成一律 ask；`bash script.sh`（无 `-c`）行为不变。剩余绕过面（xargs / find -exec / eval / cd 跟踪）见 #51。
+- 审批 description 显示真实解析路径：`~` / `$HOME` 与权限门使用同一个 `expandHome`，并优先复用门已确认的 `resolvedPath`。此前 `read_file ~/.wayang.config.json` 在审批与 TUI 里显示成 `<workspace>/~/.wayang.config.json`；`~user` 无法解析时保留原文并标注。
+- allow 决策写审计：审计枚举新增 `allowed`，在 allow 快路径执行前落一条记录（matchedRule / access / resolvedPath / operation / taskId / workerId / toolName / ts）。不记命令原文，与既有立场一致：决策可观测，内容不可观测。
+- 收紧 sed 的只读准入：脚本按白名单校验，`e` / `w` / `W` / `r` / `R` 命令与 `s///e` 等 flag 一律不判只读，`-f script.sed` 因无法在判定期确认同样不判只读。
+- 敏感写改为审批：敏感命中不再是「不可审批」，而是「不可静默」——敏感列表仍压过所有 allow 规则，命中只可能是 ask 或 deny。默认 `sensitiveMode: 'ask'` 时读写都走审批（请求带命中条目、来源、路径与方向），`sensitiveMode: 'deny'` 时读写都直接拒。`matchedRule` 统一为 `sensitive-list`，方向由审计的 `access` 字段承载，旧的 `sensitive-list-write` 移除。
+- 任务级审批记忆（#46）：同一任务内，同一路径的读方向批准一次后不再重复询问；key 为「方向 + 规范化路径」，文件工具与 bash 共享；敏感命中、写方向、deny 结果永不记忆；任务进入 completed / failed / cancelled 即清除，不跨任务、不跨 session、不持久化。新增 `permission.approvalMemory: 'task' | 'off'`（默认 `task`）。审计新增 `granted-by-memory` 决策与 `grantId` 字段。
+
+### 说明
+
+- 本版尚未发布到 npm；发布由 `v0.8.4` tag 触发。
+- 权限改造在 0.8.x 收口，后续版本不再扩展该范围。
+
 ## v0.8.3 (2026-11-04)
 
 ### 权限

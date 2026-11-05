@@ -2,7 +2,7 @@
  * Structured permission audit trail.
  *
  * Every permission decision that required the controller (approved / denied)
- * and every hard refusal (sensitive write, `sensitiveMode: 'deny'`) is written
+ * and every hard refusal (`sensitiveMode: 'deny'` on a sensitive hit) is written
  * to the session's pino log with `audit: 'permission'`, so the trail can be
  * filtered out of the regular application log:
  *
@@ -15,6 +15,13 @@
  * it protected is a second leak. `recordPermissionAudit` therefore builds the
  * object from an explicit field allowlist instead of forwarding caller-supplied
  * extras.
+ *
+ * That stance holds for `allowed` too, which is written on the policy's allow
+ * fast path: the DECISION is observable (which rule allowed it, which path it
+ * judged, which tool and task), the CONTENT is not. An allowing record names no
+ * command text — a bash line that allowed records its judged target (if any),
+ * never the command string — so "the gate decided" and "here is what the worker
+ * ran" stay separate questions.
  *
  * This is deliberately NOT a conversation transcript: audit records never enter
  * the worker/controller context (they would eat the context budget and pollute
@@ -42,12 +49,28 @@ export type PermissionAccess = 'read' | 'write' | 'unknown';
 
 /**
  * The decision being recorded.
+ * - `allowed`      — the policy allowed the call outright: no controller was
+ *                    asked, the tool ran immediately. The majority decision on
+ *                    the happy path, and the one that made the trail look
+ *                    incomplete when only the asks were recorded: "the gate
+ *                    never saw this call" and "the gate allowed it" are
+ *                    different stories about the same silence.
  * - `approved`     — the controller approved an `ask` verdict
  * - `denied`       — the controller refused (or the request timed out / aborted)
- * - `hard-denied`  — the policy refused without asking (sensitive write,
- *                    `sensitiveMode: 'deny'`)
+ * - `hard-denied`  — the policy refused without asking (`sensitiveMode: 'deny'`
+ *                    on a sensitive hit; the default mode asks instead)
+ * - `granted-by-memory` — the call asked, but a grant recorded earlier in the
+ *                    SAME task already covered every path it needed, so no
+ *                    `permission_request` was emitted. `grantId` names that
+ *                    earlier approval (issue #46). Reads only — a write and a
+ *                    sensitive hit always ask again.
  */
-export type PermissionAuditDecision = 'approved' | 'denied' | 'hard-denied';
+export type PermissionAuditDecision =
+  | 'allowed'
+  | 'approved'
+  | 'denied'
+  | 'hard-denied'
+  | 'granted-by-memory';
 
 /** Why an `ask` ended the way it did (only meaningful for `denied`). */
 export type PermissionAuditSource = 'controller' | 'timeout' | 'aborted';
@@ -61,7 +84,11 @@ export interface PermissionAuditEntry {
   matchedEntry?: string;
   /** Which sensitive rule produced the hit (`segment`, `config-dir`, …). */
   matchedSource?: string;
-  /** Policy rule that produced the verdict (`sensitive-list-write`, …). */
+  /**
+   * Policy rule that produced the verdict (`sensitive-list`, …). The DIRECTION
+   * of a sensitive hit is not encoded here — it is the separate `access` field,
+   * so one rule name covers both reads and writes.
+   */
   matchedRule?: string;
   /** Task this call belongs to. */
   taskId?: string;
@@ -81,6 +108,12 @@ export interface PermissionAuditEntry {
   decision: PermissionAuditDecision;
   /** Set on `denied`: who/what ended the request. */
   source?: PermissionAuditSource;
+  /**
+   * Set on `granted-by-memory`: the grant whose earlier approval let this call
+   * run unprompted. An id, never content — the trail says WHICH decision this
+   * one inherited, not what was read.
+   */
+  grantId?: string;
 }
 
 /** Operation implied by a gated tool name (`bash` runs commands). */
@@ -126,6 +159,7 @@ export function recordPermissionAudit(logger: Logger | undefined, entry: Permiss
       ...(entry.workerId !== undefined && { workerId: entry.workerId }),
       ...(entry.toolName !== undefined && { toolName: entry.toolName }),
       ...(entry.source !== undefined && { source: entry.source }),
+      ...(entry.grantId !== undefined && { grantId: entry.grantId }),
     },
     'permission audit',
   );

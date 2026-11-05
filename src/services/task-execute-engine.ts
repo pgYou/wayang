@@ -40,42 +40,35 @@ import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { createWorkerTools } from '@/services/tools/index';
 import { askControllerTool } from '@/services/tools/ask-controller';
 import { wrapWithPermissionMiddleware, type PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
-import { FILE_TOOL_NAMES, decideToolAccess, type WorkerAccessScope } from '@/services/tools/permission-rules';
+import {
+  FILE_TOOL_NAMES,
+  decideToolAccess,
+  expandHome,
+  type WorkerAccessScope,
+} from '@/services/tools/permission-rules';
+import { ApprovalMemory } from '@/services/permission/approval-memory';
+import { resolveApprovalMemory } from '@/infra/permission/permission-config';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import { generateId } from '@/utils/id';
 import { formatLlmError } from '@/utils/llm-error';
-import { basename, dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { normalizeWorkspacePath } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 const PUPPET_WORKER_TYPE = 'puppet';
 
-/**
- * The user's home directory a session belongs to — the anchor of the path
- * permission policy (sensitive list + read scope).
- *
- * The wayang data dir lives at `<userHome>/.wayang`, so its parent is the home
- * the policy anchors on. Ad-hoc session dirs (hand-built temp dirs in tests)
- * don't follow the `<wayangDir>/sessions/<id>` layout, so fall back to the OS
- * home rather than guessing a parent. Derived ONCE at construction and injected
- * into every policy call — the decision code never reads it globally.
- */
-function resolveUserHomeDir(sessionDir: string): string {
-  const wayangDir = wayangDirForSessionDir(sessionDir);
-  return wayangDir && basename(wayangDir) === '.wayang' ? dirname(wayangDir) : homedir();
-}
-
 /** Construction options for TaskExecuteEngine. */
 export interface TaskExecuteEngineOptions {
   /**
    * The user's home directory the path permission policy anchors on (sensitive
-   * list and read scope). Derived from `ctx.sessionDir` when omitted; inject it
-   * explicitly in tests (which use temp home dirs) or whenever the session
-   * layout does not follow `<userHome>/.wayang/sessions/<id>`.
+   * list and read scope). Always the PROCESS home (`os.homedir()`) when
+   * omitted — never derived from the session layout: where wayang keeps its
+   * data (`--wayang-root`) has nothing to do with whose home the policy
+   * protects. Inject it explicitly in tests (which use temp home dirs) to
+   * keep the boundary controlled.
    */
-  homeDir?: string;
+  userHome?: string;
   /**
    * User-config permission section (`allowedDirs` / `autoAllowRoots` /
    * `sensitiveDirs`, plus the deprecated `deniedDirs` alias and
@@ -164,11 +157,18 @@ export class TaskExecuteEngine implements Subscribable {
   /** Idle TTL (ms). Idle workers are disposed after this if not reused. */
   private readonly idleTimeoutMs: number;
   /** The user's home directory the path permission policy anchors on. */
-  private readonly homeDir: string;
+  private readonly userHome: string;
   /** User-config permission section applied to this run's worker tools. */
   private readonly permission?: PermissionConfig;
   /** Session-side hook: remember every workspace a task is accepted for. */
   private readonly onTaskWorkspace?: (workspace: WorkspaceRef) => void;
+  /**
+   * Task-scoped approval grants (#46): one store per engine (= per session),
+   * handed to every worker's permission middleware so a grant approved in one
+   * worker run is visible to the next run of the SAME task. Nothing is
+   * persisted — a resumed session builds a new engine and starts empty.
+   */
+  readonly approvalGrants = new ApprovalMemory();
 
   constructor(
     private readonly ctx: SystemContext,
@@ -177,7 +177,7 @@ export class TaskExecuteEngine implements Subscribable {
     options: TaskExecuteEngineOptions = {},
   ) {
     this.logger = ctx.logger;
-    this.homeDir = options.homeDir ?? resolveUserHomeDir(ctx.sessionDir);
+    this.userHome = options.userHome ?? homedir();
     this.permission = options.permission ?? ctx.config.permission;
     this.onTaskWorkspace = options.onTaskWorkspace;
     this.maxConcurrency = ctx.maxConcurrency;
@@ -290,6 +290,10 @@ export class TaskExecuteEngine implements Subscribable {
         status: 'cancelled',
         completedAt: Date.now(),
       });
+      // Pending tasks never pass through `moveToHistory`, so their approval
+      // grants are dropped here (usually none — but a re-queued task could
+      // still hold one, and a cancelled task must not).
+      this.clearApprovalGrants(id);
       // No worker was ever spawned — announce directly so the dispatching
       // controller turn resolves as cancelled instead of running forever.
       this.emitTaskCancelled(task);
@@ -851,6 +855,32 @@ export class TaskExecuteEngine implements Subscribable {
       status,
       completedAt: Date.now(),
     });
+    // This is the single exit for a RUNNING task into a terminal state
+    // (completed / failed / cancelled), so it is also where the task's
+    // approval grants die — a grant must never outlive the task it was given
+    // in (issue #46).
+    this.clearApprovalGrants(id);
+  }
+
+  /**
+   * Drop every approval grant remembered for one task.
+   *
+   * A direct call, not a lifecycle hook: the grant store is part of the
+   * permission gate's own semantics (the key #46 invariant is "a grant is
+   * task-scoped"), and a hook listener that is missing would silently turn
+   * task-scoped approvals into session-scoped ones — exactly the kind of
+   * failure `LifecycleHooks` is not meant to own.
+   *
+   * Called from the terminal transitions only: `moveToHistory` (which serves
+   * completed / failed / cancelled) and the pending branch of `cancel()`
+   * (a pending task never reaches `moveToHistory`). A multi-stage task parked
+   * idle keeps its grants — it is the same task.
+   */
+  private clearApprovalGrants(taskId: string): void {
+    const cleared = this.approvalGrants.clearTask(taskId);
+    if (cleared > 0) {
+      this.logger.info({ taskId, grants: cleared }, 'Cleared task approval grants');
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1174,7 +1204,7 @@ export class TaskExecuteEngine implements Subscribable {
     // the per-task grant and the config section supplies user allow/sensitive
     // roots.
     const accessScope: WorkerAccessScope = {
-      homeDir: this.homeDir,
+      userHome: this.userHome,
       workspace,
       taskAllowedDirs: task.taskAllowedDirs,
       permission: this.permission,
@@ -1218,6 +1248,9 @@ export class TaskExecuteEngine implements Subscribable {
           ...createWorkerTools({
           listTasks: (status?: TaskDetail['status']) => this.list(status),
           cwd: workspace,
+          // `~` expansion in the tools anchors on the PROCESS home
+          // (`expandHome`), the same anchor the permission gate below
+          // (accessScope) judges expanded paths with — no injection needed.
           tavilyApiKey: this.ctx.config.tavilyApiKey,
           registry: this.skills,
           reportProgress: (msg: string, _percent?: number) => {
@@ -1260,12 +1293,27 @@ export class TaskExecuteEngine implements Subscribable {
         // ask). `deny` refuses here without ever emitting a permission_request;
         // both `deny` and every answered `ask` are audited (see the middleware).
         decide: (toolName, args) => decideToolAccess(accessScope, toolName, args),
-        describeCall: (toolName, args) => {
+        describeCall: (toolName, args, verdict) => {
           if (toolName === 'bash') return `Execute shell command: ${args.command}`;
           if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
             const rawPath = typeof args.path === 'string' ? args.path : '';
-            const resolved = rawPath ? resolve(workspace, rawPath) : workspace;
-            return `${toolName}: ${rawPath || '(workspace root)'} (resolved: ${resolved})`;
+            if (!rawPath) return `${toolName}: (workspace root) (resolved: ${workspace})`;
+            // The description must name the path the gate actually JUDGED, not
+            // one re-derived here: `resolve()` alone left `~` / `$HOME`
+            // unexpanded, so `read_file ~/.wayang.config.json` reached the
+            // controller (and the TUI) as `<workspace>/~/.wayang.config.json` —
+            // a path that does not exist and that nobody recognizes as their
+            // own config. Expansion goes through the SAME `expandHome` the gate
+            // uses, and the canonical target the policy resolved wins when the
+            // verdict carries one (it also normalizes symlinks).
+            const expanded = expandHome(rawPath);
+            if (expanded.unresolvable) {
+              // `~user` names another user's home and is deliberately NOT
+              // expanded (see `HomeExpansion`) — show what was asked for.
+              return `${toolName}: ${rawPath} (unresolved: another user's home cannot be expanded)`;
+            }
+            const target = verdict?.resolvedPath ?? resolve(workspace, expanded.path);
+            return `${toolName}: ${rawPath} (resolved: ${target})`;
           }
           return `${toolName}: ${JSON.stringify(args)}`;
         },
@@ -1279,6 +1327,12 @@ export class TaskExecuteEngine implements Subscribable {
         turnLineage: this.workerLineage(workerId),
         // Permission audit trail (metadata only) shares the session logger.
         logger: this.ctx.logger,
+        // Task-scoped approval memory (#46): the switch comes from
+        // `permission.approvalMemory`, the store is this engine's per-session
+        // one, cleared per task on the terminal transitions (see
+        // `clearApprovalGrants`).
+        approvalMemory: resolveApprovalMemory(this.permission),
+        grants: this.approvalGrants,
       });
       tools = middleware.wrappedTools;
       this.permissionResolvers.set(workerId, middleware);

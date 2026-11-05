@@ -20,7 +20,7 @@ async function exec(toolObj: any, args: any): Promise<string> {
   return toolObj.execute(args);
 }
 
-let homeDir: string;
+let userHome: string;
 let outsideRoot: string;
 let workspaceDir: string;
 let dataDir: string;
@@ -35,17 +35,17 @@ function makeDir(base: string, name: string): string {
 }
 
 beforeEach(() => {
-  homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-allowed-dirs-home-'));
+  userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-allowed-dirs-home-'));
   outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-allowed-dirs-outside-'));
-  workspaceDir = makeDir(homeDir, 'workspace');
-  dataDir = makeDir(homeDir, 'data');
-  cacheDir = makeDir(homeDir, 'cache');
+  workspaceDir = makeDir(userHome, 'workspace');
+  dataDir = makeDir(userHome, 'data');
+  cacheDir = makeDir(userHome, 'cache');
   relDataDir = makeDir(workspaceDir, 'rel-data');
-  sshDir = makeDir(homeDir, '.ssh');
+  sshDir = makeDir(userHome, '.ssh');
 });
 
 afterEach(() => {
-  fs.rmSync(homeDir, { recursive: true, force: true });
+  fs.rmSync(userHome, { recursive: true, force: true });
   fs.rmSync(outsideRoot, { recursive: true, force: true });
 });
 
@@ -53,7 +53,7 @@ function makeTool(added: TaskDetail[], deps: Partial<Parameters<typeof addTaskTo
   return addTaskTool({
     addTask: (t) => { added.push(t); return 'w-1'; },
     workspaceDir,
-    homeDir,
+    userHome,
     ...deps,
   });
 }
@@ -112,7 +112,7 @@ describe('addTaskTool — allowedDirs declaration', () => {
 
   it('rejects a configured sensitiveDirs entry and creates no task', async () => {
     const added: TaskDetail[] = [];
-    const secretDir = makeDir(homeDir, 'secret-area');
+    const secretDir = makeDir(userHome, 'secret-area');
     const tool = makeTool(added, { permissionConfig: { sensitiveDirs: ['secret-area'] } });
 
     const result = await exec(tool, {
@@ -128,7 +128,7 @@ describe('addTaskTool — allowedDirs declaration', () => {
 
   it('honours the deprecated deniedDirs alias for the same rejection', async () => {
     const added: TaskDetail[] = [];
-    const secretDir = makeDir(homeDir, 'legacy-area');
+    const secretDir = makeDir(userHome, 'legacy-area');
     const tool = makeTool(added, { permissionConfig: { deniedDirs: ['legacy-area'] } });
 
     const result = await exec(tool, {
@@ -188,7 +188,7 @@ describe('addTaskTool — allowedDirs declaration', () => {
 
   it('refuses allowedDirs when the home boundary is unknown', async () => {
     const added: TaskDetail[] = [];
-    const tool = makeTool(added, { homeDir: undefined });
+    const tool = makeTool(added, { userHome: undefined });
 
     const result = await exec(tool, {
       title: 'T',

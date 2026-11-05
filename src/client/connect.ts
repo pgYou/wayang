@@ -12,8 +12,8 @@ import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 export interface ConnectOptions {
   configPath: string;
-  /** Root dir for the `--home-dir` flag (the server joins `.wayang` itself). */
-  homeDir: string;
+  /** Root dir for the `--wayang-root` flag (the server joins `.wayang` itself). */
+  wayangRootDir: string;
   workspaceDir: string;
   /**
    * Workspace identities the session has touched, resolved by the caller
@@ -44,7 +44,7 @@ export async function connectRemoteServer(options: ConnectOptions): Promise<Remo
     entry,
     'server',
     '--config', options.configPath,
-    '--home-dir', options.homeDir,
+    '--wayang-root', options.wayangRootDir,
     '--workspace-dir', options.workspaceDir,
     '--session', sessionArg,
   ];

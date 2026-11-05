@@ -70,7 +70,7 @@ import { getLatestSessionForWorkspace } from '@/infra/session-helpers';
 import { normalizeWorkspacePath, workspaceSlugFromPath } from '@/infra/workspace-registry';
 
 describe('session workspace accumulation', () => {
-  let homeDir: string;
+  let dataDir: string;
   let dirA: string;
   let dirB: string;
   let manager: SessionManager;
@@ -89,12 +89,12 @@ describe('session workspace accumulation', () => {
 
   beforeEach(() => {
     puppetWorkers.length = 0;
-    homeDir = mkdtempSync(join(tmpdir(), 'wayang-accum-home-'));
+    dataDir = mkdtempSync(join(tmpdir(), 'wayang-accum-home-'));
     dirA = mkdtempSync(join(tmpdir(), 'wayang-accum-a-'));
     dirB = mkdtempSync(join(tmpdir(), 'wayang-accum-b-'));
 
     // Session created in A.
-    manager = SessionManager.create(homeDir, dirA);
+    manager = SessionManager.create(dataDir, dirA);
 
     const ctx = createMockCtx({
       sessionDir: manager.sessionDir,
@@ -108,7 +108,7 @@ describe('session workspace accumulation', () => {
   });
 
   afterEach(() => {
-    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
     rmSync(dirA, { recursive: true, force: true });
     rmSync(dirB, { recursive: true, force: true });
   });
@@ -130,12 +130,12 @@ describe('session workspace accumulation', () => {
     ]);
 
     // The accumulated workspace is discoverable through the session index.
-    const latest = getLatestSessionForWorkspace(homeDir, dirB);
+    const latest = getLatestSessionForWorkspace(dataDir, dirB);
     expect(latest).not.toBeNull();
     expect(latest!.sessionId).toBe(manager.sessionId);
 
     // A still matches too (the startup workspace is not lost).
-    expect(getLatestSessionForWorkspace(homeDir, dirA)!.sessionId).toBe(manager.sessionId);
+    expect(getLatestSessionForWorkspace(dataDir, dirA)!.sessionId).toBe(manager.sessionId);
   });
 
   it('is idempotent: re-declaring B does not append a second entry', () => {

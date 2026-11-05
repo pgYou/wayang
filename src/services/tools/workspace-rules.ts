@@ -41,7 +41,7 @@ export interface WorkspaceRulesInput {
   /** The workspace the task will execute in (canonical path). */
   workspacePath?: string;
   /** The user's home directory — the anchor of the access policy. */
-  homeDir?: string;
+  userHome?: string;
   /** User-config permission section; its `sensitiveDirs` extend the sensitive list. */
   permissionConfig?: PermissionConfig;
 }
@@ -94,8 +94,8 @@ function describeRefusal(
   workspacePath: string,
   input: WorkspaceRulesInput,
 ): string | null {
-  const homeDir = input.homeDir;
-  if (!homeDir) {
+  const userHome = input.userHome;
+  if (!userHome) {
     // Without a home anchor the decision cannot be made. That is NOT the same
     // as "no rules file", so say so instead of reading the file unguarded.
     return 'unavailable — the permission policy cannot be evaluated here (no home directory in this context), so the file was not read.';
@@ -105,7 +105,7 @@ function describeRefusal(
     access: 'read',
     path: rulesPath,
     cwd: workspacePath,
-    homeDir,
+    userHome: userHome,
     taskWorkspace: workspacePath,
     extraSensitiveDirs: mergeSensitiveDirs(input.permissionConfig),
     sensitiveMode: resolveSensitiveMode(input.permissionConfig),
