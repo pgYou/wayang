@@ -2,22 +2,40 @@
 
 ## v0.9.0 (2026-11-05)
 
-规划段：本版范围先以草案记录，实施完成后按实际交付校准。
-
 ### ACP worker 适配层（Refs #25）
 
-- 计划新增 `src/services/acp/` 协议层：ndjson 上的 JSON-RPC，不引入新依赖。
-- 计划新增 `BaseAcpWorker` 骨架，以及 codebuddy / opencode 两个 provider 薄类。
-- 计划把 ACP permission 请求接入现有 approval 通路。
-- 计划环境就绪 fail-fast：缺少 CLI 时给出安装与认证步骤，不静默降级。
+- 新增协议层 `src/services/acp/`：自实现 ndjson 分帧与 JSON-RPC（零新增依赖）、超时矩阵、错误分类、取消时序（session/cancel → 宽限 → SIGTERM → SIGKILL）、pending 请求收敛。
+- 新增 worker 层 `src/services/agents/acp/`：BaseAcpWorker 骨架 + codebuddy-acp / opencode-acp 两个 provider 薄类；事件映射按 toolCallId 合并，兼容 codebuddy 的「空首事件三段式」与 opencode 的「首事件即全量」；回合内 transcript 写入与信号通道复用既有实现。
+- 权限：ACP request_permission 接入既有 decideToolAccess 与任务级审批记忆；optionId 按 kind 选择（不依赖顺序与字面值），未知形态 fail-closed；审计新增 allowed / granted-by-memory 决策与 transport/provider 字段。
+- 接线：`WORKER_TYPES` 增加两种类型；WorkerConfig 支持 command/args/env/protocol/permissionMode；引擎 worker 分发与接线改用能力探测替代 instanceof；controller prompt 标注 `[acp:<provider>]`；provider 默认 emoji。
+- 实测：codebuddy 2.180.0 与 opencode 2.2.5 的 initialize / session/new / prompt / cancel 全链路跑通（耗时基线见设计文档 07 分册）。
+- opencode 权限闸：其默认权限为全放行，不注入配置时 bash 与文件写完全不经 wayang 审批。本版在 opencode provider 默认注入 ask-all 的 `OPENCODE_CONFIG`；可用 `protocol.gatePermissions=false` 关闭（会告警），父进程已有 `OPENCODE_CONFIG` 时不覆盖（会告警），闸文件写入失败则直接失败，绝不无闸启动。
+- 拒绝语义：agent 被拒后以 stopReason cancelled 收尾，本版按「本回合拒绝次数」区分——拒绝映射为 `failed("Permission denied by user: <tool>")`，真取消仍为 `Aborted`。
+- 真机验收测试为 opt-in（`ACP_REAL_CODEBUDDY=1` / `ACP_REAL_OPENCODE=1`），另含受控 PATH 的 opencode CLI 缺失 fail-fast 用例（默认常跑）。
 
 ### 大文件拆分（Refs #50）
 
-- 计划按纯搬移原则拆分 >500 行的源文件，用 re-export 保持导出面兼容。
+- 拆分 7 个超过 500 行的源文件（permission-rules 1832 / task-execute-engine 1488 / claude-code-worker 1186 / controller-agent 924 / shell-lexer 606 / worker-transcript 573 / input-area 530），纯搬移并保留原路径门面；src 下已无 >500 行源文件。
 
-### 说明
+### 日志与缓冲（Fixes #52, #53）
 
-- 真人实测（codebuddy 登录态、opencode 安装）不在本版验收范围；provider 类标记 experimental，需在配置里显式开启。
+- DEBUG 级 LLM 调用日志默认只记元数据（model / 消息数 / token 估算）；全量 prompt 需 `WAYANG_LOG_PROMPTS=1` 且强制脱敏，单条日志从约 286KB 降到百字节量级。
+- 日志按大小轮转（默认 10MB × 4 份），总量有界；resume 不读日志，行为不变。
+- 工具结果写入 transcript 增加统一上限（`WAYANG_TOOL_OUTPUT_MAX_CHARS`，默认 20000，保留头尾并标注省略）。
+
+### 修复
+
+- `resolveAcpTimeouts` 不再把 protocol 中的非超时键（capabilities、gatePermissions）当作超时值校验；此前用户一旦配置 `protocol.capabilities` 该 worker 必然启动失败。
+
+### 文档
+
+- ACP 设计文档改为 v3：索引页 + `docs/design/acp/` 分册（协议、骨架、providers、权限、配置、测试、就绪）+ 冻结页「实测勘误」；codex 不在本版范围。
+
+### 已知限制
+
+- 权限策略硬拒绝（`sensitiveMode: 'deny'`）与权限超时引发的 cancelled 仍映射为 Aborted（Refs #56）。
+- 冻结页原规划的 fake-acp-agent e2e 夹具未交付，暂以 worker 层 fake + 协议层真子进程 + 真机 opt-in 测试替代。
+- claude-code worker 的 `setSignalContext` 尚不接收 grants/approvalMemory，任务级审批记忆对 claude-code 不生效。
 
 ## v0.8.4 (2026-11-05)
 
