@@ -9,7 +9,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { AcpLaunchConfig } from './config';
+import { resolveAcpTimeouts, type AcpLaunchConfig, type AcpTimeouts } from './config';
 import { AcpError } from './errors';
 import type { AcpCloseReason, AcpExitInfo } from './types';
 
@@ -178,6 +178,7 @@ export class StdioAcpTransport implements StderrAcpTransport {
   private child: ChildProcess | null = null;
   private started = false;
   private startFailed: AcpError | null = null;
+  private readonly timeouts: AcpTimeouts;
   private decoder = new LineDecoder();
   private stderrDecoder = new LineDecoder({ maxLineBytes: STDERR_MAX_LINE_BYTES });
   private stderrLines: string[] = [];
@@ -196,6 +197,9 @@ export class StdioAcpTransport implements StderrAcpTransport {
 
   constructor(config: AcpLaunchConfig) {
     this.config = config;
+    // Validate once up front: a NaN/invalid wait would make setTimeout fire
+    // immediately and skip the SIGTERM rung of the kill ladder entirely.
+    this.timeouts = resolveAcpTimeouts(config.timeouts);
     this.maxLineBytes = config.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
     this.decoder = new LineDecoder({ maxLineBytes: this.maxLineBytes });
   }
@@ -227,7 +231,12 @@ export class StdioAcpTransport implements StderrAcpTransport {
           detached: false,
         });
       } catch (err) {
-        reject(this.toCliMissing(err));
+        // A synchronous spawn throw (invalid argv types etc.) must leave the
+        // transport marked failed — otherwise `started` is already true and a
+        // second start() would silently resolve.
+        this.startFailed = this.toCliMissing(err);
+        this.closing = this.closing ?? { sigtermWaitMs: this.timeouts.sigtermWaitMs, reason: 'crash' };
+        reject(this.startFailed);
         return;
       }
       this.child = child;
@@ -381,7 +390,7 @@ export class StdioAcpTransport implements StderrAcpTransport {
         : new AcpError('protocol-mismatch', `ndjson framing error: ${err instanceof Error ? err.message : String(err)}`);
     this.emitError(error);
     if (!this.closePromise && !this.exitInfo) {
-      this.closing = { sigtermWaitMs: this.config.timeouts.sigtermWaitMs, reason: 'crash' };
+      this.closing = { sigtermWaitMs: this.timeouts.sigtermWaitMs, reason: 'crash' };
       this.closePromise = this.terminate(this.closing);
     }
   }
