@@ -59,6 +59,18 @@ describe('resolveAcpTimeouts', () => {
     expect(() => resolveAcpTimeouts({ handshakeMs: Number.POSITIVE_INFINITY })).toThrowError(AcpError);
     expect(() => resolveAcpTimeouts({ sigtermWaitMs: 'soon' as unknown as number })).toThrowError(AcpError);
   });
+
+  it('ignores non-timeout keys (callers spread whole AcpProtocolConfig objects in)', () => {
+    // The worker layer spreads the whole protocol override object in —
+    // `capabilities` and `gatePermissions` must neither land in the merged
+    // matrix nor fail its numeric validation (latent bug fixed with #25).
+    const resolved = resolveAcpTimeouts({
+      handshakeMs: 20_000,
+      capabilities: { permissionRequests: true },
+      gatePermissions: false,
+    } as unknown as Parameters<typeof resolveAcpTimeouts>[0]);
+    expect(resolved).toEqual({ ...DEFAULT_ACP_TIMEOUTS, handshakeMs: 20_000 });
+  });
 });
 
 describe('ACP_JSONRPC_ERROR', () => {

@@ -13,6 +13,8 @@
  * - unknown kind fail-closed: shape inference failure asks directly and never
  *   feeds decideToolAccess (which allows every unknown tool name);
  * - timeout fail-closed (denied source 'timeout');
+ * - onControllerDenial fires for a controller deny only — never for the
+ *   timeout or the abort cleanup (#25 deny-vs-cancel mapping);
  * - option set with neither allow nor reject → cancelled + hard-denied audit;
  * - verdicts are always based on the MERGED snapshot (request toolCall +
  *   previously accumulated events).
@@ -200,6 +202,35 @@ describe('bridge: verdict → outcome', () => {
     expect(auditRecords(logger)).toEqual([expect.objectContaining({ decision: 'denied', source: 'controller' })]);
     // A refusal is a decision about THIS request — nothing is remembered.
     expect(grants.has('task-1', 'read:/etc/passwd')).toBe(false);
+  });
+
+  it('controller deny fires onControllerDenial (#25); an abort-cleanup settle does not', async () => {
+    const denials: string[] = [];
+    const { handler, signals, pending } = makeBridge({ onControllerDenial: (toolName) => denials.push(toolName) });
+    const read = () =>
+      permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/etc/passwd' } });
+
+    // A controller denial is a user rejection — recorded with the tool name.
+    const denied = handler(read());
+    pending.resolve(signals[0].payload.requestId, { approved: false });
+    await denied;
+    expect(denials).toEqual(['read']);
+
+    // The abort cleanup ('Worker aborted') also settles unapproved, but it is
+    // the run being torn down, not the user refusing.
+    const aborted = handler(read());
+    pending.resolve(signals[1].payload.requestId, { approved: false, reason: 'Worker aborted' });
+    await aborted;
+    expect(denials).toEqual(['read']);
+  });
+
+  it('a timeout does not fire onControllerDenial (#25)', async () => {
+    const denials: string[] = [];
+    const { handler } = makeBridge({ permissionMs: 15, onControllerDenial: (toolName) => denials.push(toolName) });
+    await handler(
+      permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/etc/passwd' } }),
+    );
+    expect(denials).toEqual([]);
   });
 
   it('approval memory hit → allow WITHOUT a signal, audit granted-by-memory + grantId', async () => {

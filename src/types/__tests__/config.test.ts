@@ -211,6 +211,22 @@ describe('validateConfig: workers section (05 §5)', () => {
     expect(badValue).toContain('protocol.capabilities.toolCalls must be a boolean');
   });
 
+  it('accepts a boolean protocol.gatePermissions and rejects a non-boolean one', () => {
+    expect(
+      validateConfig(
+        makeConfigWithWorkers({
+          opencode: { type: 'opencode-acp', description: 'x', protocol: { gatePermissions: false } },
+        }),
+      ),
+    ).toBeNull();
+    const err = validateConfig(
+      makeConfigWithWorkers({
+        opencode: { type: 'opencode-acp', description: 'x', protocol: { gatePermissions: 'no' } },
+      }),
+    );
+    expect(err).toContain('workers.opencode.protocol.gatePermissions must be a boolean');
+  });
+
   it.each([
     ['description', ''],
     ['capabilities', ['code', 7]],

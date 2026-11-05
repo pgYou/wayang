@@ -69,6 +69,13 @@ export interface AcpPermissionBridgeDeps {
   provider: string;
   /** Wait bound for a controller answer. */
   permissionMs?: number;
+  /**
+   * Called when the CONTROLLER actively denies a permission request — a real
+   * user rejection, not a timeout and not the abort cleanup. The run layer
+   * aggregates these per turn to tell a denial-induced turn cancel apart
+   * from a real cancellation (#25).
+   */
+  onControllerDenial?: (toolName: string) => void;
 }
 
 /** What an `ask` carries into the signal payload and the audit record. */
@@ -195,6 +202,17 @@ function reusableGrantKeys(verdict: ToolAccessDecision): string[] {
 /** toolName the signal/audit carry (04 §8: `toolCall.name ?? kind`). */
 function bridgeToolName(snapshot: AcpToolSnapshot): string {
   return snapshot.name || snapshot.kind || 'unknown';
+}
+
+/**
+ * Why an unapproved wait settled (#25): the controller denied, the wait timed
+ * out, or the run was aborted (the cleanup settles pending waits). Only the
+ * first is a user rejection.
+ */
+function denialSource(reason: string | undefined): 'timeout' | 'aborted' | 'controller' {
+  if (reason === 'timeout') return 'timeout';
+  if (reason === 'Worker aborted') return 'aborted';
+  return 'controller';
 }
 
 /** toolArgs for the signal payload: the merged rawInput, or locations when absent. */
@@ -413,14 +431,7 @@ export function createAcpPermissionBridge(
         matchedRule: ask.matchedRule,
         matchedEntry: ask.matchedEntry,
         matchedSource: ask.matchedSource,
-        ...(!result.approved && {
-          source:
-            result.reason === 'timeout'
-              ? ('timeout' as const)
-              : result.reason === 'Worker aborted'
-                ? ('aborted' as const)
-                : ('controller' as const),
-        }),
+        ...(!result.approved && { source: denialSource(result.reason) }),
       });
 
       if (result.approved) {
@@ -430,6 +441,7 @@ export function createAcpPermissionBridge(
         }
         return outcomeFor('allow');
       }
+      if (denialSource(result.reason) === 'controller') deps.onControllerDenial?.(toolName);
       return outcomeFor('reject');
     }
 
@@ -462,16 +474,10 @@ export function createAcpPermissionBridge(
       ...base,
       decision: result.approved ? 'approved' : 'denied',
       access: 'unknown',
-      ...(!result.approved && {
-        source:
-          result.reason === 'timeout'
-            ? ('timeout' as const)
-            : result.reason === 'Worker aborted'
-              ? ('aborted' as const)
-              : ('controller' as const),
-      }),
+      ...(!result.approved && { source: denialSource(result.reason) }),
     });
 
+    if (!result.approved && denialSource(result.reason) === 'controller') deps.onControllerDenial?.(toolName);
     return result.approved ? outcomeFor('allow') : outcomeFor('reject');
   };
 }

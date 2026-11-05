@@ -77,6 +77,8 @@ export interface AcpReadiness {
 /** 05 §3 protocol overrides as the worker layer reads them (C2 lands them in WorkerConfig). */
 export interface AcpProtocolOverrides extends Partial<AcpTimeouts> {
   capabilities?: Partial<Pick<AcpCapabilities, 'permissionRequests' | 'toolCalls'>>;
+  /** opencode only: inject the ask-all permission gate (default true). See `AcpProtocolConfig`. */
+  gatePermissions?: boolean;
 }
 
 /** 05 §2 `*-acp` config row fields (C2 lands them in WorkerConfig). */
@@ -163,6 +165,8 @@ export abstract class BaseAcpWorker {
   protected readonly config: WorkerConfig;
   protected readonly state: WorkerState;
   readonly workspaceDir: string;
+  /** Wayang session directory (provider hooks write per-run side files here, e.g. the opencode gate). */
+  protected readonly sessionDir: string;
   protected readonly logger: Logger;
   protected readonly abortController = new AbortController();
   protected _terminalResult: WorkerResult | null = null;
@@ -177,6 +181,13 @@ export abstract class BaseAcpWorker {
 
   // --- Permission plumbing (same shape as ClaudeCodeWorker.permissionHandler) ---
   protected readonly _pendingPermissions = new BlockingRequestMap<AcpPermissionAnswer>();
+  /**
+   * Controller-issued permission denials in the CURRENT turn (#25): the run
+   * layer resets this at every turn boundary and reads it when a turn ends
+   * 'cancelled' — a denial means the user refused, not that the run aborted.
+   */
+  protected _deniedPermissions = 0;
+  protected _lastDeniedToolName: string | undefined;
   readonly permissionHandler: PermissionMiddlewareResult = {
     resolvePermission: (requestId: string, approved: boolean, reason?: string) =>
       this._pendingPermissions.resolve(requestId, { approved, reason }),
@@ -235,6 +246,7 @@ export abstract class BaseAcpWorker {
     this.ctx = ctx;
     this.config = config;
     this.workspaceDir = workspaceDir;
+    this.sessionDir = sessionDir;
     this.logger = ctx.logger;
     this.skills = skills;
     this.workspaceRef = resolveWorkspaceRef(wayangDirForSessionDir(sessionDir), workspaceDir);
@@ -267,9 +279,16 @@ export abstract class BaseAcpWorker {
         logger: this.logger,
         provider: this.config.type,
         permissionMs: acpCtx.permissionMs,
+        onControllerDenial: (toolName) => this.notePermissionDenial(toolName),
       },
       this._pendingPermissions,
     )(req);
+  }
+
+  /** Bridge callback (#25): the controller actively denied a permission in the current turn. */
+  protected notePermissionDenial(toolName: string): void {
+    this._deniedPermissions += 1;
+    this._lastDeniedToolName = toolName;
   }
 
   /** 3) Error normalization: fold a phase failure into an AcpError. Default: AcpErrors pass, everything else is agent-error. */
