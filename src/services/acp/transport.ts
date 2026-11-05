@@ -298,7 +298,7 @@ export class StdioAcpTransport implements StderrAcpTransport {
     const code = (err as NodeJS.ErrnoException | null)?.code;
     const message = err instanceof Error ? err.message : String(err);
     const reason = code ? `${code}: ${message}` : message;
-    return new AcpError('cli-missing', `spawn "${this.config.command}" failed: ${reason}`, undefined);
+    return new AcpError('cli-missing', `spawn "${this.config.command}" failed: ${reason}`, { reason });
   }
 
   private wireStreams(child: ChildProcess): void {

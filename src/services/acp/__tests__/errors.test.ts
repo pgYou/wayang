@@ -104,4 +104,22 @@ describe('AcpError', () => {
     expect(err.detail).toBeUndefined();
     expect(err.userMessage).toBe('任务已取消');
   });
+
+  it('propagates detail.reason into the cli-missing userMessage', () => {
+    const err = new AcpError('cli-missing', 'spawn "codebuddy" failed: ENOENT: spawn codebuddy ENOENT', {
+      reason: 'ENOENT: spawn codebuddy ENOENT',
+    });
+    expect(err.userMessage).toContain('无法启动：ENOENT: spawn codebuddy ENOENT');
+    expect(err.userMessage).toContain('npm i -g @tencent-ai/codebuddy-code');
+  });
+
+  it('propagates detail.seconds into the handshake-timeout userMessage', () => {
+    const err = new AcpError('handshake-timeout', 'initialize: no response within 15000ms', { seconds: 15 });
+    expect(err.userMessage).toContain('握手超时（15s 无 initialize 响应）');
+  });
+
+  it('propagates detail.reason into the protocol-mismatch userMessage', () => {
+    const err = new AcpError('protocol-mismatch', 'agent protocolVersion 2 !== 1', { reason: '版本 2' });
+    expect(err.userMessage).toBe('与 agent 的 ACP 协议不匹配（版本 2）。请升级该 CLI 或提交 issue');
+  });
 });

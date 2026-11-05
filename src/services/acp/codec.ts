@@ -72,6 +72,7 @@ export function parseHandshake(raw: unknown): AcpHandshake {
     throw new AcpError(
       'protocol-mismatch',
       `agent protocolVersion ${JSON.stringify(obj.protocolVersion)} !== ${ACP_PROTOCOL_VERSION}`,
+      { reason: `版本 ${JSON.stringify(obj.protocolVersion)}` },
     );
   }
   const capsRaw = (obj.agentCapabilities ?? {}) as Record<string, unknown>;
@@ -108,6 +109,7 @@ export function parseTurnResult(raw: unknown): AcpTurnResult {
     throw new AcpError(
       'protocol-mismatch',
       `session/prompt settled without a valid stopReason: ${JSON.stringify(stopReason)}`,
+      { reason: '回合未收尾（stopReason 无效）' },
     );
   }
   return { stopReason: stopReason as AcpStopReason, raw };

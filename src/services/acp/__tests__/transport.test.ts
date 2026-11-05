@@ -68,9 +68,19 @@ describe('StdioAcpTransport.start', () => {
     await transport.close({ sigtermWaitMs: 2_000, reason: 'shutdown' });
   });
 
-  it('maps ENOENT to AcpError(cli-missing)', async () => {
+  it('maps ENOENT to AcpError(cli-missing) with the errno summary in userMessage', async () => {
     const transport = new StdioAcpTransport(nodeAgentConfig([], { command: 'wayang-no-such-command-xyz' }));
-    await expect(transport.start()).rejects.toMatchObject({ code: 'cli-missing' });
+    const err = await transport.start().then(
+      () => {
+        throw new Error('expected start() to reject');
+      },
+      (failure) => failure,
+    );
+    expect(err).toBeInstanceOf(AcpError);
+    expect(err.code).toBe('cli-missing');
+    expect(err.message).toContain('ENOENT');
+    expect(err.userMessage).toContain('无法启动');
+    expect(err.userMessage).toContain('ENOENT');
   });
 
   itNonRoot('maps EACCES (non-executable file) to AcpError(cli-missing)', async () => {
