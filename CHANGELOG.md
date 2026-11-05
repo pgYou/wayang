@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.1 (2026-11-05)
+
+### 文档
+
+- README 补齐 ACP worker（codebuddy / opencode）的安装、配置示例、权限闸说明与设计文档索引（#59）。
+- 修正 CHANGELOG v0.9.0 段落的日志轮转表述为「单文件 10MB、保留 3 份历史」（#60）。
+
+### 待评估
+
+- 本地 dev 配置仍含 claude-code worker 项，评估是否需要在文档里说明「0.9.0 起推荐的 ACP worker 配置」。
+
 ## v0.9.0 (2026-11-05)
 
 ### ACP worker 适配层（Refs #25）
