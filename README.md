@@ -31,7 +31,7 @@ Complex AI workflows need more than a single chat. Wayang acts as an intelligent
 - **Multi-Worker Parallelism** — Multiple Workers run simultaneously with configurable concurrency limits
 - **Rich TUI** — Ink-powered (React for CLI) interface with streaming output, slash commands, and keyboard shortcuts
 - **Session Recovery** — `wayang --resume` restores interrupted sessions with automatic crash cleanup
-- **Extensible Workers** — Built-in Puppet Worker and Claude Code Worker; plug in custom third-party Workers
+- **Extensible Workers** — Built-in Puppet Worker and Claude Code Worker; plug in custom third-party Workers. 0.9.0 起亦可通过 ACP 接入 codebuddy / opencode。
 - **Headless Server + RPC** — `wayang server` runs the orchestration core as a headless process driven over a JSON-RPC-style stdio protocol; the TUI is a thin client on the same protocol (WebSocket reserved for the upcoming WebUI)
 - **Context Compression** — Automatic compact to prevent token overflow
 
@@ -133,6 +133,49 @@ wayang --resume --all             # list all sessions to pick
 
 `--home-dir <path>` still works as a deprecated alias of `--wayang-root`
 (identical semantics; the CLI warns once when it is used).
+
+## ACP Worker（外部 Agent 接入，0.9.0+）
+
+0.9.0 起，Wayang 支持通过 ACP（Agent Client Protocol）接入外部 agent CLI（codebuddy、opencode），与内置 puppet worker 并存，统一由 Controller 调度。
+
+### 前置条件
+
+- codebuddy CLI：安装并完成登录后用 `codebuddy --version` 确认（实测 2.180.0）。
+- opencode CLI：安装并完成配置后用 `opencode --version` 确认（实测 2.2.5）。
+
+### 配置示例
+
+在 `~/.wayang.config.json` 的 `workers` 中加入：
+
+```json
+"workers": {
+  "codebuddy": { "type": "codebuddy-acp", "description": "Tencent CodeBuddy Code (ACP)", "capabilities": ["code","refactor","shell"] },
+  "opencode":  { "type": "opencode-acp", "description": "OpenCode (ACP)", "capabilities": ["code","refactor","shell"] }
+}
+```
+
+### 启动方式
+
+默认分别以 `codebuddy --acp` / `opencode acp` 启动；如需覆盖，可用 `command` / `args` / `env` 三个字段（不必展开全部），例如给 opencode 子进程注入环境变量：
+
+```json
+"env": { "HTTPS_PROXY": "http://127.0.0.1:7890" }
+```
+
+### 权限闸
+
+ACP worker 的工具调用会经 wayang 的权限闸（`decideToolAccess` + 任务级审批记忆），敏感或越界操作会弹出审批。特别注意 opencode：它自身默认权限是全放行，wayang 默认给它注入 ask-all 的 `OPENCODE_CONFIG`（写入会话目录），把裁决权收回；可用 `"protocol": { "gatePermissions": false }` 关闭，但那样 opencode 的工具操作**不经 wayang 审批**；若父进程已有 `OPENCODE_CONFIG`，wayang 不覆盖并会告警。
+
+### 能力与限制
+
+- ACP worker 没有 `update_progress` / `done` 工具，进度与收尾由协议层事件映射处理。
+- `chat_worker` 的消息在回合边界交付，回合内不实时送达。
+- 敏感操作会发起 permission request，Controller 需用 `respond_permission` 处理。
+- 被用户拒绝时任务以 `Permission denied by user: <tool>` 失败（真取消才标记为 `Aborted`）。
+
+### 参考文档
+
+设计文档见 `docs/design/acp/`：03 providers、04 permissions、05 config、07 readiness。
 
 ## Skills
 
