@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9.1 (2026-11-05)
+
+### 文档
+
+- README 增加 ACP worker 接入说明：codebuddy / opencode 的安装前置、workers 配置示例、默认启动命令与覆盖方式、权限闸（含 opencode 默认注入 ask-all 的 OPENCODE_CONFIG 与 `protocol.gatePermissions` 开关）、能力与限制、设计文档索引（#59）。
+- 修正 v0.9.0 段落中日志轮转的表述，与实现一致（单文件 10MB 上限、保留 3 份历史）（#60）。
+
 ## v0.9.0 (2026-11-05)
 
 ### ACP worker 适配层（Refs #25）
@@ -20,7 +27,7 @@
 ### 日志与缓冲（Fixes #52, #53）
 
 - DEBUG 级 LLM 调用日志默认只记元数据（model / 消息数 / token 估算）；全量 prompt 需 `WAYANG_LOG_PROMPTS=1` 且强制脱敏，单条日志从约 286KB 降到百字节量级。
-- 日志按大小轮转（默认 10MB × 4 份），总量有界；resume 不读日志，行为不变。
+- 日志按大小轮转（单文件 10MB 上限，保留 3 份历史），总量有界；resume 不读日志，行为不变。
 - 工具结果写入 transcript 增加统一上限（`WAYANG_TOOL_OUTPUT_MAX_CHARS`，默认 20000，保留头尾并标注省略）。
 
 ### 修复
