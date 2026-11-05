@@ -6,26 +6,23 @@
  * notifications never create pending entries, peer requests for unknown
  * methods get -32601, a throwing permission handler gets -32603, and the
  * `$/cancel_request` notification is received but not processed (wayang only
- * cancels through `session/cancel`). Generic JSON-RPC mechanics live in the
- * internal json-rpc.ts, pure parsing in codec.ts, permission response
- * plumbing in permission-responder.ts.
+ * cancels through `session/cancel`). This file is the frozen facade: generic
+ * JSON-RPC mechanics live in json-rpc.ts, pure parsing in codec.ts,
+ * permission response plumbing in permission-responder.ts, prompt-turn
+ * tracking + cancel timing in prompt-tracking.ts, and inbound line/update
+ * classification + dispatch in inbound-dispatch.ts.
  *
  * No-hanging-promise guarantee: every request settles through a response, its
  * own timeout, a fatal protocol error, transport close, or client close.
  */
 
-import { ACP_JSONRPC_ERROR, resolveAcpTimeouts, type AcpTimeouts } from './config';
+import { resolveAcpTimeouts, type AcpTimeouts } from './config';
 import { AcpError } from './errors';
-import {
-  AUTH_STDERR_PATTERN,
-  KNOWN_SESSION_UPDATE_VARIANTS,
-  ACP_PROTOCOL_VERSION,
-  normalizeClientCapabilities,
-  parseHandshake,
-  parseTurnResult,
-} from './codec';
+import { AUTH_STDERR_PATTERN, ACP_PROTOCOL_VERSION, normalizeClientCapabilities, parseHandshake, parseTurnResult } from './codec';
 import { JsonRpcPeer, JsonRpcRequestFailure } from './json-rpc';
+import { AcpInboundDispatcher } from './inbound-dispatch';
 import { AcpPermissionResponder } from './permission-responder';
+import { AcpPromptTracker, mapPromptFailure } from './prompt-tracking';
 import { onStderrIfAvailable, type AcpTransport } from './transport';
 import type {
   AcpClientCapabilities,
@@ -45,8 +42,6 @@ import type {
 export { buildAcpCapabilities, selectAllowOption, selectRejectOption } from './codec';
 
 const SESSION_NEW_TAG = 'session/new';
-const DEFAULT_NON_JSON_LIMIT = 50;
-const DEFAULT_UNKNOWN_VARIANT_LIMIT = 50;
 
 export interface AcpClientOptions {
   clientInfo: { name: string; version: string };
@@ -77,29 +72,17 @@ export interface AcpClientStats {
   streamErrors: number;
 }
 
-interface PromptTracking {
-  sessionId: string;
-  requestId: number;
-  cancelTimer: NodeJS.Timeout | null;
-  graceTimer: NodeJS.Timeout | null;
-}
-
 export class AcpClient {
   private readonly transport: AcpTransport;
   private readonly options: AcpClientOptions;
   private readonly timeouts: AcpTimeouts;
   private readonly clientCapabilities: AcpClientCapabilities;
-  private readonly nonJsonLimit: number;
-  private readonly unknownVariantLimit: number;
   private readonly unsubscribes: Array<() => void>;
   private readonly peer: JsonRpcPeer;
   private readonly permissionResponder: AcpPermissionResponder;
+  private readonly prompts: AcpPromptTracker;
+  private readonly inbound: AcpInboundDispatcher;
 
-  private readonly activePrompts = new Map<string, PromptTracking>();
-  private readonly updateHandlers = new Set<(update: AcpSessionUpdate) => void>();
-
-  private nonJsonStreak = 0;
-  private unknownVariantStreak = 0;
   private fatalError: AcpError | null = null;
   private closedInfo: AcpExitInfo | null = null;
   private handshake: AcpHandshake | null = null;
@@ -124,16 +107,10 @@ export class AcpClient {
     this.options = options;
     this.timeouts = resolveAcpTimeouts(options.timeouts);
     this.clientCapabilities = normalizeClientCapabilities(options.clientCapabilities);
-    this.nonJsonLimit =
-      options.nonJsonLimit !== undefined && options.nonJsonLimit > 0 ? options.nonJsonLimit : DEFAULT_NON_JSON_LIMIT;
-    this.unknownVariantLimit =
-      options.unknownVariantLimit !== undefined && options.unknownVariantLimit > 0
-        ? options.unknownVariantLimit
-        : DEFAULT_UNKNOWN_VARIANT_LIMIT;
     this.peer = new JsonRpcPeer({
       write: (line) => this.transport.write(line),
-      onPeerRequest: (id, method, params) => this.handlePeerRequest(id, method, params),
-      onNotification: (method, params) => this.handleNotification(method, params),
+      onPeerRequest: (id, method, params) => this.inbound.handlePeerRequest(id, method, params),
+      onNotification: (method, params) => this.inbound.handleNotification(method, params),
       onUnknownResponseId: () => {
         this.statsValue.unknownResponseIds += 1;
       },
@@ -146,8 +123,19 @@ export class AcpClient {
         this.statsValue.latePermissionOutcomes += 1;
       },
     });
+    this.prompts = new AcpPromptTracker(this.peer, this.timeouts.promptMs, this.timeouts.cancelGraceMs, {
+      onExpiry: (sessionId) => this.sessionCancel(sessionId),
+    });
+    this.inbound = new AcpInboundDispatcher({
+      peer: this.peer,
+      stats: this.statsValue,
+      permissionResponder: this.permissionResponder,
+      nonJsonLimit: options.nonJsonLimit,
+      unknownVariantLimit: options.unknownVariantLimit,
+      onFatal: (err) => this.tripFatal(err),
+    });
     this.unsubscribes = [
-      transport.onMessage((line) => this.handleLine(line)),
+      transport.onMessage((line) => this.inbound.handleLine(line)),
       transport.onClose((info) => this.handleTransportClose(info)),
       transport.onError((err) => this.handleTransportError(err)),
       onStderrIfAvailable(transport, (line) => this.handleStderrLine(line)),
@@ -222,21 +210,11 @@ export class AcpClient {
   /** Serial per session: calling again before the previous turn settles → AcpError('protocol-mismatch'). */
   async sessionPrompt(sessionId: string, blocks: AcpContentBlock[]): Promise<AcpTurnResult> {
     this.assertUsable();
-    if (this.activePrompts.has(sessionId)) {
+    if (this.prompts.has(sessionId)) {
       throw new AcpError('protocol-mismatch', `session/prompt already in flight for session ${sessionId}`);
     }
     const { id, promise } = this.peer.request('session/prompt', { sessionId, prompt: blocks });
-    const tracking: PromptTracking = { sessionId, requestId: id, cancelTimer: null, graceTimer: null };
-    this.activePrompts.set(sessionId, tracking);
-    if (this.timeouts.promptMs > 0) {
-      tracking.cancelTimer = setTimeout(() => this.beginCancel(tracking), this.timeouts.promptMs);
-    }
-    return promise
-      .then(
-        (result) => parseTurnResult(result),
-        (err) => this.mapPromptFailure(err),
-      )
-      .finally(() => this.settlePrompt(tracking));
+    return this.prompts.track(sessionId, id, promise.then(parseTurnResult, mapPromptFailure));
   }
 
   /** Fire-and-forget notification; also immediately answers every pending request_permission with outcome 'cancelled' (protocol MUST). */
@@ -247,10 +225,7 @@ export class AcpClient {
 
   /** Sync callbacks; a throwing handler is debug-counted and never breaks the read loop. */
   onUpdate(handler: (update: AcpSessionUpdate) => void): () => void {
-    this.updateHandlers.add(handler);
-    return () => {
-      this.updateHandlers.delete(handler);
-    };
+    return this.inbound.onUpdate(handler);
   }
 
   /** The handler must return an outcome; the client writes the JSON-RPC response. */
@@ -302,18 +277,6 @@ export class AcpClient {
     return new AcpError('transport-closed', err instanceof Error ? err.message : String(err));
   }
 
-  private mapPromptFailure(err: unknown): never {
-    if (err instanceof JsonRpcRequestFailure) {
-      const rpc = { code: err.code, message: err.message };
-      if (err.code === ACP_JSONRPC_ERROR.requestCancelled) {
-        throw new AcpError('cancelled', `session/prompt cancelled by agent: ${err.message}`, { rpc });
-      }
-      throw new AcpError('agent-error', `session/prompt failed: ${err.message}`, { rpc });
-    }
-    if (err instanceof AcpError) throw err;
-    throw new AcpError('transport-closed', err instanceof Error ? err.message : String(err));
-  }
-
   private writeMessage(message: unknown): void {
     this.transport.write(JSON.stringify(message));
   }
@@ -325,121 +288,11 @@ export class AcpClient {
     }
   }
 
-  private beginCancel(tracking: PromptTracking): void {
-    tracking.cancelTimer = null;
-    this.sessionCancel(tracking.sessionId);
-    tracking.graceTimer = setTimeout(() => {
-      tracking.graceTimer = null;
-      this.peer.rejectById(
-        tracking.requestId,
-        new AcpError('cancelled', `session/prompt cancel grace ${this.timeouts.cancelGraceMs}ms elapsed without settle`),
-      );
-    }, this.timeouts.cancelGraceMs);
-  }
-
-  private settlePrompt(tracking: PromptTracking): void {
-    if (tracking.cancelTimer) {
-      clearTimeout(tracking.cancelTimer);
-      tracking.cancelTimer = null;
-    }
-    if (tracking.graceTimer) {
-      clearTimeout(tracking.graceTimer);
-      tracking.graceTimer = null;
-    }
-    this.activePrompts.delete(tracking.sessionId);
-  }
-
   /** Settle every pending request and permission request with `error` / 'cancelled'. */
   private settleEverything(error: AcpError): void {
-    for (const tracking of [...this.activePrompts.values()]) this.settlePrompt(tracking);
+    this.prompts.clearAll();
     this.peer.rejectAll(error);
     this.permissionResponder.cancelAll();
-  }
-
-  // --- inbound handling ---
-
-  private handleLine(line: string): void {
-    const outcome = this.peer.handleLine(line);
-    if (outcome.kind === 'empty') {
-      this.statsValue.emptyLines += 1;
-      return;
-    }
-    if (outcome.kind === 'invalid') {
-      this.registerNonJson(outcome.detail);
-      return;
-    }
-    this.nonJsonStreak = 0;
-  }
-
-  private registerNonJson(detail?: string): void {
-    this.statsValue.nonJsonLines += 1;
-    this.nonJsonStreak += 1;
-    if (this.nonJsonStreak >= this.nonJsonLimit) {
-      this.tripFatal(
-        new AcpError(
-          'protocol-mismatch',
-          `${this.nonJsonStreak} consecutive non-JSON stdout lines (limit ${this.nonJsonLimit})${detail ? `; first: ${detail}` : ''}`,
-          { reason: `${this.nonJsonStreak} 行非 JSON` },
-        ),
-      );
-    }
-  }
-
-  private handleNotification(method: string, params: unknown): void {
-    if (method === 'session/update') {
-      this.handleSessionUpdate(params);
-      return;
-    }
-    if (method === '$/cancel_request') {
-      this.statsValue.cancelRequestNotifications += 1;
-      return;
-    }
-    this.statsValue.unknownNotifications += 1;
-  }
-
-  private handleSessionUpdate(params: unknown): void {
-    const update = (params as { update?: unknown } | null)?.update;
-    if (
-      update === null ||
-      typeof update !== 'object' ||
-      typeof (update as { sessionUpdate?: unknown }).sessionUpdate !== 'string'
-    ) {
-      this.registerNonJson('malformed session/update payload');
-      return;
-    }
-    const variant = (update as { sessionUpdate: string }).sessionUpdate;
-    if (KNOWN_SESSION_UPDATE_VARIANTS.has(variant)) {
-      this.unknownVariantStreak = 0;
-    } else {
-      this.unknownVariantStreak += 1;
-      this.statsValue.unknownVariants += 1;
-    }
-    for (const handler of [...this.updateHandlers]) {
-      try {
-        handler(update as AcpSessionUpdate);
-      } catch {
-        this.statsValue.handlerErrors += 1;
-      }
-    }
-    if (this.unknownVariantStreak >= this.unknownVariantLimit) {
-      this.tripFatal(
-        new AcpError(
-          'protocol-mismatch',
-          `${this.unknownVariantStreak} consecutive unknown sessionUpdate variants (limit ${this.unknownVariantLimit}); last: ${variant}`,
-          { reason: `连续 ${this.unknownVariantStreak} 个未知 sessionUpdate 变体` },
-        ),
-      );
-    }
-  }
-
-  private handlePeerRequest(id: number | string, method: string, params: unknown): void {
-    this.statsValue.peerRequests += 1;
-    if (method === 'session/request_permission') {
-      this.permissionResponder.handleRequest(id, params);
-      return;
-    }
-    this.statsValue.unansweredPeerMethods += 1;
-    this.peer.respondError(id, ACP_JSONRPC_ERROR.methodNotFound, `method not found: ${method}`);
   }
 
   // --- lifecycle edges ---
@@ -486,7 +339,7 @@ export class AcpClient {
     if (info.cancelled) {
       return new AcpError('cancelled', 'agent process closed on the cancel path', { exit: info, stderrTail });
     }
-    if (info.code === 0 && this.activePrompts.size > 0) {
+    if (info.code === 0 && this.prompts.hasActive) {
       return new AcpError('protocol-mismatch', 'agent exited with code 0 while a session/prompt turn is still in flight', {
         reason: 'agent 退出但回合未结束',
       });
