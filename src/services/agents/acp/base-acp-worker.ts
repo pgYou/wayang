@@ -77,6 +77,8 @@ export interface AcpReadiness {
 /** 05 §3 protocol overrides as the worker layer reads them (C2 lands them in WorkerConfig). */
 export interface AcpProtocolOverrides extends Partial<AcpTimeouts> {
   capabilities?: Partial<Pick<AcpCapabilities, 'permissionRequests' | 'toolCalls'>>;
+  /** opencode only: inject the ask-all permission gate (default true). See `AcpProtocolConfig`. */
+  gatePermissions?: boolean;
 }
 
 /** 05 §2 `*-acp` config row fields (C2 lands them in WorkerConfig). */
@@ -163,6 +165,8 @@ export abstract class BaseAcpWorker {
   protected readonly config: WorkerConfig;
   protected readonly state: WorkerState;
   readonly workspaceDir: string;
+  /** Wayang session directory (provider hooks write per-run side files here, e.g. the opencode gate). */
+  protected readonly sessionDir: string;
   protected readonly logger: Logger;
   protected readonly abortController = new AbortController();
   protected _terminalResult: WorkerResult | null = null;
@@ -235,6 +239,7 @@ export abstract class BaseAcpWorker {
     this.ctx = ctx;
     this.config = config;
     this.workspaceDir = workspaceDir;
+    this.sessionDir = sessionDir;
     this.logger = ctx.logger;
     this.skills = skills;
     this.workspaceRef = resolveWorkspaceRef(wayangDirForSessionDir(sessionDir), workspaceDir);

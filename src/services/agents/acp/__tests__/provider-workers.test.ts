@@ -8,9 +8,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { TaskDetail, WorkerConfig } from '@/types/index';
 import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx } from '@/__tests__/helpers';
@@ -164,6 +164,70 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
     mockFind.mockReturnValue('/usr/local/bin/opencode');
     const worker = new ExposedOpenCode(makeProviderConfig('opencode-acp'), tempDir, tempDir, createMockCtx() as any, skills);
     expect(worker.launch(BASE_VIEW)).toMatchObject({ command: 'opencode', args: ['acp'] });
+  });
+
+  // --- Permission gate (measured #25: opencode 2.2.5 defaults are allow-all) ---
+
+  /** Warn messages the mock session logger collected. */
+  function warnMessages(ctx: ReturnType<typeof createMockCtx>): string[] {
+    return (ctx.logger.warn as unknown as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[1] ?? ''));
+  }
+
+  it('injects the ask-all permission gate by default: OPENCODE_CONFIG → sessionDir gate file (stale content overwritten)', () => {
+    mockFind.mockReturnValue('/usr/local/bin/opencode');
+    const worker = new ExposedOpenCode(makeProviderConfig('opencode-acp'), tempDir, tempDir, createMockCtx() as any, skills);
+    // A stale gate file from an earlier launch must be replaced, not trusted.
+    writeFileSync(join(tempDir, 'opencode-acp-gate.json'), '{"permissions":[]}', 'utf8');
+    const launch = worker.launch(BASE_VIEW);
+    const gatePath = resolve(tempDir, 'opencode-acp-gate.json');
+    expect(launch.env.OPENCODE_CONFIG).toBe(gatePath);
+    expect(JSON.parse(readFileSync(gatePath, 'utf8'))).toEqual({
+      permissions: [{ action: '*', resource: '*', effect: 'ask' }],
+    });
+  });
+
+  it('protocol.gatePermissions=false skips the injection and warns once', () => {
+    mockFind.mockReturnValue('/usr/local/bin/opencode');
+    const ctx = createMockCtx();
+    const worker = new ExposedOpenCode(
+      makeProviderConfig('opencode-acp', { protocol: { gatePermissions: false } }),
+      tempDir,
+      tempDir,
+      ctx as any,
+      skills,
+    );
+    const launch = worker.launch(BASE_VIEW);
+    expect(launch.env.OPENCODE_CONFIG).toBeUndefined();
+    expect(existsSync(join(tempDir, 'opencode-acp-gate.json'))).toBe(false);
+    const warns = warnMessages(ctx).filter((m) => m.includes('bypass the wayang permission gate'));
+    expect(warns).toHaveLength(1);
+  });
+
+  it('keeps an existing OPENCODE_CONFIG from the parent env (no override, warn)', () => {
+    mockFind.mockReturnValue('/usr/local/bin/opencode');
+    const ctx = createMockCtx();
+    const worker = new ExposedOpenCode(makeProviderConfig('opencode-acp'), tempDir, tempDir, ctx as any, skills);
+    const userConfig = '/home/test-user/opencode.json';
+    const launch = worker.launch({ ...BASE_VIEW, env: { ...BASE_VIEW.env, OPENCODE_CONFIG: userConfig } });
+    expect(launch.env.OPENCODE_CONFIG).toBe(userConfig);
+    expect(existsSync(join(tempDir, 'opencode-acp-gate.json'))).toBe(false);
+    expect(warnMessages(ctx).some((m) => m.includes('OPENCODE_CONFIG already set'))).toBe(true);
+  });
+
+  it('permissionMode "agent" skips the gate (the agent owns its permissions)', () => {
+    mockFind.mockReturnValue('/usr/local/bin/opencode');
+    const ctx = createMockCtx();
+    const worker = new ExposedOpenCode(
+      makeProviderConfig('opencode-acp', { permissionMode: 'agent' }),
+      tempDir,
+      tempDir,
+      ctx as any,
+      skills,
+    );
+    const launch = worker.launch(BASE_VIEW);
+    expect(launch.env.OPENCODE_CONFIG).toBeUndefined();
+    expect(existsSync(join(tempDir, 'opencode-acp-gate.json'))).toBe(false);
+    expect(warnMessages(ctx).some((m) => m.includes('permission gate not injected'))).toBe(true);
   });
 
   it('stopPolicy: 5000 / 2000 / trustUpdatesAfterCancel FALSE (conservative drop)', () => {

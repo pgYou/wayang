@@ -56,20 +56,28 @@ export const ACP_JSONRPC_ERROR = {
   internal: -32603,
 } as const;
 
+/** The timeout fields `resolveAcpTimeouts` reads; anything else in `partial` is ignored. */
+const ACP_TIMEOUT_KEYS = ['handshakeMs', 'sessionNewMs', 'promptMs', 'permissionMs', 'cancelGraceMs', 'sigtermWaitMs'] as const;
+
 /**
  * Merge a partial timeout matrix over the defaults and validate it:
  * `promptMs` must be >= 0, every other field > 0, all finite numbers.
  * Violations throw `AcpError('protocol-mismatch')`.
+ *
+ * Callers pass whole `AcpProtocolConfig` objects (which also carry
+ * non-timeout fields such as `capabilities` / `gatePermissions`); only the
+ * six timeout fields above are read — a non-timeout key must never leak into
+ * the merged matrix (it would fail the numeric validation below).
  */
 export function resolveAcpTimeouts(partial?: Partial<AcpTimeouts>): AcpTimeouts {
   const merged: AcpTimeouts = { ...DEFAULT_ACP_TIMEOUTS };
   if (partial) {
-    for (const key of Object.keys(partial) as (keyof AcpTimeouts)[]) {
+    for (const key of ACP_TIMEOUT_KEYS) {
       const value = partial[key];
       if (value !== undefined) merged[key] = value;
     }
   }
-  for (const key of Object.keys(merged) as (keyof AcpTimeouts)[]) {
+  for (const key of ACP_TIMEOUT_KEYS) {
     const value = merged[key];
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       throw new AcpError('protocol-mismatch', `invalid AcpTimeouts.${key}: ${String(value)}`);

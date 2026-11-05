@@ -63,6 +63,16 @@ export interface AcpProtocolConfig extends Partial<AcpTimeouts> {
    * honest values — no downgrade assumptions (05 §3).
    */
   capabilities?: Partial<Pick<AcpCapabilities, 'permissionRequests' | 'toolCalls'>>;
+  /**
+   * opencode only (measured 2026-11-05, opencode 2.2.5): the agent's default
+   * permission rules are allow-all, so `opencode acp` never sends
+   * session/request_permission and the wayang permission bridge is inert.
+   * `true` (default) makes the worker inject an ask-all permission matrix via
+   * the child env's `OPENCODE_CONFIG`; `false` launches the agent untouched —
+   * its tool operations then bypass the wayang permission gate. Inert for
+   * codebuddy-acp.
+   */
+  gatePermissions?: boolean;
 }
 
 /** Third-party worker configuration. */
@@ -309,6 +319,10 @@ function validateWorkerEntry(id: string, worker: WorkerConfig): string | null {
             return `${at}.protocol.capabilities.${key} must be a boolean (got ${JSON.stringify(value)})`;
           }
         }
+      }
+      const gatePermissions = record.gatePermissions;
+      if (gatePermissions !== undefined && typeof gatePermissions !== 'boolean') {
+        return `${at}.protocol.gatePermissions must be a boolean (got ${JSON.stringify(gatePermissions)})`;
       }
     }
   }
