@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import prompts from 'prompts';
 import type { WayangConfig, WorkerConfig } from './types/index';
-import { validateConfig } from './types/index';
+import { validateConfig, collectWorkerWarnings } from './types/index';
 import { warnDeprecatedPermissionKeys } from './infra/permission/permission-config';
 
 /** Fill missing apiKeys from environment variables. */
@@ -146,6 +146,11 @@ async function buildConfigInteractive(): Promise<WayangConfig> {
     config.workers = { 'claude-code': workerConfig };
   }
 
+  // ACP workers are configured by editing the config file, not onboarded —
+  // one pointer so the option is discoverable (05 §7). Default generated
+  // content is unchanged.
+  console.log('  Tip: ACP workers (codebuddy-acp / opencode-acp) can be added later under "workers" in the config file.');
+
   return config;
 }
 
@@ -207,6 +212,12 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
   // `mergeSensitiveDirs`), and a config that uses it gets one pointer to the
   // new key per process — warn only when the legacy key is really populated.
   warnDeprecatedPermissionKeys(config.permission, (message) => console.warn(`Warning: ${message}`));
+  // `*-acp` rows accept `maxTurns`/`cliPath` for backwards compatibility, but
+  // neither has any effect there (05 §4) — surface that once at load instead
+  // of failing configs that used to work.
+  for (const warning of collectWorkerWarnings(config)) {
+    console.warn(`Warning: ${warning}`);
+  }
 
   const err = validateConfig(config);
   if (err) {

@@ -5,7 +5,7 @@
  * not present in the config file. This module provides canonical values.
  */
 
-import type { WorkerConfig } from '@/types/config';
+import type { WorkerConfig, WorkerType } from '@/types/config';
 
 /** Built-in puppet worker metadata. */
 export const PUPPET_DEFAULTS = {
@@ -18,6 +18,19 @@ export const PUPPET_DEFAULTS = {
   /** Capability tags. */
   capabilities: ['code', 'debug', 'refactor', 'search', 'file-io', 'web-search', 'shell'],
 } as const;
+
+/**
+ * Provider-default emojis for `*-acp` workers (TUI item of the C2 wiring):
+ * shown when the config row declares no `emoji`, so an ACP worker is still
+ * distinguishable at a glance instead of collapsing into the generic 🤖.
+ * A configured `emoji` always wins. Provisional picks — not prescribed by
+ * the design booklets; adjust with the config, not here, once real usage
+ * settles on better glyphs.
+ */
+const ACP_PROVIDER_EMOJIS: Partial<Record<WorkerType, string>> = {
+  'codebuddy-acp': '\u{1F427}', // 🐧 Tencent CodeBuddy
+  'opencode-acp': '\u{1F989}', // 🦉 OpenCode (experimental)
+};
 
 /**
  * Resolve display metadata for a worker type.
@@ -34,6 +47,7 @@ export function getWorkerMeta(
   const config = workerConfigs?.[type];
   return {
     label: type,
-    emoji: config?.emoji ?? '\u{1F916}', // 🤖 fallback
+    // Configured emoji → provider default (ACP rows) → generic fallback.
+    emoji: config?.emoji ?? (config ? ACP_PROVIDER_EMOJIS[config.type] : undefined) ?? '\u{1F916}', // 🤖 fallback
   };
 }

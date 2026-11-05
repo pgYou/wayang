@@ -5,6 +5,8 @@
 import type { IWorkerInstance, TaskDetail, WorkerResult } from '@/types/index';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
+import { CodebuddyAcpWorker } from '@/services/agents/acp/codebuddy-acp-worker';
+import { OpenCodeAcpWorker } from '@/services/agents/acp/opencode-acp-worker';
 import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { formatLlmError } from '@/utils/llm-error';
 import { generateId } from '@/utils/id';
@@ -138,8 +140,20 @@ export class WorkerDispatchEngine extends WorkerWiringEngine {
     switch (config.type) {
       case 'claude-code':
         return new ClaudeCodeWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
-      default:
-        throw new Error(`Unsupported worker type: "${config.type}"`);
+      // ACP workers: same constructor shape as ClaudeCodeWorker (freeze §7 ①).
+      // Construction never spawns — a missing CLI fails fast in run() (C1
+      // preflight), so the createWorker stage cannot crash on it.
+      case 'codebuddy-acp':
+        return new CodebuddyAcpWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
+      case 'opencode-acp':
+        return new OpenCodeAcpWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
+      default: {
+        // Exhaustiveness: a new WORKER_TYPES entry without a case above fails
+        // lint here (05 §1). The runtime guard stays for configs that never
+        // went through validateConfig (engine used directly in tests).
+        const _exhaustive: never = config.type;
+        throw new Error(`Unsupported worker type: "${_exhaustive}"`);
+      }
     }
   }
 
