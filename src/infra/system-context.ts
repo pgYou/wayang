@@ -27,11 +27,14 @@ export class SystemContext {
     this.abortController = new AbortController();
     this.hooks = new LifecycleHooks();
 
-    // The sink writes <sessionDir>/wayang.log from a pino transport worker
-    // thread that keeps running (and initially even opens the file) AFTER
-    // this constructor returns. SystemContext owns that sink so callers get
-    // an awaitable teardown — see closeLogger().
-    this.logSink = createFileLogger(this.logLevel, `${sessionDir}/wayang.log`);
+    // The sink writes <sessionDir>/wayang.log through pino-pretty on the main
+    // thread, rotating by size (config `logging`, defaults 10MB × 3 backups —
+    // issue #52). SystemContext owns that sink so callers get an awaitable
+    // teardown — see closeLogger().
+    this.logSink = createFileLogger(this.logLevel, `${sessionDir}/wayang.log`, {
+      maxFileSizeBytes: config.logging?.maxFileSizeBytes,
+      maxFiles: config.logging?.maxFiles,
+    });
     this.logger = this.logSink.logger.child({
       session: sessionId,
     });

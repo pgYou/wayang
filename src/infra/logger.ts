@@ -1,93 +1,70 @@
 import pino from 'pino';
-import { EventEmitter } from 'node:events';
+import pinoPretty from 'pino-pretty';
+import { RotatingFileSink } from './rotating-file-sink';
 
 export type Logger = pino.Logger;
 
-/**
- * Minimal surface of a pino transport (thread-stream) that we rely on to
- * close it. Declared structurally so we do not depend on transitive typings.
- */
-interface TransportStream extends EventEmitter {
-  write(msg: string): boolean;
-  /** Flush buffered data and signal the worker that no more is coming. */
-  end(): void;
-  /** True once the stream errored out and the worker was terminated. */
-  readonly destroyed: boolean;
-  /** True once the underlying worker thread has exited. */
-  readonly closed: boolean;
+/** Default rotation policy for the session log (issue #52): 10MB × 3 backups. */
+export const DEFAULT_LOG_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_LOG_MAX_FILES = 3;
+
+/** Rotation knobs for {@link createFileLogger}; defaults above when omitted. */
+export interface FileLoggerOptions {
+  /** Max bytes the active log file may reach before rotation. */
+  maxFileSizeBytes?: number;
+  /** Number of rotated files (`wayang.log.1` … `.N`) to retain. */
+  maxFiles?: number;
 }
 
 /** A logger plus an awaitable, idempotent close path for its file sink. */
 export interface FileLogger {
   logger: Logger;
   /**
-   * Flush and close the file sink; resolves once the transport worker thread
-   * has exited. After `await close()` resolves, this logger will never write
-   * to the log file's directory again. Idempotent: repeated calls return the
-   * same promise. Log calls made after (or racing with) close are safely
-   * ignored — they never throw and never crash the caller.
+   * Flush and close the file sink; resolves once every accepted line is on
+   * disk and the sink will never write to the log file's directory again.
+   * Idempotent: repeated calls return the same promise. Log calls made after
+   * (or racing with) close are safely ignored — they never throw and never
+   * crash the caller.
    */
   close(): Promise<void>;
 }
 
 /**
- * End a pino transport's worker thread and resolve once it has fully exited.
+ * Create a logger that pretty-prints to a size-rotated file.
  *
- * Relies on thread-stream semantics:
- * - `end()` flushes everything buffered, then blocks until the worker has
- *   consumed it and acknowledged the end signal. The worker opens the
- *   destination file during startup (before it can consume anything), so by
- *   the time end() completes the file has been created — or its open failed
- *   and the stream is already destroyed.
- * - After processing the end signal the worker exits by itself, and 'close'
- *   fires on the main thread once the thread is gone.
- * - When an async flush is still in flight, the real end is deferred to the
- *   flush tail, so we await 'close' instead of trusting end() to block.
- * - Writes made after end() emit 'error' asynchronously. pino child loggers
- *   copy their level at creation time and cannot be silenced retroactively,
- *   so a no-op 'error' listener is the only reliable way to make late
- *   writes harmless instead of fatal ("Unhandled 'error' event").
+ * pino-pretty runs on the MAIN thread here (not in a pino transport worker):
+ * its destination is our {@link RotatingFileSink}, the only thing that touches
+ * the log directory. Appends are synchronous, so closing is trivial — end the
+ * sink, and once its 'close' fires (autoDestroy after the final sync write)
+ * the file is fully quiescent. Writes racing with or landing after close hit
+ * an ended/destroyed stream: the no-op 'error' listeners below swallow them
+ * instead of letting them crash the caller (the contract FileLogger documents).
  */
-function closeTransport(transport: TransportStream): Promise<void> {
-  return new Promise<void>((resolve) => {
-    // Must be attached before end(): writes racing with close (e.g. from
-    // child loggers held by other components) land here and are dropped.
-    transport.on('error', () => {
-      /* late writes after close are ignored on purpose */
-    });
-    if (transport.closed || transport.destroyed) {
-      resolve();
-      return;
-    }
-    transport.once('close', () => resolve());
-    try {
-      transport.end();
-    } catch {
-      // A wedged worker makes end() throw; the stream then destroys itself
-      // and still emits 'close'. Teardown must never break the exit flow.
-    }
+export function createFileLogger(
+  level: string,
+  logFilePath: string,
+  options?: FileLoggerOptions,
+): FileLogger {
+  const sink = new RotatingFileSink(logFilePath, {
+    maxFileSizeBytes: options?.maxFileSizeBytes ?? DEFAULT_LOG_MAX_FILE_SIZE_BYTES,
+    maxFiles: options?.maxFiles ?? DEFAULT_LOG_MAX_FILES,
   });
-}
 
-/**
- * Create a logger that pretty-prints to a file via a pino transport worker
- * thread, and expose an awaitable close for that sink.
- *
- * The transport opens the destination file asynchronously from its worker
- * thread (even at level 'silent', with no log line ever written). Callers
- * that need the directory to be quiescent — e.g. before deleting it — must
- * `await close()` first.
- */
-export function createFileLogger(level: string, logFilePath: string): FileLogger {
-  const transport: TransportStream = pino.transport({
-    target: 'pino-pretty',
-    options: {
-      destination: logFilePath,
-      colorize: false,
-      singleLine: true,
-      ignore: 'pid,hostname',
-      translateTime: 'SYS:HH:MM:ss.l',
-    },
+  const pretty = pinoPretty({
+    colorize: false,
+    singleLine: true,
+    ignore: 'pid,hostname',
+    translateTime: 'SYS:HH:MM:ss.l',
+    destination: sink,
+  });
+
+  // Late writes after close land on an ended stream and surface as an
+  // asynchronous 'error' — ignore them on purpose (see FileLogger.close).
+  pretty.on('error', () => {
+    /* late writes after close are ignored on purpose */
+  });
+  sink.on('error', () => {
+    /* append failures are handled inside the sink */
   });
 
   const logger = pino(
@@ -98,13 +75,48 @@ export function createFileLogger(level: string, logFilePath: string): FileLogger
         error: pino.stdSerializers.err,
       },
     },
-    transport,
+    pretty,
   );
 
   let closePromise: Promise<void> | undefined;
   return {
     logger,
-    close: () => (closePromise ??= closeTransport(transport)),
+    close: () =>
+      (closePromise ??= new Promise<void>((resolve) => {
+        let settled = false;
+        const settle = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        const endSink = () => {
+          sink.once('close', settle);
+          try {
+            sink.end();
+          } catch {
+            settle();
+          }
+        };
+        // Drain the pretty pipe first: its 'finish' fires once every accepted
+        // line has been handed down to the sink, so ending the sink right
+        // after cannot drop a line that was logged before close(). The sink's
+        // writes are synchronous, so its 'close' (autoDestroy after 'finish')
+        // means the file is fully on disk. The pump's own end propagation may
+        // end the sink first — a second end() throws and settles instead of
+        // hanging shutdown.
+        if (pretty.destroyed || pretty.writableEnded) {
+          endSink();
+          return;
+        }
+        pretty.once('finish', endSink);
+        pretty.once('error', endSink);
+        try {
+          pretty.end();
+        } catch {
+          endSink();
+        }
+      })),
   };
 }
 
