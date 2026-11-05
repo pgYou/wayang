@@ -25,7 +25,7 @@ import type { WorkerInquiryResolution } from './types';
 /** How long a worker waits for a controller answer before continuing on its own. */
 const INQUIRY_TIMEOUT_MS = 300_000;
 
-export class WorkerWiringEngine extends WorkerTrackingEngine {
+export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
   /**
    * Wire Wayang tools + permission middleware + signal context onto a worker.
    * Shared between fresh-spawn and idle-reuse paths.

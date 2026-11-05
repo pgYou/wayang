@@ -14,16 +14,14 @@ import type { WorkspaceRef } from '@/infra/workspace-registry';
 import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { TaskEngineBase, PUPPET_WORKER_TYPE } from './engine-base';
 
-/**
- * Methods provided by the dispatch layer (a subclass): scheduling and abort
- * are implemented further down the engine chain.
- */
-export interface TaskLifecycleEngine {
-  scheduleNext(): void;
-  abortByTaskId(taskId: string): void;
-}
+export abstract class TaskLifecycleEngine extends TaskEngineBase {
+  /**
+   * Methods provided by the dispatch layer (a subclass): scheduling and abort
+   * are implemented further down the engine chain.
+   */
+  abstract scheduleNext(): void;
+  abstract abortByTaskId(taskId: string): void;
 
-export class TaskLifecycleEngine extends TaskEngineBase {
   // ---------------------------------------------------------------------------
   // Task management
   // ---------------------------------------------------------------------------

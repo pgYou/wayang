@@ -3,7 +3,7 @@
 // Extends ClaudeWorkerPermissionGate.
 
 import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { EEntryType, ESystemSubtype } from '@/types/index';
+import { EEntryType } from '@/types/index';
 import type { AssistantEntry, ConversationEntry, ToolCallRecord } from '@/types/conversation';
 import { toolUseBlockToRecord, toolResultBlockToRecord, type SdkToolUseBlock, type SdkToolResultBlock } from '../utils/claude-tool-records';
 import { applyTurnEnvelope } from '../utils/entry-envelope';

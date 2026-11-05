@@ -5,9 +5,6 @@
 import type {
   ActiveWorkerInfo,
   ConversationEntry,
-  IWorkerInstance,
-  NewSignalInput,
-  SignalTurnLineage,
   TaskDetail,
   WorkerLiveStatus,
 } from '@/types/index';
@@ -19,12 +16,7 @@ import type { WorkerMessageDelivery } from './types';
 import { normalizeWorkspacePath } from '@/infra/workspace-registry';
 import { TaskLifecycleEngine } from './task-lifecycle';
 
-/** Method provided by the dispatch layer (a subclass). */
-export interface WorkerTrackingEngine {
-  scheduleNext(): void;
-}
-
-export class WorkerTrackingEngine extends TaskLifecycleEngine {
+export abstract class WorkerTrackingEngine extends TaskLifecycleEngine {
   // ---------------------------------------------------------------------------
   // Worker queries
   // ---------------------------------------------------------------------------
