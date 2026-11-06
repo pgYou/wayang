@@ -2,11 +2,11 @@
 
 import { classifyRedirections, tokenizeShellLite } from '@/services/tools/shell-lexer';
 import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
-import { segmentAccess, unverifiedReadOnlyCommand } from './bash-classification';
+import { segmentAccess, unanalyzedInnerCommand, unverifiedReadOnlyCommand } from './bash-classification';
 import { isDangerousCommandLine } from './bash-head';
 import { commandAccess, extractPathCandidates, type BashCandidate } from './bash-paths';
 import { expandHome, expandHomeVars } from './home-expansion';
-import { evaluateShellScripts } from './shell-script';
+import { evaluateShellScripts, unanalyzedScriptFile } from './shell-script';
 import { evaluateSubstitutions } from './substitutions';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
@@ -59,17 +59,21 @@ function fallbackSensitiveHit(
  * by these same rules (see `evaluateShellScripts`) → dynamic constructs (a
  * command substitution that is not read-only, an output redirection into a real
  * file, a command the lexer cannot parse) → the read-only-unverified
- * escalation (a table command that failed its deferred condition) → remaining
- * `ask` candidates (a sensitive ask first, then the ordinary ones) → allow.
+ * escalation (a table command that failed its deferred condition) → the #51
+ * fail-closed tier for shapes carrying an unanalyzed inner command (see
+ * `unanalyzedInnerCommand` / `unanalyzedScriptFile`) → remaining `ask`
+ * candidates (a sensitive ask first, then the ordinary ones) → allow.
  * A hard refusal therefore outranks the destructive-command heuristic, and a
  * sensitive `ask` carries its hit into the approval request.
  *
  * Fallback when the command yields NO path candidate (`ls -la`, `npm test`,
  * `sed -n 1,10p src/cli.ts`): there is nothing for the policy to judge, so the
  * historic rule applies — a dangerous command still asks, anything else runs.
- * The one exception is the read-only-unverified escalation above: a table
- * command that failed its deferred condition asks precisely because the
- * table's "this only reads" promise is what could not be verified.
+ * The exceptions are the two fail-closed escalations above: a table command
+ * that failed its deferred condition asks because its "this only reads"
+ * promise could not be verified, and a #51 shape asks because an inner command
+ * it runs was never analyzed (`xargs`, `find -exec`, `eval`, `cd && ...`, a
+ * script file, a compound keyword) — neither may rest on a silent allow.
  * Relative spellings are never candidates, so the sensitive list cannot see
  * them; they are confined by the task workspace (the shell's cwd), as before.
  *
@@ -270,6 +274,25 @@ export function evaluateBashCommand(
       // Never audited as a read: read-only-ness is exactly what failed to
       // verify. A candidate-proven write keeps its direction.
       access: lineAccess === 'write' ? 'write' : 'unknown',
+    };
+  }
+
+  // #51 fail-closed fallback: shapes that carry an inner command this gate
+  // never analyzes (xargs, find -exec / -execdir / -ok, eval, cd && ..., a
+  // script file, a compound shell keyword). Their outer word yields no path
+  // candidate, so they used to fall through to `allow (no-path)` even though
+  // an unjudged command runs inside. No parser or recursion is added — the
+  // shape alone escalates, and the reason names it. The tiers above keep their
+  // priority (a sensitive hit still names its entry, a real path still asks,
+  // read-only-unverified keeps its own reason); only what would otherwise be
+  // an allow becomes an ask, with no `askPaths` (not a one-path decision).
+  const innerShape = unanalyzedInnerCommand(segments) ?? unanalyzedScriptFile(segments);
+  if (innerShape !== undefined) {
+    return {
+      decision: 'ask',
+      matchedRule: 'dynamic-shell',
+      reason: `${innerShape} runs an inner command this gate does not analyze — controller approval is required (fail-closed, issue #51)`,
+      access: lineAccess,
     };
   }
 
