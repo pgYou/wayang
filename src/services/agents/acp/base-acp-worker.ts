@@ -40,8 +40,9 @@ import { type AcpTimeouts, type AcpLaunchConfig } from '@/services/acp/config';
 import type { AcpCapabilities, AcpHandshake, AcpPermissionOutcome, AcpPermissionRequest } from '@/services/acp/types';
 import { buildAcpCapabilities } from '@/services/acp/client';
 import { createAcpToolAccumulator, type AcpToolAccumulator } from './event-mapper';
-import { createAcpPermissionBridge, type AcpDenialSource, type AcpPermissionAnswer } from './permission-bridge';
+import { createAcpPermissionBridge, type AcpDenialInfo, type AcpPermissionAnswer } from './permission-bridge';
 import { AcpTurnWriter } from './acp-turn-writer';
+import { classifyTurnEnd, denialKey, resetTurnGuard, sanitizeTarget, turnEndErrorText, type TurnDenial, type TurnGuardState } from './turn-attribution';
 
 // --- Hook types (frozen §2 / 02 §2) ---
 
@@ -182,13 +183,14 @@ export abstract class BaseAcpWorker {
   // --- Permission plumbing (same shape as ClaudeCodeWorker.permissionHandler) ---
   protected readonly _pendingPermissions = new BlockingRequestMap<AcpPermissionAnswer>();
   /**
-   * Source-tagged permission refusals in the CURRENT turn (#56): the run
-   * layer resets this at every turn boundary and reads it when a turn ends
-   * 'cancelled'. A denial means the user/policy refused or the approval timed
-   * out — not that the run aborted. Kept in arrival order; denialFailureError
-   * applies the source priority when a turn holds several.
+   * Structured permission refusals in the CURRENT turn (#56): the run layer
+   * takes and clears this ledger at every turn end. A denial means the
+   * user/policy refused or the approval timed out — not that the run aborted.
+   * Kept in arrival order.
    */
-  protected _turnDenials: Array<{ source: AcpDenialSource; toolName: string }> = [];
+  protected _turnDenials: TurnDenial[] = [];
+  /** Turn-loop guard (#56): reset at run start, advanced once per finished turn. */
+  protected _turnGuard: TurnGuardState = resetTurnGuard(0);
   readonly permissionHandler: PermissionMiddlewareResult = {
     resolvePermission: (requestId: string, approved: boolean, reason?: string) =>
       this._pendingPermissions.resolve(requestId, { approved, reason }),
@@ -280,40 +282,43 @@ export abstract class BaseAcpWorker {
         logger: this.logger,
         provider: this.config.type,
         permissionMs: acpCtx.permissionMs,
-        onDenial: (source, toolName) => this.notePermissionDenial(source, toolName),
+        onDenial: (info) => this.notePermissionDenial(info),
       },
       this._pendingPermissions,
     )(req);
   }
 
-  /** Bridge callback (#56): record a source-tagged permission refusal in the current turn. */
-  protected notePermissionDenial(source: AcpDenialSource, toolName: string): void {
-    this._turnDenials.push({ source, toolName });
+  /** Bridge callback (#56): record one structured refusal in the current turn. */
+  protected notePermissionDenial(info: AcpDenialInfo): void {
+    const sanitizedTarget = sanitizeTarget(info.target, { workspace: this.workspaceDir });
+    const key = denialKey({ source: info.source, toolName: info.toolName, sanitizedTarget });
+    this._turnDenials.push({
+      source: info.source,
+      toolName: info.toolName,
+      reason: info.reason,
+      sanitizedTarget,
+      key,
+      injectable: info.injectable ?? (info.source !== 'controller'),
+    });
+  }
+
+  /** Take and clear the current turn's refusal ledger (#56). */
+  protected takeTurnDenials(): TurnDenial[] {
+    const denials = this._turnDenials;
+    this._turnDenials = [];
+    return denials;
   }
 
   /**
-   * Failure wording for a denial-induced 'cancelled' turn (#56), or null when
-   * the turn had no refusal (a real cancel/abort → 'Aborted'). When a turn
-   * holds several refusals, the FIRST source in the priority order wins:
-   * policy > timeout > controller. The tool name comes from the first event
-   * of that winning source.
+   * Compatibility facade (#56): the three denial wordings now come from
+   * turnEndErrorText, so there is a single source of truth. Returns null when
+   * the current turn holds no refusal (a real cancel/abort → 'Aborted').
    */
   protected denialFailureError(): string | null {
     const denials = this._turnDenials;
     if (denials.length === 0) return null;
-    const sources = new Set(denials.map((d) => d.source));
-    const source: AcpDenialSource = sources.has('policy')
-      ? 'policy'
-      : sources.has('timeout')
-        ? 'timeout'
-        : 'controller';
-    const toolName = denials.find((d) => d.source === source)?.toolName ?? denials[0].toolName;
-    const wording: Record<AcpDenialSource, string> = {
-      policy: `Permission denied by policy: ${toolName}`,
-      timeout: `Permission request timed out: ${toolName}`,
-      controller: `Permission denied by user: ${toolName}`,
-    };
-    return wording[source];
+    const category = classifyTurnEnd({ stopReason: 'cancelled', cancelFact: null, denials, hasQueuedMessages: false });
+    return turnEndErrorText(category, this._turnGuard, denials) || null;
   }
 
   /** 3) Error normalization: fold a phase failure into an AcpError. Default: AcpErrors pass, everything else is agent-error. */

@@ -49,6 +49,8 @@ export interface AcpPermissionAnswer {
 
 /** Why a turn was refused (#56): the source that decides the failure wording. */
 export type AcpDenialSource = 'policy' | 'timeout' | 'controller';
+/** Raw refusal fields (#56); BASE assembles the structured TurnDenial. */
+export interface AcpDenialInfo { source: AcpDenialSource; toolName: string; reason: string; target: string; matchedRule?: string; injectable?: boolean }
 
 /** Everything the bridge needs, injected by BaseAcpWorker (which got it from the engine). */
 export interface AcpPermissionBridgeDeps {
@@ -73,14 +75,12 @@ export interface AcpPermissionBridgeDeps {
   /** Wait bound for a controller answer. */
   permissionMs?: number;
   /**
-   * Called when a permission is refused in the CURRENT turn (#56), tagged by
-   * source: 'policy' (the bridge's own hard deny), 'timeout' (approval wait
-   * expired), or 'controller' (the user actively denied). An 'aborted' settle
-   * (run teardown) is NOT a denial and never fires this. The run layer records
-   * these as source-tagged events to map a 'cancelled' turn to the right
-   * failure reason instead of a blanket 'Aborted'.
+   * Called when a permission is refused in the CURRENT turn (#56) with the raw
+   * { source, toolName, reason, target, matchedRule } fields; BASE assembles
+   * the structured TurnDenial (sanitizedTarget/key/injectable). An 'aborted'
+   * settle (run teardown) is NOT a denial and never fires this.
    */
-  onDenial?: (source: AcpDenialSource, toolName: string) => void;
+  onDenial?: (info: AcpDenialInfo) => void;
 }
 
 /** What an `ask` carries into the signal payload and the audit record. */
@@ -270,10 +270,10 @@ export function createAcpPermissionBridge(
   const audit = (entry: Parameters<typeof recordPermissionAudit>[1]) =>
     recordPermissionAudit(deps.logger, { ...entry, transport: 'acp', provider: deps.provider });
 
-  /** Emit a source-tagged refusal (#56). An 'aborted' settle is run teardown, not a denial. */
-  const emitWaitDenial = (reason: string | undefined, toolName: string): void => {
+  /** Emit a structured refusal (#56). An 'aborted' settle is run teardown, not a denial. */
+  const emitWaitDenial = (reason: string | undefined, toolName: string, target: string, matchedRule?: string): void => {
     const source = denialSource(reason);
-    if (source !== 'aborted') deps.onDenial?.(source, toolName);
+    if (source !== 'aborted') deps.onDenial?.({ source, toolName, reason: reason ?? '', target, matchedRule });
   };
 
   const baseAuditFields = (toolName: string, snapshot: AcpToolSnapshot, classification: Classification) => ({
@@ -301,6 +301,7 @@ export function createAcpPermissionBridge(
     const snapshot = deps.accumulator.upsert(req.toolCall);
     const toolName = bridgeToolName(snapshot);
     const classification = classifyAcpToolCall(snapshot);
+    const denialTarget = classification.type === 'policy' ? (classification.command ?? classification.path ?? '<unspecified>') : (pathFromSnapshot(snapshot) ?? '<unspecified>');
     const base = baseAuditFields(toolName, snapshot, classification);
 
     // Helper: pick an outcome by option KIND (never by order, never by optionId).
@@ -382,7 +383,7 @@ export function createAcpPermissionBridge(
           matchedEntry: verdict.matchedEntry,
           matchedSource: verdict.matchedSource,
         });
-        deps.onDenial?.('policy', toolName);
+        deps.onDenial?.({ source: 'policy', toolName, reason: verdict.reason ?? 'policy hard-deny', target: denialTarget, matchedRule: verdict.matchedRule });
         return outcomeFor('reject');
       }
 
@@ -454,7 +455,7 @@ export function createAcpPermissionBridge(
         }
         return outcomeFor('allow');
       }
-      emitWaitDenial(result.reason, toolName);
+      emitWaitDenial(result.reason, toolName, denialTarget, ask.matchedRule);
       return outcomeFor('reject');
     }
 
@@ -490,7 +491,7 @@ export function createAcpPermissionBridge(
       ...(!result.approved && { source: denialSource(result.reason) }),
     });
 
-    if (!result.approved) emitWaitDenial(result.reason, toolName);
+    if (!result.approved) emitWaitDenial(result.reason, toolName, denialTarget, ask.matchedRule);
     return result.approved ? outcomeFor('allow') : outcomeFor('reject');
   };
 }

@@ -32,12 +32,19 @@ import type { SignalQueue } from '@/services/signal/signal-queue';
 import { BaseAcpWorker, findExecutableOnPath, type AcpPermissionContext, type AcpWorkerEnvView } from './base-acp-worker';
 import { createAcpToolAccumulator, mapSessionUpdate, snapshotToToolCallRecord, type AcpMappedEvent } from './event-mapper';
 import { ACP_PERMISSION_TIMEOUT_MS } from './permission-bridge';
+import { advanceGuard, classifyTurnEnd, decideNextAction, resetTurnGuard, type CancelFact } from './turn-attribution';
+import { buildReissuePrompt, joinControllerMessages, makeInjectedEntry, makeTerminalResult } from './acp-turn-prompt';
 import pkg from '@/../package.json';
 
 /** Progress debounce (02 §5): aligned with the claude-code worker's 500ms. */
 const PROGRESS_DEBOUNCE_MS = 500;
 
 export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInstance {
+  /** Per-turn work counters feeding the guard's progressSig (#56). */
+  private _turnTextChars = 0;
+  private _turnToolCalls = 0;
+  private _turnToolResults = 0;
+
   async run(
     task: TaskDetail & { workerId: string },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- IWorkerInstance.run's tools param (public interface)
@@ -56,6 +63,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     this._sawToolCall = false;
     this._sawPermissionRequest = false;
     this._turnDenials = [];
+    this._turnGuard = resetTurnGuard(Date.now());
     this._accumulator = createAcpToolAccumulator();
     this._turnWriter.reset();
 
@@ -152,6 +160,13 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
             transport: 'acp',
             provider: this.config.type,
           });
+          this.notePermissionDenial({
+            source: 'policy',
+            toolName: req.toolCall?.name ?? req.toolCall?.kind ?? 'unknown',
+            reason: 'permissionMode "agent": protocol-level cancelled answer (no client-side control)',
+            target: '',
+            injectable: false,
+          });
           return { outcome: 'cancelled' };
         }
         const acpCtx: AcpPermissionContext = {
@@ -171,51 +186,50 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       const unregisterUpdates = client.onUpdate((update) => this.handleSessionUpdate(update, onProgress));
 
       try {
-        // Step 7: the turn loop. First prompt = task prompt (+ idle-period
-        // messages folded in); later turns deliver queued controller messages
-        // at turn boundaries (ACP has no mid-turn injection, 01 §2.4).
+        // Step 7: guard-driven turn loop (#56). One session/prompt per turn;
+        // queued controller messages are delivered all at once at a turn
+        // boundary (ACP has no mid-turn injection, 01 §2.4).
         let promptText = `${buildThirdPartyPrompt(this.skills)}${task.description}`;
-        const leftovers = this._messageQueue.splice(0, this._messageQueue.length);
-        if (leftovers.length > 0) {
-          promptText += `\n\n${leftovers.map((m) => `[Controller message] ${m}`).join('\n\n')}`;
-        }
+        const initialQueued = this._messageQueue.splice(0, this._messageQueue.length);
+        if (initialQueued.length > 0) promptText += `\n\n${joinControllerMessages(initialQueued)}`;
 
         while (!this.abortController.signal.aborted) {
-          // Per-turn denial ledger (#56): a 'cancelled' turn is a denial
-          // consequence only if a refusal was recorded during THIS turn.
-          this._turnDenials = [];
+          const cancelBaseline = client.cancelSentCount;
+          this.resetTurnProgress();
           const result: AcpTurnResult = await client.sessionPrompt(sessionId, [{ type: 'text', text: promptText }]);
           this._resultReceived = true;
           this.settleTurn();
 
-          if (result.stopReason === 'end_turn') {
-            const summary = this._turnWriter.lastText() ?? '';
-            if (this._messageQueue.length > 0) {
-              promptText = `[Controller message] ${this._messageQueue.shift()!}`;
-              continue;
-            }
+          const denials = this.takeTurnDenials();
+          const cancelFact: CancelFact = client.cancelSentCount > cancelBaseline ? client.lastCancelReason : null;
+          const hasQueuedMessages = this._messageQueue.length > 0;
+          const category = classifyTurnEnd({ stopReason: result.stopReason, cancelFact, denials, hasQueuedMessages });
+          const progressSig = this.progressSignature();
+          // decideNextAction's perKey/consecutive/stagnant budgets are defined
+          // against PRIOR turns (see turn-attribution.test.ts); advanceGuard
+          // folds THIS turn's denials in, so decide on the pre-advance snapshot.
+          const guardBefore = this._turnGuard;
+          const verdict = decideNextAction(guardBefore, category, hasQueuedMessages, denials);
+          this._turnGuard = advanceGuard(guardBefore, { category, denials, progressSig, now: Date.now() });
+
+          if (verdict.action === 'terminate') {
             this._inputClosed = true;
-            this._terminalResult = { status: 'completed', summary };
+            this._terminalResult = makeTerminalResult(
+              category, verdict.reason, this._turnGuard, denials,
+              this._turnWriter.lastText() ?? '', result.stopReason, this.config.type,
+            );
             break;
           }
-          // cancelled / max_tokens / max_turn_requests / refusal (02 §4).
-          this._inputClosed = true;
-          if (result.stopReason === 'cancelled') {
-            // #56 (measured, opencode 2.2.5): a refused permission also ends
-            // the turn as 'cancelled'. Source-tagged refusals recorded in THIS
-            // turn decide the failure wording; no refusal means a real
-            // cancel/abort → 'Aborted'.
-            this._terminalResult = {
-              status: 'failed',
-              error: this.denialFailureError() ?? 'Aborted',
-            };
+
+          const queued = this._messageQueue.splice(0, this._messageQueue.length);
+          if (verdict.action === 'reissue') {
+            this._turnGuard.denialReissues += 1;
+            promptText = buildReissuePrompt(denials, joinControllerMessages(queued));
           } else {
-            this._terminalResult = {
-              status: 'failed',
-              error: acpUserMessage('agent-error', { provider: this.config.type, stopReason: result.stopReason }),
-            };
+            promptText = joinControllerMessages(queued);
           }
-          break;
+          const injectedKind: 'acp-denial-notice' | 'controller-delivery' = verdict.action === 'reissue' ? 'acp-denial-notice' : 'controller-delivery';
+          this.state.append('conversation', applyTurnEnvelope(makeInjectedEntry(promptText, injectedKind, this.ctx.sessionId), this._currentTurnEnv ?? undefined));
         }
       } finally {
         unregisterUpdates();
@@ -280,7 +294,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     const client = this._client;
     if (!client || !this._sessionId || this._terminalResult) return;
     this._cancelledAt = Date.now();
-    client.sessionCancel(this._sessionId);
+    client.sessionCancel(this._sessionId, 'abort');
     const policy = this.stopPolicy();
     this.logger.warn(
       { workerId: this.id, cancelGraceMs: policy.cancelGraceMs },
@@ -358,6 +372,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       switch (event.kind) {
         case 'agent-text':
           this._turnWriter.addText(event.text);
+          this._turnTextChars += event.text.length;
           break;
         case 'progress':
           this.emitDebouncedProgress(event.text, onProgress);
@@ -365,9 +380,11 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
         case 'tool-call':
           this._sawToolCall = true;
           this._turnWriter.addToolCall(event.record);
+          this._turnToolCalls += 1;
           break;
         case 'tool-result':
           this._turnWriter.addToolResult(event.record);
+          this._turnToolResults += 1;
           break;
         case 'runtime-state':
           this.recordAcpRuntime({ [event.key]: event.value });
@@ -378,6 +395,9 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       }
     }
   }
+
+  private resetTurnProgress(): void { this._turnTextChars = 0; this._turnToolCalls = 0; this._turnToolResults = 0; }
+  private progressSignature(): string { return `${this._turnTextChars}:${this._turnToolCalls}:${this._turnToolResults}`; }
 
   /** Turn settled: flush the accumulator's unsettled calls, then the writer. */
   private settleTurn(): void {
