@@ -12,6 +12,7 @@ import { failTool } from '@/services/tools/fail';
 import { skipReplyTool } from '@/services/tools/skip-reply';
 import { bashTool } from '@/services/tools/bash';
 import { makeTask } from '@/__tests__/helpers';
+import { resolveToolOutputMaxChars } from '@/services/agents/utils/tool-output-clamp';
 
 // Helper to call tool execute
 async function exec(toolObj: any, args: any): Promise<string> {
@@ -127,6 +128,59 @@ describe('listTasksTool', () => {
     const tool = listTasksTool({ listTasks });
     await exec(tool, { status: 'running' });
     expect(listTasks).toHaveBeenCalledWith('running');
+  });
+
+  it('truncates a 30000-char result to the tool-output cap, keeping head/tail and marking the omission', async () => {
+    const big = 'HEAD-' + 'x'.repeat(29_990) + '-TAIL'; // exactly 30000 chars
+    expect(big).toHaveLength(30_000);
+    const tool = listTasksTool({ listTasks: () => [makeTask('t1', { status: 'completed', result: big })] });
+
+    const result = await exec(tool, {});
+
+    expect(result.length).toBeLessThanOrEqual(resolveToolOutputMaxChars());
+    expect(result).toMatch(/\[omitted \d+ of 30000 chars\]/);
+    expect(result).toContain('HEAD-');
+    expect(result).toContain('-TAIL');
+  });
+
+  it('does the same truncation for a 30000-char error', async () => {
+    const big = 'ERR-' + 'y'.repeat(29_992) + '-END'; // exactly 30000 chars
+    expect(big).toHaveLength(30_000);
+    const tool = listTasksTool({ listTasks: () => [makeTask('t2', { status: 'failed', error: big })] });
+
+    const result = await exec(tool, {});
+
+    expect(result.length).toBeLessThanOrEqual(resolveToolOutputMaxChars());
+    expect(result).toContain('✗ ERR-');
+    expect(result).toMatch(/\[omitted \d+ of 30000 chars\]/);
+    expect(result).toContain('-END');
+  });
+
+  it('keeps the whole list within the cap even when several tasks carry huge fields', async () => {
+    const big = 'z'.repeat(30_000);
+    const tasks = Array.from({ length: 4 }, (_, i) =>
+      makeTask(`t${i}`, { status: 'failed', result: big, error: big }),
+    );
+    const tool = listTasksTool({ listTasks: () => tasks });
+
+    const result = await exec(tool, {});
+
+    expect(result.length).toBeLessThanOrEqual(resolveToolOutputMaxChars());
+    expect(result).toContain('[omitted');
+  });
+
+  it('honours WAYANG_TOOL_OUTPUT_MAX_CHARS as the cap', async () => {
+    vi.stubEnv('WAYANG_TOOL_OUTPUT_MAX_CHARS', '1000');
+    try {
+      const tool = listTasksTool({ listTasks: () => [makeTask('t1', { status: 'completed', result: 'q'.repeat(5000) })] });
+
+      const result = await exec(tool, {});
+
+      expect(result.length).toBeLessThanOrEqual(1000);
+      expect(result).toContain('[omitted');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
