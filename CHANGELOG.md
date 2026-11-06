@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.2 (2026-11-06)
+
+### 修复
+
+- ACP worker：区分权限拒绝来源。policy 硬拒绝与审批超时引发的 `stopReason: cancelled` 不再统一映射为 `Aborted`，分别报 `Permission denied by policy: <tool>` 与 `Permission request timed out: <tool>`；真取消仍为 `Aborted`，清理路径不变（#56）。
+
+### 改进
+
+- `/tasks` 每行补充 worker 类型、耗时与结果/错误摘要，`TaskDetail.error` 参与渲染；`list_tasks` 对 `result` / `error` 复用工具输出上限口径截断（#49）。
+- bash 兜底：`xargs` / `find -exec` / `eval` / `cd` 等含内层命令但未递归解析的形态，由 `allow(no-path)` 升级为 `ask`；不引入解析器（#51）。注：0.8.4 曾冻结该范围，本版恢复。
+
 ## v0.9.1 (2026-11-05)
 
 ### 文档
