@@ -33,7 +33,7 @@ import { BaseAcpWorker, findExecutableOnPath, type AcpPermissionContext, type Ac
 import { createAcpToolAccumulator, mapSessionUpdate, snapshotToToolCallRecord, type AcpMappedEvent } from './event-mapper';
 import { ACP_PERMISSION_TIMEOUT_MS } from './permission-bridge';
 import { advanceGuard, classifyTurnEnd, decideNextAction, resetTurnGuard, type CancelFact } from './turn-attribution';
-import { buildReissuePrompt, joinControllerMessages, makeInjectedEntry, makeTerminalResult } from './acp-turn-prompt';
+import { buildReissuePrompt, finalizeTurnVerdict, joinControllerMessages, makeInjectedEntry, makeTerminalResult } from './acp-turn-prompt';
 import pkg from '@/../package.json';
 
 /** Progress debounce (02 §5): aligned with the claude-code worker's 500ms. */
@@ -209,14 +209,17 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           // against PRIOR turns (see turn-attribution.test.ts); advanceGuard
           // folds THIS turn's denials in, so decide on the pre-advance snapshot.
           const guardBefore = this._turnGuard;
-          const verdict = decideNextAction(guardBefore, category, hasQueuedMessages, denials);
+          // P1.3 double insurance: never reissue when the denial notice is empty.
+          const verdict = finalizeTurnVerdict(
+            decideNextAction(guardBefore, category, hasQueuedMessages, denials), denials,
+          );
           this._turnGuard = advanceGuard(guardBefore, { category, denials, progressSig, now: Date.now() });
 
           if (verdict.action === 'terminate') {
             this._inputClosed = true;
             this._terminalResult = makeTerminalResult(
-              category, verdict.reason, this._turnGuard, denials,
-              this._turnWriter.lastText() ?? '', result.stopReason, this.config.type,
+              category, verdict.reason, denials,
+              this._turnWriter.lastText() ?? '', result.stopReason,
             );
             break;
           }

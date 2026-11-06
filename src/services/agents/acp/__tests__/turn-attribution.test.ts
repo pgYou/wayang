@@ -11,6 +11,7 @@ import {
   turnEndErrorText,
   TURN_LIMITS,
 } from '@/services/agents/acp/turn-attribution';
+import { finalizeTurnVerdict } from '@/services/agents/acp/acp-turn-prompt';
 import type {
   TurnDenial,
   TurnGuardState,
@@ -190,6 +191,14 @@ describe('decideNextAction', () => {
   it('fresh policy/timeout denial → reissue', () => {
     expect(decideNextAction(guard(), 'denied_by_policy', true, [], NOW)).toEqual({ action: 'reissue' });
     expect(decideNextAction(guard(), 'denied_by_timeout', true, [], NOW)).toEqual({ action: 'reissue' });
+  });
+
+  it('all denials non-injectable → terminate (category still denied_by_policy)', () => {
+    const d = denial({ toolName: 'bash', injectable: false });
+    expect(classify({ denials: [d] })).toBe('denied_by_policy');
+    expect(decideNextAction(guard(), 'denied_by_policy', true, [d], NOW)).toEqual({
+      action: 'terminate', reason: 'non-injectable denial: bash',
+    });
   });
 
   it('unexpected end: queued messages → continue, otherwise terminate with reason', () => {
@@ -379,33 +388,38 @@ describe('buildDenialNotice', () => {
     expect(notice.length).toBeLessThanOrEqual(800);
   });
 
-  it('an empty denial list produces a well-formed notice without an omission note', () => {
-    const notice = buildDenialNotice([]);
-    expect(notice).toContain('上一回合有 0 个工具调用被拒绝');
-    expect(notice).not.toContain('条省略');
-    expect(notice.endsWith('[/SYSTEM NOTICE]')).toBe(true);
+  it('an empty (or fully non-injectable) denial list produces no notice', () => {
+    expect(buildDenialNotice([])).toBe('');
+    expect(buildDenialNotice([denial({ injectable: false })])).toBe('');
+  });
+
+  it('renders only injectable denials and reports the filtered total', () => {
+    const hidden = denial({ toolName: 'secret_tool', injectable: false });
+    const shown = denial({ toolName: 'bash', reason: '策略禁止', sanitizedTarget: '<ws>/x' });
+    const notice = buildDenialNotice([hidden, shown]);
+    expect(notice).toContain('上一回合有 1 个工具调用被拒绝');
+    expect(notice).toContain('工具=bash');
+    expect(notice).not.toContain('secret_tool');
   });
 });
 
 describe('turnEndErrorText', () => {
-  const g = guard();
-
   it('returns the specified wording for every category', () => {
-    expect(turnEndErrorText('our_cancel', g, [])).toBe('Aborted');
-    expect(turnEndErrorText('our_timeout', g, [])).toBe('ACP worker request timed out');
+    expect(turnEndErrorText('our_cancel', [])).toBe('Aborted');
+    expect(turnEndErrorText('our_timeout', [])).toBe('ACP worker request timed out');
     expect(
-      turnEndErrorText('denied_by_user', g, [denial({ source: 'controller', toolName: 'read' })]),
+      turnEndErrorText('denied_by_user', [denial({ source: 'controller', toolName: 'read' })]),
     ).toBe('Permission denied by user: read');
     expect(
-      turnEndErrorText('denied_by_policy', g, [denial({ toolName: 'bash' })]),
+      turnEndErrorText('denied_by_policy', [denial({ toolName: 'bash' })]),
     ).toBe('Permission denied by policy: bash');
     expect(
-      turnEndErrorText('denied_by_timeout', g, [denial({ source: 'timeout', toolName: 'edit_file' })]),
+      turnEndErrorText('denied_by_timeout', [denial({ source: 'timeout', toolName: 'edit_file' })]),
     ).toBe('Permission request timed out: edit_file');
     expect(
-      turnEndErrorText('agent_ended_unexpectedly', g, [], { stopReason: 'cancelled' }),
+      turnEndErrorText('agent_ended_unexpectedly', [], { stopReason: 'cancelled' }),
     ).toBe('ACP worker ended the turn unexpectedly (stopReason=cancelled)');
-    expect(turnEndErrorText('completed', g, [])).toBe('');
+    expect(turnEndErrorText('completed', [])).toBe('');
   });
 
   it('picks the tool of the winning source by priority', () => {
@@ -413,7 +427,7 @@ describe('turnEndErrorText', () => {
       denial({ source: 'controller', toolName: 'read' }),
       denial({ source: 'policy', toolName: 'edit_file' }),
     ];
-    expect(turnEndErrorText('denied_by_policy', g, denials)).toBe(
+    expect(turnEndErrorText('denied_by_policy', denials)).toBe(
       'Permission denied by policy: edit_file',
     );
   });
@@ -421,9 +435,25 @@ describe('turnEndErrorText', () => {
   it('does not reuse the injected notice string', () => {
     const d = denial({ toolName: 'bash' });
     const notice = buildDenialNotice([d]);
-    const error = turnEndErrorText('denied_by_policy', g, [d]);
+    const error = turnEndErrorText('denied_by_policy', [d]);
     expect(error).not.toBe(notice);
     expect(error).not.toContain('[SYSTEM NOTICE]');
     expect(notice).not.toContain(error);
+  });
+});
+
+describe('finalizeTurnVerdict (call-site double insurance)', () => {
+  it('downgrades a reissue to terminate when the denial notice is empty', () => {
+    expect(finalizeTurnVerdict({ action: 'reissue' }, [denial({ toolName: 'bash', injectable: false })]))
+      .toEqual({ action: 'terminate', reason: 'non-injectable denial: bash' });
+    expect(finalizeTurnVerdict({ action: 'reissue' }, []))
+      .toEqual({ action: 'terminate', reason: 'non-injectable denial: unknown' });
+  });
+
+  it('keeps a reissue with an injectable notice and leaves other verdicts untouched', () => {
+    expect(finalizeTurnVerdict({ action: 'reissue' }, [denial({ toolName: 'bash' })]))
+      .toEqual({ action: 'reissue' });
+    expect(finalizeTurnVerdict({ action: 'terminate', reason: 'x' }, []))
+      .toEqual({ action: 'terminate', reason: 'x' });
   });
 });

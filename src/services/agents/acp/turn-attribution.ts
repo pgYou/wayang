@@ -101,11 +101,14 @@ const EN_TEMPLATE: NoticeTemplate = {
     'Do not retry the denied operations above; use other compliant approaches to continue the task, or state clearly that you cannot proceed.\n[/SYSTEM NOTICE]',
 };
 
-/** A reissue notice for the agent. Never reuses turnEndErrorText's wording. */
+/** A reissue notice for the agent. Only injectable denials are rendered; an
+ * empty result (nothing injectable) must not be injected by the caller. */
 export function buildDenialNotice(denials: TurnDenial[], locale: string = 'zh'): string {
+  const injectable = denials.filter((d) => d.injectable === true);
+  if (injectable.length === 0) return '';
   const template = locale.toLowerCase().startsWith('en') ? EN_TEMPLATE : ZH_TEMPLATE;
-  const header = template.header(denials.length);
-  const lines = denials.map((d, index) => template.line(index + 1, d));
+  const header = template.header(injectable.length);
+  const lines = injectable.map((d, index) => template.line(index + 1, d));
   const render = (kept: number): string => {
     const omitted = lines.length - kept;
     const note = omitted > 0 ? template.omitted(omitted) : '';
@@ -196,6 +199,14 @@ export function decideNextAction(
   if (category === 'denied_by_user') return { action: 'terminate', reason: 'denied by user' };
 
   if (category === 'denied_by_policy' || category === 'denied_by_timeout') {
+    // Protocol-level denials (permissionMode 'agent') carry injectable=false:
+    // there is nothing to put in a follow-up notice. Even though the category
+    // is still denied_by_policy, a turn whose denials are ALL non-injectable
+    // must terminate instead of reissuing an empty notice.
+    if (denials.length > 0 && denials.every((d) => d.injectable === false)) {
+      const tool = denials[0].toolName;
+      return { action: 'terminate', reason: `non-injectable denial: ${tool}` };
+    }
     if (guard.denialReissues >= TURN_LIMITS.MAX_DENIAL_REISSUES) {
       return {
         action: 'terminate',
@@ -230,7 +241,6 @@ export function decideNextAction(
 }
 
 export interface TurnEndErrorOptions {
-  provider?: string;
   /** stopReason of the turn, used by the 'agent_ended_unexpectedly' wording. */
   stopReason?: string;
 }
@@ -238,12 +248,9 @@ export interface TurnEndErrorOptions {
 /** Short error text for the orchestrator. Independent of the injected notice. */
 export function turnEndErrorText(
   category: TurnEndCategory,
-  guard: TurnGuardState,
   denials: TurnDenial[],
   options: TurnEndErrorOptions = {},
 ): string {
-  void guard;
-  void options.provider;
   const winner: DenialSource | null =
     category === 'denied_by_policy'
       ? 'policy'

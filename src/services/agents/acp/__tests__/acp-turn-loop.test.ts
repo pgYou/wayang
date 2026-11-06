@@ -63,6 +63,10 @@ class TestAcpWorker extends AcpWorkerRun implements IWorkerInstance {
   }
   protected createTransport(_config: AcpLaunchConfig): AcpTransport { return this.transport; }
   protected stopPolicy(): AcpStopPolicy { return this.policy; }
+  /** Live client while run() is in flight (null after the finally closes it). */
+  get liveClient() { return this._client; }
+  /** Current turn's refusal ledger, before takeTurnDenials() clears it. */
+  get turnDenials() { return this._turnDenials; }
   protected isReady(ctx: AcpReadyContext): AcpReadiness {
     return authAttributingReadiness(ctx, { provider: this.config.type, command: this._launchCommand });
   }
@@ -214,6 +218,7 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     const result = await runPromise;
     expect(result.status).toBe('failed');
     expect(result.error).toMatch(/per-key|budget/);
+    expect(result.error).toContain('per-key budget exhausted'); // integration wording, not just the pure helper
     expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(2);
   });
 
@@ -239,7 +244,34 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     expect(prompts.some((m) => JSON.stringify(m).includes('[SYSTEM NOTICE]'))).toBe(false);
   });
 
-  // 5) abort → 'Aborted'; promptMs timeout → a DIFFERENT timeout wording.
+  // 4b) permissionMode 'agent': a protocol-level denial is recorded but NOT injected.
+  it('permissionMode "agent": one denial → no reissue, no SYSTEM NOTICE, policy termination', async () => {
+    const worker = new TestAcpWorker({}, { permissionMode: 'agent' }, tempDir, tempDir);
+    worker.setSignalContext(signalContext());
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendPermissionRequest(worker, 760, { toolCallId: 'tc-agent', name: 'bash', rawInput: { command: 'echo hi' } }, [
+      { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject', name: 'Reject once', kind: 'reject_once' },
+    ]);
+    await waitForPermissionAnswer(worker.transport, 760);
+    // Snapshot before the turn boundary's takeTurnDenials() clears the ledger.
+    const recorded = worker.turnDenials.map((d) => ({ ...d }));
+
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+    const result = await runPromise;
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ source: 'policy', injectable: false });
+    const prompts = worker.transport.clientMessages.filter((m) => m.method === 'session/prompt');
+    expect(prompts).toHaveLength(1);
+    expect(prompts.some((m) => JSON.stringify(m).includes('[SYSTEM NOTICE]'))).toBe(false);
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('Permission denied by policy');
+  });
+
+  // 5) abort → 'Aborted' + close('cancel'); promptMs timeout → timeout wording + close('run-finished').
   it('abort → "Aborted"; promptMs timeout → timeout wording (different)', async () => {
     const abortWorker = new TestAcpWorker({}, {}, tempDir, tempDir);
     abortWorker.setSignalContext(signalContext());
@@ -247,9 +279,14 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     await openFakeSession(abortWorker);
     abortWorker.abort();
     await abortWorker.transport.waitForClientOutput(4);
+    const abortClient = abortWorker.liveClient; // still in flight before respondToPrompt
     await respondToPrompt(abortWorker.transport, 0, { stopReason: 'cancelled' });
     const abortResult = await abortPromise;
     expect(abortResult.error).toBe('Aborted');
+    expect(abortWorker.transport.closeCalls.map((c) => c.reason)).toContain('cancel');
+    expect(abortClient).not.toBeNull();
+    expect(abortClient!.cancelSentCount).toBeGreaterThan(0); // incremented from 0
+    expect(abortClient!.lastCancelReason).toBe('abort');
 
     const timeoutWorker = new TestAcpWorker({}, { protocol: { promptMs: 5, cancelGraceMs: 200 } }, tempDir, tempDir);
     timeoutWorker.setSignalContext(signalContext());
@@ -258,13 +295,18 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     // The tracker's promptMs expiry writes session/cancel tagged 'prompt-timeout'.
     await timeoutWorker.transport.waitForClientOutput(4);
     expect(timeoutWorker.transport.clientMessages[3].method).toBe('session/cancel');
+    const timeoutClient = timeoutWorker.liveClient;
     await respondToPrompt(timeoutWorker.transport, 0, { stopReason: 'cancelled' });
     const timeoutResult = await timeoutPromise;
-    expect(timeoutResult.error).toContain('timed out');
+    expect(timeoutResult.error).toContain('timed out'); // our_timeout wording
     expect(timeoutResult.error).not.toContain('Aborted');
     expect(timeoutResult.error).not.toBe(abortResult.error);
     // A timeout is NOT an abort: the client is closed on the normal path.
     expect(timeoutWorker.transport.closeCalls.map((c) => c.reason)).toEqual(['run-finished']);
+    expect(timeoutClient).not.toBeNull();
+    expect(timeoutClient!.cancelSentCount).toBeGreaterThan(0); // incremented from 0
+    // cancelFact is derived from lastCancelReason ⇒ classifyTurnEnd → our_timeout.
+    expect(timeoutClient!.lastCancelReason).toBe('prompt-timeout');
   });
 
   // 6) multiple queued messages delivered in ONE round, no denial quota used.

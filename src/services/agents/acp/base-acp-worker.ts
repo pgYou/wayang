@@ -318,7 +318,7 @@ export abstract class BaseAcpWorker {
     const denials = this._turnDenials;
     if (denials.length === 0) return null;
     const category = classifyTurnEnd({ stopReason: 'cancelled', cancelFact: null, denials, hasQueuedMessages: false });
-    return turnEndErrorText(category, this._turnGuard, denials) || null;
+    return turnEndErrorText(category, denials) || null;
   }
 
   /** 3) Error normalization: fold a phase failure into an AcpError. Default: AcpErrors pass, everything else is agent-error. */
