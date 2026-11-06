@@ -5,6 +5,7 @@
 ### 修复
 
 - ACP worker 区分权限拒绝来源：policy 硬拒绝与审批超时不再统一映射为 `Aborted`，分别报 `Permission denied by policy: <tool>` 与 `Permission request timed out: <tool>`；真取消与 abort 清理路径保持不变（#56）。
+- ACP 回合循环重构：按「我们是否发过 session/cancel」而不是 agent 返回的 stopReason 归因回合结束，新增 `our_timeout` 类别区分协议超时与用户取消；policy / timeout 拒绝不再一次即终止，改为把脱敏后的拒绝原因以 `[SYSTEM NOTICE]` 注入下一轮 prompt 继续执行（同一 key 最多 1 次、每次 run 最多 3 次）；新增六个护栏：单 run 最多 12 回合、连续 2 个拒绝回合熔断、连续 2 回合无进展终止、墙钟 30 分钟上限、拒绝补发配额、同 key 配额。用户主动拒绝与 `permissionMode=agent` 的协议级拒绝不注入、不补发（#56）。
 - claude-code worker 接入任务级审批记忆与 grant：`canUseTool` 消费与 puppet 相同的 `reusableGrantKeys`，同一任务内同一 key 不再重复询问，任务结束统一失效（#58）。
 
 ### 改进
