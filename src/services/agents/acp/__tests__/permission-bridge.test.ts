@@ -13,8 +13,9 @@
  * - unknown kind fail-closed: shape inference failure asks directly and never
  *   feeds decideToolAccess (which allows every unknown tool name);
  * - timeout fail-closed (denied source 'timeout');
- * - onControllerDenial fires for a controller deny only — never for the
- *   timeout or the abort cleanup (#25 deny-vs-cancel mapping);
+ * - onDenial emits a source-tagged event: controller deny → 'controller',
+ *   timeout → 'timeout', policy hard-deny → 'policy'; an abort-cleanup settle
+ *   ('aborted') emits none (#56 deny-source mapping);
  * - option set with neither allow nor reject → cancelled + hard-denied audit;
  * - verdicts are always based on the MERGED snapshot (request toolCall +
  *   previously accumulated events).
@@ -204,33 +205,53 @@ describe('bridge: verdict → outcome', () => {
     expect(grants.has('task-1', 'read:/etc/passwd')).toBe(false);
   });
 
-  it('controller deny fires onControllerDenial (#25); an abort-cleanup settle does not', async () => {
+  it('controller deny fires onDenial(controller); an abort-cleanup settle fires none (#56)', async () => {
     const denials: string[] = [];
-    const { handler, signals, pending } = makeBridge({ onControllerDenial: (toolName) => denials.push(toolName) });
+    const { handler, signals, pending } = makeBridge({
+      onDenial: (source, toolName) => denials.push(`${source}:${toolName}`),
+    });
     const read = () =>
       permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/etc/passwd' } });
 
-    // A controller denial is a user rejection — recorded with the tool name.
+    // A controller denial is a user rejection — recorded with source + tool name.
     const denied = handler(read());
     pending.resolve(signals[0].payload.requestId, { approved: false });
     await denied;
-    expect(denials).toEqual(['read']);
+    expect(denials).toEqual(['controller:read']);
 
     // The abort cleanup ('Worker aborted') also settles unapproved, but it is
-    // the run being torn down, not the user refusing.
+    // the run being torn down, not a refusal — it emits no denial event.
     const aborted = handler(read());
     pending.resolve(signals[1].payload.requestId, { approved: false, reason: 'Worker aborted' });
     await aborted;
-    expect(denials).toEqual(['read']);
+    expect(denials).toEqual(['controller:read']);
   });
 
-  it('a timeout does not fire onControllerDenial (#25)', async () => {
+  it('a timeout fires onDenial(timeout) (#56)', async () => {
     const denials: string[] = [];
-    const { handler } = makeBridge({ permissionMs: 15, onControllerDenial: (toolName) => denials.push(toolName) });
+    const { handler } = makeBridge({
+      permissionMs: 15,
+      onDenial: (source, toolName) => denials.push(`${source}:${toolName}`),
+    });
     await handler(
       permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/etc/passwd' } }),
     );
-    expect(denials).toEqual([]);
+    expect(denials).toEqual(['timeout:read']);
+  });
+
+  it('a policy hard-deny fires onDenial(policy) with no controller prompt (#56)', async () => {
+    const denials: string[] = [];
+    const { handler, signals, logger } = makeBridge({
+      scope: { ...SCOPE, permission: { sensitiveMode: 'deny' } },
+      onDenial: (source, toolName) => denials.push(`${source}:${toolName}`),
+    });
+    const outcome = await handler(
+      permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/home/test-user/.ssh/id_rsa' } }),
+    );
+    expect(outcome).toEqual({ outcome: 'selected', optionId: 'reject' });
+    expect(signals).toHaveLength(0); // policy refused locally — no permission_request signal
+    expect(denials).toEqual(['policy:read']);
+    expect(auditRecords(logger).some((record) => record.decision === 'hard-denied')).toBe(true);
   });
 
   it('approval memory hit → allow WITHOUT a signal, audit granted-by-memory + grantId', async () => {

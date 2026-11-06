@@ -40,7 +40,7 @@ import { type AcpTimeouts, type AcpLaunchConfig } from '@/services/acp/config';
 import type { AcpCapabilities, AcpHandshake, AcpPermissionOutcome, AcpPermissionRequest } from '@/services/acp/types';
 import { buildAcpCapabilities } from '@/services/acp/client';
 import { createAcpToolAccumulator, type AcpToolAccumulator } from './event-mapper';
-import { createAcpPermissionBridge, type AcpPermissionAnswer } from './permission-bridge';
+import { createAcpPermissionBridge, type AcpDenialSource, type AcpPermissionAnswer } from './permission-bridge';
 import { AcpTurnWriter } from './acp-turn-writer';
 
 // --- Hook types (frozen §2 / 02 §2) ---
@@ -182,12 +182,13 @@ export abstract class BaseAcpWorker {
   // --- Permission plumbing (same shape as ClaudeCodeWorker.permissionHandler) ---
   protected readonly _pendingPermissions = new BlockingRequestMap<AcpPermissionAnswer>();
   /**
-   * Controller-issued permission denials in the CURRENT turn (#25): the run
+   * Source-tagged permission refusals in the CURRENT turn (#56): the run
    * layer resets this at every turn boundary and reads it when a turn ends
-   * 'cancelled' — a denial means the user refused, not that the run aborted.
+   * 'cancelled'. A denial means the user/policy refused or the approval timed
+   * out — not that the run aborted. Kept in arrival order; denialFailureError
+   * applies the source priority when a turn holds several.
    */
-  protected _deniedPermissions = 0;
-  protected _lastDeniedToolName: string | undefined;
+  protected _turnDenials: Array<{ source: AcpDenialSource; toolName: string }> = [];
   readonly permissionHandler: PermissionMiddlewareResult = {
     resolvePermission: (requestId: string, approved: boolean, reason?: string) =>
       this._pendingPermissions.resolve(requestId, { approved, reason }),
@@ -279,16 +280,40 @@ export abstract class BaseAcpWorker {
         logger: this.logger,
         provider: this.config.type,
         permissionMs: acpCtx.permissionMs,
-        onControllerDenial: (toolName) => this.notePermissionDenial(toolName),
+        onDenial: (source, toolName) => this.notePermissionDenial(source, toolName),
       },
       this._pendingPermissions,
     )(req);
   }
 
-  /** Bridge callback (#25): the controller actively denied a permission in the current turn. */
-  protected notePermissionDenial(toolName: string): void {
-    this._deniedPermissions += 1;
-    this._lastDeniedToolName = toolName;
+  /** Bridge callback (#56): record a source-tagged permission refusal in the current turn. */
+  protected notePermissionDenial(source: AcpDenialSource, toolName: string): void {
+    this._turnDenials.push({ source, toolName });
+  }
+
+  /**
+   * Failure wording for a denial-induced 'cancelled' turn (#56), or null when
+   * the turn had no refusal (a real cancel/abort → 'Aborted'). When a turn
+   * holds several refusals, the FIRST source in the priority order wins:
+   * policy > timeout > controller. The tool name comes from the first event
+   * of that winning source.
+   */
+  protected denialFailureError(): string | null {
+    const denials = this._turnDenials;
+    if (denials.length === 0) return null;
+    const sources = new Set(denials.map((d) => d.source));
+    const source: AcpDenialSource = sources.has('policy')
+      ? 'policy'
+      : sources.has('timeout')
+        ? 'timeout'
+        : 'controller';
+    const toolName = denials.find((d) => d.source === source)?.toolName ?? denials[0].toolName;
+    const wording: Record<AcpDenialSource, string> = {
+      policy: `Permission denied by policy: ${toolName}`,
+      timeout: `Permission request timed out: ${toolName}`,
+      controller: `Permission denied by user: ${toolName}`,
+    };
+    return wording[source];
   }
 
   /** 3) Error normalization: fold a phase failure into an AcpError. Default: AcpErrors pass, everything else is agent-error. */
