@@ -17,6 +17,8 @@
  */
 
 import type { TaskDetail } from '@/types/index';
+import { getWorkerMeta } from '@/services/agents/worker-defaults';
+import { formatDuration } from '@/services/worker-transcript';
 import { collapseWhitespace, truncateToWidth } from '@/tui/utils/text-width';
 import { formatTaskWorkspaceMark } from '@/tui/utils/workspace-display';
 
@@ -140,9 +142,39 @@ export interface TaskRowOptions {
    * task shows its slug rather than hiding the attribution.
    */
   defaultWorkspacePath?: string;
+  /** Epoch ms used as "now" for a running task's elapsed time; defaults to Date.now(). */
+  now?: number;
 }
 
-/** One list row: every existing column, with description and result digested. */
+/**
+ * Worker-type tag from the canonical worker defaults (`🧸 puppet`, `🤖 <id>`).
+ * Only rendered when the task actually carries a workerType — legacy tasks
+ * and the existing row fixtures have none, so their rows stay byte-identical.
+ */
+function formatWorkerMark(workerType: string | undefined): string {
+  if (!workerType) return '';
+  const { emoji, label } = getWorkerMeta(workerType);
+  return ` · ${emoji} ${label}`;
+}
+
+/**
+ * Elapsed-time fragment: "已运行 X" while running (now − startedAt), or the
+ * recorded total "耗时 X" once the task is terminal (completedAt − startedAt).
+ * Absent timestamps yield no fragment, so rows without timing data are
+ * unchanged. `now` is injected to keep rendering deterministic in tests.
+ */
+function formatDurationMark(task: TaskDetail, now: number): string {
+  if (task.startedAt === undefined) return '';
+  if (task.status === 'running') {
+    return ` · 已运行 ${formatDuration(Math.max(0, now - task.startedAt))}`;
+  }
+  if (task.completedAt !== undefined) {
+    return ` · 耗时 ${formatDuration(Math.max(0, task.completedAt - task.startedAt))}`;
+  }
+  return '';
+}
+
+/** One list row: existing columns plus optional worker/duration/error marks. */
 export function formatTaskRow(
   task: TaskDetail,
   options: TaskRowOptions = {},
@@ -158,7 +190,15 @@ export function formatTaskRow(
   const result = task.result
     ? truncateForList(task.result, options.resultMaxWidth ?? TASK_LIST_RESULT_MAX_WIDTH)
     : '';
-  return `[${task.status}] ${task.id}: ${description}${workspacePart}${result ? ` → ${result}` : ''}`;
+  // A failed task's error is just as free-form (and often multi-line): give it
+  // the same one-line digest so the reason is visible instead of a bare
+  // "failed" status. Whitespace-only errors collapse to nothing.
+  const error = task.error
+    ? truncateForList(task.error, options.resultMaxWidth ?? TASK_LIST_RESULT_MAX_WIDTH)
+    : '';
+  const workerPart = formatWorkerMark(task.workerType);
+  const durationPart = formatDurationMark(task, options.now ?? Date.now());
+  return `[${task.status}] ${task.id}: ${description}${workspacePart}${workerPart}${durationPart}${result ? ` → ${result}` : ''}${error ? ` ✗ ${error}` : ''}`;
 }
 
 /** Render the whole `/tasks` output: capped rows plus an optional note line. */

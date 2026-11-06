@@ -204,6 +204,39 @@ describe('handleCommand /tasks', () => {
     expect((await handleCommand('/tasks failed')).output).toContain('[completed] t-9: boom');
     expect(seen).toEqual([undefined, 'failed']);
   });
+
+  it('shows worker type, elapsed time and error summary through /tasks', async () => {
+    const now = Date.now();
+    const tasks: TaskDetail[] = [
+      {
+        ...makeTask('t-run', 'scan repo'), status: 'running',
+        workerType: 'puppet', startedAt: now - 5_000,
+      },
+      {
+        ...makeTask('t-done', 'build'), status: 'completed',
+        workerType: 'claude-code', startedAt: now - 20_000, completedAt: now - 8_000,
+        result: 'all green',
+      },
+      {
+        ...makeTask('t-fail', 'run tests'), status: 'failed',
+        workerType: 'puppet', startedAt: now - 9_000, completedAt: now - 2_000,
+        error: 'AssertionError: expected 1 to equal 2\n  at spec.ts:42',
+      },
+    ];
+    const handleCommand = await captureWith(withTasks(tasks));
+
+    const output = (await handleCommand('/tasks')).output!;
+    const lines = output.split('\n');
+
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain('🧸 puppet');
+    expect(lines[0]).toContain('已运行');
+    expect(lines[1]).toContain('🤖 claude-code');
+    expect(lines[1]).toContain('耗时');
+    expect(lines[1]).toContain('→ all green');
+    expect(lines[2]).toContain('✗ AssertionError: expected 1 to equal 2');
+    expect(output).not.toContain('\n\n');
+  });
 });
 
 describe('handleCommand /tasks workspace marks', () => {
