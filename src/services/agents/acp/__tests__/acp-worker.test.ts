@@ -10,8 +10,10 @@
  *   runtimeState.acp.pid + audit transport:'acp';
  * - stopReason mapping: end_turn → completed (summary = last agent text),
  *   refusal → failed with the agent-error wording, cancelled → failed
- *   'Aborted' — EXCEPT when the controller denied a permission during the
- *   turn (#25, measured opencode): then 'Permission denied by user: <tool>';
+ *   'Aborted' — EXCEPT when a permission was refused during the turn
+ *   (measured opencode): the refusal source decides the wording (#56) —
+ *   'Permission denied by policy: <tool>', 'Permission request timed out:
+ *   <tool>', or 'Permission denied by user: <tool>';
  * - cancel: late updates differ per stopPolicy — trustUpdatesAfterCancel
  *   true keeps them in the transcript, false drops + counts;
  * - readiness attribution: an auth keyword on stderr during session/new
@@ -112,6 +114,12 @@ class TestAcpWorker extends AcpWorkerRun implements IWorkerInstance {
   auditRecords(): any[] {
     const logger = this.ctx.logger as unknown as { info: { mock: { calls: any[] } } };
     return logger.info.mock.calls.filter((call) => call[0]?.audit === 'permission').map((call) => call[0]);
+  }
+
+  /** #56: resolve the failure wording for a synthetic, source-tagged ledger. */
+  resolveDenial(events: Array<{ source: 'policy' | 'timeout' | 'controller'; toolName: string }>): string | null {
+    this._turnDenials = events;
+    return this.denialFailureError();
   }
 }
 
@@ -539,6 +547,92 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     respondTo(worker.transport, 4, { stopReason: 'cancelled' });
     const result = await runPromise;
     expect(result).toEqual({ status: 'failed', error: 'Aborted' });
+  });
+
+  it('a policy hard-deny maps a cancelled turn to "Permission denied by policy: <tool>" (#56)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext({
+      signalQueue: queue as any,
+      workerId: 'w-policy',
+      taskId: TASK.id,
+      taskTitle: TASK.title,
+      workerType: 'codebuddy-acp',
+      accessScope: { ...SCOPE, permission: { sensitiveMode: 'deny' } },
+      grants: new ApprovalMemory(),
+      approvalMemory: 'task',
+    });
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    // The sensitive path is refused by the policy itself — no controller prompt.
+    sendSensitivePermissionRequest(worker, 504);
+    expect(queue.signals).toHaveLength(0);
+    await worker.transport.waitForClientOutput(4);
+    expect(worker.transport.clientMessages[3]).toMatchObject({ id: 504 });
+
+    respondTo(worker.transport, 2, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('Permission denied by policy: execute');
+    expect(result.error).not.toBe('Aborted');
+  });
+
+  it('an approval timeout maps a cancelled turn to "Permission request timed out: <tool>" (#56)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext({
+      signalQueue: queue as any,
+      workerId: 'w-timeout',
+      taskId: TASK.id,
+      taskTitle: TASK.title,
+      workerType: 'codebuddy-acp',
+      accessScope: SCOPE,
+      grants: new ApprovalMemory(),
+      approvalMemory: 'task',
+    });
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 505);
+    expect(queue.signals).toHaveLength(1);
+    // Simulate the approval wait expiring: the bridge settles with reason
+    // 'timeout' — the exact value its wait timer's makeTimeoutValue() returns
+    // (see the real-timer case in permission-bridge.test.ts). Driving it through
+    // the same permissionHandler channel keeps the test deterministic: the
+    // protocol responder owns a SECOND permissionMs timer that, under the fake
+    // transport's synchronous injection, would race the bridge's timeout event.
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'timeout')).toBe(true);
+    await worker.transport.waitForClientOutput(4);
+    expect(worker.transport.clientMessages[3]).toMatchObject({ id: 505 });
+
+    respondTo(worker.transport, 2, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('Permission request timed out: execute');
+    expect(result.error).not.toBe('Aborted');
+  });
+
+  it('denial wording picks the first source by priority policy > timeout > controller (#56)', () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    expect(worker.resolveDenial([])).toBeNull(); // no refusal → real cancel → 'Aborted'
+    expect(worker.resolveDenial([{ source: 'controller', toolName: 'read' }])).toBe('Permission denied by user: read');
+    expect(worker.resolveDenial([{ source: 'timeout', toolName: 'bash' }])).toBe('Permission request timed out: bash');
+    expect(worker.resolveDenial([{ source: 'policy', toolName: 'edit_file' }])).toBe('Permission denied by policy: edit_file');
+    expect(
+      worker.resolveDenial([
+        { source: 'controller', toolName: 'read' },
+        { source: 'timeout', toolName: 'bash' },
+      ]),
+    ).toBe('Permission request timed out: bash');
+    expect(
+      worker.resolveDenial([
+        { source: 'controller', toolName: 'read' },
+        { source: 'timeout', toolName: 'bash' },
+        { source: 'policy', toolName: 'edit_file' },
+      ]),
+    ).toBe('Permission denied by policy: edit_file');
   });
 });
 
