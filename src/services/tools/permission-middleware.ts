@@ -103,6 +103,17 @@ export interface PermissionMiddlewareDeps {
 }
 
 /**
+ * Shape the reuse rule reads. Both `PermissionVerdict` (puppet middleware) and
+ * `ToolAccessDecision` (the shared policy claude-code uses) satisfy it, so one
+ * exported function can serve both gates instead of drifting into two copies
+ * of the rule (issue #58).
+ */
+export type GrantReuseVerdict = Pick<
+  PermissionVerdict,
+  'decision' | 'access' | 'sensitive' | 'askPaths'
+>;
+
+/**
  * The grants a verdict may reuse, or `[]` when this call must ask again.
  *
  * The rule is the whole contract of the feature (issue #46):
@@ -114,7 +125,7 @@ export interface PermissionMiddlewareDeps {
  *     are not about a single path (`dangerous-bash`, `dynamic-shell`,
  *     `home-other-user`) can never be covered by an old grant.
  */
-function reusableGrantKeys(verdict: PermissionVerdict): string[] {
+export function reusableGrantKeys(verdict: GrantReuseVerdict): string[] {
   if (verdict.decision !== 'ask') return [];
   if (verdict.access !== 'read') return [];
   if (verdict.sensitive === true) return [];
