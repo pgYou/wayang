@@ -87,6 +87,14 @@ export class AcpClient {
   private closedInfo: AcpExitInfo | null = null;
   private handshake: AcpHandshake | null = null;
 
+  // Cancel facts for turn attribution (#56): read-only from outside, written
+  // only by sessionCancel so the run layer can tell OUR cancel/timeout apart
+  // from an agent that ended its turn on its own.
+  private _cancelSentCount = 0;
+  private _lastCancelReason: 'abort' | 'prompt-timeout' | null = null;
+  get cancelSentCount(): number { return this._cancelSentCount; }
+  get lastCancelReason(): 'abort' | 'prompt-timeout' | null { return this._lastCancelReason; }
+
   private readonly statsValue: AcpClientStats = {
     unknownResponseIds: 0,
     nonJsonLines: 0,
@@ -124,7 +132,7 @@ export class AcpClient {
       },
     });
     this.prompts = new AcpPromptTracker(this.peer, this.timeouts.promptMs, this.timeouts.cancelGraceMs, {
-      onExpiry: (sessionId) => this.sessionCancel(sessionId),
+      onExpiry: (sessionId) => this.sessionCancel(sessionId, 'prompt-timeout'),
     });
     this.inbound = new AcpInboundDispatcher({
       peer: this.peer,
@@ -218,7 +226,9 @@ export class AcpClient {
   }
 
   /** Fire-and-forget notification; also immediately answers every pending request_permission with outcome 'cancelled' (protocol MUST). */
-  sessionCancel(sessionId: string): void {
+  sessionCancel(sessionId: string, reason: 'abort' | 'prompt-timeout' = 'abort'): void {
+    this._cancelSentCount += 1;
+    this._lastCancelReason = reason;
     this.writeMessage({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } });
     this.permissionResponder.cancelAll();
   }

@@ -208,7 +208,7 @@ describe('bridge: verdict → outcome', () => {
   it('controller deny fires onDenial(controller); an abort-cleanup settle fires none (#56)', async () => {
     const denials: string[] = [];
     const { handler, signals, pending } = makeBridge({
-      onDenial: (source, toolName) => denials.push(`${source}:${toolName}`),
+      onDenial: (info) => denials.push(`${info.source}:${info.toolName}`),
     });
     const read = () =>
       permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/etc/passwd' } });
@@ -231,7 +231,7 @@ describe('bridge: verdict → outcome', () => {
     const denials: string[] = [];
     const { handler } = makeBridge({
       permissionMs: 15,
-      onDenial: (source, toolName) => denials.push(`${source}:${toolName}`),
+      onDenial: (info) => denials.push(`${info.source}:${info.toolName}`),
     });
     await handler(
       permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/etc/passwd' } }),
@@ -243,7 +243,7 @@ describe('bridge: verdict → outcome', () => {
     const denials: string[] = [];
     const { handler, signals, logger } = makeBridge({
       scope: { ...SCOPE, permission: { sensitiveMode: 'deny' } },
-      onDenial: (source, toolName) => denials.push(`${source}:${toolName}`),
+      onDenial: (info) => denials.push(`${info.source}:${info.toolName}`),
     });
     const outcome = await handler(
       permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/home/test-user/.ssh/id_rsa' } }),
