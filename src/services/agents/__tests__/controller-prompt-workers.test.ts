@@ -22,8 +22,8 @@ function promptWith(workers?: Record<string, WorkerConfig>): string {
 describe('buildControllerSystemPrompt: worker list for *-acp rows (05 §7)', () => {
   it('appends the [acp:<provider>] tag and the external-agent hint to configured ACP workers', () => {
     const prompt = promptWith({
-      codebuddy: { type: 'codebuddy-acp', description: 'Tencent CodeBuddy Code agent', capabilities: ['code', 'refactor', 'shell'] },
-      opencode: { type: 'opencode-acp', description: 'OpenCode (native ACP, experimental)' },
+      codebuddy: { type: 'codebuddy', description: 'Tencent CodeBuddy Code agent', capabilities: ['code', 'refactor', 'shell'] },
+      opencode: { type: 'opencode', description: 'OpenCode (native ACP, experimental)' },
     });
 
     expect(prompt).toContain('`codebuddy` — Tencent CodeBuddy Code agent [code, refactor, shell] [acp:codebuddy]');
@@ -49,5 +49,22 @@ describe('buildControllerSystemPrompt: worker list for *-acp rows (05 §7)', () 
     expect(prompt).toContain('`puppet` —');
     expect(prompt).not.toContain('[acp:');
     expect(prompt).not.toContain('external ACP agent');
+  });
+
+  it('tags the generic acp row by its configured command', () => {
+    const prompt = promptWith({
+      mycli: { type: 'acp', command: 'my-cli', description: 'Any ACP-speaking CLI' },
+    });
+
+    expect(prompt).toContain('`mycli` — Any ACP-speaking CLI [acp:my-cli]');
+    expect(prompt).toContain('external ACP agent: no update_progress/done tools');
+  });
+
+  it('falls back to the plain [acp:acp] tag when the generic row has no command', () => {
+    const prompt = promptWith({
+      mycli: { type: 'acp', description: 'Command stripped by tests' } as WorkerConfig,
+    });
+
+    expect(prompt).toContain('[acp:acp]');
   });
 });

@@ -120,7 +120,7 @@ export interface PermissionAuditEntry {
    */
   transport?: 'acp';
   /**
-   * Provider label of the ACP worker (`config.type`, e.g. `'codebuddy-acp'`).
+   * Provider label of the ACP worker (`config.type`, e.g. `'codebuddy'`).
    * Lets the trail be split per provider without touching the shared format.
    */
   provider?: string;

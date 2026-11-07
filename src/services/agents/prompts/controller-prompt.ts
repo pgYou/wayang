@@ -358,13 +358,32 @@ const HARD_CONSTRAINTS = section('Hard constraints',
 const ACP_WORKER_HINT =
   'external ACP agent: no update_progress/done tools (it ends each turn by itself); chat_worker messages are delivered at its next turn boundary; sensitive operations still surface as permission requests you must answer; it needs its CLI installed and logged in — a missing CLI fails the task fast with an install hint';
 
+/**
+ * `[acp:<provider>]` tag of an ACP row (05 §7) — explicit mapping, the type
+ * names no longer carry the provider suffix: the dedicated rows map to their
+ * provider label, the generic 'acp' row is tagged by its configured command
+ * (missing command falls back to the plain 'acp' label).
+ */
+function acpTagFor(config: WorkerConfig): string | null {
+  switch (config.type) {
+    case 'acp':
+      return `acp:${config.command ?? 'acp'}`;
+    case 'codebuddy':
+      return 'acp:codebuddy';
+    case 'opencode':
+      return 'acp:opencode';
+    default:
+      return null;
+  }
+}
+
 function buildWorkerList(workers?: Record<string, WorkerConfig>): string {
   const lines: string[] = [`- \`puppet\` — ${PUPPET_DEFAULTS.description} [${PUPPET_DEFAULTS.capabilities.join(', ')}]`];
   if (workers) {
     for (const [id, config] of Object.entries(workers)) {
       const caps = config.capabilities?.length ? ` [${config.capabilities.join(', ')}]` : '';
-      // `[acp:<provider>]` tag: 'codebuddy-acp' → '[acp:codebuddy]' (05 §7).
-      const acp = config.type.endsWith('-acp') ? ` [acp:${config.type.slice(0, -'-acp'.length)}] — ${ACP_WORKER_HINT}` : '';
+      const acpTag = acpTagFor(config);
+      const acp = acpTag ? ` [${acpTag}] — ${ACP_WORKER_HINT}` : '';
       lines.push(`- \`${id}\` — ${config.description}${caps}${acp}`);
     }
   }

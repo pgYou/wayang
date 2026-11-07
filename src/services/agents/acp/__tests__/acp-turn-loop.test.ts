@@ -48,7 +48,7 @@ class TestAcpWorker extends AcpWorkerRun implements IWorkerInstance {
     workspaceDir?: string,
   ) {
     super(
-      { type: 'codebuddy-acp', description: 'test acp worker', ...config } as WorkerConfig,
+      { type: 'codebuddy', description: 'test acp worker', ...config } as WorkerConfig,
       sessionDir ?? '/tmp/acp-test-session',
       workspaceDir ?? '/tmp/acp-test-ws',
       createMockCtx({ sessionDir: sessionDir ?? '/tmp/acp-test-session', workspaceDir: workspaceDir ?? '/tmp/acp-test-ws' } as any),

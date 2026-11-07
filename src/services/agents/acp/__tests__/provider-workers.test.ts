@@ -92,13 +92,13 @@ describe('CodebuddyAcpWorker (main path, measured)', () => {
 
   it('defaults to `codebuddy --acp` when the CLI is on PATH', () => {
     mockFind.mockImplementation((command) => (command === 'codebuddy' ? '/usr/local/bin/codebuddy' : undefined));
-    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy-acp'), tempDir, tempDir, createMockCtx() as any, skills);
+    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy'), tempDir, tempDir, createMockCtx() as any, skills);
     expect(worker.launch(BASE_VIEW)).toMatchObject({ command: 'codebuddy', args: ['--acp'], cwd: '/tmp/ws' });
   });
 
   it('falls back to the `cbc` alias when only that is on PATH', () => {
     mockFind.mockImplementation((command) => (command === 'cbc' ? '/usr/local/bin/cbc' : undefined));
-    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy-acp'), tempDir, tempDir, createMockCtx() as any, skills);
+    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy'), tempDir, tempDir, createMockCtx() as any, skills);
     expect(worker.launch(BASE_VIEW).command).toBe('cbc');
     // The alias was chosen by probing BOTH names.
     expect(mockFind).toHaveBeenCalledWith('codebuddy');
@@ -107,19 +107,19 @@ describe('CodebuddyAcpWorker (main path, measured)', () => {
 
   it('a user-configured command/args override always wins', () => {
     mockFind.mockReturnValue('/opt/custom/codebuddy');
-    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy-acp'), tempDir, tempDir, createMockCtx() as any, skills);
+    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy'), tempDir, tempDir, createMockCtx() as any, skills);
     expect(
       worker.launch({ ...BASE_VIEW, command: '/opt/custom/codebuddy', args: ['--acp', '--verbose'] }),
     ).toMatchObject({ command: '/opt/custom/codebuddy', args: ['--acp', '--verbose'] });
   });
 
   it('stopPolicy: 8000 / 2000 / trustUpdatesAfterCancel true (03 §2.3)', () => {
-    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy-acp'), tempDir, tempDir, createMockCtx() as any, skills);
+    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy'), tempDir, tempDir, createMockCtx() as any, skills);
     expect(worker.policy()).toEqual({ cancelGraceMs: 8_000, sigtermWaitMs: 2_000, trustUpdatesAfterCancel: true });
   });
 
   it('isReady attributes session/new failures to the login state (03 §2.2)', () => {
-    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy-acp'), tempDir, tempDir, createMockCtx() as any, skills);
+    const worker = new ExposedCodebuddy(makeProviderConfig('codebuddy'), tempDir, tempDir, createMockCtx() as any, skills);
     // Handshake phase: protocolVersion 1 is enough.
     expect(worker.readiness({ handshake: HANDSHAKE, phase: 'handshake', stderrTail: [] })).toEqual({ ready: true });
     // session/new timeout with declared authMethods → auth-required (the
@@ -132,7 +132,7 @@ describe('CodebuddyAcpWorker (main path, measured)', () => {
     });
     expect(timeout.ready).toBe(false);
     expect(timeout.kind).toBe('auth-required');
-    expect(timeout.message).toContain('codebuddy-acp');
+    expect(timeout.message).toContain('codebuddy');
     expect(timeout.message).toContain('未登录');
     expect(timeout.message).toContain('Login with iOA');
     // stderr keyword short-circuit: judge on the hit, no timeout wait.
@@ -162,7 +162,7 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
 
   it('defaults to `opencode acp` (docs-only, unmeasured)', () => {
     mockFind.mockReturnValue('/usr/local/bin/opencode');
-    const worker = new ExposedOpenCode(makeProviderConfig('opencode-acp'), tempDir, tempDir, createMockCtx() as any, skills);
+    const worker = new ExposedOpenCode(makeProviderConfig('opencode'), tempDir, tempDir, createMockCtx() as any, skills);
     expect(worker.launch(BASE_VIEW)).toMatchObject({ command: 'opencode', args: ['acp'] });
   });
 
@@ -175,7 +175,7 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
 
   it('injects the ask-all permission gate by default: OPENCODE_CONFIG → sessionDir gate file (stale content overwritten)', () => {
     mockFind.mockReturnValue('/usr/local/bin/opencode');
-    const worker = new ExposedOpenCode(makeProviderConfig('opencode-acp'), tempDir, tempDir, createMockCtx() as any, skills);
+    const worker = new ExposedOpenCode(makeProviderConfig('opencode'), tempDir, tempDir, createMockCtx() as any, skills);
     // A stale gate file from an earlier launch must be replaced, not trusted.
     writeFileSync(join(tempDir, 'opencode-acp-gate.json'), '{"permissions":[]}', 'utf8');
     const launch = worker.launch(BASE_VIEW);
@@ -190,7 +190,7 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
     mockFind.mockReturnValue('/usr/local/bin/opencode');
     const ctx = createMockCtx();
     const worker = new ExposedOpenCode(
-      makeProviderConfig('opencode-acp', { protocol: { gatePermissions: false } }),
+      makeProviderConfig('opencode', { protocol: { gatePermissions: false } }),
       tempDir,
       tempDir,
       ctx as any,
@@ -206,7 +206,7 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
   it('keeps an existing OPENCODE_CONFIG from the parent env (no override, warn)', () => {
     mockFind.mockReturnValue('/usr/local/bin/opencode');
     const ctx = createMockCtx();
-    const worker = new ExposedOpenCode(makeProviderConfig('opencode-acp'), tempDir, tempDir, ctx as any, skills);
+    const worker = new ExposedOpenCode(makeProviderConfig('opencode'), tempDir, tempDir, ctx as any, skills);
     const userConfig = '/home/test-user/opencode.json';
     const launch = worker.launch({ ...BASE_VIEW, env: { ...BASE_VIEW.env, OPENCODE_CONFIG: userConfig } });
     expect(launch.env.OPENCODE_CONFIG).toBe(userConfig);
@@ -218,7 +218,7 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
     mockFind.mockReturnValue('/usr/local/bin/opencode');
     const ctx = createMockCtx();
     const worker = new ExposedOpenCode(
-      makeProviderConfig('opencode-acp', { permissionMode: 'agent' }),
+      makeProviderConfig('opencode', { permissionMode: 'agent' }),
       tempDir,
       tempDir,
       ctx as any,
@@ -231,14 +231,14 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
   });
 
   it('stopPolicy: 5000 / 2000 / trustUpdatesAfterCancel FALSE (conservative drop)', () => {
-    const worker = new ExposedOpenCode(makeProviderConfig('opencode-acp'), tempDir, tempDir, createMockCtx() as any, skills);
+    const worker = new ExposedOpenCode(makeProviderConfig('opencode'), tempDir, tempDir, createMockCtx() as any, skills);
     expect(worker.policy()).toEqual({ cancelGraceMs: 5_000, sigtermWaitMs: 2_000, trustUpdatesAfterCancel: false });
   });
 
   it('a missing CLI fails fast with the generic opencode hint (never silent degradation)', async () => {
     mockFind.mockReturnValue(undefined);
     const worker = new OpenCodeAcpWorker(
-      makeProviderConfig('opencode-acp'),
+      makeProviderConfig('opencode'),
       tempDir,
       tempDir,
       createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any),

@@ -1,7 +1,7 @@
 // Types barrel — re-export all for backward compatibility
 
 export type { ProviderConfig, WayangConfig, WorkerConfig, WorkerType, AcpProtocolConfig, ToolChoice, PermissionConfig, SensitiveMode, LoggingConfig } from './config';
-export { validateConfig, collectWorkerWarnings, WORKER_TYPES } from './config';
+export { validateConfig, collectWorkerWarnings, normalizeWorkerTypes, WORKER_TYPES } from './config';
 
 export type {
   ConversationEntry,

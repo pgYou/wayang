@@ -55,14 +55,14 @@ describe.skipIf(!process.env.ACP_REAL_CODEBUDDY)('real codebuddy: full turn (opt
     async () => {
       const dirs = makeRealDirs('full-turn');
       trackDir(dirs.root);
-      const worker = new WireTappingCodebuddyWorker(makeWorkerConfig('codebuddy-acp'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
+      const worker = new WireTappingCodebuddyWorker(makeWorkerConfig('codebuddy'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
       const queue = new RecordingSignalQueue(() => true); // safety net: approve any policy ask
       queue.bind(worker.permissionHandler);
       wireSignalContext(worker, dirs, queue, {
         workerId: 'w-real-cb-full',
         taskId: 'task-real-cb-full',
         taskTitle: 'Real codebuddy full turn',
-        workerType: 'codebuddy-acp',
+        workerType: 'codebuddy',
       });
 
       const captured: { result?: WorkerResult; durationMs: number } = { durationMs: 0 };
@@ -148,7 +148,7 @@ describe.skipIf(!process.env.ACP_REAL_CODEBUDDY)('real codebuddy: permission ask
       const dirs = makeRealDirs('ask-deny');
       trackDir(dirs.root);
       const forbiddenPath = `/tmp/wayang-acp-should-not-exist-${randomUUID()}.txt`;
-      const worker = new WireTappingCodebuddyWorker(makeWorkerConfig('codebuddy-acp'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
+      const worker = new WireTappingCodebuddyWorker(makeWorkerConfig('codebuddy'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
       // Refuse the requests that would WRITE the forbidden path; approve the
       // agent's read-only existence probes so the actual write request (the
       // interesting evidence) is reached.
@@ -168,7 +168,7 @@ describe.skipIf(!process.env.ACP_REAL_CODEBUDDY)('real codebuddy: permission ask
         workerId: 'w-real-cb-ask',
         taskId: 'task-real-cb-ask',
         taskTitle: 'Real codebuddy permission ask',
-        workerType: 'codebuddy-acp',
+        workerType: 'codebuddy',
       });
 
       const captured: { result?: WorkerResult; durationMs: number } = { durationMs: 0 };
@@ -252,14 +252,14 @@ describe.skipIf(!process.env.ACP_REAL_CODEBUDDY)('real codebuddy: cancel (opt-in
     async () => {
       const dirs = makeRealDirs('cancel');
       trackDir(dirs.root);
-      const worker = new WireTappingCodebuddyWorker(makeWorkerConfig('codebuddy-acp'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
+      const worker = new WireTappingCodebuddyWorker(makeWorkerConfig('codebuddy'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
       const queue = new RecordingSignalQueue(() => true);
       queue.bind(worker.permissionHandler);
       wireSignalContext(worker, dirs, queue, {
         workerId: 'w-real-cb-cancel',
         taskId: 'task-real-cb-cancel',
         taskTitle: 'Real codebuddy cancel',
-        workerType: 'codebuddy-acp',
+        workerType: 'codebuddy',
       });
 
       const captured: { result?: WorkerResult; durationMs: number } = { durationMs: 0 };
