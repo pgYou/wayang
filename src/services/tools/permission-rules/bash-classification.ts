@@ -277,6 +277,22 @@ const FIND_INNER_COMMAND_FLAGS: ReadonlySet<string> = new Set([
   '-exec', '-execdir', '-ok', '-okdir',
 ]);
 
+/**
+ * Heads that re-base the cwd, so every relative path in the segments AFTER them
+ * changes meaning. `cd` is spelled `cd`, but the lexer keeps a leading
+ * parenthesis inside the word — `(cd …` is a SUBSHELL, which restores the old
+ * cwd and is therefore exactly the shape a per-line cursor cannot follow.
+ */
+const CD_HEAD_PATTERN = /^\(*cd$/;
+
+/**
+ * Process the directory STACK rather than a plain working directory:
+ * `pushd <dir> && …` re-bases later relative paths exactly like `cd`, `popd`
+ * jumps to a directory whose value only the running shell knows. Neither can be
+ * resolved statically, so both fail closed like the `cd` shape.
+ */
+const DIRECTORY_STACK_COMMANDS: ReadonlySet<string> = new Set(['pushd', 'popd']);
+
 /** Shell control-flow keywords: a segment whose command word is one of these opens an inner command. */
 const COMPOUND_KEYWORDS: ReadonlySet<string> = new Set([
   'for', 'while', 'until', 'do', 'done', 'if', 'then', 'else', 'elif', 'fi',
@@ -285,9 +301,16 @@ const COMPOUND_KEYWORDS: ReadonlySet<string> = new Set([
 
 /**
  * The first unanalyzed-inner-command shape among `segments` (a label for the
- * approval reason), or undefined. `cd` is a shape only when another segment
- * follows it — a bare `cd` has no inner command, and `cd <dir> && ...` is the
- * form that quietly re-bases every later relative path.
+ * approval reason), or undefined. A cwd change is a shape only when another
+ * segment follows it — a bare `cd` has no inner command, and `cd <dir> && ...`
+ * is the form that quietly re-bases every later relative path.
+ *
+ * Four spellings are recognized, and only LITERAL `cd <dir>` chains are
+ * resolved elsewhere (see `applyCdChain`); everything else keeps this
+ * fail-closed ask: `cd <dir> && …` (including `cd -`, whose target is OLDPWD and
+ * `cd $VAR`, whose target this gate cannot know), the subshell form `(cd …)`
+ * (it restores the old cwd, so one cursor cannot follow it) and the directory
+ * stack `pushd` / `popd`.
  */
 export function unanalyzedInnerCommand(segments: readonly ShellSegment[]): string | undefined {
   for (let i = 0; i < segments.length; i += 1) {
@@ -300,7 +323,15 @@ export function unanalyzedInnerCommand(segments: readonly ShellSegment[]): strin
       if (flag !== undefined) return `find ${flag}`;
     }
     if (COMPOUND_KEYWORDS.has(head.command)) return 'shell compound keyword (for / do / then ...)';
-    if (head.command === 'cd' && i < segments.length - 1) return 'cd <dir> && ...';
+    // A cwd change re-bases the relative paths of everything after it. Only a
+    // FOLLOWED segment is a shape: a bare `cd` / `pushd` runs nothing inside.
+    if (i < segments.length - 1) {
+      if (head.command === 'cd') return 'cd <dir> && ...';
+      // `(cd …)` is a subshell — it restores the old cwd, so the line cannot be
+      // followed with one cursor, which is why it lands here as its own shape.
+      if (CD_HEAD_PATTERN.test(head.command)) return `subshell (${head.command.replace(/^\(+/, '')} ...)`;
+      if (DIRECTORY_STACK_COMMANDS.has(head.command)) return `${head.command} <dir> && ...`;
+    }
   }
   return undefined;
 }

@@ -15,8 +15,8 @@ export function tokenizeShellLite(command: string): ShellTokenizeResult {
   let pendingHeredocs: PendingHeredoc[] = [];
   let i = 0;
 
-  const endSegment = () => {
-    if (tokens.length > 0) segments.push({ tokens });
+  const endSegment = (operator?: string) => {
+    if (tokens.length > 0) segments.push(operator === undefined ? { tokens } : { tokens, operator });
     tokens = [];
   };
 
@@ -70,8 +70,11 @@ export function tokenizeShellLite(command: string): ShellTokenizeResult {
         continue;
       }
       i += 1;
+      const operatorStart = i - 1;
       while (i < n && (command[i] === '|' || command[i] === ';' || command[i] === '&')) i += 1;
-      endSegment();
+      // The operator RUN is recorded as one string (`&&`, `||`, `|&`, `;;`), so
+      // a consumer can tell `a && b` from `a; b` without re-lexing the input.
+      endSegment(command.slice(operatorStart, i));
       continue;
     }
 

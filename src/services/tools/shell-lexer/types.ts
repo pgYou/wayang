@@ -39,6 +39,15 @@ export type ShellToken =
 /** One command of a command line (a pipeline stage, a `&&` branch, …). */
 export interface ShellSegment {
   tokens: ShellToken[];
+  /**
+   * The control operator that ENDED this segment, as written (`&&`, `||`, `;`,
+   * `|`, …). Absent when the segment ended a line (newline or end of input).
+   *
+   * The segments alone would otherwise lose the operator: `a; b` and `a && b`
+   * produce identical segment lists, yet they mean different things. A `cd`
+   * slice (see `applyCdChain`) may only cross `&&`.
+   */
+  operator?: string;
 }
 
 /** Lexer result: the segments, or why the command could not be parsed. */

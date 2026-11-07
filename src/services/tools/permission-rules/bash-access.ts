@@ -5,6 +5,7 @@ import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
 import { segmentAccess, unanalyzedInnerCommand, unverifiedReadOnlyCommand } from './bash-classification';
 import { isDangerousCommandLine } from './bash-head';
 import { commandAccess, extractPathCandidates, type BashCandidate } from './bash-paths';
+import { applyCdChain } from './cd-chain';
 import { expandHome, expandHomeVars } from './home-expansion';
 import { evaluateShellScripts, unanalyzedScriptFile } from './shell-script';
 import { evaluateSubstitutions } from './substitutions';
@@ -55,14 +56,16 @@ function fallbackSensitiveHit(
  * `unknown` (which could not even reach that rule) to a named `read`.
  *
  * Ordering: a hard refusal (only reachable under `sensitiveMode: 'deny'`, from
- * the candidate sweep) → destructive-command tier → a shell `-c` script judged
- * by these same rules (see `evaluateShellScripts`) → dynamic constructs (a
- * command substitution that is not read-only, an output redirection into a real
- * file, a command the lexer cannot parse) → the read-only-unverified
- * escalation (a table command that failed its deferred condition) → the #51
- * fail-closed tier for shapes carrying an unanalyzed inner command (see
- * `unanalyzedInnerCommand` / `unanalyzedScriptFile`) → remaining `ask`
- * candidates (a sensitive ask first, then the ordinary ones) → allow.
+ * the candidate sweep or the `cd` slice) → destructive-command tier → a shell
+ * `-c` script judged by these same rules (see `evaluateShellScripts`) → dynamic
+ * constructs (a command substitution that is not read-only, an output
+ * redirection into a real file, a command the lexer cannot parse) → the
+ * read-only-unverified escalation (a table command that failed its deferred
+ * condition) → the `cd` slice's verdict for a chain that lands somewhere it may
+ * not go (see `applyCdChain`) → the #51 fail-closed tier for shapes carrying an
+ * unanalyzed inner command (see `unanalyzedInnerCommand` /
+ * `unanalyzedScriptFile`) → remaining `ask` candidates (a sensitive ask first,
+ * then the ordinary ones) → allow.
  * A hard refusal therefore outranks the destructive-command heuristic, and a
  * sensitive `ask` carries its hit into the approval request.
  *
@@ -76,6 +79,8 @@ function fallbackSensitiveHit(
  * script file, a compound keyword) — neither may rest on a silent allow.
  * Relative spellings are never candidates, so the sensitive list cannot see
  * them; they are confined by the task workspace (the shell's cwd), as before.
+ * The ONE exception is a resolved `cd` chain: where the shell ends up is judged
+ * (see `applyCdChain`), which is exactly what confines those relative spellings.
  *
  * Discard redirections (`> /dev/null`, `2>&1`) and read-only command
  * substitutions are exempt from the dynamic tier — see `evaluateSubstitutions`
@@ -114,7 +119,20 @@ export function evaluateBashCommand(
     };
   }
 
-  const segments = tokenized.segments;
+  // The `cd` slice: a leading run of literal `cd <dir>` segments chained ONLY by
+  // `&&` is walked with a local cwd CURSOR (see `applyCdChain`), and each target
+  // is judged as a read against the scope it lands in. Consumed segments drop
+  // out of the analysis below, so the rest of the line is judged exactly as
+  // before — against the directory the shell will actually be in. The verdict
+  // for a target that lands elsewhere is an ASK carrying its own reason (or, in
+  // `sensitiveMode: 'deny'`, the policy's refusal). Nothing here can loosen a
+  // judgement: shapes the slice does not recognize (`cd -`, `cd $X`, `(cd …`,
+  // `cd a; cd b`, pushd/popd) are left untouched for the #51 fallback.
+  const cdChain = applyCdChain(scope, tokenized.segments);
+  if (cdChain.decision?.decision === 'deny') return cdChain.decision;
+  const cdAsk = cdChain.decision?.decision === 'ask' ? cdChain.decision : undefined;
+
+  const segments = cdChain.segments;
   const redirections = classifyRedirections(segments);
 
   const candidates: BashCandidate[] = [];
@@ -276,6 +294,14 @@ export function evaluateBashCommand(
       access: lineAccess === 'write' ? 'write' : 'unknown',
     };
   }
+
+  // The `cd` slice's own verdict, after every path- and command-level tier
+  // above: the chain reached a directory that is sensitive, readable-but-not-
+  // silent, or outside the scope, so the whole line asks with a reason naming
+  // the cd target and the path it resolves to. It outranks the #51 fallback on
+  // purpose — the shape IS a `cd <dir> && …` chain, and "outside the allowed
+  // scope" is the actionable answer, not "this runs an inner command".
+  if (cdAsk) return cdAsk;
 
   // #51 fail-closed fallback: shapes that carry an inner command this gate
   // never analyzes (xargs, find -exec / -execdir / -ok, eval, cd && ..., a
