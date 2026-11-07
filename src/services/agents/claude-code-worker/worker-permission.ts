@@ -12,6 +12,7 @@ import {
   type PermissionOperation,
 } from '@/services/permission/permission-audit';
 import { decideToolAccess, type ToolAccessDecision, type WorkerAccessScope } from '@/services/tools/permission-rules';
+import { reusableGrantKeys } from '@/services/tools/permission-middleware';
 import { generateId } from '@/utils/id';
 import { homedir } from 'node:os';
 import { ClaudeWorkerBase } from './worker-base';
@@ -116,7 +117,7 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
       const verdict = decideToolAccess(scope, 'bash', { command: String(input.command ?? '') });
       const operation = operationForTool('bash');
       if (verdict.decision === 'deny') return this.denyWithAudit(toolName, input, verdict, operation);
-      if (verdict.decision === 'ask') return this.requestPermission(toolName, input, this.askOf(verdict, operation));
+      if (verdict.decision === 'ask') return this.handleAsk(toolName, input, verdict, operation);
       return { behavior: 'allow' };
     }
 
@@ -139,7 +140,7 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
       }
       const verdict = decideToolAccess(scope, fileTool.policyTool, { path: rawPath });
       if (verdict.decision === 'deny') return this.denyWithAudit(toolName, input, verdict, operation);
-      if (verdict.decision === 'ask') return this.requestPermission(toolName, input, this.askOf(verdict, operation));
+      if (verdict.decision === 'ask') return this.handleAsk(toolName, input, verdict, operation);
       return { behavior: 'allow' };
     }
 
@@ -211,6 +212,53 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
     };
   }
 
+  /**
+   * Apply the SAME task approval-memory rule as the puppet middleware
+   * (`permission-middleware.ts`): when every path this `ask` needs was already
+   * approved for reading in THIS task, allow without emitting a
+   * `permission_request` and audit the reuse as `granted-by-memory`. Otherwise
+   * emit the request and, on approval, remember one grant per asking path.
+   *
+   * `grants`/`approvalMemory` reach here through setSignalContext (engine →
+   * worker-wiring). A worker driven directly has no store and keeps asking, so
+   * the standalone behaviour is unchanged. The key/scope judgement is the
+   * exported `reusableGrantKeys` — no second copy of the rule lives here.
+   */
+  private handleAsk(
+    toolName: string,
+    input: Record<string, unknown>,
+    verdict: ToolAccessDecision,
+    operation: PermissionOperation,
+  ): Promise<PermissionResult> {
+    const ctx = this._runContext;
+    if (!ctx) return Promise.resolve({ behavior: 'allow' });
+    const store = this._approvalGrants;
+    const grantKeys = this._approvalMemoryMode === 'task' && store
+      ? reusableGrantKeys(verdict)
+      : [];
+
+    if (store && grantKeys.length > 0 && grantKeys.every((key) => store.has(ctx.taskId, key))) {
+      recordPermissionAudit(this.logger, {
+        decision: 'granted-by-memory',
+        grantId: store.get(ctx.taskId, grantKeys[0])?.grantId,
+        operation,
+        // reusableGrantKeys only ever returns read keys.
+        access: 'read',
+        resolvedPath: verdict.resolvedPath,
+        requestedPath: this.requestedPathOf(input),
+        matchedEntry: verdict.matchedEntry,
+        matchedSource: verdict.matchedSource,
+        matchedRule: verdict.matchedRule,
+        taskId: ctx.taskId,
+        workerId: ctx.workerId,
+        toolName,
+      });
+      return Promise.resolve({ behavior: 'allow' });
+    }
+
+    return this.requestPermission(toolName, input, this.askOf(verdict, operation), grantKeys);
+  }
+
   /** The target as the worker spelled it (for auditing against the prompt). */
   private requestedPathOf(input: Record<string, unknown>): string | undefined {
     for (const key of ['file_path', 'notebook_path', 'path']) {
@@ -229,6 +277,7 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
     toolName: string,
     input: Record<string, unknown>,
     ask: PermissionAsk,
+    grantKeys: string[] = [],
   ): Promise<PermissionResult> {
     if (!this._signalQueue || !this._runContext) return { behavior: 'allow' };
 
@@ -285,6 +334,16 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
         source: result.message === 'Permission request timed out' ? ('timeout' as const) : ('controller' as const),
       }),
     });
+
+    // An approved READ that is not a sensitive hit opens one grant per asking
+    // path, so the same path inside this task asks no further. A denial writes
+    // nothing. Mirrors the puppet middleware's post-approval write (#46/#58);
+    // `grantKeys` is empty when approval memory is off or the ask names no path.
+    if (!denied && this._approvalGrants) {
+      for (const key of grantKeys) {
+        this._approvalGrants.remember(this._runContext.taskId, key, { requestId });
+      }
+    }
     return result;
   }
 

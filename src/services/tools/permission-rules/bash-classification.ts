@@ -258,3 +258,49 @@ export function unverifiedReadOnlyCommand(segments: readonly ShellSegment[]): st
   }
   return undefined;
 }
+
+/**
+ * #51 fail-closed tier: shell shapes that carry an INNER command this gate
+ * never analyzes. Judged on the command position (see `headCommand`), so a
+ * wrapper prefix does not hide the shape and a shape word used as a mere
+ * argument (`echo xargs`) does not trip it.
+ *
+ * `bash -c` / `sh -c` scripts are deliberately NOT here — `evaluateShellScripts`
+ * already judges them recursively — and a script FILE operand is handled by
+ * `unanalyzedScriptFile` in `shell-script.ts`. No parser is added: recognizing
+ * the shape is enough to escalate, and the returned label names it so the
+ * approval reason can say WHY the line is being asked about.
+ */
+
+/** find flags that hand control to ANOTHER command (an unanalyzed inner command). */
+const FIND_INNER_COMMAND_FLAGS: ReadonlySet<string> = new Set([
+  '-exec', '-execdir', '-ok', '-okdir',
+]);
+
+/** Shell control-flow keywords: a segment whose command word is one of these opens an inner command. */
+const COMPOUND_KEYWORDS: ReadonlySet<string> = new Set([
+  'for', 'while', 'until', 'do', 'done', 'if', 'then', 'else', 'elif', 'fi',
+  'case', 'esac', 'select', 'function', '{', '}',
+]);
+
+/**
+ * The first unanalyzed-inner-command shape among `segments` (a label for the
+ * approval reason), or undefined. `cd` is a shape only when another segment
+ * follows it — a bare `cd` has no inner command, and `cd <dir> && ...` is the
+ * form that quietly re-bases every later relative path.
+ */
+export function unanalyzedInnerCommand(segments: readonly ShellSegment[]): string | undefined {
+  for (let i = 0; i < segments.length; i += 1) {
+    const head = headCommand(segments[i]);
+    if (head === undefined) continue;
+    if (head.command === 'xargs') return 'xargs';
+    if (head.command === 'eval') return 'eval';
+    if (head.command === 'find') {
+      const flag = head.words.find((word) => FIND_INNER_COMMAND_FLAGS.has(word));
+      if (flag !== undefined) return `find ${flag}`;
+    }
+    if (COMPOUND_KEYWORDS.has(head.command)) return 'shell compound keyword (for / do / then ...)';
+    if (head.command === 'cd' && i < segments.length - 1) return 'cd <dir> && ...';
+  }
+  return undefined;
+}

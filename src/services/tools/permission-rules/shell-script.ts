@@ -39,17 +39,18 @@ interface ShellScript {
  * as the script. The lexer already removed the quoting, so the script is the
  * bare command text a shell would run.
  *
- * `bash script.sh` (no `-c`) deliberately returns nothing: a script FILE's
- * contents are not part of the command line this gate judges, exactly like
- * `xargs` and `find -exec` (see issue #51). Its verdict there stays as before.
+ * `bash script.sh` (no `-c`) returns `'script-file'`: a script FILE's contents
+ * are not part of the command line this gate judges, so this gate cannot see
+ * the inner commands it runs. `evaluateShellScripts` leaves that case alone;
+ * `unanalyzedScriptFile` reports it to the #51 fail-closed tier instead.
  */
-function shellScriptOf(segment: ShellSegment): ShellScript | 'missing-operand' | undefined {
+function shellScriptOf(segment: ShellSegment): ShellScript | 'missing-operand' | 'script-file' | undefined {
   const head = headCommand(segment);
   if (head === undefined || !SHELL_COMMANDS.has(head.command)) return undefined;
   const words = head.words;
   for (let i = 1; i < words.length; i += 1) {
     const word = words[i];
-    if (word === '--') return undefined; // everything after `--` is an operand
+    if (word === '--') return words[i + 1] === undefined ? undefined : 'script-file';
     if (SHELL_OPTIONS_WITH_VALUE.has(word)) {
       i += 1; // `bash -o pipefail -c '…'`: the option value is not an operand
       continue;
@@ -62,8 +63,10 @@ function shellScriptOf(segment: ShellSegment): ShellScript | 'missing-operand' |
       return { shell: head.command, script: word.slice('--command='.length) };
     }
     if (word.startsWith('--')) continue; // other long flags take no value here
-    // The first operand without a `-c` before it is the script FILE.
-    if (!word.startsWith('-')) return undefined;
+    // The first operand without a `-c` before it is the script FILE: its
+    // contents are not on the command line, so (#51) it is reported as an
+    // unanalyzed inner command instead of silently returning `undefined`.
+    if (!word.startsWith('-')) return 'script-file';
     if (word.slice(1).includes('c')) {
       const script = words[i + 1];
       return script === undefined ? 'missing-operand' : { shell: head.command, script };
@@ -112,7 +115,9 @@ export function evaluateShellScripts(
 ): ToolAccessDecision | undefined {
   for (const segment of segments) {
     const found = shellScriptOf(segment);
-    if (found === undefined) continue;
+    // A script FILE has no `-c` text to recurse into; its escalation belongs to
+    // the #51 fail-closed tier (see `unanalyzedScriptFile`), not here.
+    if (found === undefined || found === 'script-file') continue;
     if (found === 'missing-operand') {
       return {
         decision: 'ask',
@@ -156,6 +161,24 @@ export function evaluateShellScripts(
         ...(verdict.askPaths !== undefined && { askPaths: verdict.askPaths }),
       };
     }
+  }
+  return undefined;
+}
+
+/**
+ * #51: a shell invoked with a SCRIPT FILE operand (`bash script.sh`,
+ * `sh deploy.sh`) runs commands whose text is not on the command line, so this
+ * gate can neither see nor judge them. `-c` scripts are NOT flagged — they are
+ * already judged recursively by `evaluateShellScripts` (see `shellScriptOf`).
+ *
+ * Returns a shape label for the approval reason, or undefined. No file is read:
+ * recognizing the shape is enough to fail closed.
+ */
+export function unanalyzedScriptFile(segments: readonly ShellSegment[]): string | undefined {
+  for (const segment of segments) {
+    if (shellScriptOf(segment) !== 'script-file') continue;
+    const shell = headCommand(segment)?.command ?? 'shell';
+    return `${shell} script file (contents not read)`;
   }
   return undefined;
 }

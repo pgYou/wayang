@@ -10,8 +10,10 @@
  *   runtimeState.acp.pid + audit transport:'acp';
  * - stopReason mapping: end_turn → completed (summary = last agent text),
  *   refusal → failed with the agent-error wording, cancelled → failed
- *   'Aborted' — EXCEPT when the controller denied a permission during the
- *   turn (#25, measured opencode): then 'Permission denied by user: <tool>';
+ *   'Aborted' — EXCEPT when a permission was refused during the turn
+ *   (measured opencode): the refusal source decides the wording (#56) —
+ *   'Permission denied by policy: <tool>', 'Permission request timed out:
+ *   <tool>', or 'Permission denied by user: <tool>';
  * - cancel: late updates differ per stopPolicy — trustUpdatesAfterCancel
  *   true keeps them in the transcript, false drops + counts;
  * - readiness attribution: an auth keyword on stderr during session/new
@@ -44,6 +46,7 @@ import type { AcpTransport } from '@/services/acp/transport';
 import type { IWorkerInstance } from '@/types/worker';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
 import { FakeAgentTransport } from './fake-agent-transport';
+import { denialKey, sanitizeTarget, type TurnDenial } from '@/services/agents/acp/turn-attribution';
 
 const skills = new SkillRegistry([]);
 
@@ -113,6 +116,15 @@ class TestAcpWorker extends AcpWorkerRun implements IWorkerInstance {
     const logger = this.ctx.logger as unknown as { info: { mock: { calls: any[] } } };
     return logger.info.mock.calls.filter((call) => call[0]?.audit === 'permission').map((call) => call[0]);
   }
+
+  /** #56: resolve the failure wording for a synthetic, structured ledger. */
+  resolveDenial(events: Array<{ source: 'policy' | 'timeout' | 'controller'; toolName: string }>): string | null {
+    this._turnDenials = events.map((e): TurnDenial => {
+      const sanitizedTarget = sanitizeTarget('');
+      return { ...e, reason: '', sanitizedTarget, key: denialKey({ ...e, sanitizedTarget }), injectable: e.source !== 'controller' };
+    });
+    return this.denialFailureError();
+  }
 }
 
 // --- JSON-RPC message helpers (the fake agent speaks ndjson) ---
@@ -121,6 +133,34 @@ class TestAcpWorker extends AcpWorkerRun implements IWorkerInstance {
 function respondTo(transport: FakeAgentTransport, clientLineIndex: number, result: unknown): void {
   const request = transport.clientMessages[clientLineIndex] as { id: number | string };
   transport.agentMessage({ jsonrpc: '2.0', id: request.id, result });
+}
+
+/**
+ * Locate the Nth session/prompt by METHOD NAME (round count), not a fixed
+ * client-line index: reissue/delivery rounds add lines and shift indices.
+ */
+async function nthPromptIndex(transport: FakeAgentTransport, n: number): Promise<number> {
+  for (;;) {
+    const indices = transport.clientMessages
+      .map((m, i) => ({ m, i }))
+      .filter(({ m }) => m.method === 'session/prompt')
+      .map(({ i }) => i);
+    if (indices.length > n) return indices[n];
+    await transport.waitForClientOutput(transport.clientOutput.length + 1);
+  }
+}
+
+/** Respond to the Nth session/prompt; waits for that round to be written. */
+async function respondToPrompt(transport: FakeAgentTransport, n: number, result: unknown): Promise<void> {
+  respondTo(transport, await nthPromptIndex(transport, n), result);
+}
+
+/** Wait until the client has written the JSON-RPC answer for a permission request id. */
+async function waitForPermissionAnswer(transport: FakeAgentTransport, id: number): Promise<void> {
+  for (;;) {
+    if (transport.clientMessages.some((m) => m.id === id)) return;
+    await transport.waitForClientOutput(transport.clientOutput.length + 1);
+  }
 }
 
 const HANDSHAKE_RESULT = {
@@ -247,7 +287,7 @@ describe('BaseAcpWorker: end-to-end turn (frozen §8 case 1 shape)', () => {
       status: 'completed',
       rawOutput: { type: 'text', text: 'SECRET' },
     });
-    respondTo(worker.transport, 2, { stopReason: 'end_turn' });
+    await respondToPrompt(worker.transport, 0, { stopReason:'end_turn' });
 
     const result = await runPromise;
     expect(result.status).toBe('completed');
@@ -294,11 +334,13 @@ describe('BaseAcpWorker: end-to-end turn (frozen §8 case 1 shape)', () => {
     const runPromise = worker.run(TASK, {});
     await openFakeSession(worker);
     await worker.transport.waitForClientOutput(3);
-    respondTo(worker.transport, 2, { stopReason: 'refusal' });
+    await respondToPrompt(worker.transport, 0, { stopReason:'refusal' });
     const result = await runPromise;
     expect(result.status).toBe('failed');
-    expect(result.error).toContain('codebuddy-acp');
+    // #56: a non-end_turn stop with no cancel/denial is an unexpected end,
+    // worded by turnEndErrorText instead of the old agent-error template.
     expect(result.error).toContain('refusal');
+    expect(result.error).toContain('unexpectedly');
   });
 
   it('auth keyword on stderr during session/new short-circuits to auth-required', async () => {
@@ -368,7 +410,7 @@ describe('BaseAcpWorker: cancel and late updates (frozen §6)', () => {
       content: { type: 'text', text: 'late wrap-up' },
       messageId: 'm-2',
     });
-    respondTo(worker.transport, 2, { stopReason: 'cancelled' });
+    await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });
 
     const result = await runPromise;
     expect(result).toEqual({ status: 'failed', error: 'Aborted' });
@@ -397,7 +439,7 @@ describe('BaseAcpWorker: cancel and late updates (frozen §6)', () => {
       content: { type: 'text', text: 'late wrap-up' },
       messageId: 'm-2',
     });
-    respondTo(worker.transport, 2, { stopReason: 'cancelled' });
+    await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });
 
     const result = await runPromise;
     expect(result).toEqual({ status: 'failed', error: 'Aborted' });
@@ -433,7 +475,7 @@ describe('BaseAcpWorker: cancel and late updates (frozen §6)', () => {
     await worker.transport.waitForClientOutput(5);
     const answer = worker.transport.clientMessages[4] as { id: number; result: unknown };
     expect(answer).toMatchObject({ id: 501, result: { outcome: { outcome: 'cancelled' } } });
-    respondTo(worker.transport, 2, { stopReason: 'cancelled' });
+    await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });
     const result = await runPromise;
     expect(result).toEqual({ status: 'failed', error: 'Aborted' });
     // The cleanup settlement left an audit trail: denied, source 'aborted'.
@@ -452,19 +494,26 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  /** Sensitive execute + permission request, same measured shape as the e2e case. */
-  function sendSensitivePermissionRequest(worker: TestAcpWorker, requestId: number): void {
-    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-d1', title: 'Bash', kind: 'other', status: 'in_progress', rawInput: {} });
-    sendUpdate(worker, { sessionUpdate: 'tool_call_update', toolCallId: 'tc-d1', rawInput: { command: 'cat /home/test-user/.ssh/id_rsa' } });
+  /**
+   * Sensitive execute + permission request (measured shape). toolCallId,
+   * command and name are parameterised so denial KEYS can be repeated or
+   * varied across turns (#56).
+   */
+  function sendSensitivePermissionRequest(
+    worker: TestAcpWorker,
+    requestId: number,
+    toolCallId = 'tc-d1',
+    command = 'cat /home/test-user/.ssh/id_rsa',
+    name?: string,
+  ): void {
+    const nameField = name ? { name } : {};
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId, title: 'Bash', ...nameField, kind: 'other', status: 'in_progress', rawInput: {} });
+    sendUpdate(worker, { sessionUpdate: 'tool_call_update', toolCallId, rawInput: { command } });
     sendUpdate(worker, {
-      sessionUpdate: 'tool_call',
-      toolCallId: 'tc-d1',
-      title: 'cat sensitive',
-      kind: 'execute',
-      status: 'pending',
-      rawInput: { command: 'cat /home/test-user/.ssh/id_rsa' },
+      sessionUpdate: 'tool_call', toolCallId, title: 'cat sensitive', ...nameField,
+      kind: 'execute', status: 'pending', rawInput: { command },
     });
-    sendPermissionRequest(worker, requestId, { toolCallId: 'tc-d1', rawInput: { command: 'cat /home/test-user/.ssh/id_rsa' } }, [
+    sendPermissionRequest(worker, requestId, { toolCallId, rawInput: { command } }, [
       { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
       { optionId: 'reject', name: 'Reject once', kind: 'reject_once' },
     ]);
@@ -500,10 +549,14 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
 
     // opencode ends the turn as 'cancelled' on a rejected permission
     // (measured #25) — the denial, not a user abort, is the cause.
-    respondTo(worker.transport, 2, { stopReason: 'cancelled' });
+    await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });
     const result = await runPromise;
     expect(result.status).toBe('failed');
     expect(result.error).toBe('Permission denied by user: execute');
+    // #56: a user denial ALWAYS terminates — no reissue round, no notice.
+    const prompts = worker.transport.clientMessages.filter((m) => m.method === 'session/prompt');
+    expect(prompts).toHaveLength(1);
+    expect(prompts.some((m) => JSON.stringify(m).includes('[SYSTEM NOTICE]'))).toBe(false);
   });
 
   it('a denial from an EARLIER turn does not relabel a later real cancel (per-turn ledger)', async () => {
@@ -515,6 +568,69 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
       taskId: TASK.id,
       taskTitle: TASK.title,
       workerType: 'codebuddy-acp',
+      // #56: a controller denial now terminates immediately, so drive turn 1
+      // with a POLICY denial instead — that is what opens the reissue round.
+      accessScope: { ...SCOPE, permission: { sensitiveMode: 'deny' } },
+      grants: new ApprovalMemory(),
+      approvalMemory: 'task',
+    });
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    // Turn 1: policy hard-deny → the loop reissues with a denial notice.
+    sendSensitivePermissionRequest(worker, 503, 'tc-deny2');
+    await waitForPermissionAnswer(worker.transport, 503);
+    await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });
+
+    // Turn 2 (the reissue) is open; a REAL cancel arrives mid-turn. The
+    // turn-1 denial must not relabel it as a policy failure.
+    await nthPromptIndex(worker.transport, 1);
+    worker.abort();
+    await respondToPrompt(worker.transport, 1, { stopReason:'cancelled' });
+    const result = await runPromise;
+    expect(result).toEqual({ status: 'failed', error: 'Aborted' });
+  });
+
+  it('a policy hard-deny reissues once with a denial notice, then completes (#56)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext({
+      signalQueue: queue as any,
+      workerId: 'w-policy',
+      taskId: TASK.id,
+      taskTitle: TASK.title,
+      workerType: 'codebuddy-acp',
+      accessScope: { ...SCOPE, permission: { sensitiveMode: 'deny' } },
+      grants: new ApprovalMemory(),
+      approvalMemory: 'task',
+    });
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    // The sensitive path is refused by the policy itself — no controller prompt.
+    sendSensitivePermissionRequest(worker, 504);
+    expect(queue.signals).toHaveLength(0);
+    await waitForPermissionAnswer(worker.transport, 504);
+
+    await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });
+    // #56: the first policy denial is a REISSUE, not a terminal failure.
+    const idx = await nthPromptIndex(worker.transport, 1);
+    const text = (worker.transport.clientMessages[idx] as any).params.prompt[0].text as string;
+    expect(text).toContain('[SYSTEM NOTICE]');
+    await respondToPrompt(worker.transport, 1, { stopReason:'end_turn' });
+    const result = await runPromise;
+    expect(result.status).toBe('completed');
+  });
+
+  it('an approval timeout reissues once with a denial notice, then completes (#56)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext({
+      signalQueue: queue as any,
+      workerId: 'w-timeout',
+      taskId: TASK.id,
+      taskTitle: TASK.title,
+      workerType: 'codebuddy-acp',
       accessScope: SCOPE,
       grants: new ApprovalMemory(),
       approvalMemory: 'task',
@@ -522,23 +638,43 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     const runPromise = worker.run(TASK, {});
     await openFakeSession(worker);
 
-    // Queue a controller message so turn 1's end_turn opens turn 2.
-    worker.acceptMessage('status?');
-
-    // Turn 1: the controller denies, but the agent ends the turn gracefully.
-    sendSensitivePermissionRequest(worker, 503);
+    sendSensitivePermissionRequest(worker, 505);
+    expect(queue.signals).toHaveLength(1);
+    // Simulate the approval wait expiring (reason 'timeout') through the same
+    // permissionHandler channel — deterministic under the fake transport.
     const payload = queue.signals[0].payload;
-    expect(worker.permissionHandler.resolvePermission(payload.requestId, false)).toBe(true);
-    await worker.transport.waitForClientOutput(4);
-    respondTo(worker.transport, 2, { stopReason: 'end_turn' });
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'timeout')).toBe(true);
+    await waitForPermissionAnswer(worker.transport, 505);
 
-    // Turn 2 opens (line 5: the second session/prompt), then a REAL cancel
-    // arrives mid-turn — the turn-1 denial must not relabel it.
-    await worker.transport.waitForClientOutput(5);
-    worker.abort();
-    respondTo(worker.transport, 4, { stopReason: 'cancelled' });
+    await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });
+    // #56: a timeout denial is a REISSUE, not a terminal failure.
+    const idx = await nthPromptIndex(worker.transport, 1);
+    const text = (worker.transport.clientMessages[idx] as any).params.prompt[0].text as string;
+    expect(text).toContain('[SYSTEM NOTICE]');
+    await respondToPrompt(worker.transport, 1, { stopReason:'end_turn' });
     const result = await runPromise;
-    expect(result).toEqual({ status: 'failed', error: 'Aborted' });
+    expect(result.status).toBe('completed');
+  });
+
+  it('denial wording picks the first source by priority policy > timeout > controller (#56)', () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    expect(worker.resolveDenial([])).toBeNull(); // no refusal → real cancel → 'Aborted'
+    expect(worker.resolveDenial([{ source: 'controller', toolName: 'read' }])).toBe('Permission denied by user: read');
+    expect(worker.resolveDenial([{ source: 'timeout', toolName: 'bash' }])).toBe('Permission request timed out: bash');
+    expect(worker.resolveDenial([{ source: 'policy', toolName: 'edit_file' }])).toBe('Permission denied by policy: edit_file');
+    expect(
+      worker.resolveDenial([
+        { source: 'controller', toolName: 'read' },
+        { source: 'timeout', toolName: 'bash' },
+      ]),
+    ).toBe('Permission request timed out: bash');
+    expect(
+      worker.resolveDenial([
+        { source: 'controller', toolName: 'read' },
+        { source: 'timeout', toolName: 'bash' },
+        { source: 'policy', toolName: 'edit_file' },
+      ]),
+    ).toBe('Permission denied by policy: edit_file');
   });
 });
 
@@ -567,13 +703,13 @@ describe('BaseAcpWorker: messaging and live status', () => {
     expect(worker.pendingMessages()).toEqual(['status?']);
 
     // Turn 1 ends with a queued message → a second turn starts for it.
-    respondTo(worker.transport, 2, { stopReason: 'end_turn' });
-    await worker.transport.waitForClientOutput(4); // turn-2 prompt
-    const secondPrompt = worker.transport.clientMessages[3] as { params: { prompt: unknown[] } };
+    await respondToPrompt(worker.transport, 0, { stopReason:'end_turn' });
+    const secondPromptIdx = await nthPromptIndex(worker.transport, 1);
+    const secondPrompt = worker.transport.clientMessages[secondPromptIdx] as { params: { prompt: unknown[] } };
     expect(secondPrompt.params.prompt).toEqual([{ type: 'text', text: '[Controller message] status?' }]);
 
     // Turn 2 ends with nothing queued → the run completes and closes input.
-    respondTo(worker.transport, 3, { stopReason: 'end_turn' });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
     const result = await runPromise;
     expect(result.status).toBe('completed');
     expect(worker.getLiveStatus()).toEqual({ resultReceived: true, streamEnded: true });
@@ -590,7 +726,7 @@ describe('BaseAcpWorker: messaging and live status', () => {
     const runPromise = worker.run(TASK, {});
     await openFakeSession(worker);
     worker.abort();
-    respondTo(worker.transport, 2, { stopReason: 'cancelled' });
+    await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });
     const result = await runPromise;
     expect(result).toEqual({ status: 'failed', error: 'Aborted' });
     expect(worker.acceptMessage('nope')).toBe(false);

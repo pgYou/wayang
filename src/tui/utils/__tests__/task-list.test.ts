@@ -363,6 +363,64 @@ describe('formatTaskRow', () => {
     expect(formatTaskRow(task, { resultMaxWidth: 5 })).toBe('[completed] t-1: d → abcd…');
     expect(formatTaskRow(task, { resultMaxWidth: 0 })).toBe('[completed] t-1: d');
   });
+
+  it('adds a worker-type tag and a running elapsed time when timestamps are present', () => {
+    const task = makeTask({
+      id: 't-run',
+      status: 'running',
+      description: 'scan repo',
+      workerType: 'puppet',
+      startedAt: 1_000,
+    });
+
+    expect(formatTaskRow(task, { now: 6_000 }))
+      .toBe('[running] t-run: scan repo · 🧸 puppet · 已运行 5.0s');
+  });
+
+  it('shows the recorded total duration for a terminal task, ignoring now', () => {
+    const task = makeTask({
+      id: 't-done',
+      status: 'completed',
+      description: 'build',
+      workerType: 'claude-code',
+      startedAt: 1_000,
+      completedAt: 13_500,
+      result: 'ok',
+    });
+
+    const row = formatTaskRow(task, { now: 99_000 });
+
+    expect(row).toBe('[completed] t-done: build · 🤖 claude-code · 耗时 12.5s → ok');
+    expect(row).not.toContain('已运行');
+  });
+
+  it('renders a failed task with a one-line, width-capped error digest', () => {
+    const task = makeTask({
+      id: 't-fail',
+      status: 'failed',
+      description: 'run build',
+      workerType: 'puppet',
+      startedAt: 1_000,
+      completedAt: 4_000,
+      error: 'TypeError: x is not a function\n  at run (a.ts:1)\n  at main (b.ts:2)\n' + 'E'.repeat(200),
+    });
+
+    const row = formatTaskRow(task, { now: 9_000 });
+    const digest = row.split(' ✗ ')[1];
+
+    expect(row).toContain('[failed] t-fail:');
+    expect(row).toContain('耗时 3.0s');
+    expect(row).toContain('✗ TypeError: x is not a function');
+    expect(row).not.toContain('\n');
+    expect(row).not.toContain('\t');
+    expect(digest.endsWith('…')).toBe(true);
+    expect(stringWidth(digest)).toBeLessThanOrEqual(TASK_LIST_RESULT_MAX_WIDTH);
+  });
+
+  it('appends no error mark for a whitespace-only error', () => {
+    expect(formatTaskRow(makeTask({ description: 'd', error: ' \n\t ' })))
+      .toBe('[completed] t-1: d');
+  });
 });
 
 describe('formatTaskList', () => {
@@ -494,5 +552,48 @@ describe('formatTaskList', () => {
 
     expect(lines).toHaveLength(5);
     expect(lines.every(line => line.includes(' → a b c d e'))).toBe(true);
+  });
+
+  it('renders running / completed / failed rows distinctly, one physical line each, within the 20-row cap', () => {
+    const now = 100_000;
+    const tasks: TaskDetail[] = [
+      makeTask({
+        id: 't-run', status: 'running', description: 'scan repo',
+        workerType: 'puppet', startedAt: now - 5_000,
+      }),
+      makeTask({
+        id: 't-done', status: 'completed', description: 'build',
+        workerType: 'claude-code', startedAt: now - 30_000, completedAt: now - 10_000,
+        result: 'R'.repeat(500) + '\nsecond line\nthird line',
+      }),
+      makeTask({
+        id: 't-fail', status: 'failed', description: 'run tests',
+        workerType: 'puppet', startedAt: now - 8_000, completedAt: now - 1_000,
+        error: 'AssertionError: expected 1 to equal 2\n  at spec.ts:42\n  at runner.ts:7',
+      }),
+    ];
+
+    const lines = formatTaskList(tasks, { now }).split('\n');
+
+    expect(lines).toHaveLength(3);
+    expect(lines.length).toBeLessThanOrEqual(TASK_LIST_MAX_ITEMS);
+    // running: worker type + live elapsed, no result/error mark
+    expect(lines[0]).toContain('[running] t-run:');
+    expect(lines[0]).toContain('🧸 puppet');
+    expect(lines[0]).toContain('已运行 5.0s');
+    // completed: total duration + one-line truncated result
+    expect(lines[1]).toContain('[completed] t-done:');
+    expect(lines[1]).toContain('🤖 claude-code');
+    expect(lines[1]).toContain('耗时 20.0s');
+    expect(lines[1]).toContain(' → R');
+    expect(lines[1].endsWith('…')).toBe(true);
+    // failed: total duration + one-line error digest (never a bare "failed")
+    expect(lines[2]).toContain('[failed] t-fail:');
+    expect(lines[2]).toContain('耗时 7.0s');
+    expect(lines[2]).toContain('✗ AssertionError: expected 1 to equal 2');
+    for (const line of lines) {
+      expect(line).not.toContain('\n');
+      expect(line).not.toContain('\t');
+    }
   });
 });

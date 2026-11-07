@@ -16,6 +16,9 @@ import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import type { WorkerAccessScope } from '@/services/tools/permission-rules';
+import type { ApprovalMemory } from '@/services/permission/approval-memory';
+import type { ApprovalMemoryMode } from '@/types/config';
+import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import type { SkillRegistry } from '@/services/skills/registry';
 import type { SignalTurnLineage } from '@/types/index';
@@ -95,6 +98,15 @@ export class ClaudeWorkerBase {
    * from the worker's own directory is used when absent.
    */
   protected _accessScope: WorkerAccessScope | null = null;
+  /**
+   * Task-scoped approval-memory store (#46/#58), injected by the engine via
+   * setSignalContext and shared with the puppet permission middleware. Null
+   * when a worker is driven directly (tests): no grants are then reused or
+   * remembered, so the standalone gate keeps asking every time.
+   */
+  protected _approvalGrants: ApprovalMemory | null = null;
+  /** `permission.approvalMemory` for this run (default `'task'`). */
+  protected _approvalMemoryMode: ApprovalMemoryMode = DEFAULT_APPROVAL_MEMORY;
   /** Session directory this worker belongs to (workspace-registry lookup). */
   private readonly sessionDir: string;
   /** Turn lineage for permission-request signals emitted by this worker. */
@@ -176,11 +188,17 @@ export class ClaudeWorkerBase {
      * directory is then used.
      */
     accessScope?: WorkerAccessScope;
+    /** Task-scoped approval-memory store (#46/#58), shared with the puppet gate. */
+    grants?: ApprovalMemory;
+    /** Whether grants are remembered at all (`permission.approvalMemory`). */
+    approvalMemory?: ApprovalMemoryMode;
   }): void {
     this._signalQueue = deps.signalQueue;
     this._runContext = deps;
     this._turnLineage = deps.turnLineage ?? {};
     this._accessScope = deps.accessScope ?? null;
+    this._approvalGrants = deps.grants ?? null;
+    this._approvalMemoryMode = deps.approvalMemory ?? DEFAULT_APPROVAL_MEMORY;
   }
 
   /** Get state for UI rendering. */

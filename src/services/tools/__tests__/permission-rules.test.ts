@@ -199,9 +199,12 @@ describe('evaluateBashAccess', () => {
       expect(evaluateBashAccess(scope(), `cat ${ws}/src/cli.ts`).decision).toBe('allow');
     });
 
-    it('cd into the workspace runs', () => {
+    it('cd into the workspace now asks (#51: cd re-bases later relative paths)', () => {
       const command = `cd ${ws} && git diff v0.4.0 HEAD -- package.json`;
-      expect(evaluateBashAccess(scope(), command).decision).toBe('allow');
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.reason).toContain('cd <dir>');
     });
   });
 
@@ -214,7 +217,7 @@ describe('evaluateBashAccess', () => {
       'stat -f %z dist/cli.js',
       'wc -l < src/cli.ts',
       'npx vitest run src/services/tools/permission-rules.test.ts',
-      `cd ${ws} && git diff v0.4.0 HEAD -- package.json src/types/config.ts src/types/index.ts tsconfig.json`,
+      'git diff v0.4.0 HEAD -- package.json src/types/config.ts src/types/index.ts tsconfig.json',
     ])('%s → allow (no path candidate)', (command) => {
       const verdict = evaluateBashAccess(scope(), command);
       expect(verdict.decision).toBe('allow');
@@ -629,10 +632,15 @@ describe('evaluateBashAccess', () => {
       expect(verdict.matchedRule).toBe('dynamic-shell');
     });
 
-    it('bash script.sh (no -c) keeps its behaviour: a script FILE is not read', () => {
-      // Unchanged by design — the file's contents are not part of the command
-      // line this gate judges (same scope as xargs / find -exec, issue #51).
-      expect(evaluateBashAccess(scope(), 'bash script.sh').decision).toBe('allow');
+    it('bash script.sh (no -c) now asks (#51): a script FILE is never read', () => {
+      // The file's contents are not part of the command line this gate judges,
+      // so the inner commands it runs are unanalyzed — fail closed instead of
+      // the old silent allow (same scope as xargs / find -exec, issue #51).
+      const verdict = evaluateBashAccess(scope(), 'bash script.sh');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.reason).toContain('script file');
+      // A sensitive operand still wins over the fallback tier.
       expect(evaluateBashAccess(scope(), 'bash script.sh ~/.ssh/id_rsa').matchedRule).toBe('sensitive-list');
     });
 
@@ -940,6 +948,76 @@ describe('evaluateBashAccess', () => {
         expect(verdict.decision).toBe('ask');
         expect(verdict.matchedRule).toBe('read-only-unverified');
         expect(verdict.access).toBe('unknown');
+      }
+    });
+  });
+
+  /**
+   * #51: a command that carries an INNER command this gate never analyzes used
+   * to be an unconditional `allow (no-path)` — the outer word produces no path
+   * candidate, so the sensitive / path rules saw nothing. No parser or
+   * recursion is added: recognizing the shape is enough to fail closed, and the
+   * reason names the shape so the controller can act on it. A static `-c`
+   * script is NOT in this set — it is already judged recursively (0.8.4).
+   */
+  describe('#51 fail-closed fallback for unanalyzed inner commands', () => {
+    describe('the six shapes ask and name the shape in the reason', () => {
+      it.each([
+        ['xargs rm -rf build', 'xargs'],
+        ['echo hi | xargs -n1 echo', 'xargs'],
+        ['find . -exec rm {} +', 'find -exec'],
+        ['find . -execdir sh -c "id" {} +', 'find -execdir'],
+        ['find . -ok rm {} +', 'find -ok'],
+        ['eval "echo hi"', 'eval'],
+        ['cd build && ls -la', 'cd <dir>'],
+        ['bash script.sh', 'script file'],
+        ['sh deploy.sh', 'script file'],
+        ['for f in a b; do cat "$f"; done', 'compound keyword'],
+        ['if true; then echo yes; fi', 'compound keyword'],
+      ])('%s → ask (reason names %s)', (command, shape) => {
+        const verdict = evaluateBashAccess(scope(), command);
+        expect(verdict.decision).toBe('ask');
+        expect(verdict.matchedRule).toBe('dynamic-shell');
+        expect(verdict.reason).toContain(shape);
+      });
+    });
+
+    it('the escalation is not a one-path decision (no askPaths)', () => {
+      expect(evaluateBashAccess(scope(), 'xargs rm').askPaths).toBeUndefined();
+    });
+
+    it('a sensitive hit keeps priority over the fallback', () => {
+      const verdict = evaluateBashAccess(scope(), 'bash script.sh ~/.ssh/id_rsa');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('sensitive-list');
+      expect(verdict.matchedEntry).toBe('.ssh');
+    });
+
+    it('no-path read-only commands still allow with no reason', () => {
+      for (const command of ['ls -la', 'npm test', 'git status', 'pwd']) {
+        const verdict = evaluateBashAccess(scope(), command);
+        expect(verdict.decision).toBe('allow');
+        expect(verdict.matchedRule).toBe('no-path');
+        expect(verdict.reason).toBeUndefined();
+      }
+    });
+
+    it('a shell -c script keeps its recursive verdict (an inner read-only command still allows)', () => {
+      expect(evaluateBashAccess(scope(), 'bash -c "ls -la"').decision).toBe('allow');
+      expect(evaluateBashAccess(scope(), 'sh -c "git status"').decision).toBe('allow');
+      const hit = evaluateBashAccess(scope(), 'sh -c "cat ~/.ssh/id_rsa"');
+      expect(hit.decision).toBe('ask');
+      expect(hit.matchedEntry).toBe('.ssh');
+    });
+
+    it('ordinary commands with an explicit path are unchanged (no false positive)', () => {
+      // `grep -rn '/api/' src` currently asks as outside-all; the fallback must
+      // not claim it as one of the six shapes.
+      const verdict = evaluateBashAccess(scope(), "grep -rn '/api/' src");
+      expect(verdict.matchedRule).toBe('outside-all');
+      expect(verdict.reason).toBeUndefined();
+      for (const command of ['cat package.json', 'sed -n 1,10p src/cli.ts', 'git status']) {
+        expect(evaluateBashAccess(scope(), command).decision).toBe('allow');
       }
     });
   });

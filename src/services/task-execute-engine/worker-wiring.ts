@@ -240,9 +240,10 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
         emoji: workerMeta.emoji,
         turnLineage: this.workerLineage(workerId),
         accessScope,
-        // Task-scoped approval memory (#46), same store/mode the puppet
-        // middleware above gets — the ACP permission bridge consumes them
-        // (04 §3); ClaudeCodeWorker currently ignores the two extras.
+        // Task-scoped approval memory (#46/#58), same store/mode the puppet
+        // middleware above gets. Both the ACP permission bridge (04 §3) and
+        // ClaudeCodeWorker's canUseTool gate consume them, so every worker
+        // type reuses grants through the shared approval-memory rule.
         grants: this.approvalGrants,
         approvalMemory: resolveApprovalMemory(this.permission),
       });

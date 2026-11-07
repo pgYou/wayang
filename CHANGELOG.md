@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.9.2 (2026-11-06)
+
+### 修复
+
+- ACP worker 区分权限拒绝来源：policy 硬拒绝与审批超时不再统一映射为 `Aborted`，分别报 `Permission denied by policy: <tool>` 与 `Permission request timed out: <tool>`；真取消与 abort 清理路径保持不变（#56）。
+- ACP 回合循环重构：按「我们是否发过 session/cancel」而不是 agent 返回的 stopReason 归因回合结束，新增 `our_timeout` 类别区分协议超时与用户取消；policy / timeout 拒绝不再一次即终止，改为把脱敏后的拒绝原因以 `[SYSTEM NOTICE]` 注入下一轮 prompt 继续执行（同一 key 最多 1 次、每次 run 最多 3 次）；新增六个护栏：单 run 最多 12 回合、连续 2 个拒绝回合熔断、连续 2 回合无进展终止、墙钟 30 分钟上限、拒绝补发配额、同 key 配额。用户主动拒绝与 `permissionMode=agent` 的协议级拒绝不注入、不补发（#56）。
+- claude-code worker 接入任务级审批记忆与 grant：`canUseTool` 消费与 puppet 相同的 `reusableGrantKeys`，同一任务内同一 key 不再重复询问，任务结束统一失效（#58）。
+
+### 改进
+
+- `/tasks` 每行补充 worker 类型、耗时与结果/错误摘要，失败任务显示 error 摘要；`list_tasks` 对 `result` / `error` 统一按工具输出上限（默认 20000 字符）截断并标注省略（#49）。
+- bash 判定兜底：`xargs`、`find -exec/-execdir/-ok`、`eval`、`cd <dir> && ...`、脚本文件（`bash script.sh`）、复合关键字（`for/do/then` 等）这些含内层命令但未递归解析的形态，由 `allow(no-path)` 升级为 `ask`，reason 指明形态；只读命令与带显式路径的普通命令行为不变（#51）。注：0.8.4 曾冻结该范围，本版恢复。
+
 ## v0.9.1 (2026-11-05)
 
 ### 文档
