@@ -22,6 +22,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
@@ -39,6 +41,40 @@ import type { AcpPermissionOption, AcpPermissionRequest, AcpToolCall, AcpToolCal
 import type { WorkerAccessScope } from '@/services/tools/permission-rules';
 
 const SCOPE: WorkerAccessScope = { userHome: '/home/test-user', workspace: '/tmp/test-ws' };
+
+/**
+ * Canonical spelling of a path, mirroring the policy's `normalizePath`
+ * semantics WITHOUT importing it (the tests must not borrow the code under
+ * test to compute their own expectations).
+ *
+ * The bridge keys grants on the `resolvedPath` the policy judged, and that is
+ * `realpath`-normalized — on macOS `/etc` is a symlink to `/private/etc`, so a
+ * raw `/etc/passwd` and the granted `/private/etc/passwd` name the same file
+ * but are not the same string. Resolve the deepest EXISTING ancestor with
+ * `realpathSync` and glue the missing tail back on:
+ *
+ *   /tmp/link/new_key   (/tmp/link -> /home/u)  =>  /home/u/new_key
+ */
+function canonical(p: string): string {
+  const lexical = resolve(p);
+  const peeled: string[] = [];
+  let candidate = lexical;
+
+  for (let depth = 0; depth <= 32; depth += 1) {
+    try {
+      const resolved = realpathSync(candidate);
+      return peeled.length === 0 ? resolved : resolve(join(resolved, ...peeled));
+    } catch {
+      // Missing or unreadable — peel one segment and retry on the parent.
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) break; // hit the filesystem root
+    peeled.unshift(basename(candidate));
+    candidate = parent;
+  }
+
+  return lexical;
+}
 
 /** Measured codebuddy option set shape: allow_always FIRST, optionIds arbitrary. */
 const MEASURED_OPTIONS: AcpPermissionOption[] = [
@@ -189,7 +225,7 @@ describe('bridge: verdict → outcome', () => {
     pending.resolve(payload.requestId, { approved: true });
     await expect(promise).resolves.toEqual({ outcome: 'selected', optionId: 'allow' });
     // The read approval opened a grant for the asking path.
-    expect(grants.has('task-1', `read:/etc/passwd`)).toBe(true);
+    expect(grants.has('task-1', `read:${canonical('/etc/passwd')}`)).toBe(true);
   });
 
   it('ask → controller deny → reject option, audit denied source controller', async () => {
