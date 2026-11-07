@@ -79,14 +79,14 @@ describe.skipIf(!process.env.ACP_REAL_OPENCODE)('real opencode: full turn — DE
     async () => {
       const dirs = makeRealDirs('opencode-full-turn');
       trackDir(dirs.root);
-      const worker = new WireTappingOpenCodeWorker(makeWorkerConfig('opencode-acp'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
+      const worker = new WireTappingOpenCodeWorker(makeWorkerConfig('opencode'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
       const queue = new RecordingSignalQueue(() => true); // safety net: approve any policy ask
       queue.bind(worker.permissionHandler);
       wireSignalContext(worker, dirs, queue, {
         workerId: 'w-real-oc-full',
         taskId: 'task-real-oc-full',
         taskTitle: 'Real opencode full turn',
-        workerType: 'opencode-acp',
+        workerType: 'opencode',
       });
 
       const captured: { result?: WorkerResult; durationMs: number } = { durationMs: 0 };
@@ -189,7 +189,7 @@ describe.skipIf(!process.env.ACP_REAL_OPENCODE)('real opencode: permission ask p
         `${JSON.stringify({ permissions: [{ action: '*', resource: '*', effect: 'ask' }] }, null, 2)}\n`,
       );
       const worker = new WireTappingOpenCodeWorker(
-        { ...makeWorkerConfig('opencode-acp'), env: { OPENCODE_CONFIG: askConfigPath } } as any,
+        { ...makeWorkerConfig('opencode'), env: { OPENCODE_CONFIG: askConfigPath } } as any,
         dirs.sessionDir,
         dirs.workspace,
         makeMockCtxFor(dirs),
@@ -214,7 +214,7 @@ describe.skipIf(!process.env.ACP_REAL_OPENCODE)('real opencode: permission ask p
         workerId: 'w-real-oc-ask',
         taskId: 'task-real-oc-ask',
         taskTitle: 'Real opencode permission ask',
-        workerType: 'opencode-acp',
+        workerType: 'opencode',
       });
 
       const captured: { result?: WorkerResult; durationMs: number } = { durationMs: 0 };
@@ -306,14 +306,14 @@ describe.skipIf(!process.env.ACP_REAL_OPENCODE)('real opencode: cancel (opt-in)'
     async () => {
       const dirs = makeRealDirs('opencode-cancel');
       trackDir(dirs.root);
-      const worker = new WireTappingOpenCodeWorker(makeWorkerConfig('opencode-acp'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
+      const worker = new WireTappingOpenCodeWorker(makeWorkerConfig('opencode'), dirs.sessionDir, dirs.workspace, makeMockCtxFor(dirs), skills);
       const queue = new RecordingSignalQueue(() => true);
       queue.bind(worker.permissionHandler);
       wireSignalContext(worker, dirs, queue, {
         workerId: 'w-real-oc-cancel',
         taskId: 'task-real-oc-cancel',
         taskTitle: 'Real opencode cancel',
-        workerType: 'opencode-acp',
+        workerType: 'opencode',
       });
 
       const captured: { result?: WorkerResult; durationMs: number } = { durationMs: 0 };
@@ -406,7 +406,7 @@ describe('opencode fail-fast (controlled PATH — no CLI reachable)', () => {
       process.env.PATH = emptyPathDir;
       try {
         const worker = new OpenCodeAcpWorker(
-          makeWorkerConfig('opencode-acp'),
+          makeWorkerConfig('opencode'),
           dirs.sessionDir,
           dirs.workspace,
           makeMockCtxFor(dirs),

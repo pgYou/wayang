@@ -107,11 +107,11 @@ function makeBridge(overrides: Partial<AcpPermissionBridgeDeps> = {}): BridgeHar
     accumulator,
     scope: SCOPE,
     signalQueue,
-    runContext: { workerId: 'w-1', taskId: 'task-1', taskTitle: 'Test task', workerType: 'codebuddy-acp' },
+    runContext: { workerId: 'w-1', taskId: 'task-1', taskTitle: 'Test task', workerType: 'codebuddy' },
     grants,
     approvalMemory: 'task',
     logger,
-    provider: 'codebuddy-acp',
+    provider: 'codebuddy',
     permissionMs: ACP_PERMISSION_TIMEOUT_MS,
     ...overrides,
   };
@@ -201,7 +201,7 @@ describe('bridge: verdict → outcome', () => {
     // optionId 'allow' is the allow_once entry; 'allow_always' sits FIRST in the array.
     expect(outcome).toEqual({ outcome: 'selected', optionId: 'allow' });
     expect(auditRecords(logger)).toEqual([
-      expect.objectContaining({ decision: 'allowed', toolName: 'execute', transport: 'acp', provider: 'codebuddy-acp' }),
+      expect.objectContaining({ decision: 'allowed', toolName: 'execute', transport: 'acp', provider: 'codebuddy' }),
     ]);
   });
 

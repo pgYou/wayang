@@ -71,7 +71,7 @@ class TestAcpWorker extends AcpWorkerRun implements IWorkerInstance {
     workspaceDir?: string,
   ) {
     super(
-      { type: 'codebuddy-acp', description: 'test acp worker', ...config } as WorkerConfig,
+      { type: 'codebuddy', description: 'test acp worker', ...config } as WorkerConfig,
       sessionDir ?? '/tmp/acp-test-session',
       workspaceDir ?? '/tmp/acp-test-ws',
       createMockCtx({ sessionDir: sessionDir ?? '/tmp/acp-test-session', workspaceDir: workspaceDir ?? '/tmp/acp-test-ws' } as any),
@@ -224,7 +224,7 @@ describe('BaseAcpWorker: end-to-end turn (frozen §8 case 1 shape)', () => {
       workerId: 'w-e2e',
       taskId: TASK.id,
       taskTitle: TASK.title,
-      workerType: 'codebuddy-acp',
+      workerType: 'codebuddy',
       accessScope: SCOPE,
       grants,
       approvalMemory: 'task',
@@ -315,7 +315,7 @@ describe('BaseAcpWorker: end-to-end turn (frozen §8 case 1 shape)', () => {
 
     // runtimeState.acp carries the pid evidence (02 §3).
     const runtime = worker.getState().get<Record<string, any>>('runtimeState');
-    expect(runtime.acp).toMatchObject({ pid: 424242, command: 'node', provider: 'codebuddy-acp' });
+    expect(runtime.acp).toMatchObject({ pid: 424242, command: 'node', provider: 'codebuddy' });
 
     // Live status: run over.
     expect(worker.getLiveStatus()).toEqual({ resultReceived: true, streamEnded: true });
@@ -527,7 +527,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
       workerId: 'w-deny1',
       taskId: TASK.id,
       taskTitle: TASK.title,
-      workerType: 'codebuddy-acp',
+      workerType: 'codebuddy',
       accessScope: SCOPE,
       grants: new ApprovalMemory(),
       approvalMemory: 'task',
@@ -567,7 +567,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
       workerId: 'w-deny2',
       taskId: TASK.id,
       taskTitle: TASK.title,
-      workerType: 'codebuddy-acp',
+      workerType: 'codebuddy',
       // #56: a controller denial now terminates immediately, so drive turn 1
       // with a POLICY denial instead — that is what opens the reissue round.
       accessScope: { ...SCOPE, permission: { sensitiveMode: 'deny' } },
@@ -599,7 +599,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
       workerId: 'w-policy',
       taskId: TASK.id,
       taskTitle: TASK.title,
-      workerType: 'codebuddy-acp',
+      workerType: 'codebuddy',
       accessScope: { ...SCOPE, permission: { sensitiveMode: 'deny' } },
       grants: new ApprovalMemory(),
       approvalMemory: 'task',
@@ -630,7 +630,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
       workerId: 'w-timeout',
       taskId: TASK.id,
       taskTitle: TASK.title,
-      workerType: 'codebuddy-acp',
+      workerType: 'codebuddy',
       accessScope: SCOPE,
       grants: new ApprovalMemory(),
       approvalMemory: 'task',

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConfig, collectWorkerWarnings, WORKER_TYPES, type WayangConfig, type WorkerConfig } from '@/types/config';
+import { validateConfig, collectWorkerWarnings, normalizeWorkerTypes, WORKER_TYPES, type WayangConfig, type WorkerConfig } from '@/types/config';
 import type { AcpProtocolConfig } from '@/types/config';
 import type { AcpProtocolOverrides } from '@/services/agents/acp/base-acp-worker';
 
@@ -100,8 +100,8 @@ describe('validateConfig: workers section (05 §5)', () => {
     expect(
       validateConfig(
         makeConfigWithWorkers({
-          codebuddy: { type: 'codebuddy-acp', description: 'Tencent CodeBuddy (ACP)' },
-          opencode: { type: 'opencode-acp', description: 'OpenCode (ACP, experimental)' },
+          codebuddy: { type: 'codebuddy', description: 'Tencent CodeBuddy (ACP)' },
+          opencode: { type: 'opencode', description: 'OpenCode (ACP, experimental)' },
         }),
       ),
     ).toBeNull();
@@ -112,7 +112,7 @@ describe('validateConfig: workers section (05 §5)', () => {
       validateConfig(
         makeConfigWithWorkers({
           codebuddy: {
-            type: 'codebuddy-acp',
+            type: 'codebuddy',
             description: 'CodeBuddy',
             command: '/usr/local/bin/codebuddy',
             args: ['--acp'],
@@ -131,6 +131,37 @@ describe('validateConfig: workers section (05 §5)', () => {
     for (const allowed of WORKER_TYPES) {
       expect(err).toContain(allowed);
     }
+  });
+
+  it('accepts the generic acp type with a command and full ACP fields', () => {
+    expect(
+      validateConfig(
+        makeConfigWithWorkers({
+          mycli: {
+            type: 'acp',
+            description: 'Generic ACP CLI',
+            command: 'my-cli',
+            args: ['acp'],
+            env: { NO_COLOR: '1' },
+            protocol: { promptMs: 0 },
+            permissionMode: 'client',
+            trustUpdatesAfterCancel: true,
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects the generic acp type without a command, naming the field path', () => {
+    const err = validateConfig(makeConfigWithWorkers({ mycli: { type: 'acp', description: 'x' } }));
+    expect(err).toContain('workers.mycli.command is required for type "acp"');
+  });
+
+  it('rejects a non-boolean trustUpdatesAfterCancel on an ACP row', () => {
+    const err = validateConfig(
+      makeConfigWithWorkers({ mycli: { type: 'acp', command: 'my-cli', description: 'x', trustUpdatesAfterCancel: 'yes' } }),
+    );
+    expect(err).toContain('workers.mycli.trustUpdatesAfterCancel must be a boolean');
   });
 
   it('rejects a missing type with the allowed list', () => {
@@ -155,7 +186,7 @@ describe('validateConfig: workers section (05 §5)', () => {
   ])('rejects non-positive protocol.%s = %s (promptMs only allows >= 0)', (key, value) => {
     const err = validateConfig(
       makeConfigWithWorkers({
-        codebuddy: { type: 'codebuddy-acp', description: 'x', protocol: { [key]: value } },
+        codebuddy: { type: 'codebuddy', description: 'x', protocol: { [key]: value } },
       }),
     );
     expect(err).toContain(`workers.codebuddy.protocol.${key}`);
@@ -165,7 +196,7 @@ describe('validateConfig: workers section (05 §5)', () => {
     expect(
       validateConfig(
         makeConfigWithWorkers({
-          opencode: { type: 'opencode-acp', description: 'x', protocol: { promptMs: 0, permissionMs: 1 } },
+          opencode: { type: 'opencode', description: 'x', protocol: { promptMs: 0, permissionMs: 1 } },
         }),
       ),
     ).toBeNull();
@@ -189,7 +220,7 @@ describe('validateConfig: workers section (05 §5)', () => {
     ['permissionMode', 'auto'],
   ])('rejects a malformed *-acp %s', (key, value) => {
     const err = validateConfig(
-      makeConfigWithWorkers({ codebuddy: { type: 'codebuddy-acp', description: 'x', [key]: value } }),
+      makeConfigWithWorkers({ codebuddy: { type: 'codebuddy', description: 'x', [key]: value } }),
     );
     expect(err).toContain(`workers.codebuddy.${key}`);
   });
@@ -197,7 +228,7 @@ describe('validateConfig: workers section (05 §5)', () => {
   it('rejects unknown protocol.capabilities keys and non-boolean values', () => {
     const unknownKey = validateConfig(
       makeConfigWithWorkers({
-        codebuddy: { type: 'codebuddy-acp', description: 'x', protocol: { capabilities: { streaming: true } } },
+        codebuddy: { type: 'codebuddy', description: 'x', protocol: { capabilities: { streaming: true } } },
       }),
     );
     expect(unknownKey).toContain('protocol.capabilities.streaming is not a known capability');
@@ -205,7 +236,7 @@ describe('validateConfig: workers section (05 §5)', () => {
 
     const badValue = validateConfig(
       makeConfigWithWorkers({
-        codebuddy: { type: 'codebuddy-acp', description: 'x', protocol: { capabilities: { toolCalls: 'yes' } } },
+        codebuddy: { type: 'codebuddy', description: 'x', protocol: { capabilities: { toolCalls: 'yes' } } },
       }),
     );
     expect(badValue).toContain('protocol.capabilities.toolCalls must be a boolean');
@@ -215,13 +246,13 @@ describe('validateConfig: workers section (05 §5)', () => {
     expect(
       validateConfig(
         makeConfigWithWorkers({
-          opencode: { type: 'opencode-acp', description: 'x', protocol: { gatePermissions: false } },
+          opencode: { type: 'opencode', description: 'x', protocol: { gatePermissions: false } },
         }),
       ),
     ).toBeNull();
     const err = validateConfig(
       makeConfigWithWorkers({
-        opencode: { type: 'opencode-acp', description: 'x', protocol: { gatePermissions: 'no' } },
+        opencode: { type: 'opencode', description: 'x', protocol: { gatePermissions: 'no' } },
       }),
     );
     expect(err).toContain('workers.opencode.protocol.gatePermissions must be a boolean');
@@ -233,14 +264,14 @@ describe('validateConfig: workers section (05 §5)', () => {
     ['emoji', 42],
   ])('rejects a malformed common field %s', (key, value) => {
     const err = validateConfig(
-      makeConfigWithWorkers({ codebuddy: { type: 'codebuddy-acp', description: 'x', [key]: value } }),
+      makeConfigWithWorkers({ codebuddy: { type: 'codebuddy', description: 'x', [key]: value } }),
     );
     expect(err).toContain(`workers.codebuddy.${key}`);
   });
 
   it('still validates a disabled worker (enable: false hides nothing)', () => {
     const err = validateConfig(
-      makeConfigWithWorkers({ codebuddy: { type: 'codebuddy-acp', description: 'x', enable: false, permissionMode: 'nope' } }),
+      makeConfigWithWorkers({ codebuddy: { type: 'codebuddy', description: 'x', enable: false, permissionMode: 'nope' } }),
     );
     expect(err).toContain('workers.codebuddy.permissionMode');
   });
@@ -260,8 +291,8 @@ describe('collectWorkerWarnings (05 §4: inert fields warn, never fail)', () => 
   it('warns about maxTurns and cliPath on *-acp rows', () => {
     const warnings = collectWorkerWarnings(
       makeConfigWithWorkers({
-        codebuddy: { type: 'codebuddy-acp', description: 'x', maxTurns: 100, cliPath: '/bin/codebuddy' },
-        opencode: { type: 'opencode-acp', description: 'x', maxTurns: 50 },
+        codebuddy: { type: 'codebuddy', description: 'x', maxTurns: 100, cliPath: '/bin/codebuddy' },
+        opencode: { type: 'opencode', description: 'x', maxTurns: 50 },
       }) as WayangConfig,
     );
     expect(warnings).toHaveLength(3);
@@ -279,5 +310,44 @@ describe('collectWorkerWarnings (05 §4: inert fields warn, never fail)', () => 
       ),
     ).toEqual([]);
     expect(collectWorkerWarnings(makeConfig())).toEqual([]);
+  });
+});
+
+describe('normalizeWorkerTypes (legacy type names, config-parse exit)', () => {
+  it('rewrites both legacy names in place and warns once per affected row', () => {
+    const config = makeConfigWithWorkers({
+      cb: { type: 'codebuddy-acp', description: 'x' },
+      oc: { type: 'opencode-acp', description: 'x' },
+    });
+    const warnings: string[] = [];
+    normalizeWorkerTypes(config as WayangConfig, (m) => warnings.push(m));
+
+    expect((config.workers!.cb as { type: string }).type).toBe('codebuddy');
+    expect((config.workers!.oc as { type: string }).type).toBe('opencode');
+    expect(warnings).toEqual([
+      "worker type 'codebuddy-acp' is deprecated, use 'codebuddy' (workers.cb)",
+      "worker type 'opencode-acp' is deprecated, use 'opencode' (workers.oc)",
+    ]);
+  });
+
+  it('the rewritten config validates cleanly (old configs keep loading)', () => {
+    const config = makeConfigWithWorkers({
+      cb: { type: 'codebuddy-acp', description: 'x' },
+      oc: { type: 'opencode-acp', description: 'x' },
+    });
+    normalizeWorkerTypes(config as WayangConfig, () => undefined);
+    expect(validateConfig(config)).toBeNull();
+  });
+
+  it('leaves canonical names and non-worker configs untouched (no warnings)', () => {
+    const config = makeConfigWithWorkers({
+      cb: { type: 'codebuddy', description: 'x' },
+      mycli: { type: 'acp', command: 'my-cli', description: 'x' },
+      cc: { type: 'claude-code', description: 'x' },
+    });
+    const warnings: string[] = [];
+    normalizeWorkerTypes(config as WayangConfig, (m) => warnings.push(m));
+    expect(warnings).toEqual([]);
+    expect((config.workers!.cb as { type: string }).type).toBe('codebuddy');
   });
 });

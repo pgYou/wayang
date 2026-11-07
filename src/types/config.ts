@@ -46,10 +46,38 @@ export interface ProviderConfig {
  * `WORKER_TYPES` is the single source of truth: the dispatch switch cases,
  * `validateConfig`'s allowed values, and error messages all reference it.
  */
-export type WorkerType = 'claude-code' | 'codebuddy-acp' | 'opencode-acp';
+export type WorkerType = 'claude-code' | 'acp' | 'codebuddy' | 'opencode';
 
 /** Allowed `workers.<id>.type` values — see `WorkerType` (05 §1). */
-export const WORKER_TYPES: readonly WorkerType[] = ['claude-code', 'codebuddy-acp', 'opencode-acp'];
+export const WORKER_TYPES: readonly WorkerType[] = ['claude-code', 'acp', 'codebuddy', 'opencode'];
+
+/**
+ * Pre-0.9.x `workers.<id>.type` values, mapped to their current names.
+ * `normalizeWorkerTypes` rewrites them (with a deprecation warning) at the
+ * config-parse exit so no consumer ever sees the legacy spellings.
+ */
+const DEPRECATED_WORKER_TYPES: Readonly<Record<string, WorkerType>> = {
+  'codebuddy-acp': 'codebuddy',
+  'opencode-acp': 'opencode',
+};
+
+/**
+ * Rewrite deprecated `workers.<id>.type` values in place, warning once per
+ * affected row. Runs at the single config-parse exit (`loadConfig`) BEFORE
+ * validation, so `validateConfig` and every downstream consumer only ever
+ * see the canonical names — the normalization is not scattered to use sites.
+ */
+export function normalizeWorkerTypes(config: WayangConfig, warn: (message: string) => void): void {
+  for (const [id, worker] of Object.entries(config.workers ?? {})) {
+    if (typeof worker !== 'object' || worker === null) continue;
+    const current = (worker as { type?: unknown }).type;
+    if (typeof current !== 'string') continue;
+    const canonical = DEPRECATED_WORKER_TYPES[current];
+    if (!canonical) continue;
+    (worker as { type: WorkerType }).type = canonical;
+    warn(`worker type '${current}' is deprecated, use '${canonical}' (workers.${id})`);
+  }
+}
 
 /**
  * Protocol-level overrides for `*-acp` workers (05 §3). Field names align
@@ -70,7 +98,7 @@ export interface AcpProtocolConfig extends Partial<AcpTimeouts> {
    * `true` (default) makes the worker inject an ask-all permission matrix via
    * the child env's `OPENCODE_CONFIG`; `false` launches the agent untouched —
    * its tool operations then bypass the wayang permission gate. Inert for
-   * codebuddy-acp.
+   * codebuddy.
    */
   gatePermissions?: boolean;
 }
@@ -111,6 +139,14 @@ export interface WorkerConfig {
    * silently allowed (04 booklet §6).
    */
   permissionMode?: 'client' | 'agent';
+  /**
+   * ACP only (type 'acp'; the dedicated codebuddy/opencode rows keep their
+   * own measured policy): whether session/updates arriving AFTER a cancel
+   * are still trusted and written to the transcript. Defaults to false —
+   * the conservative choice, post-cancel updates are dropped and counted.
+   * Inert for `claude-code`.
+   */
+  trustUpdatesAfterCancel?: boolean;
 }
 
 /**
@@ -222,9 +258,9 @@ export interface WayangConfig {
   logging?: LoggingConfig;
 }
 
-/** Whether `type` is one of the two ACP worker rows (05 §2). */
-function isAcpWorkerType(type: WorkerType): type is 'codebuddy-acp' | 'opencode-acp' {
-  return type === 'codebuddy-acp' || type === 'opencode-acp';
+/** Whether `type` is one of the ACP worker rows (generic + the two providers). */
+function isAcpWorkerType(type: WorkerType): type is 'acp' | 'codebuddy' | 'opencode' {
+  return type === 'acp' || type === 'codebuddy' || type === 'opencode';
 }
 
 /** Timeout fields of `AcpProtocolConfig` (05 §3); `promptMs` alone allows 0. */
@@ -273,17 +309,24 @@ function validateWorkerEntry(id: string, worker: WorkerConfig): string | null {
 
   // Rule 4: claude-code must not mix in the ACP launch semantics.
   if (type === 'claude-code') {
-    for (const key of ['command', 'args', 'env', 'protocol'] as const) {
+    for (const key of ['command', 'args', 'env', 'protocol', 'trustUpdatesAfterCancel'] as const) {
       if (worker[key] !== undefined) {
         return `${at}.${key} is not supported for type "claude-code" (claude-code uses cliPath)`;
       }
     }
   }
 
-  // Rule 5: `*-acp` row shapes.
+  // Rule 5: ACP row shapes.
   if (isAcpWorkerType(worker.type)) {
+    // The generic 'acp' type has no built-in executable — command is required.
+    if (worker.type === 'acp' && (worker.command === undefined || worker.command === '')) {
+      return `${at}.command is required for type "acp" (set workers.${id}.command to the ACP agent executable)`;
+    }
     if (worker.command !== undefined && (typeof worker.command !== 'string' || worker.command.length === 0)) {
       return `${at}.command must be a non-empty string (got ${JSON.stringify(worker.command)})`;
+    }
+    if (worker.trustUpdatesAfterCancel !== undefined && typeof worker.trustUpdatesAfterCancel !== 'boolean') {
+      return `${at}.trustUpdatesAfterCancel must be a boolean (got ${JSON.stringify(worker.trustUpdatesAfterCancel)})`;
     }
     if (worker.args !== undefined && (!Array.isArray(worker.args) || worker.args.some((a) => typeof a !== 'string'))) {
       return `${at}.args must be an array of strings (got ${JSON.stringify(worker.args)})`;
@@ -409,7 +452,7 @@ export function collectWorkerWarnings(config: WayangConfig): string[] {
       warnings.push(`workers.${id}.maxTurns has no effect on type "${worker.type}" (ACP has no turn cap)`);
     }
     if (worker.cliPath !== undefined) {
-      warnings.push(`workers.${id}.cliPath has no effect on type "${worker.type}" (*-acp workers use "command")`);
+      warnings.push(`workers.${id}.cliPath has no effect on type "${worker.type}" (ACP workers use "command")`);
     }
   }
   return warnings;

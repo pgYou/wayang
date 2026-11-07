@@ -28,8 +28,8 @@ describe('acpUserMessage', () => {
   });
 
   it('renders auth-required with the auth method list', () => {
-    expect(acpUserMessage('auth-required', { provider: 'codebuddy-acp', command: 'codebuddy', authMethods: ['Login with iOA', 'Login with Google/Github'] })).toBe(
-      '"codebuddy-acp" 未登录：先在终端运行一次 "codebuddy" 完成登录（Login with iOA、Login with Google/Github）再重试',
+    expect(acpUserMessage('auth-required', { provider: 'codebuddy', command: 'codebuddy', authMethods: ['Login with iOA', 'Login with Google/Github'] })).toBe(
+      '"codebuddy" 未登录：先在终端运行一次 "codebuddy" 完成登录（Login with iOA、Login with Google/Github）再重试',
     );
   });
 
@@ -46,11 +46,11 @@ describe('acpUserMessage', () => {
   });
 
   it('renders agent-error from an rpc message, falling back to stopReason', () => {
-    expect(acpUserMessage('agent-error', { provider: 'codebuddy-acp', rpc: { code: -32603, message: 'boom' } })).toBe(
-      '"codebuddy-acp" 回合失败（boom）',
+    expect(acpUserMessage('agent-error', { provider: 'codebuddy', rpc: { code: -32603, message: 'boom' } })).toBe(
+      '"codebuddy" 回合失败（boom）',
     );
-    expect(acpUserMessage('agent-error', { provider: 'codebuddy-acp', stopReason: 'refusal' })).toBe(
-      '"codebuddy-acp" 回合失败（refusal）',
+    expect(acpUserMessage('agent-error', { provider: 'codebuddy', stopReason: 'refusal' })).toBe(
+      '"codebuddy" 回合失败（refusal）',
     );
     expect(acpUserMessage('agent-error', {})).toBe('agent 回合失败（未知错误）');
   });

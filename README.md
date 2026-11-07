@@ -82,6 +82,8 @@ On first run, an interactive setup wizard will guide you through configuring you
 
 On first run, Wayang launches an interactive setup wizard. Just fill in your LLM provider details.
 
+For every field, worker type, and troubleshooting, see the [configuration guide](docs/guides/configuration.md).
+
 Or create `~/.wayang.config.json` manually:
 
 ```json
@@ -149,8 +151,8 @@ wayang --resume --all             # list all sessions to pick
 
 ```json
 "workers": {
-  "codebuddy": { "type": "codebuddy-acp", "description": "Tencent CodeBuddy Code (ACP)", "capabilities": ["code","refactor","shell"] },
-  "opencode":  { "type": "opencode-acp", "description": "OpenCode (ACP)", "capabilities": ["code","refactor","shell"] }
+  "codebuddy": { "type": "codebuddy", "description": "Tencent CodeBuddy Code (ACP)", "capabilities": ["code","refactor","shell"] },
+  "opencode":  { "type": "opencode", "description": "OpenCode (ACP)", "capabilities": ["code","refactor","shell"] }
 }
 ```
 

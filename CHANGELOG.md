@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.3 (2026-11-07)
+
+### 新增
+
+- 新增通用 ACP worker 类型 `acp`：由 `workers.<id>` 的 `command`（必填）/ `args` / `env` / `permissionMode` / `protocol` / `trustUpdatesAfterCancel` 声明式驱动，无需为每个 ACP CLI 新增子类；就绪判定沿用基类默认（`protocolVersion === 1`），取消后更新默认丢弃（`trustUpdatesAfterCancel` 可改为信任）。
+- 类型改名：`codebuddy-acp` → `codebuddy`，`opencode-acp` → `opencode`。旧值仍可用：配置解析出口（`loadConfig`）将其规范化为新值并输出弃用告警，存量配置无需改动。
+
+### 改进
+
+- `BaseAcpWorker` 的 `buildLaunch` / `isReady` / `stopPolicy` 由 abstract 改为带默认实现的可选 override（通用启动透传、`protocolVersion === 1` 就绪检查、中性保守停止策略 5000/2000/取消后不信任），codebuddy / opencode 两个专用类的实测覆写保持不变。
+
 ## v0.9.2 (2026-11-06)
 
 ### 修复
