@@ -71,7 +71,15 @@ export class ClaudeWorkerBase {
   // --- Permission control via canUseTool ---
   protected readonly _pendingPermissions = new BlockingRequestMap<PermissionResult>();
 
-  /** Exposed for engine to resolve pending permission requests. */
+  /**
+   * Exposed for engine to resolve pending permission requests.
+   *
+   * The approval here is a bare `allow` — the controller has no tool input to
+   * echo, and this method is not where the tool call is known. The gate that
+   * awaited the answer (`requestPermission`) attaches the original `input` as
+   * `updatedInput` before handing the result to the SDK, which the CLI's reply
+   * schema requires.
+   */
   readonly permissionHandler: PermissionMiddlewareResult = {
     resolvePermission: (requestId: string, approved: boolean, reason?: string) => {
       return this._pendingPermissions.resolve(
