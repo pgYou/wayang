@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import prompts from 'prompts';
 import type { WayangConfig, WorkerConfig } from './types/index';
-import { validateConfig, collectWorkerWarnings } from './types/index';
+import { validateConfig, collectWorkerWarnings, normalizeWorkerTypes } from './types/index';
 import { warnDeprecatedPermissionKeys } from './infra/permission/permission-config';
 
 /** Fill missing apiKeys from environment variables. */
@@ -149,7 +149,7 @@ async function buildConfigInteractive(): Promise<WayangConfig> {
   // ACP workers are configured by editing the config file, not onboarded —
   // one pointer so the option is discoverable (05 §7). Default generated
   // content is unchanged.
-  console.log('  Tip: ACP workers (codebuddy-acp / opencode-acp) can be added later under "workers" in the config file.');
+  console.log('  Tip: ACP workers (acp / codebuddy / opencode) can be added later under "workers" in the config file.');
 
   return config;
 }
@@ -206,6 +206,11 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
     }
   }
   fillApiKeys(config);
+
+  // Worker-type compatibility: 'codebuddy-acp' / 'opencode-acp' are the
+  // pre-generic-ACP spellings. Rewritten once, here at the config-parse exit,
+  // so validation and every consumer only see the canonical names.
+  normalizeWorkerTypes(config, (message) => console.warn(`Warning: ${message}`));
 
   // Config-key compatibility: `permission.deniedDirs` is a deprecated alias of
   // `permission.sensitiveDirs`. It is still honoured (see

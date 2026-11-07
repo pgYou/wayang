@@ -28,8 +28,9 @@ export const PUPPET_DEFAULTS = {
  * settles on better glyphs.
  */
 const ACP_PROVIDER_EMOJIS: Partial<Record<WorkerType, string>> = {
-  'codebuddy-acp': '\u{1F427}', // 🐧 Tencent CodeBuddy
-  'opencode-acp': '\u{1F989}', // 🦉 OpenCode (experimental)
+  acp: '\u{1F9E9}', // 🧩 generic config-driven ACP worker
+  codebuddy: '\u{1F427}', // 🐧 Tencent CodeBuddy
+  opencode: '\u{1F989}', // 🦉 OpenCode (experimental)
 };
 
 /**

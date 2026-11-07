@@ -143,9 +143,9 @@ export class WorkerDispatchEngine extends WorkerWiringEngine {
       // ACP workers: same constructor shape as ClaudeCodeWorker (freeze §7 ①).
       // Construction never spawns — a missing CLI fails fast in run() (C1
       // preflight), so the createWorker stage cannot crash on it.
-      case 'codebuddy-acp':
+      case 'codebuddy':
         return new CodebuddyAcpWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
-      case 'opencode-acp':
+      case 'opencode':
         return new OpenCodeAcpWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
       default: {
         // Exhaustiveness: a new WORKER_TYPES entry without a case above fails
