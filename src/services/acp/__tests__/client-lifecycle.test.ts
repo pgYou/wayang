@@ -217,9 +217,9 @@ describe('capability helpers', () => {
   });
 
   it('buildAcpCapabilities fills the stable view with 0.9.0 constants', () => {
-    const caps = buildAcpCapabilities('codebuddy-acp', handshake());
+    const caps = buildAcpCapabilities('codebuddy', handshake());
     expect(caps).toEqual({
-      provider: 'codebuddy-acp',
+      provider: 'codebuddy',
       protocolVersion: 1,
       streaming: true,
       toolCalls: true,
@@ -233,7 +233,7 @@ describe('capability helpers', () => {
 
   it('buildAcpCapabilities reflects loadSession=false and applies overrides', () => {
     const caps = buildAcpCapabilities(
-      'opencode-acp',
+      'opencode',
       handshake({ agentCapabilities: { loadSession: false, raw: null } }),
       { toolCalls: false },
     );

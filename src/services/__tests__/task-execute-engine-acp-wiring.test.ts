@@ -23,14 +23,16 @@ import { createMockCtx, makeTask } from '@/__tests__/helpers';
 import { SkillRegistry } from '@/services/skills/registry';
 import { CodebuddyAcpWorker } from '@/services/agents/acp/codebuddy-acp-worker';
 import { OpenCodeAcpWorker } from '@/services/agents/acp/opencode-acp-worker';
+import { GenericAcpWorker } from '@/services/agents/acp/generic-acp-worker';
 import type { WorkerConfig, WayangConfig } from '@/types/config';
 
 let tempDir: string;
 
-/** Minimal `*-acp` rows — command omitted on purpose: provider defaults apply. */
+/** Minimal ACP rows — provider commands omitted on purpose: defaults apply; 'acp' declares its own. */
 const acpWorkers: Record<string, WorkerConfig> = {
-  codebuddy: { type: 'codebuddy-acp', description: 'Tencent CodeBuddy (ACP)' },
-  opencode: { type: 'opencode-acp', description: 'OpenCode (ACP, experimental)' },
+  codebuddy: { type: 'codebuddy', description: 'Tencent CodeBuddy (ACP)' },
+  opencode: { type: 'opencode', description: 'OpenCode (ACP, experimental)' },
+  mycli: { type: 'acp', command: 'my-cli', description: 'Generic ACP CLI' },
 };
 
 function makeEngine(workers: Record<string, WorkerConfig> = acpWorkers, permission?: WayangConfig['permission']) {
@@ -52,7 +54,7 @@ describe('createWorker: *-acp dispatch (freeze §7 ①)', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('constructs a CodebuddyAcpWorker for a codebuddy-acp row (minimal config, mock ctx)', () => {
+  it('constructs a CodebuddyAcpWorker for a codebuddy row (minimal config, mock ctx)', () => {
     const { engine } = makeEngine();
     const worker = (engine as any).createWorker('codebuddy', makeTask('t1'));
 
@@ -62,11 +64,20 @@ describe('createWorker: *-acp dispatch (freeze §7 ①)', () => {
     expect(worker.workspaceDir).toBe(tempDir);
   });
 
-  it('constructs an OpenCodeAcpWorker for an opencode-acp row', () => {
+  it('constructs an OpenCodeAcpWorker for an opencode row', () => {
     const { engine } = makeEngine();
     const worker = (engine as any).createWorker('opencode', makeTask('t2'));
 
     expect(worker).toBeInstanceOf(OpenCodeAcpWorker);
+    expect(worker.id).toMatch(/^aw/);
+  });
+
+  it('constructs a GenericAcpWorker for an acp row', () => {
+    const { engine } = makeEngine();
+    const worker = (engine as any).createWorker('mycli', makeTask('t4'));
+
+    expect(worker).toBeInstanceOf(GenericAcpWorker);
+    expect(worker).not.toBeInstanceOf(CodebuddyAcpWorker);
     expect(worker.id).toMatch(/^aw/);
   });
 
