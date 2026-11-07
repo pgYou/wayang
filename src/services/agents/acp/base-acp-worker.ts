@@ -8,8 +8,9 @@
  * permissionHandler / acceptMessage / getLiveStatus / …) so the engine treats
  * an ACP worker as just another IWorkerInstance. Providers override only the
  * five hooks — buildLaunch / mapPermission(default: shared bridge) /
- * normalizeError(default: pass-through) / isReady / stopPolicy — and the
- * skeleton never branches on a provider name.
+ * normalizeError(default: pass-through) / isReady(default: protocol check) /
+ * stopPolicy — all of which now carry a default implementation; the skeleton
+ * never branches on a provider name.
  */
 
 import type { WorkerResult } from '@/types/index';
@@ -260,10 +261,23 @@ export abstract class BaseAcpWorker {
     );
   }
 
-  // --- Five hooks (02 §2) ---
+  // --- Five hooks (02 §2) — all defaulted, override optional ---
 
-  /** 1) Launch: command/args (user overrides win), env merged, cwd. Missing CLI is preflighted by the skeleton. */
-  protected abstract buildLaunch(env: AcpWorkerEnvView): AcpLaunchConfig;
+  /**
+   * 1) Launch: command/args (user overrides win), env merged, cwd. The
+   * default is the config-driven pass-through: `workers.<id>.command` /
+   * `.args` (empty when unset). No default executable exists — a missing
+   * command fails fast here so the run layer surfaces an explicit error
+   * instead of spawning an empty argv. Missing CLI on PATH is preflighted by
+   * the skeleton. Provider subclasses keep overriding with their measured
+   * default executable and fallbacks.
+   */
+  protected buildLaunch(view: AcpWorkerEnvView): AcpLaunchConfig {
+    if (!view.command) {
+      throw new AcpError('agent-error', 'workers.<id>.command is required for the generic "acp" worker type (no default executable)');
+    }
+    return { command: view.command, args: view.args ?? [], env: view.env, cwd: view.cwd, timeouts: view.timeouts };
+  }
 
   /**
    * 2) Permission: the default implementation walks the shared bridge
@@ -333,8 +347,17 @@ export abstract class BaseAcpWorker {
     return { ready: false, message: acpUserMessage('protocol-mismatch', { command: this._launchCommand }) };
   }
 
-  /** 5) Stop strategy — provider values (03 booklet). */
-  protected abstract stopPolicy(): AcpStopPolicy;
+  /**
+   * 5) Stop strategy — provider-measured values override (03 booklet). The
+   * default is CLI-neutral and conservative, chosen because no specific CLI
+   * behavior backs anything wider: cancelGraceMs 5000 / sigtermWaitMs 2000 /
+   * trustUpdatesAfterCancel FALSE — post-cancel updates are dropped and
+   * counted rather than written, so steps that ran after a user cancel are
+   * never recorded as if they were sanctioned.
+   */
+  protected stopPolicy(): AcpStopPolicy {
+    return { cancelGraceMs: 5_000, sigtermWaitMs: 2_000, trustUpdatesAfterCancel: false };
+  }
 
   // --- IWorkerInstance surface (aligned with ClaudeCodeWorker) ---
 
