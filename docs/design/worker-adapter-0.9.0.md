@@ -20,7 +20,7 @@
 
 1. **做 ACP，但 ACP 只是共享协议层；每个 provider 仍然有自己的 worker 类。** `src/services/acp/`（ndjson、JSON-RPC、session 生命周期、取消、超时）是纯库，不含任何 wayang 业务策略。上层是 `BaseAcpWorker`（实现 `IWorkerInstance` 的通用骨架，暴露「启动 / 权限 / 错误归一化 / 就绪判定 / 停止策略」五个钩子）+ `CodebuddyAcpWorker` / `OpenCodeAcpWorker` 两个薄类。理由：两家的差异不是配置差异而是**控制流**差异——codebuddy「握手成功 ≠ 可用」（未登录时 `session/new` 无响应，实测）、opencode 的取消语义取保守丢弃。压进一个通用实现，等于把某家的已知 bug 变成共享代码里的条件分支（03 分册）。
 2. **不重写 `ClaudeCodeWorker`，它也不继承 `BaseAcpWorker`。** 它继续作为 `switch` 的一个 case 存在（02 分册 §1）。
-3. **分发保持 `switch`，按配置里必填的 `type` 落到具体类**（`claude-code` / `codebuddy-acp` / `opencode-acp`），不做注册表。`createWorker`（task-execute-engine.ts:1035）只加 case；两处 `instanceof ClaudeCodeWorker`（:1283 / :1344）改为可选成员探测，之后加 provider 不再动引擎（02 分册 §1、05 分册 §1）。
+3. **分发保持 `switch`，按配置里必填的 `type` 落到具体类**（`claude-code` / `acp` / `codebuddy` / `opencode`，0.9.3 起旧拼写 `codebuddy-acp` / `opencode-acp` 在配置解析出口规范化并告警），不做注册表。`createWorker`（task-execute-engine.ts:1035）只加 case；两处 `instanceof ClaudeCodeWorker`（:1283 / :1344）改为可选成员探测，之后加 provider 不再动引擎（02 分册 §1、05 分册 §1）。
 4. **中途消息在 ACP v1 下必然退化为「回合边界交付」**，与 claude-code 现有实测语义一致，不是能力倒退；回合内注入只在 ACP v2 draft / 厂商 steering 扩展里，0.9.0 不做（01 分册 §2.4）。
 5. **权限是本次最大的语义缺口**：ACP 的 `session/request_permission` 是「选一个选项」，不是「返回带理由的裁决」。0.8.4 下敏感命中（含写方向）**默认走审批**（`sensitiveMode:'ask'`），硬拒仅出现在 `sensitiveMode:'deny'`；拒绝理由只进审计与信号，agent 看不到。选项缺失时 fail-closed（04 分册）。
 6. **环境就绪 fail-fast**：缺 CLI / 握手超时 / 认证失败各自有明确归因、文案与退出行为；**不以静默降级代替报错**（07 分册）。
@@ -45,7 +45,7 @@ TaskExecuteEngine.createWorker           ← switch (config.type)，三个 case�
 | --- | --- | --- | --- |
 | 协议层 | `src/services/acp/` | ndjson 分帧与 JSON-RPC、生命周期方法、错误分类 | 不读 `WayangConfig`、不写 transcript、不发 signal、不碰 TUI、不出现 provider 名字 |
 | 骨架 | `src/services/agents/acp/base-acp-worker.ts`（+ `event-mapper.ts`） | `run()` 骨架、transcript、回合边界交付、能力视图、审计埋点 | 不出现 `if (provider === …)`；不定义 provider 默认命令 |
-| provider 薄类 | `codebuddy-acp-worker.ts` / `opencode-acp-worker.ts` | 只覆写五钩子（`buildLaunch` / `mapPermission` / `normalizeError` / `isReady` / `stopPolicy`） | 不写 JSON-RPC / 起进程 / kill；不复制 `run()` 骨架 |
+| provider 薄类 | `codebuddy-acp-worker.ts` / `opencode-acp-worker.ts` / `generic-acp-worker.ts` | 按需覆写五钩子（`buildLaunch` / `mapPermission` / `normalizeError` / `isReady` / `stopPolicy`，0.9.3 起五个钩子均有基类默认实现，覆写可选） | 不写 JSON-RPC / 起进程 / kill；不复制 `run()` 骨架 |
 
 依赖方向单向：provider 薄类 → 骨架 → 协议层；反向不成立（分层禁令用 grep 断言守住，01 分册 §1）。共享件 `permission-bridge.ts` 由骨架默认调用（04 分册）。
 
@@ -53,8 +53,8 @@ TaskExecuteEngine.createWorker           ← switch (config.type)，三个 case�
 
 | provider | type | 状态 | 依据 |
 | --- | --- | --- | --- |
-| codebuddy code | `codebuddy-acp` | **主路径，真机已实测（2026-11-05）** | 探针五步全部成功（27.5s：initialize / session-new / prompt / request_permission / cancel，冻结页 §9）；用户确认 cbc 可正常对话 |
-| opencode | `opencode-acp` | **experimental，未实测** | 仅官方文档 `https://opencode.ai/docs/acp/`；本机未安装；所有行为标注「未实测」，fail-fast（07 分册） |
+| codebuddy code | `codebuddy` | **主路径，真机已实测（2026-11-05）** | 探针五步全部成功（27.5s：initialize / session-new / prompt / request_permission / cancel，冻结页 §9）；用户确认 cbc 可正常对话 |
+| opencode | `opencode` | **experimental，未实测** | 仅官方文档 `https://opencode.ai/docs/acp/`；本机未安装；所有行为标注「未实测」，fail-fast（07 分册） |
 
 实测校正后的协议事实（v3 必读，逐条来自 2026-11-05 codebuddy 探针，01 分册 §4）：`tool_call` 流式累积合并；`request_permission` 的选项**按 kind 选**（`allow_once` > `allow_always`、`reject_once` > `reject_always`）；`optionId` 是任意串，禁止按字面值匹配；`stopReason` 恒五值；codebuddy 厂商扩展字段一律忽略未知字段。
 

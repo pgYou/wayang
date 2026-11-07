@@ -7,23 +7,26 @@
 ## 1. 类型与枚举
 
 ```ts
-export type WorkerType = 'claude-code' | 'codebuddy-acp' | 'opencode-acp';
-export const WORKER_TYPES: readonly WorkerType[] = ['claude-code', 'codebuddy-acp', 'opencode-acp'];
+export type WorkerType = 'claude-code' | 'acp' | 'codebuddy' | 'opencode';
+export const WORKER_TYPES: readonly WorkerType[] = ['claude-code', 'acp', 'codebuddy', 'opencode'];
 ```
 
 `WORKER_TYPES` 是唯一真源（`src/types/config.ts`）：`switch` 的 case、`validateConfig` 的允许值、错误文案、文档示例全部引用它。加 provider 时 `switch` 末尾的穷尽检查（`const _exhaustive: never = config.type`）让 `npm run lint` 直接报错，不会漏 case（02 分册 §1）。
 
-## 2. `WorkerConfig` 扩展（`*-acp` 行新增字段）
+旧拼写 `codebuddy-acp` / `opencode-acp` 在配置解析出口（`loadConfig` → `normalizeWorkerTypes`）一次性规范化为新值并输出弃用告警（形如 `worker type 'codebuddy-acp' is deprecated, use 'codebuddy'`）；校验与所有使用方只见新值。存量配置无需改动。
+
+## 2. `WorkerConfig` 扩展（ACP 行新增字段）
 
 | 字段 | 类型 | 默认 | 说明 / 校验 |
 | --- | --- | --- | --- |
 | `type` | `WorkerType` | **必填** | 允许值即 `WORKER_TYPES`。缺失或不在枚举内 → 加载期报错（不再拖到派发） |
-| `command` | `string` | 由 provider 类的 `buildLaunch()` 提供 | 覆盖该 provider 的 ACP 可执行文件；相对路径不解析，要求可从 `PATH` 找到 |
-| `args` | `string[]` | 同上 | 覆盖默认参数（`['--acp']` / `['acp']`） |
+| `command` | `string` | 由 provider 类的 `buildLaunch()` 提供；`type: 'acp'` 时**必填** | 覆盖该 provider 的 ACP 可执行文件；相对路径不解析，要求可从 `PATH` 找到 |
+| `args` | `string[]` | 同上（`type: 'acp'` 默认 `[]`） | 覆盖默认参数（`['--acp']` / `['acp']`） |
 | `env` | `Record<string,string>` | `{}` | 与 `process.env` 合并后作为子进程环境（合并由 worker 层完成，冻结页 §2.1） |
 | `protocol` | `AcpProtocolConfig` | 见 §3 | 超时、能力与权限闸覆盖（§3、§3.1）；不填即用 provider 默认 |
 | `permissionMode` | `'client' \| 'agent'` | `'client'` | 见 04 分册 §6 |
-| `maxTurns` / `cliPath` / `enable` / `emoji` / `description` / `capabilities` | — | 沿用 0.8.4 | `maxTurns` / `cliPath` 对 `*-acp` 不生效（见 §5） |
+| `trustUpdatesAfterCancel` | `boolean` | `false` | 仅 `type: 'acp'` 生效：取消后到达的 `session/update` 是否仍写入 transcript；默认 false（保守丢弃并计数）。专用 provider 行沿用各自实测策略，忽略该字段 |
+| `maxTurns` / `cliPath` / `enable` / `emoji` / `description` / `capabilities` | — | 沿用 0.8.4 | `maxTurns` / `cliPath` 对 ACP 行不生效（见 §5） |
 
 ## 3. `AcpProtocolConfig`（字段名与冻结页 §2.1 的 `AcpTimeouts` 对齐，不再另起一套）
 
@@ -37,7 +40,7 @@ export interface AcpProtocolConfig {
   sigtermWaitMs?: number;      // 默认 2000；必须 > 0
   /** 覆盖实测观察到的能力（permissionRequests / toolCalls），如实表达、不做降级假设。 */
   capabilities?: Partial<Pick<AcpCapabilities, 'permissionRequests' | 'toolCalls'>>;
-  /** opencode 权限闸注入开关，见 §3.1。默认 true；仅对 opencode-acp 生效，codebuddy-acp 忽略。 */
+  /** opencode 权限闸注入开关，见 §3.1。默认 true；仅对 opencode 生效，codebuddy 忽略。 */
   gatePermissions?: boolean;
 }
 ```
@@ -52,24 +55,40 @@ export interface AcpProtocolConfig {
 - **边界行为**（两个 warn 都进启动期日志，不报错、不阻断）：
   - `gatePermissions:false` → **不注入并 warn**：agent 的工具执行（含越界写）将不经审批直接落地，风险由配置者承担（安全边界旁注同 §6）。
   - 父 `process.env` 已有 `OPENCODE_CONFIG` → **不覆盖并 warn**：用户配置优先；权限闸是否生效取决于该配置的内容。
-- **生效范围**：仅 `type:'opencode-acp'`；`codebuddy-acp` 原生即对副作用工具发请求，该字段忽略。
+- **生效范围**：仅 `type:'opencode'`；`codebuddy` 原生即对副作用工具发请求，该字段忽略。
 
 ## 4. provider 默认启动方式（写在各自 `buildLaunch()` 里，不放 profile 表——表里的值必须和类里的兜底挨着看，分开放迟早对不上）
 
 | type | command | args | 备注 |
 | --- | --- | --- | --- |
-| `codebuddy-acp` | `codebuddy` | `['--acp']` | 原生；主路径，实测 2026-11-05（2.180.0，03 分册 §2） |
-| `opencode-acp` | `opencode` | `['acp']` | 原生，实测 2.2.5（03 分册 §3）；`gatePermissions !== false` 时在 env 合并阶段注入 `OPENCODE_CONFIG` 权限闸（§3.1） |
+| `acp` | **配置必填**（`workers.<id>.command`） | `[]` | 通用类型（§4.1），完全由配置驱动，无内置默认 |
+| `codebuddy` | `codebuddy` | `['--acp']` | 原生；主路径，实测 2026-11-05（2.180.0，03 分册 §2）；PATH 上只有别名 `cbc` 时回退到 `cbc` |
+| `opencode` | `opencode` | `['acp']` | 原生，实测 2.2.5（03 分册 §3）；`gatePermissions !== false` 时在 env 合并阶段注入 `OPENCODE_CONFIG` 权限闸（§3.1） |
 
-`maxTurns` 对 `*-acp` 不生效（ACP 没有「最大回合数」字段；回合上限由 agent 自己的配置决定）；加载期对 `*-acp` + `maxTurns` 给 warning 而不报错，避免存量配置直接失败。`cliPath` 同理：`claude-code` 用 `cliPath`，`*-acp` 用 `command`（校验规则 4 防混用）。
+`maxTurns` 对 ACP 行不生效（ACP 没有「最大回合数」字段；回合上限由 agent 自己的配置决定）；加载期对 ACP 行 + `maxTurns` 给 warning 而不报错，避免存量配置直接失败。`cliPath` 同理：`claude-code` 用 `cliPath`，ACP 行用 `command`（校验规则 4 防混用）。
+
+### 4.1 通用 `acp` 类型（0.9.3 新增）
+
+`type: 'acp'` 由配置声明式驱动，不需要为每个 ACP CLI 写子类：启动、就绪判定与停止策略全部走 `BaseAcpWorker` 的默认实现（`GenericAcpWorker` 只覆写 `stopPolicy` 以读取 `trustUpdatesAfterCancel`）。专用类（cbc 回退、8000ms 宽限、opencode 权限闸）的定制不属于通用类型。
+
+| 字段 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `command` | **是** | — | ACP agent 可执行文件；缺失 → 加载期报错 `workers.<id>.command is required for type "acp"` |
+| `args` | 否 | `[]` | 传给子进程的参数 |
+| `env` | 否 | `{}` | 与 `process.env` 合并后作为子进程环境 |
+| `permissionMode` | 否 | `'client'` | 同 04 分册 §6 |
+| `protocol` | 否 | 超时矩阵默认 | `AcpProtocolConfig`（§3）；`cancelGraceMs` 默认 5000 |
+| `trustUpdatesAfterCancel` | 否 | `false` | 取消后的 `session/update` 是否仍写入 transcript（§2） |
+
+就绪判定用基类默认（`protocolVersion === 1`），不做 CLI 专属探测——登录态归因（auth-required）目前只在 codebuddy / opencode 两个实测 provider 上有依据。
 
 ## 5. `validateConfig` 对 `workers` 段的校验规则（新增，src/types/config.ts）
 
-1. `type` 必填且必须是 `WORKER_TYPES` 之一。缺失 → `workers.<id>.type is required (allowed: claude-code, codebuddy-acp, opencode-acp)`；未知 → `workers.<id>.type "foo" is not supported (allowed: …)`。文案必须带字段路径 + 允许值。
+1. `type` 必填且必须是 `WORKER_TYPES` 之一。缺失 → `workers.<id>.type is required (allowed: claude-code, acp, codebuddy, opencode)`；未知 → `workers.<id>.type "foo" is not supported (allowed: …)`。文案必须带字段路径 + 允许值。旧值 `codebuddy-acp` / `opencode-acp` 在校验前已被规范化（§1）。
 2. `type: 'puppet'` 写进 `workers` → 报错：`puppet is a built-in worker type, do not declare it under workers`。
 3. `description` 必须非空字符串；`capabilities` 必须字符串数组；`emoji` 必须字符串。
-4. `type === 'claude-code'`：`command` / `args` / `env` / `protocol` 一律禁止（提示「claude-code 用 cliPath」），避免两套启动语义混用。
-5. `type` 为任一 `*-acp`：`command` 出现时必须非空字符串；`args` 必须字符串数组；`env` 必须 `Record<string,string>`；`protocol.*` 必须正数（`promptMs` 允许 0）、`protocol.gatePermissions` 必须是 boolean；`protocol.capabilities` 的键必须是已知键。
+4. `type === 'claude-code'`：`command` / `args` / `env` / `protocol` / `trustUpdatesAfterCancel` 一律禁止（提示「claude-code 用 cliPath」），避免两套启动语义混用。
+5. `type` 为任一 ACP 类型：`command` 出现时必须非空字符串，且 `type: 'acp'` 时必填（§4.1）；`args` 必须字符串数组；`env` 必须 `Record<string,string>`；`trustUpdatesAfterCancel` 必须是 boolean；`protocol.*` 必须正数（`promptMs` 允许 0）、`protocol.gatePermissions` 必须是 boolean；`protocol.capabilities` 的键必须是已知键。
 6. `permissionMode` 必须是 `'client'` 或 `'agent'`。
 7. `enable === false` 的 worker 仍要校验形状（配置错误不因禁用而隐藏）。
 
@@ -79,26 +98,32 @@ export interface AcpProtocolConfig {
 {
   "workers": {
     "codebuddy": {
-      "type": "codebuddy-acp",
+      "type": "codebuddy",
       "description": "Tencent CodeBuddy Code agent (ACP, 主路径，实测 2.180.0)",
       "capabilities": ["code", "refactor", "shell"]
     },
     "opencode": {
-      "type": "opencode-acp",
+      "type": "opencode",
       "description": "OpenCode (native ACP, 实测 2.2.5)",
       "protocol": { "capabilities": { "permissionRequests": true } }
+    },
+    "mycli": {
+      "type": "acp",
+      "command": "my-cli",
+      "args": ["acp"],
+      "description": "任意 ACP CLI（配置驱动，字段见 §4.1）"
     }
   }
 }
 ```
 
-示例旁必须注明的安全边界（04 分册 §7）：client 声明不支持 `fs/*` / `terminal/*` 后，工具由 agent 自己执行；只有 agent 主动发 `request_permission` 时 wayang 才能拦。示例里不许出现 `type: 'acp'` 这类旧写法（校验规则 1 会拒绝并给出允许值）。opencode 行的权限闸默认开启（§3.1）；显式关闭写 `"protocol": { "gatePermissions": false }`——启动期 warn，此后 agent 的工具执行（含越界写）不经审批直接落地。
+示例旁必须注明的安全边界（04 分册 §7）：client 声明不支持 `fs/*` / `terminal/*` 后，工具由 agent 自己执行；只有 agent 主动发 `request_permission` 时 wayang 才能拦。示例里不许出现 `codebuddy-acp` / `opencode-acp` 这类旧拼写（会触发弃用告警并被规范化为新值）。opencode 行的权限闸默认开启（§3.1）；显式关闭写 `"protocol": { "gatePermissions": false }`——启动期 warn，此后 agent 的工具执行（含越界写）不经审批直接落地。
 
 ## 7. 能力声明对 controller / TUI / 审计的影响
 
-- **controller prompt**：`buildWorkerList`（controller-prompt.ts:351）继续用 `capabilities` 字符串标签，并对 `*-acp` 类型追加 `[acp:<provider>]` 后缀（如 `[acp:codebuddy]`），让 controller 知道这是外部 agent（没有 `update_progress`/`done` 工具，靠回合结束收尾，中途消息只能回合边界交付）。这是**唯一需要改 controller prompt 的地方**，不改调度模型（主文档「不做」第 7 条）。
+- **controller prompt**：`buildWorkerList`（controller-prompt.ts）继续用 `capabilities` 字符串标签，并对 ACP 类型追加 `[acp:<provider>]` 后缀（显式映射：`codebuddy` → `[acp:codebuddy]`、`opencode` → `[acp:opencode]`、`acp` → `[acp:<command>]`，command 缺失回退 `[acp:acp]`），让 controller 知道这是外部 agent（没有 `update_progress`/`done` 工具，靠回合结束收尾，中途消息只能回合边界交付）。这是**唯一需要改 controller prompt 的地方**，不改调度模型（主文档「不做」第 7 条）。
 - **TUI**：零改动（冻结页 §7）。`ActiveWorkerInfo.workerType`/`emoji`（src/types/worker.ts:12-28）已够用；工具行展示沿用 `ToolCallRecord` 既有渲染；`getLiveStatus()` 两标志见 02 分册 §3。
 - **transcript**：与 puppet / claude-code 同构（02 分册 §7），读取路径不变；`read_worker_conversation` / `get_worker_status` / `get_task_detail` 不为 provider 分叉。
 - **审计**：`transport: 'acp'` + `provider: <config.type>` 两字段（04 分册 §4）；不新增文件、不新增格式。
 - **能力差异矩阵**：`docs/develop/acp-capability-matrix.md`（新增），两 provider × 七列（流式 / 工具可见性 / 权限请求 / 取消 / resume / 中途注入 / 认证失败形态），值来自实测，写「未实测」而不是猜（06 分册 §5 的回填纪律）。
-- **onboard 提示**：`src/onboard.ts` 初始化流程补一句「也可选填 ACP worker（codebuddy-acp / opencode-acp）」，不改默认生成内容。
+- **onboard 提示**：`src/onboard.ts` 初始化流程补一句「也可选填 ACP worker（acp / codebuddy / opencode）」，不改默认生成内容。

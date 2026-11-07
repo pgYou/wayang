@@ -149,8 +149,8 @@ wayang --resume --all             # list all sessions to pick
 
 ```json
 "workers": {
-  "codebuddy": { "type": "codebuddy-acp", "description": "Tencent CodeBuddy Code (ACP)", "capabilities": ["code","refactor","shell"] },
-  "opencode":  { "type": "opencode-acp", "description": "OpenCode (ACP)", "capabilities": ["code","refactor","shell"] }
+  "codebuddy": { "type": "codebuddy", "description": "Tencent CodeBuddy Code (ACP)", "capabilities": ["code","refactor","shell"] },
+  "opencode":  { "type": "opencode", "description": "OpenCode (ACP)", "capabilities": ["code","refactor","shell"] }
 }
 ```
 
