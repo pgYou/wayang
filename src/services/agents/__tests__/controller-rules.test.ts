@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   loadControllerRules,
@@ -26,6 +35,40 @@ function makeTree(): { root: string; home: string; cwd: string; cleanup: () => v
   return { root: dir, home, cwd, cleanup };
 }
 
+/**
+ * Canonical spelling of a path, mirroring what `loadControllerRules` reports
+ * (it labels each file with its `realpathSync` result) WITHOUT importing the
+ * code under test.
+ *
+ * `mkdtempSync(join(tmpdir(), …))` hands back the platform spelling of the temp
+ * dir, which on macOS is the un-resolved `/var/folders/…` — while the loader
+ * reports `/private/var/folders/…`. Both name the same file; only the spelling
+ * differs. Resolve the deepest EXISTING ancestor with `realpathSync` and glue
+ * the missing tail back on:
+ *
+ *   /tmp/link/new_key   (/tmp/link -> /home/u)  =>  /home/u/new_key
+ */
+function canonical(p: string): string {
+  const lexical = resolve(p);
+  const peeled: string[] = [];
+  let candidate = lexical;
+
+  for (let depth = 0; depth <= 32; depth += 1) {
+    try {
+      const resolved = realpathSync(candidate);
+      return peeled.length === 0 ? resolved : resolve(join(resolved, ...peeled));
+    } catch {
+      // Missing or unreadable — peel one segment and retry on the parent.
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) break; // hit the filesystem root
+    peeled.unshift(basename(candidate));
+    candidate = parent;
+  }
+
+  return lexical;
+}
+
 describe('loadControllerRules', () => {
   it('loads only the home AGENTS.md when cwd has none', () => {
     const { home, cwd, cleanup } = makeTree();
@@ -34,7 +77,7 @@ describe('loadControllerRules', () => {
       const rules = loadControllerRules({ userHome: home, cwd });
 
       expect(rules).toContain('HOME RULE: answer in Chinese.');
-      expect(rules).toContain(`from ${join(home, 'AGENTS.md')}`);
+      expect(rules).toContain(`from ${canonical(join(home, 'AGENTS.md'))}`);
       expect(rules).not.toContain(join(cwd, 'AGENTS.md'));
     } finally {
       cleanup();
@@ -48,7 +91,7 @@ describe('loadControllerRules', () => {
       const rules = loadControllerRules({ userHome: home, cwd });
 
       expect(rules).toContain('CWD RULE: run npm run lint.');
-      expect(rules).toContain(`from ${join(cwd, 'AGENTS.md')}`);
+      expect(rules).toContain(`from ${canonical(join(cwd, 'AGENTS.md'))}`);
       expect(rules).not.toContain(join(home, 'AGENTS.md'));
     } finally {
       cleanup();
@@ -71,8 +114,8 @@ describe('loadControllerRules', () => {
       writeFileSync(join(cwd, 'AGENTS.md'), 'CWD RULE: supplement.');
 
       const rules = loadControllerRules({ userHome: home, cwd });
-      const homeAt = rules.indexOf(`from ${join(home, 'AGENTS.md')}`);
-      const cwdAt = rules.indexOf(`from ${join(cwd, 'AGENTS.md')}`);
+      const homeAt = rules.indexOf(`from ${canonical(join(home, 'AGENTS.md'))}`);
+      const cwdAt = rules.indexOf(`from ${canonical(join(cwd, 'AGENTS.md'))}`);
 
       expect(homeAt).toBeGreaterThanOrEqual(0);
       expect(cwdAt).toBeGreaterThan(homeAt);
@@ -91,7 +134,7 @@ describe('loadControllerRules', () => {
       // Starting wayang inside the home directory: same dir, same file.
       const rules = loadControllerRules({ userHome: home, cwd: home });
 
-      const occurrences = rules.split(`from ${join(home, 'AGENTS.md')}`).length - 1;
+      const occurrences = rules.split(`from ${canonical(join(home, 'AGENTS.md'))}`).length - 1;
       expect(occurrences).toBe(1);
       expect(rules.split('SHARED RULE: appears once.').length - 1).toBe(1);
     } finally {
@@ -127,7 +170,7 @@ describe('loadControllerRules', () => {
       // First file survives untouched, second one is cut.
       expect(rules).toContain(first);
       expect(rules).not.toContain('SECOND TAIL MARKER');
-      expect(rules).toContain(`from ${join(cwd, 'AGENTS.md')}`);
+      expect(rules).toContain(`from ${canonical(join(cwd, 'AGENTS.md'))}`);
       expect(rules).toContain('...truncated at 150 bytes');
       // Bodies stay within the cap (headings/marker are outside the budget).
       const bodyBytes = (first.length + Math.max(0, maxBytes - first.length));
@@ -151,7 +194,7 @@ describe('loadControllerRules', () => {
       expect(rules).toContain(homeText);
       expect(rules).not.toContain('\uFFFD');
 
-      const heading = `## Project rules (from ${join(cwd, 'AGENTS.md')})`;
+      const heading = `## Project rules (from ${canonical(join(cwd, 'AGENTS.md'))})`;
       const cwdBody = rules
         .slice(rules.indexOf(heading) + heading.length, rules.indexOf('...truncated at'))
         .trim();
@@ -171,8 +214,8 @@ describe('loadControllerRules', () => {
       // Cap smaller than either file: only the first is loaded, cut short.
       const rules = loadControllerRules({ userHome: home, cwd, maxBytes: 100 });
 
-      expect(rules).toContain(`from ${join(home, 'AGENTS.md')}`);
-      expect(rules).not.toContain(`from ${join(cwd, 'AGENTS.md')}`);
+      expect(rules).toContain(`from ${canonical(join(home, 'AGENTS.md'))}`);
+      expect(rules).not.toContain(`from ${canonical(join(cwd, 'AGENTS.md'))}`);
       expect(rules).toContain('x'.repeat(100));
       expect(rules).not.toContain('x'.repeat(101));
       expect(rules).toContain('...truncated at 100 bytes');

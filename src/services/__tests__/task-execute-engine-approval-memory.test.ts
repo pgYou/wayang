@@ -16,8 +16,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 /** Fake puppet workers, newest last. */
@@ -123,6 +123,40 @@ function auditRecords(ctx: SystemContext): Record<string, unknown>[] {
     .filter((record) => record && record.audit === 'permission');
 }
 
+/**
+ * Canonical spelling of a path, mirroring the policy's `normalizePath`
+ * semantics WITHOUT importing it (the tests must not borrow the code under
+ * test to compute their own expectations).
+ *
+ * `mkdtempSync(join(tmpdir(), …))` hands back the platform's spelling of the
+ * temp dir, which on macOS is the un-resolved `/var/folders/…` — while the
+ * gate `realpath`s what it judges and audits `/private/var/folders/…`. Both
+ * name the same file; only the spelling differs. Resolve the deepest EXISTING
+ * ancestor with `realpathSync` and glue the missing tail back on:
+ *
+ *   /tmp/link/new_key   (/tmp/link -> /home/u)  =>  /home/u/new_key
+ */
+function canonical(p: string): string {
+  const lexical = resolve(p);
+  const peeled: string[] = [];
+  let candidate = lexical;
+
+  for (let depth = 0; depth <= 32; depth += 1) {
+    try {
+      const resolved = realpathSync(candidate);
+      return peeled.length === 0 ? resolved : resolve(join(resolved, ...peeled));
+    } catch {
+      // Missing or unreadable — peel one segment and retry on the parent.
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) break; // hit the filesystem root
+    peeled.unshift(basename(candidate));
+    candidate = parent;
+  }
+
+  return lexical;
+}
+
 /** Read `path` once through the worker's tool set, answering any request. */
 async function readOnce(
   engine: TaskExecuteEngine,
@@ -160,7 +194,7 @@ describe('approval memory — grants die with the task', () => {
       decision: 'granted-by-memory',
       access: 'read',
       taskId: 't1',
-      resolvedPath: target,
+      resolvedPath: canonical(target),
     });
 
     await resolveAndSettle(worker, { status: 'completed', summary: 'done' });

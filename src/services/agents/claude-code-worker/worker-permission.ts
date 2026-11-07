@@ -103,12 +103,19 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
    * `sensitiveMode: 'deny'`, an ambiguous target asks, and a path inside the
    * allowed scope runs immediately. This closes the parity gap where the old
    * regex-only gate let sensitive paths through silently.
+   *
+   * Every `allow` returned here echoes the untouched `input` as `updatedInput`.
+   * The SDK's own types mark that field optional, but the CLI validates the
+   * reply against a union whose allow branch REQUIRES it — a bare
+   * `{ behavior: 'allow' }` reaches the worker as
+   * `Tool permission request failed: ZodError: invalid_union`, so omitting it
+   * breaks every gated call. Echoing the input unchanged means "no edit".
    */
   protected async handleCanUseTool(toolName: string, input: Record<string, unknown>): Promise<PermissionResult> {
     // Without signal context there is nowhere to route an approval, and the run
     // uses bypassPermissions — canUseTool is never consulted in that mode.
     if (!this._signalQueue || !this._runContext) {
-      return { behavior: 'allow' };
+      return { behavior: 'allow', updatedInput: input };
     }
 
     const scope = this.effectiveAccessScope();
@@ -118,7 +125,7 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
       const operation = operationForTool('bash');
       if (verdict.decision === 'deny') return this.denyWithAudit(toolName, input, verdict, operation);
       if (verdict.decision === 'ask') return this.handleAsk(toolName, input, verdict, operation);
-      return { behavior: 'allow' };
+      return { behavior: 'allow', updatedInput: input };
     }
 
     const fileTool = ClaudeWorkerPermissionGate.SDK_FILE_TOOL_MAP[toolName];
@@ -136,17 +143,17 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
         }
         // An optional-path search tool defaults to the workspace (its cwd),
         // which is inside the allowed scope.
-        return { behavior: 'allow' };
+        return { behavior: 'allow', updatedInput: input };
       }
       const verdict = decideToolAccess(scope, fileTool.policyTool, { path: rawPath });
       if (verdict.decision === 'deny') return this.denyWithAudit(toolName, input, verdict, operation);
       if (verdict.decision === 'ask') return this.handleAsk(toolName, input, verdict, operation);
-      return { behavior: 'allow' };
+      return { behavior: 'allow', updatedInput: input };
     }
 
     if (ClaudeWorkerPermissionGate.SDK_NON_PATH_TOOLS.has(toolName)) {
       // Nothing filesystem-related to judge — parity with the ungated puppet tools.
-      return { behavior: 'allow' };
+      return { behavior: 'allow', updatedInput: input };
     }
 
     if (toolName.startsWith('mcp__wayang__')) {
@@ -157,7 +164,7 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
       // and an approval request that can only be answered by calling the
       // controller deadlocks the worker. Other servers' tools
       // (`mcp__other__*`) keep falling through to that escalation.
-      return { behavior: 'allow' };
+      return { behavior: 'allow', updatedInput: input };
     }
 
     // Unrecognized tool: we cannot prove it stays inside the allowed scope, so
@@ -231,7 +238,7 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
     operation: PermissionOperation,
   ): Promise<PermissionResult> {
     const ctx = this._runContext;
-    if (!ctx) return Promise.resolve({ behavior: 'allow' });
+    if (!ctx) return Promise.resolve({ behavior: 'allow', updatedInput: input });
     const store = this._approvalGrants;
     const grantKeys = this._approvalMemoryMode === 'task' && store
       ? reusableGrantKeys(verdict)
@@ -253,7 +260,7 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
         workerId: ctx.workerId,
         toolName,
       });
-      return Promise.resolve({ behavior: 'allow' });
+      return Promise.resolve({ behavior: 'allow', updatedInput: input });
     }
 
     return this.requestPermission(toolName, input, this.askOf(verdict, operation), grantKeys);
@@ -279,7 +286,7 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
     ask: PermissionAsk,
     grantKeys: string[] = [],
   ): Promise<PermissionResult> {
-    if (!this._signalQueue || !this._runContext) return { behavior: 'allow' };
+    if (!this._signalQueue || !this._runContext) return { behavior: 'allow', updatedInput: input };
 
     const requestId = generateId('perm');
     const description = this.describePermissionRequest(toolName, input, ask);
@@ -309,11 +316,21 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
       ...this._turnLineage,
     });
 
-    const result = await this._pendingPermissions.wait(
+    const answer = await this._pendingPermissions.wait(
       requestId,
       ClaudeWorkerPermissionGate.PERMISSION_TIMEOUT_MS,
       () => ({ behavior: 'deny', message: 'Permission request timed out' }) as PermissionResult,
     );
+
+    // The controller answers with a bare allow/deny (it has no input to echo),
+    // but the SDK's CLI rejects an allow whose `updatedInput` is missing — the
+    // very approval this gate exists for would then surface to the worker as
+    // "Tool permission request failed: ZodError: invalid_union". Attach the
+    // untouched input here; without it there is no way back to this point.
+    const result: PermissionResult =
+      answer.behavior === 'allow' && answer.updatedInput === undefined
+        ? { ...answer, updatedInput: input }
+        : answer;
 
     // Audit approvals AND refusals with the same fields the puppet worker
     // uses — one record per gated call, no file content.

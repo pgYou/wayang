@@ -22,8 +22,8 @@
  * touching the real user's home.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Logger } from '@/infra/logger';
 import type { SignalQueue } from '@/services/signal/signal-queue';
@@ -169,6 +169,40 @@ function caller(gate: Gate) {
   };
 }
 
+/**
+ * Canonical spelling of a path, mirroring the policy's `normalizePath`
+ * semantics WITHOUT importing it (the tests must not borrow the code under
+ * test to compute their own expectations).
+ *
+ * `mkdtempSync(join(tmpdir(), …))` hands back the platform's spelling of the
+ * temp dir, which on macOS is the un-resolved `/var/folders/…` — while the
+ * policy `realpath`s what it judges and keys/persists `/private/var/folders/…`.
+ * Both name the same file; only the spelling differs. Resolve the deepest
+ * EXISTING ancestor with `realpathSync` and glue the missing tail back on:
+ *
+ *   /tmp/link/new_key   (/tmp/link -> /home/u)  =>  /home/u/new_key
+ */
+function canonical(p: string): string {
+  const lexical = resolve(p);
+  const peeled: string[] = [];
+  let candidate = lexical;
+
+  for (let depth = 0; depth <= 32; depth += 1) {
+    try {
+      const resolved = realpathSync(candidate);
+      return peeled.length === 0 ? resolved : resolve(join(resolved, ...peeled));
+    } catch {
+      // Missing or unreadable — peel one segment and retry on the parent.
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) break; // hit the filesystem root
+    peeled.unshift(basename(candidate));
+    candidate = parent;
+  }
+
+  return lexical;
+}
+
 describe('approval memory — a read approved once is reused inside the task', () => {
   it('1. the second read of the same path emits no permission_request and audits granted-by-memory', async () => {
     const gate = makeGate();
@@ -178,9 +212,13 @@ describe('approval memory — a read approved once is reused inside the task', (
     expect(first.requests).toHaveLength(1);
     expect(first.output).toBe('ran:read_file');
     expect(first.audits).toHaveLength(1);
-    expect(first.audits[0]).toMatchObject({ decision: 'approved', access: 'read', resolvedPath: target });
+    expect(first.audits[0]).toMatchObject({
+      decision: 'approved',
+      access: 'read',
+      resolvedPath: canonical(target),
+    });
 
-    const grant = gate.grants.get('t1', `read:${target}`);
+    const grant = gate.grants.get('t1', `read:${canonical(target)}`);
     expect(grant).toBeDefined();
 
     const second = await call('read_file', { path: target });
@@ -195,7 +233,7 @@ describe('approval memory — a read approved once is reused inside the task', (
       decision: 'granted-by-memory',
       access: 'read',
       operation: 'read',
-      resolvedPath: target,
+      resolvedPath: canonical(target),
       // The original verdict's rule is carried over, not invented.
       matchedRule: 'read-within-home',
       taskId: 't1',
@@ -215,7 +253,10 @@ describe('approval memory — a read approved once is reused inside the task', (
     // `~/shared/notes.txt` expands to the same canonical path.
     const second = await call('read_file', { path: '~/shared/notes.txt' });
     expect(second.requests).toHaveLength(0);
-    expect(second.audits[0]).toMatchObject({ decision: 'granted-by-memory', resolvedPath: target });
+    expect(second.audits[0]).toMatchObject({
+      decision: 'granted-by-memory',
+      resolvedPath: canonical(target),
+    });
   });
 });
 
@@ -252,8 +293,8 @@ describe('approval memory — the key is direction + path, not the tool', () => 
       toolName: 'bash',
       operation: 'exec',
       access: 'read',
-      resolvedPath: target,
-      grantId: gate.grants.get('t1', `read:${target}`)?.grantId,
+      resolvedPath: canonical(target),
+      grantId: gate.grants.get('t1', `read:${canonical(target)}`)?.grantId,
     });
   });
 
@@ -289,7 +330,7 @@ describe('approval memory — writes are never remembered', () => {
     const call = caller(gate);
 
     await call('read_file', { path: target }, true);
-    expect(gate.grants.has('t1', `read:${target}`)).toBe(true);
+    expect(gate.grants.has('t1', `read:${canonical(target)}`)).toBe(true);
 
     const write = await call('write_file', { path: target, content: 'x' }, true);
     expect(write.requests).toHaveLength(1);
@@ -389,8 +430,8 @@ describe('approval memory — scope and reuse boundaries', () => {
 
     // That approval covered both candidates: one grant per asking path.
     expect(gate.grants.size()).toBe(2);
-    expect(gate.grants.has('t1', `read:${target}`)).toBe(true);
-    expect(gate.grants.has('t1', `read:${otherTarget}`)).toBe(true);
+    expect(gate.grants.has('t1', `read:${canonical(target)}`)).toBe(true);
+    expect(gate.grants.has('t1', `read:${canonical(otherTarget)}`)).toBe(true);
 
     const reused = await call('bash', { command });
     expect(reused.requests).toHaveLength(0);

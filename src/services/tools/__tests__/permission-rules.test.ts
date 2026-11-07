@@ -15,8 +15,8 @@
  * assertions are independent of the real user's home directory.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   decideToolAccess,
@@ -57,6 +57,40 @@ afterEach(() => {
 
 function scope(overrides: Partial<WorkerAccessScope> = {}): WorkerAccessScope {
   return { userHome: home, workspace: ws, ...overrides };
+}
+
+/**
+ * Canonical spelling of a path, mirroring the policy's `normalizePath`
+ * semantics WITHOUT importing it (the tests must not borrow the code under
+ * test to compute their own expectations).
+ *
+ * `mkdtempSync(join(tmpdir(), …))` hands back the platform's spelling of the
+ * temp dir, which on macOS is the un-resolved `/var/folders/…` — while the
+ * policy `realpath`s what it judges and reports `/private/var/folders/…`.
+ * Both name the same file; only the spelling differs. Resolve the deepest
+ * EXISTING ancestor with `realpathSync` and glue the missing tail back on:
+ *
+ *   /tmp/link/new_key   (/tmp/link -> /home/u)  =>  /home/u/new_key
+ */
+function canonical(p: string): string {
+  const lexical = resolve(p);
+  const peeled: string[] = [];
+  let candidate = lexical;
+
+  for (let depth = 0; depth <= 32; depth += 1) {
+    try {
+      const resolved = realpathSync(candidate);
+      return peeled.length === 0 ? resolved : resolve(join(resolved, ...peeled));
+    } catch {
+      // Missing or unreadable — peel one segment and retry on the parent.
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) break; // hit the filesystem root
+    peeled.unshift(basename(candidate));
+    candidate = parent;
+  }
+
+  return lexical;
 }
 
 describe('evaluateBashAccess', () => {
@@ -133,7 +167,7 @@ describe('evaluateBashAccess', () => {
       expect(verdict.matchedRule).toBe('dangerous-bash');
       expect(verdict.matchedEntry).toBe('.ssh');
       expect(verdict.matchedSource).toBe('segment');
-      expect(verdict.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
+      expect(verdict.resolvedPath).toBe(canonical(join(home, '.ssh', 'id_rsa')));
       expect(verdict.sensitive).toBe(true);
       // `cat` is on the read-only table (the `sudo` prefix is stripped before
       // the lookup), so the direction is read — the danger rule still asks.
@@ -199,12 +233,23 @@ describe('evaluateBashAccess', () => {
       expect(evaluateBashAccess(scope(), `cat ${ws}/src/cli.ts`).decision).toBe('allow');
     });
 
-    it('cd into the workspace now asks (#51: cd re-bases later relative paths)', () => {
+    it('a literal cd chain that STAYS in the workspace runs (0.9.2 cd slice)', () => {
+      // 0.9.2 (#51 follow-up): the leading literal `cd <dir> && …` run is now
+      // resolved with a local cwd cursor, so a chain that never leaves the
+      // workspace no longer asks — the relative paths after it are confined to
+      // a directory this gate has already vetted.
       const command = `cd ${ws} && git diff v0.4.0 HEAD -- package.json`;
       const verdict = evaluateBashAccess(scope(), command);
-      expect(verdict.decision).toBe('ask');
-      expect(verdict.matchedRule).toBe('dynamic-shell');
-      expect(verdict.reason).toContain('cd <dir>');
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('no-path');
+
+      // The shapes the slice does NOT resolve keep the #51 fail-closed ask.
+      for (const unresolved of [`cd ${ws}; git diff v0.4.0 HEAD`, 'cd $DIR && git diff HEAD']) {
+        const ask = evaluateBashAccess(scope(), unresolved);
+        expect(ask.decision).toBe('ask');
+        expect(ask.matchedRule).toBe('dynamic-shell');
+        expect(ask.reason).toContain('cd <dir>');
+      }
     });
   });
 
@@ -535,7 +580,7 @@ describe('evaluateBashAccess', () => {
       expect(read.decision).toBe('ask');
       // The inner hit survives the wrap: the approval still names the entry.
       expect(read.matchedEntry).toBe('.ssh');
-      expect(read.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
+      expect(read.resolvedPath).toBe(canonical(join(home, '.ssh', 'id_rsa')));
       // A broken command mentioning a sensitive path keeps the hit too — it is
       // an ask under the default mode, not an unreviewed run.
       const broken = evaluateBashAccess(scope(), 'tee ~/.ssh/authorized_keys "x');
@@ -582,7 +627,7 @@ describe('evaluateBashAccess', () => {
       const verdict = evaluateBashAccess(scope(), 'bash -c "cat ~/.ssh/id_rsa"');
       expect(verdict.matchedEntry).toBe('.ssh');
       expect(verdict.sensitive).toBe(true);
-      expect(verdict.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
+      expect(verdict.resolvedPath).toBe(canonical(join(home, '.ssh', 'id_rsa')));
       expect(verdict.access).toBe('read');
       expect(verdict.reason).toContain('bash -c');
     });
@@ -961,7 +1006,7 @@ describe('evaluateBashAccess', () => {
    * script is NOT in this set — it is already judged recursively (0.8.4).
    */
   describe('#51 fail-closed fallback for unanalyzed inner commands', () => {
-    describe('the six shapes ask and name the shape in the reason', () => {
+    describe('every shape asks and names the shape in the reason', () => {
       it.each([
         ['xargs rm -rf build', 'xargs'],
         ['echo hi | xargs -n1 echo', 'xargs'],
@@ -969,7 +1014,10 @@ describe('evaluateBashAccess', () => {
         ['find . -execdir sh -c "id" {} +', 'find -execdir'],
         ['find . -ok rm {} +', 'find -ok'],
         ['eval "echo hi"', 'eval'],
-        ['cd build && ls -la', 'cd <dir>'],
+        ['cd - && ls -la', 'cd <dir>'],
+        ['(cd build && ls)', 'subshell (cd ...)'],
+        ['pushd build && ls', 'pushd <dir>'],
+        ['popd && ls', 'popd <dir>'],
         ['bash script.sh', 'script file'],
         ['sh deploy.sh', 'script file'],
         ['for f in a b; do cat "$f"; done', 'compound keyword'],
@@ -1019,6 +1067,131 @@ describe('evaluateBashAccess', () => {
       for (const command of ['cat package.json', 'sed -n 1,10p src/cli.ts', 'git status']) {
         expect(evaluateBashAccess(scope(), command).decision).toBe('allow');
       }
+    });
+  });
+
+  /**
+   * 0.9.2 (#51 follow-up): a leading run of LITERAL `cd <dir>` segments joined
+   * only by `&&` is walked with a cwd cursor before the rest of the line is
+   * judged. The cursor starts at the workspace (the shell's cwd), each target is
+   * expanded / made absolute against the CURSOR / canonicalized and judged as a
+   * read, and a target that lands outside the silent scope asks with its own
+   * reason. The cursor is local to one analysis — never module state, never
+   * carried across commands — and the slice can only ask, never allow, where the
+   * old #51 fallback asked.
+   */
+  describe('a literal `cd` chain is resolved with a local cwd cursor (0.9.2)', () => {
+    beforeEach(() => {
+      mkdirSync(join(ws, 'src'), { recursive: true });
+      mkdirSync(join(ws, 'test'), { recursive: true });
+      mkdirSync(join(home, 'docs'), { recursive: true });
+    });
+
+    it('(a) `cd <workspace>/src && ls acp` runs', () => {
+      const verdict = evaluateBashAccess(scope(), `cd ${ws}/src && ls acp`);
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('no-path');
+      expect(verdict.access).toBe('read');
+    });
+
+    it('(b) `cd <workspace> && cat package.json` runs', () => {
+      const verdict = evaluateBashAccess(scope(), `cd ${ws} && cat package.json`);
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('no-path');
+    });
+
+    it('(c) `cd ~/docs && ls` asks: the policy allows the read, the worker scope does not', () => {
+      // Real semantics, not an assumption: `~/docs` is inside the POLICY home
+      // (rule 6 allows the read) but outside the worker's silent scope, so the
+      // same `narrowHomeRead` that governs file tools turns it into an ask.
+      const verdict = evaluateBashAccess(scope(), 'cd ~/docs && ls');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('read-within-home');
+      expect(verdict.reason).toContain('inside the home directory');
+      // The reason names BOTH the spelling and the path it resolved to.
+      expect(verdict.reason).toContain('~/docs');
+      expect(verdict.reason).toContain(canonical(join(home, 'docs')));
+    });
+
+    it('(d) `cd /tmp && ls` asks, naming the scope boundary', () => {
+      const verdict = evaluateBashAccess(scope(), 'cd /tmp && ls');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('outside-all');
+      expect(verdict.reason).toContain('outside the allowed scope');
+      expect(verdict.reason).toContain('"/tmp"');
+    });
+
+    it('(e) `cd ~/.ssh && ls` asks, naming the sensitive entry', () => {
+      const verdict = evaluateBashAccess(scope(), 'cd ~/.ssh && ls');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedEntry).toBe('.ssh');
+      expect(verdict.sensitive).toBe(true);
+    });
+
+    it('(f) `cd $X && ls` keeps the #51 fail-closed ask (target not literal)', () => {
+      const verdict = evaluateBashAccess(scope(), 'cd $X && ls');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.reason).toContain('fail-closed');
+      expect(verdict.reason).toContain('issue #51');
+    });
+
+    it('(g) `cd a; cd b && ls` asks: a `;` chain is never crossed', () => {
+      const verdict = evaluateBashAccess(scope(), 'cd a; cd b && ls');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dynamic-shell');
+    });
+
+    it('(h) `(cd <workspace> && ls)` asks: a subshell restores the old cwd', () => {
+      const verdict = evaluateBashAccess(scope(), `(cd ${ws} && ls)`);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dynamic-shell');
+    });
+
+    it('(i) `cd <workspace> && rm -rf build` still asks (dangerous tier)', () => {
+      // Resolving the cd must not launder the segment it re-bases.
+      const verdict = evaluateBashAccess(scope(), `cd ${ws} && rm -rf build`);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dangerous-bash');
+    });
+
+    it('(j) `cd <workspace>/src && cd ../test && ls` runs', () => {
+      // `../test` is resolved against the CURSOR (`<workspace>/src`), which is
+      // still inside the workspace.
+      const verdict = evaluateBashAccess(scope(), `cd ${ws}/src && cd ../test && ls`);
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('no-path');
+    });
+
+    it('(j2) `cd <workspace> && cd .. && ls` asks: the base is the cursor, not the workspace', () => {
+      // `..` climbs out of the workspace, one level above it. Were the base the
+      // workspace instead of the cursor, `cd ..` would have been judged as
+      // `<workspace>/..` — a different (and still outside) directory. The reason
+      // proves where it landed.
+      const verdict = evaluateBashAccess(scope(), `cd ${ws} && cd .. && ls`);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.reason).toContain('outside the allowed scope');
+      expect(verdict.reason).toContain('".."');
+      expect(verdict.resolvedPath).toBe(canonical(dirname(ws)));
+      expect(verdict.resolvedPath).not.toBe(canonical(ws));
+    });
+
+    it('the cursor is per-analysis: an earlier allow does not carry into the next call', () => {
+      // Two independent calls, same scope. The second one starts from the
+      // workspace again, not from where the first chain ended.
+      expect(evaluateBashAccess(scope(), `cd ${ws}/src && ls`).decision).toBe('allow');
+      const second = evaluateBashAccess(scope(), 'cd .. && ls');
+      expect(second.decision).toBe('ask');
+      expect(second.resolvedPath).toBe(canonical(dirname(ws)));
+    });
+
+    it('a non-literal cd after a literal one stops the walk and keeps the #51 ask', () => {
+      // The first `cd` is resolved, the second is not: the remaining line still
+      // carries an unanalyzed cwd change, so the fail-closed ask stands.
+      const verdict = evaluateBashAccess(scope(), `cd ${ws} && cd - && ls`);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.reason).toContain('cd <dir>');
     });
   });
 });
@@ -1125,7 +1298,7 @@ describe('evaluateFileAccess', () => {
     const readKey = evaluateFileAccess(scope(), 'read_file', { path: '~/.ssh/id_rsa' });
     expect(readKey.decision).toBe('ask');
     expect(readKey.matchedEntry).toBe('.ssh');
-    expect(readKey.resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
+    expect(readKey.resolvedPath).toBe(canonical(join(home, '.ssh', 'id_rsa')));
     // A sensitive WRITE inside the task allowedDirs still asks: the grant is
     // outranked by the sensitive rule and cannot pre-approve the write.
     const writeKey = evaluateFileAccess(scope({ taskAllowedDirs: [join(home, '.ssh')] }), 'write_file', {
@@ -1556,7 +1729,7 @@ describe('process-home expansion vs the policy boundary (0.8.4)', () => {
     try {
       const verdict = evaluateFileAccess(divergentScope(), 'read_file', { path: '~/x' });
       // Expanded to the PROCESS home (what `cat ~/x` would open)…
-      expect(verdict.resolvedPath).toBe(join(otherHome, 'x'));
+      expect(verdict.resolvedPath).toBe(canonical(join(otherHome, 'x')));
       // …but the boundary anchors at `home`, so the path is outside every
       // allowed scope: ask (outside-all), never a silent allow.
       expect(verdict.decision).toBe('ask');
@@ -1569,7 +1742,7 @@ describe('process-home expansion vs the policy boundary (0.8.4)', () => {
   it('a `~` path inside the boundary still narrows read-within-home to ask (default behaviour preserved)', () => {
     // $HOME === the scope anchor (the default production state): unchanged.
     const verdict = evaluateFileAccess(divergentScope(), 'read_file', { path: '~/x' });
-    expect(verdict.resolvedPath).toBe(join(home, 'x'));
+    expect(verdict.resolvedPath).toBe(canonical(join(home, 'x')));
     expect(verdict.decision).toBe('ask');
     expect(verdict.matchedRule).toBe('read-within-home');
   });
@@ -1584,7 +1757,7 @@ describe('process-home expansion vs the policy boundary (0.8.4)', () => {
       expect(tilde.matchedRule).toBe('outside-all');
       expect(envVar.matchedRule).toBe('outside-all');
       // Both ask about the SAME path — the one a shell would open.
-      expect(tilde.askPaths).toEqual([join(otherHome, 'x')]);
+      expect(tilde.askPaths).toEqual([canonical(join(otherHome, 'x'))]);
       expect(envVar.askPaths).toEqual(tilde.askPaths);
     } finally {
       process.env.HOME = home;

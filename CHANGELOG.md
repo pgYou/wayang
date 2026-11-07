@@ -11,7 +11,7 @@
 ### 改进
 
 - `/tasks` 每行补充 worker 类型、耗时与结果/错误摘要，失败任务显示 error 摘要；`list_tasks` 对 `result` / `error` 统一按工具输出上限（默认 20000 字符）截断并标注省略（#49）。
-- bash 判定兜底：`xargs`、`find -exec/-execdir/-ok`、`eval`、`cd <dir> && ...`、脚本文件（`bash script.sh`）、复合关键字（`for/do/then` 等）这些含内层命令但未递归解析的形态，由 `allow(no-path)` 升级为 `ask`，reason 指明形态；只读命令与带显式路径的普通命令行为不变（#51）。注：0.8.4 曾冻结该范围，本版恢复。
+- bash 判定兜底：`xargs`、`find -exec/-execdir/-ok`、`eval`、`cd <dir> && ...`、脚本文件（`bash script.sh`）、复合关键字（`for/do/then` 等）这些含内层命令但未递归解析的形态，由 `allow(no-path)` 升级为 `ask`，reason 指明形态；只读命令与带显式路径的普通命令行为不变（#51）；同一 issue 的行为细化：开头仅以 `&&` 相连的单段字面量 `cd <dir>` 链不再一律 ask，而是以 workspace 为基准 cwd 用逐段推进的局部游标做绝对化与规范化（realpath 最深已存在祖先 + 补齐不存在尾部），再按敏感清单与边界判定放行，越界或命中敏感仍 ask 并在 reason 中指明 cd 目标与解析出的绝对路径，变量 cd（`cd $X`）、子 shell（`(cd …)`）、`cd -`、pushd/popd 与 `;` 相连形态维持 ask。注：0.8.4 曾冻结该范围，本版恢复。
 
 ## v0.9.1 (2026-11-05)
 

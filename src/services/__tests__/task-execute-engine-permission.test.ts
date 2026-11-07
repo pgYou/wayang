@@ -18,8 +18,17 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 // --- Mock the worker implementations (same shape as the workspace tests) ---
@@ -78,6 +87,40 @@ function makeEngine(opts: { permission?: PermissionConfig } = {}) {
   const engineOptions: TaskExecuteEngineOptions = { userHome: home, permission: opts.permission };
   const engine = new TaskExecuteEngine(ctx, signalQueue, new SkillRegistry([]), engineOptions);
   return { engine, signalQueue, ctx };
+}
+
+/**
+ * Canonical spelling of a path, mirroring the policy's `normalizePath`
+ * semantics WITHOUT importing it (the tests must not borrow the code under
+ * test to compute their own expectations).
+ *
+ * `mkdtempSync(join(tmpdir(), …))` hands back the platform's spelling of the
+ * temp dir, which on macOS is the un-resolved `/var/folders/…` — while the
+ * gate `realpath`s what it judges and reports `/private/var/folders/…`. Both
+ * name the same file; only the spelling differs. Resolve the deepest EXISTING
+ * ancestor with `realpathSync` and glue the missing tail back on:
+ *
+ *   /tmp/link/new_key   (/tmp/link -> /home/u)  =>  /home/u/new_key
+ */
+function canonical(p: string): string {
+  const lexical = resolve(p);
+  const peeled: string[] = [];
+  let candidate = lexical;
+
+  for (let depth = 0; depth <= 32; depth += 1) {
+    try {
+      const resolved = realpathSync(candidate);
+      return peeled.length === 0 ? resolved : resolve(join(resolved, ...peeled));
+    } catch {
+      // Missing or unreadable — peel one segment and retry on the parent.
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) break; // hit the filesystem root
+    peeled.unshift(basename(candidate));
+    candidate = parent;
+  }
+
+  return lexical;
 }
 
 /** Permission audit records written to the session logger, in order. */
@@ -236,7 +279,7 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(requests[0].matchedEntry).toBe('.ssh');
     expect(requests[0].matchedRule).toBe('sensitive-list');
     expect(requests[0].sensitive).toBe(true);
-    expect(requests[0].resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
+    expect(requests[0].resolvedPath).toBe(canonical(join(home, '.ssh', 'id_rsa')));
     expect(requests[0].operation).toBe('read');
     expect(requests[0].description).toContain('hit: .ssh');
     expect(requests[0].description).not.toContain('PRIVATE-KEY');
@@ -254,7 +297,7 @@ describe('worker permission gate — policy-backed decisions', () => {
       access: 'read',
       matchedEntry: '.ssh',
       matchedRule: 'sensitive-list',
-      resolvedPath: join(home, '.ssh', 'id_rsa'),
+      resolvedPath: canonical(join(home, '.ssh', 'id_rsa')),
       taskId: 't1',
     });
     // …and the audit never quotes the file.
@@ -301,7 +344,7 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(requests[0].matchedRule).toBe('sensitive-list');
     expect(requests[0].matchedEntry).toBe('.ssh');
     expect(requests[0].matchedSource).toBe('segment');
-    expect(requests[0].resolvedPath).toBe(join(home, '.ssh', 'new_key'));
+    expect(requests[0].resolvedPath).toBe(canonical(join(home, '.ssh', 'new_key')));
     expect(requests[0].access).toBe('write');
     expect(requests[0].operation).toBe('write');
     // The approval DESCRIPTION quotes the path and the hit, never the content
@@ -325,7 +368,7 @@ describe('worker permission gate — policy-backed decisions', () => {
       access: 'write',
       matchedEntry: '.ssh',
       matchedRule: 'sensitive-list',
-      resolvedPath: join(home, '.ssh', 'new_key'),
+      resolvedPath: canonical(join(home, '.ssh', 'new_key')),
       taskId: 't1',
     });
   });
@@ -391,7 +434,7 @@ describe('worker permission gate — policy-backed decisions', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0].matchedEntry).toBe('.ssh');
     // The canonical target is what the controller sees.
-    expect(requests[0].resolvedPath).toBe(join(home, '.ssh', 'id_rsa'));
+    expect(requests[0].resolvedPath).toBe(canonical(join(home, '.ssh', 'id_rsa')));
 
     engine.resolvePermission(requests[0].requestId, false, 'not needed');
     expect(await pending).not.toContain('PRIVATE-KEY');
@@ -474,7 +517,7 @@ describe('worker permission gate — policy-backed decisions', () => {
       access: 'read',
       matchedRule: 'dangerous-bash',
       matchedEntry: '.ssh',
-      resolvedPath: join(home, '.ssh', 'id_rsa'),
+      resolvedPath: canonical(join(home, '.ssh', 'id_rsa')),
       toolName: 'bash',
     });
   });
@@ -642,7 +685,9 @@ describe('worker permission gate — policy-backed decisions', () => {
       const tilde = tools.read_file.execute({ path: '~/tilde.txt' });
       await flush();
       const tildeRequest = permissionRequests(signalQueue)[0];
-      expect(tildeRequest.description).toBe(`read_file: ~/tilde.txt (resolved: ${join(home, 'tilde.txt')})`);
+      expect(tildeRequest.description).toBe(
+        `read_file: ~/tilde.txt (resolved: ${canonical(join(home, 'tilde.txt'))})`,
+      );
       expect(tildeRequest.description).not.toContain(`${taskWs}/~`);
       engine.resolvePermission(tildeRequest.requestId, true);
       expect(await tilde).toContain('TILDE');
@@ -651,7 +696,9 @@ describe('worker permission gate — policy-backed decisions', () => {
       const homeVar = tools.read_file.execute({ path: '$HOME/homevar.txt' });
       await flush();
       const homeRequest = permissionRequests(signalQueue)[1];
-      expect(homeRequest.description).toBe(`read_file: $HOME/homevar.txt (resolved: ${join(home, 'homevar.txt')})`);
+      expect(homeRequest.description).toBe(
+        `read_file: $HOME/homevar.txt (resolved: ${canonical(join(home, 'homevar.txt'))})`,
+      );
       engine.resolvePermission(homeRequest.requestId, true);
       expect(await homeVar).toContain('HOMEVAR');
 
@@ -661,7 +708,7 @@ describe('worker permission gate — policy-backed decisions', () => {
       await flush();
       const relativeRequest = permissionRequests(signalQueue)[2];
       expect(relativeRequest.description).toBe(
-        `read_file: ../shared/r.txt (resolved: ${join(home, 'shared', 'r.txt')})`,
+        `read_file: ../shared/r.txt (resolved: ${canonical(join(home, 'shared', 'r.txt'))})`,
       );
       engine.resolvePermission(relativeRequest.requestId, true);
       expect(await relative).toContain('REL');

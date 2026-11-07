@@ -286,4 +286,83 @@ describe('ClaudeCodeWorker task approval memory (#58)', () => {
     expect(silent.output).toBe('ran');
     expect(grants.size()).toBe(1);
   });
+
+  /**
+   * Mirror of the CLI's reply union: an `allow` without `updatedInput` fails the
+   * SDK's own validation and surfaces to the worker as
+   * "Tool permission request failed: ZodError: invalid_union"; a `deny` without
+   * a message fails the same way. The SDK's TS types mark `updatedInput`
+   * optional, so only this shape check (not the compiler) catches a bare allow.
+   */
+  function assertCliReplyShape(verdict: any) {
+    if (verdict.behavior === 'allow') {
+      expect(verdict.updatedInput).toBeTypeOf('object');
+      expect(verdict.updatedInput).not.toBeNull();
+      return;
+    }
+    expect(verdict.behavior).toBe('deny');
+    expect(typeof verdict.message).toBe('string');
+    expect(verdict.message.length).toBeGreaterThan(0);
+  }
+
+  it('an ask answered with allow carries the original input as updatedInput and does not raise a schema error', async () => {
+    const grants = new ApprovalMemory();
+    const { worker, signalQueue } = makeWiredWorker({ grants });
+    const canUseTool = await captureCanUseTool(worker);
+
+    const input = { file_path: target, offset: 3 };
+    const before = permissionRequests(signalQueue).length;
+    // Rejects (rather than resolving to a reply) when the gate hands the SDK an
+    // allow it cannot validate — the ZodError invalid_union regression.
+    const pending = canUseTool('Read', input);
+    await settle();
+    const fresh = permissionRequests(signalQueue).slice(before);
+    expect(fresh).toHaveLength(1);
+    for (const request of fresh) {
+      expect(worker.permissionHandler.resolvePermission((request.payload as any).requestId, true)).toBe(true);
+    }
+
+    const verdict = await pending;
+    expect(verdict.behavior).toBe('allow');
+    // The untouched input itself — not `{}`, not a repacked copy.
+    expect(verdict.updatedInput).toBe(input);
+    assertCliReplyShape(verdict);
+  });
+
+  it('every other allow path echoes the untouched input, and a refusal keeps its message', async () => {
+    const grants = new ApprovalMemory();
+    const { worker, signalQueue } = makeWiredWorker({ grants });
+    const canUseTool = await captureCanUseTool(worker);
+
+    // Path inside the allowed scope: decided without asking.
+    const inside = join(workspace, 'notes.txt');
+    writeFileSync(inside, 'x');
+    const readInput = { file_path: inside };
+    const allowed = await canUseTool('Read', readInput);
+    expect(allowed.behavior).toBe('allow');
+    expect(allowed.updatedInput).toBe(readInput);
+    assertCliReplyShape(allowed);
+
+    // Non-path tool: allowed for parity with the ungated puppet tools.
+    const todoInput = { todos: [] };
+    const todo = await canUseTool('TodoWrite', todoInput);
+    expect(todo.behavior).toBe('allow');
+    expect(todo.updatedInput).toBe(todoInput);
+    assertCliReplyShape(todo);
+
+    // A refused ask still reaches the worker as a deny WITH a message.
+    const before = permissionRequests(signalQueue).length;
+    const refusedInput = { file_path: target };
+    const pending = canUseTool('Read', refusedInput);
+    await settle();
+    const fresh = permissionRequests(signalQueue).slice(before);
+    expect(fresh).toHaveLength(1);
+    for (const request of fresh) {
+      expect(worker.permissionHandler.resolvePermission((request.payload as any).requestId, false, 'nope')).toBe(true);
+    }
+    const denial = await pending;
+    expect(denial.behavior).toBe('deny');
+    expect(denial.message).toBe('nope');
+    assertCliReplyShape(denial);
+  });
 });
