@@ -30,7 +30,17 @@ Wayang is a multi-agent orchestration platform — a CLI tool that coordinates m
 - 合入 release 分支不需要开 PR；PR 只用于需要评审、或 release 最终合回 main 的场景。
 - 开发前先确定验收标准；实现后跑完门槛（`npm run lint`、`npx vitest run`、`npm run build`）再合入 release。
 - 发布收口：版本号与 `CHANGELOG.md` 校准完成、跑通全量测试后打 tag，并将 release 分支合并回 main。
+- 具体发布流程见下方《发布与 tag》。
 - 小改动（文档、文案、单文件修补）可直接在 release 分支上提交，不必单开 feat 分支。
+
+### 发布与 tag
+
+- 发布由 tag 驱动：推送 `v*` 开头的 tag（或手动 `workflow_dispatch`）触发 `.github/workflows/release.yml`。
+- `workflow_dispatch` 的 `dry_run` 默认 `true`，只跑 `npm publish --dry-run` 做构建与检查；正式发布需显式关闭 `dry_run`。
+- tag 名必须等于 `v` + `package.json` 的 `version`，不一致会在 `Verify tag matches package.json version` 步骤失败。
+- 流水线顺序：`npm ci` → `npm run lint` → `npm test` → `npm run build` → 检查该版本是否已发布 → `npm publish --provenance --access public`（已发布则跳过 publish）。
+- 认证走 OIDC Trusted Publishing：workflow 声明 `id-token: write`，不依赖 `NPM_TOKEN`。
+- 打 tag 前置：本地跑通 `npm run lint`、`npx vitest run`、`npm run build`，且 `CHANGELOG.md` 段落已校准。
 
 ### 工作区布局
 
