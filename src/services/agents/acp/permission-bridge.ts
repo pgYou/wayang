@@ -171,18 +171,29 @@ function mcpToolIdentity(name: string): { server: string; tool: string } | undef
  *
  * Measured (0.9.4 CLI run, codebuddy): the agent never fills ACP `name` — the
  * call arrives with `kind:'other'` and the identity inside `rawInput.toolName`
- * (`{"params":{…},"toolName":"mcp__wayang__update_progress"}`). Matching `name`
- * alone therefore missed both tools and every call landed in the "kind could
- * not be determined" ask. Both structural fields are read; `title` is free text
- * and deliberately stays out of the decision.
+ * (`{"params":{…},"toolName":"mcp__wayang__update_progress"}`). Measured again
+ * (0.9.5 run): the deferred executor wraps its arguments one level deeper —
+ * `rawInput.toolName` names the DISPATCHER (`"DeferExecuteTool"`) and the real
+ * identity sits in `rawInput.params.toolName`, with the tool arguments either
+ * nested under a second `params` or flattened beside the identity. The wrapper
+ * arguments are read FIRST — they name the tool that actually runs; the outer
+ * `name` last. `title` is free text and deliberately stays out of the
+ * decision. The dispatcher itself is never exempt: a wrapper entry passes only
+ * when the RESOLVED target is in the enumerated safe set, and an unresolvable
+ * identity falls through to the fail-closed ask.
  */
 function safeOwnMcpTool(snapshot: AcpToolSnapshot): McpToolName | undefined {
   const raw = snapshot.rawInput;
-  const declared =
-    raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? (raw as Record<string, unknown>).toolName
-      : undefined;
-  for (const candidate of [snapshot.name, declared]) {
+  const declared: unknown[] = [];
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const input = raw as Record<string, unknown>;
+    const inner = input.params;
+    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+      declared.push((inner as Record<string, unknown>).toolName);
+    }
+    declared.push(input.toolName);
+  }
+  for (const candidate of [...declared, snapshot.name]) {
     if (typeof candidate !== 'string' || candidate.length === 0) continue;
     const identity = mcpToolIdentity(candidate);
     if (!identity || identity.server !== MCP_SERVER_NAME) continue;
