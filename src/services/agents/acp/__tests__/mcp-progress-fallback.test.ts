@@ -1,8 +1,8 @@
-/** 120s idle fallback over complete replies (fake timers, no sockets). */
+/** 120s idle fallback over the turn's joined text (fake timers, no sockets). */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { McpProgressTracker } from '../mcp-progress-fallback';
-import { MAX_PROGRESS_CHARS, PROGRESS_FALLBACK_MS } from '../mcp-schemas';
+import { PROGRESS_FALLBACK_MS, PROGRESS_TAIL_CHARS } from '../mcp-schemas';
 
 describe('MCP progress fallback tracker', () => {
   let allowed: boolean;
@@ -25,15 +25,15 @@ describe('MCP progress fallback tracker', () => {
     vi.useRealTimers();
   });
 
-  it('fires exactly once after 120s with the latest closed message, deduped by key', () => {
+  it('fires exactly once after 120s with the sealed text, never repeating it', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'first reply', { turn: 1, chars: 11 });
+    tracker.noteMessageSealed('first reply', { turn: 1, chars: 11 });
     tracker.noteTurnEnd();
     vi.advanceTimersByTime(PROGRESS_FALLBACK_MS - 1);
     expect(emitted).toHaveLength(0);
     vi.advanceTimersByTime(1);
     expect(emitted).toEqual(['first reply']);
-    // Same key → never repeated; the window keeps re-arming instead of spinning.
+    // Consumed → never repeated; the window keeps re-arming instead of spinning.
     vi.advanceTimersByTime(10 * 60_000);
     expect(emitted).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(1);
@@ -41,21 +41,21 @@ describe('MCP progress fallback tracker', () => {
 
   it('a real update_progress at 119s resets the idle window and advances the watermark', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'reply', { turn: 1, chars: 5 });
+    tracker.noteMessageSealed('reply', { turn: 1, chars: 5 });
     tracker.noteTurnEnd();
     vi.advanceTimersByTime(119_000);
     tracker.noteProgress({ turn: 1, chars: 5 });
     vi.advanceTimersByTime(1_000);
     expect(emitted).toHaveLength(0);
-    tracker.noteMessageSealed('m2', 'second reply', { turn: 1, chars: 17 });
+    tracker.noteMessageSealed('second reply', { turn: 1, chars: 17 });
     tracker.noteTurnEnd();
     vi.advanceTimersByTime(PROGRESS_FALLBACK_MS);
     expect(emitted).toEqual(['second reply']);
   });
 
-  it('no new message after a real report → the expired window reports nothing', () => {
+  it('no new text after a real report → the expired window reports nothing', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'already reported by the agent', { turn: 1, chars: 30 });
+    tracker.noteMessageSealed('already reported by the agent', { turn: 1, chars: 30 });
     tracker.noteProgress({ turn: 1, chars: 30 }); // covered by update_progress
     tracker.noteTurnEnd();
     vi.advanceTimersByTime(10 * PROGRESS_FALLBACK_MS);
@@ -63,11 +63,11 @@ describe('MCP progress fallback tracker', () => {
     expect(vi.getTimerCount()).toBe(1);
   });
 
-  it('a message produced AFTER a real report is announced when the window expires', () => {
+  it('text produced AFTER a real report is announced when the window expires', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'old reply', { turn: 1, chars: 9 });
+    tracker.noteMessageSealed('old reply', { turn: 1, chars: 9 });
     tracker.noteProgress({ turn: 1, chars: 9 });
-    tracker.noteMessageSealed('m2', 'fresh reply', { turn: 2, chars: 60 });
+    tracker.noteMessageSealed('fresh reply', { turn: 2, chars: 60 });
     tracker.noteTurnEnd();
     vi.advanceTimersByTime(PROGRESS_FALLBACK_MS);
     expect(emitted).toEqual(['fresh reply']);
@@ -75,7 +75,7 @@ describe('MCP progress fallback tracker', () => {
 
   it('a half message (chunks without a seal) is never a candidate', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'old reply', { turn: 1, chars: 9 });
+    tracker.noteMessageSealed('old reply', { turn: 1, chars: 9 });
     tracker.noteProgress({ turn: 1, chars: 9 });
     // Chunks of the next message are still open — nothing sealed, nothing to say.
     tracker.noteNewMessage();
@@ -85,49 +85,62 @@ describe('MCP progress fallback tracker', () => {
 
   it('a new prompt and a turn end both reset the timer without emitting', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'reply', { turn: 1, chars: 5 });
+    tracker.noteMessageSealed('reply', { turn: 1, chars: 5 });
     vi.advanceTimersByTime(119_000);
     tracker.noteNewMessage(); // re-arms at t=119s
-    tracker.noteMessageSealed('m2', 'next', { turn: 2, chars: 4 });
+    tracker.noteMessageSealed('next', { turn: 2, chars: 4 });
     vi.advanceTimersByTime(119_000);
     expect(emitted).toHaveLength(0);
     tracker.noteTurnEnd(); // re-arms at t=238s
     vi.advanceTimersByTime(119_000);
     expect(emitted).toHaveLength(0);
     vi.advanceTimersByTime(1_000);
-    expect(emitted).toEqual(['next']);
+    expect(emitted).toEqual(['replynext']);
   });
 
-  it('sealing alone never emits; the latest closed message wins', () => {
+  it('sealing alone never emits; a report is every sealed segment joined (knot renews messageId per chunk)', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'part one', { turn: 1, chars: 8 });
-    tracker.noteMessageSealed('m2', 'part two', { turn: 1, chars: 16 });
+    // knot's measured shape: one reply carved into per-chunk segments. The
+    // report must be the joined reply — not the last fragment (#64).
+    tracker.noteMessageSealed('空字符', { turn: 1, chars: 3 });
+    tracker.noteMessageSealed('串试试。', { turn: 1, chars: 7 });
+    tracker.noteMessageSealed('接下来查 workspace。', { turn: 1, chars: 18 });
     expect(emitted).toHaveLength(0);
     vi.advanceTimersByTime(PROGRESS_FALLBACK_MS);
-    expect(emitted).toEqual(['part two']);
+    expect(emitted).toEqual(['空字符串试试。接下来查 workspace。']);
   });
 
-  it('no closed message → nothing is reported and the window re-arms', () => {
+  it('stale segments are dropped, later ones still reported (one window, one real report)', () => {
+    tracker.start();
+    tracker.noteMessageSealed('covered text', { turn: 1, chars: 12 });
+    tracker.noteProgress({ turn: 1, chars: 12 });
+    tracker.noteMessageSealed('fresh tail', { turn: 1, chars: 22 });
+    vi.advanceTimersByTime(PROGRESS_FALLBACK_MS);
+    expect(emitted).toEqual(['fresh tail']);
+  });
+
+  it('no sealed segment → nothing is reported and the window re-arms', () => {
     tracker.start();
     vi.advanceTimersByTime(10 * 60_000);
     expect(emitted).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(1);
   });
 
-  it('caps the message at 20000 characters with a marker, never a summary', () => {
+  it('long joined text keeps the newest PROGRESS_TAIL_CHARS, an ellipsis marking the cut', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'z'.repeat(25_000), { turn: 1, chars: 25_000 });
+    const head = 'A'.repeat(PROGRESS_TAIL_CHARS);
+    const tail = 'B'.repeat(500);
+    tracker.noteMessageSealed(head + tail, { turn: 1, chars: 2_500 });
     tracker.noteTurnEnd();
     vi.advanceTimersByTime(PROGRESS_FALLBACK_MS);
     expect(emitted).toHaveLength(1);
-    expect(emitted[0]).toContain('…[truncated]');
-    expect(emitted[0].startsWith('z'.repeat(MAX_PROGRESS_CHARS))).toBe(true);
-    expect(emitted[0].length).toBeLessThan(MAX_PROGRESS_CHARS + 20);
+    expect(emitted[0]).toBe(`…${'A'.repeat(PROGRESS_TAIL_CHARS - 500)}${tail}`);
+    expect(emitted[0].length).toBe(PROGRESS_TAIL_CHARS + 1);
   });
 
   it('never fires when the run guards are closed (turn end / cancel / abort / agent exit)', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'reply', { turn: 1, chars: 5 });
+    tracker.noteMessageSealed('reply', { turn: 1, chars: 5 });
     tracker.noteTurnEnd();
     allowed = false;
     vi.advanceTimersByTime(10 * 60_000);
@@ -136,27 +149,28 @@ describe('MCP progress fallback tracker', () => {
 
   it('stop() (run finally / abort / loop exit) cancels the pending fire', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'reply', { turn: 1, chars: 5 });
+    tracker.noteMessageSealed('reply', { turn: 1, chars: 5 });
     tracker.noteTurnEnd();
     tracker.stop();
     vi.advanceTimersByTime(10 * 60_000);
     expect(emitted).toHaveLength(0);
   });
 
-  it('flush() reports a closed unreported message immediately, once (turn end, degraded)', () => {
+  it('flush() reports the joined unreported text immediately, once (turn end, degraded)', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'you are done', { turn: 1, chars: 12 });
+    tracker.noteMessageSealed('you are ', { turn: 1, chars: 8 });
+    tracker.noteMessageSealed('done', { turn: 1, chars: 12 });
     expect(tracker.flush()).toBe(true);
     expect(emitted).toEqual(['you are done']);
-    // Same key and position → a second flush is a no-op, the window restarts.
+    // Consumed → a second flush is a no-op, the window restarts.
     expect(tracker.flush()).toBe(false);
     expect(emitted).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(1);
   });
 
-  it('flush() respects the watermark: a message already covered by update_progress is not repeated', () => {
+  it('flush() respects the watermark: text already covered by update_progress is not repeated', () => {
     tracker.start();
-    tracker.noteMessageSealed('m1', 'stale text', { turn: 1, chars: 10 });
+    tracker.noteMessageSealed('stale text', { turn: 1, chars: 10 });
     tracker.noteProgress({ turn: 1, chars: 10 });
     expect(tracker.flush()).toBe(false);
     expect(emitted).toHaveLength(0);

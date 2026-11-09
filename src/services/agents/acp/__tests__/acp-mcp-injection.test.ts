@@ -88,10 +88,14 @@ function startRun(worker: TestAcpWorker, onProgress?: (msg: string) => void): { 
   return { runPromise, ready };
 }
 
-function sendText(worker: TestAcpWorker, text: string, messageId = 'm1'): void {
+/** messageId null → the chunk carries NO messageId field (bare chunk, knot shape). */
+function sendText(worker: TestAcpWorker, text: string, messageId: string | null = 'm1'): void {
   worker.transport.agentMessage({
     jsonrpc: '2.0', method: 'session/update',
-    params: { sessionId: 's-1', update: { sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text } } },
+    params: {
+      sessionId: 's-1',
+      update: { sessionUpdate: 'agent_message_chunk', ...(messageId !== null && { messageId }), content: { type: 'text', text } },
+    },
   });
 }
 
@@ -253,11 +257,15 @@ describe('AcpWorkerRun: MCP injection', () => {
 });
 
 /**
- * Degraded progress is reported per MESSAGE, not per chunk: the text comes from
- * the turn writer's aggregation, the trigger is the idle window (or a turn-end
- * catch-up), and the watermark keeps a real update_progress from being repeated.
+ * Degraded progress is the turn's JOINED text, never the last fragment (#64):
+ * segments come from the turn writer's own aggregation (closed by a new
+ * messageId, a tool call or the turn end), the trigger is the idle window or
+ * the turn-end catch-up, and the watermark keeps a real update_progress from
+ * being repeated. knot's measured shape — messageId renewed MID-message, which
+ * carved one reply into per-chunk fragments like 「串试试。」 — is the
+ * regression case throughout.
  */
-describe('AcpWorkerRun: degraded progress reports closed messages', () => {
+describe('AcpWorkerRun: degraded progress reports the turn text', () => {
   let tempDir: string;
   beforeEach(() => { tempDir = mkdtempSync(join(tmpdir(), 'acp-progress-')); });
   afterEach(() => { rmSync(tempDir, { recursive: true, force: true }); });
@@ -279,50 +287,100 @@ describe('AcpWorkerRun: degraded progress reports closed messages', () => {
     expect(onProgress).toHaveBeenCalledWith('你好。');
   });
 
-  it('the expired idle window announces the latest closed, unreported message', async () => {
+  it('knot shape: messageId renewed per chunk — the turn-end report is the joined reply, not the last fragment', async () => {
     const onProgress = vi.fn();
-    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 120 } } as Partial<WorkerConfig>);
+    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 5_000 } } as Partial<WorkerConfig>);
     const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
 
-    sendText(worker, 'first message', 'm1');
-    sendText(worker, 'second', 'm2'); // a new messageId closes m1
-    await sleep(250);
-    expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(onProgress).toHaveBeenCalledWith('first message');
-
-    // Same message again: nothing new to report, the window just re-arms.
-    await sleep(400);
-    expect(onProgress).toHaveBeenCalledTimes(1);
-
-    respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
-    await runPromise;
-  });
-
-  it('a half message (chunks without a close) is never announced', async () => {
-    const onProgress = vi.fn();
-    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 120 } } as Partial<WorkerConfig>);
-    const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
-
-    sendText(worker, 'still typing');
-    await sleep(400);
-    expect(onProgress).not.toHaveBeenCalled();
-
-    respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
-    await runPromise;
-  });
-
-  it('punctuation-only text is not progress', async () => {
-    const onProgress = vi.fn();
-    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 120 } } as Partial<WorkerConfig>);
-    const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
-
-    sendText(worker, '。');
-    sendText(worker, ' ……', 'm2'); // closes m1, which is punctuation only
+    sendText(worker, '我会先查询 TAPD', 'k-1');
+    sendText(worker, '，同时检索 iWiki', 'k-2'); // a new id closes k-1
+    sendText(worker, '。两条线并行推进。', 'k-3'); // and closes k-2
     await sleep(300);
     expect(onProgress).not.toHaveBeenCalled();
 
     respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
     await runPromise;
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith('我会先查询 TAPD，同时检索 iWiki。两条线并行推进。');
+  });
+
+  it('knot shape: the idle window reports the sealed fragments joined, then only text produced after that', async () => {
+    const onProgress = vi.fn();
+    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 120 } } as Partial<WorkerConfig>);
+    const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
+
+    // The incident (#64): 「串试试。」 was reported alone because it was the
+    // LATEST sealed fragment when the window fired; k-3 keeps streaming.
+    sendText(worker, '空字符', 'k-1');
+    sendText(worker, '串试试。', 'k-2'); // closes k-1
+    sendText(worker, '接下来', 'k-3');   // closes k-2, still open
+    await sleep(300);
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith('空字符串试试。');
+
+    // A later window reports only the fragments produced since — the joined
+    // text already reported never comes back.
+    sendText(worker, '收尾', 'k-4');      // closes k-3
+    sendText(worker, 'workspace。', 'k-5'); // closes k-4
+    await sleep(400);
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress).toHaveBeenLastCalledWith('接下来收尾');
+    expect(onProgress.mock.calls[1][0]).not.toContain('串试试');
+
+    respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
+    await runPromise;
+    // The turn-end catch-up closes k-5's open text and reports it.
+    expect(onProgress).toHaveBeenCalledTimes(3);
+    expect(onProgress).toHaveBeenLastCalledWith('workspace。');
+  });
+
+  it('a half message (bare chunks, no close) is never a window candidate, but the turn end reports it', async () => {
+    const onProgress = vi.fn();
+    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 120 } } as Partial<WorkerConfig>);
+    const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
+
+    sendText(worker, 'still typing', 'm1'); // one messageId, nothing closes it
+    await sleep(400);
+    expect(onProgress).not.toHaveBeenCalled();
+
+    respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
+    await runPromise;
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith('still typing');
+  });
+
+  it('no messageId at all: bare chunks accumulate and are reported joined at turn end', async () => {
+    const onProgress = vi.fn();
+    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 5_000 } } as Partial<WorkerConfig>);
+    const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
+
+    sendText(worker, '计划：先查 TAPD', null);
+    sendText(worker, '，再读 iWiki', null);
+    sendToolCall(worker, 'tc-mid'); // a tool call closes the open segment
+    sendText(worker, '。两边并行推进', null);
+    await sleep(300);
+    expect(onProgress).not.toHaveBeenCalled();
+
+    respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
+    await runPromise;
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith('计划：先查 TAPD，再读 iWiki。两边并行推进');
+  });
+
+  it('punctuation-only fragments (knot shape) are never progress', async () => {
+    const onProgress = vi.fn();
+    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 120 } } as Partial<WorkerConfig>);
+    const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
+
+    sendText(worker, '。', 'k-1');
+    sendText(worker, ' ……', 'k-2'); // closes k-1, punctuation only
+    sendText(worker, '.', 'k-3');    // closes k-2, punctuation only
+    await sleep(300);
+    expect(onProgress).not.toHaveBeenCalled();
+
+    respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
+    await runPromise;
+    expect(onProgress).not.toHaveBeenCalled();
   });
 
   it('nothing is announced after abort', async () => {

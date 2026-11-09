@@ -67,13 +67,16 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
    */
   private _messageKey: string | null = null;
   private _messageOffset = 0;
-  /** Turn counter: the fallback key suffix when the agent sends no messageId. */
+  /** Turn counter: the turn component of the progress position. */
   private _turnSeq = 0;
 
-  /** 120s idle fallback over the latest complete message (every run). */
+  /** 120s idle fallback over the turn's joined new text (every run). */
   protected _mcpFallback: McpProgressTracker = new McpProgressTracker({
     canFire: () => this.progressGuardsOpen(),
-    emit: (message) => this.reportProgress(message),
+    // fromFallback=true: the tracker advanced its own watermark to exactly the
+    // text it emitted; a whole-position advance here would eat the still-open
+    // text that has not been reported yet.
+    emit: (message) => this.reportProgress(message, true),
   });
 
   async run(
@@ -475,16 +478,17 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   }
 
   /**
-   * Single choke point for real update_progress and the 120s fallback. Both
-   * channels only restart the idle window — the MCP channel carries no id, so
-   * it takes no part in the per-message dedupe.
+   * Single choke point for real update_progress and the 120s fallback. A real
+   * report advances the watermark to the CURRENT position — everything the
+   * run has produced so far counts as announced (the MCP channel carries no
+   * id, so it takes no part in any text dedupe). The fallback does not: it
+   * only ever covered the segments it actually emitted, and the tracker
+   * records that itself.
    */
-  private reportProgress(message: string): void {
+  private reportProgress(message: string, fromFallback = false): void {
     // Guard FIRST: a late tool call must not re-arm the fallback timer either.
     if (!this.progressGuardsOpen()) return;
-    // A real report advances the watermark: everything produced so far counts
-    // as announced, so the idle window must not re-announce it later.
-    this._mcpFallback.noteProgress(this.progressPosition());
+    if (!fromFallback) this._mcpFallback.noteProgress(this.progressPosition());
     this._onProgress?.(capText(message));
   }
 
@@ -670,9 +674,9 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   /**
    * A message closed (new messageId, tool call, turn end). Its text is the turn
    * writer's own aggregation — this layer keeps no copy, only the boundary
-   * scalars — and is handed to the idle tracker as "latest complete message".
-   * Sealing NEVER emits a signal: progress is reported only when the idle
-   * window expires or, on the degraded path, at turn end.
+   * scalars — and is handed to the idle tracker as one sealed segment. Sealing
+   * NEVER emits a signal: progress is the joined turn text, reported only
+   * when the idle window expires or, on the degraded path, at turn end.
    */
   private sealMessageSegment(): void {
     const open = this._turnWriter.openText();
@@ -680,12 +684,10 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     if (open.length < this._messageOffset) this._messageOffset = 0;
     const text = open.slice(this._messageOffset);
     this._messageOffset = open.length;
-    // No messageId → turn number + text length is enough for the scalar compare.
-    const key = this._messageKey ?? `turn-${this._turnSeq}#${text.length}`;
     this._messageKey = null;
     if (!this.progressGuardsOpen()) return;
     if (!hasProgressSubstance(text)) return;
-    this._mcpFallback.noteMessageSealed(key, text, this.progressPosition());
+    this._mcpFallback.noteMessageSealed(text, this.progressPosition());
   }
 
   /** Display-ready error text with the full context (frozen §2.5 acpUserMessage). */
