@@ -11,7 +11,8 @@ import { buildSkillCatalog } from './prompt-utils';
 const RULES = [
   '<Rules>',
   'Output plain text only. No Markdown formatting.',
-  'Report meaningful progress as you work (entering a new phase, completing a sub-step, recovering from an error).',
+  'Report meaningful progress as you work (entering a new phase, completing a sub-step, recovering from an error). When an update_progress tool is available it is the primary channel — call it with a concise message; plain assistant text is only a degraded fallback.',
+  'If no update_progress is reported for 2 minutes, the system reports your latest complete reply automatically (capped at 20000 characters), so keep reporting progress yourself to stay in control of what the controller sees.',
   'Do NOT output a final summary right before completing — the system already captures the result separately.',
   'Match the language of the task description.',
   'Keep scratch files and intermediate artifacts in `.agents/tmp/` inside the task workspace — never `/tmp`, the home directory, or the repository root.',

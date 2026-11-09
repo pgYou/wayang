@@ -43,6 +43,8 @@ import { buildAcpCapabilities } from '@/services/acp/client';
 import { createAcpToolAccumulator, type AcpToolAccumulator } from './event-mapper';
 import { createAcpPermissionBridge, type AcpDenialInfo, type AcpPermissionAnswer } from './permission-bridge';
 import { AcpTurnWriter } from './acp-turn-writer';
+import type { McpTransport } from './mcp-transport';
+import type { McpProgressTracker } from './mcp-progress-fallback';
 import { classifyTurnEnd, denialKey, resetTurnGuard, sanitizeTarget, turnEndErrorText, type TurnDenial, type TurnGuardState } from './turn-attribution';
 
 // --- Hook types (frozen §2 / 02 §2) ---
@@ -90,6 +92,8 @@ export interface AcpWorkerUserConfig {
   env?: Record<string, string>;
   protocol?: AcpProtocolOverrides;
   permissionMode?: 'client' | 'agent';
+  /** Per-run MCP injection; enabled by default, `fallbackMs` overrides 120s. */
+  mcp?: { enabled?: boolean; fallbackMs?: number };
 }
 
 /** What the buildLaunch hook receives (env already merged with process.env, frozen §2.1). */
@@ -210,9 +214,17 @@ export abstract class BaseAcpWorker {
   protected _approvalMemory: ApprovalMemoryMode = 'task';
   protected _currentTurnEnv: TurnEnvelope | null = null;
 
-  // --- Progress debounce ---
+  // --- Progress (500ms debounce is the degraded path; MCP is primary) ---
   protected _progressTimer: ReturnType<typeof setTimeout> | null = null;
   protected _pendingProgress: string | null = null;
+  protected _onProgress: ((msg: string) => void) | null = null;
+  protected _mcpAvailable = false;
+  protected _mcpTransport: McpTransport | null = null;
+  protected _mcpHandshakeTimer: ReturnType<typeof setTimeout> | null = null;
+  protected _mcpWarned = false;
+  protected _mcpFallback: McpProgressTracker | null = null;
+  /** Engine-backed inquiry channel, exposed to the agent as ask_controller. */
+  protected _askController: ((question: string, context?: string) => Promise<string>) | null = null;
 
   // --- ACP runtime (per run) ---
   protected _accumulator: AcpToolAccumulator = createAcpToolAccumulator();
@@ -382,6 +394,15 @@ export abstract class BaseAcpWorker {
     this._approvalMemory = deps.approvalMemory ?? 'task';
   }
 
+  /**
+   * Wire the engine-backed ask_controller implementation. The per-run Wayang
+   * MCP bridge serves it over a Unix socket (member presence is what the
+   * engine's `wireWorker` probe detects, as with ClaudeCodeWorker).
+   */
+  setInquirySupport(ask: (question: string, context?: string) => Promise<string>): void {
+    this._askController = ask;
+  }
+
   getState(): WorkerState {
     return this.state;
   }
@@ -456,11 +477,17 @@ export abstract class BaseAcpWorker {
     this.state.set('runtimeState', { ...prev, acp: { ...((prev.acp as Record<string, unknown>) ?? {}), ...fields } });
   }
 
+  /** Clear BOTH progress paths: the 500ms debounce and the 120s MCP fallback. */
   protected clearPendingProgress(): void {
     if (this._progressTimer) {
       clearTimeout(this._progressTimer);
       this._progressTimer = null;
     }
     this._pendingProgress = null;
+    this._mcpFallback?.stop();
+    if (this._mcpHandshakeTimer) {
+      clearTimeout(this._mcpHandshakeTimer);
+      this._mcpHandshakeTimer = null;
+    }
   }
 }

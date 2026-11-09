@@ -182,6 +182,18 @@ describe('classifyAcpToolCall: kind → policy tool mapping (frozen §5 table)',
     ).toMatchObject({ type: 'policy', toolName: 'write_file' });
   });
 
+  it('wayang MCP tools are direct-allow; other mcp__* names still fall through', () => {
+    for (const name of ['update_progress', 'ask_controller', 'mcp__wayang__update_progress', 'mcp__wayang__ask_controller']) {
+      expect(classifyAcpToolCall({ toolCallId: 't', title: 'W', name, kind: 'other', rawInput: {} })).toMatchObject({
+        type: 'direct-allow',
+        reason: 'wayang MCP controller-facing tool',
+      });
+    }
+    expect(classifyAcpToolCall({ toolCallId: 't', title: '?', name: 'mcp__other__read_file', kind: 'other', rawInput: {} })).toMatchObject({
+      type: 'direct-ask',
+    });
+  });
+
   it('inference failure → direct-ask (never fed to decideToolAccess)', () => {
     expect(classifyAcpToolCall({ toolCallId: 't', title: '?', kind: 'other', rawInput: {} })).toMatchObject({
       type: 'direct-ask',

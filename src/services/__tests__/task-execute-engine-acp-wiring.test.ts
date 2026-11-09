@@ -125,14 +125,14 @@ describe('wireWorker: ACP capability probes (freeze §7 ②)', () => {
     expect(spy.mock.calls[0][0].approvalMemory).toBe('off');
   });
 
-  it('attaches no inquiry channel — ACP workers have none (02 §6)', () => {
+  it('attaches the inquiry channel to an ACP worker (MCP ask_controller)', () => {
     const { engine } = makeEngine();
     const worker = (engine as any).createWorker('codebuddy', makeTask('w3')) as CodebuddyAcpWorker;
+    const spy = vi.spyOn(worker, 'setInquirySupport');
 
-    // Precondition: the real skeleton exposes no inquiry member, so the probe
-    // must skip it — and wireWorker must not throw trying to call one.
-    expect((worker as any).setInquirySupport).toBeUndefined();
     expect(() => (engine as any).wireWorker(worker, makeTask('w3'), 'eng-w3', 'codebuddy')).not.toThrow();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(typeof spy.mock.calls[0][0]).toBe('function');
   });
 
   it('positive control: an inquiry-capable worker still gets both probes', () => {

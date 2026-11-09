@@ -158,6 +158,24 @@ describe('AcpClient.sessionNew', () => {
     await expect(newSession).resolves.toEqual({ sessionId: '01a1-abc' });
   });
 
+  it('passes the injected ACP v1 stdio descriptor through verbatim', async () => {
+    const descriptor = {
+      name: 'wayang',
+      command: '/usr/bin/node',
+      args: ['/dist/mcp-bridge-entry.js'],
+      env: [{ name: 'WAYANG_MCP_TOKEN', value: 'one-shot-token' }],
+    };
+    const newSession = client.sessionNew({ cwd, mcpServers: [descriptor] });
+    expect(transport.clientMessages[0]).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'session/new',
+      params: { cwd, mcpServers: [descriptor] },
+    });
+    transport.agentMessage(response(1, { sessionId: 's-injected' }));
+    await expect(newSession).resolves.toEqual({ sessionId: 's-injected' });
+  });
+
   it('times out to auth-required when the handshake declared auth methods', async () => {
     const initialized = client.initialize();
     transport.agentMessage(response(1, HANDSHAKE_RESULT));

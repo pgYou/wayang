@@ -2,14 +2,11 @@
 
 ## v0.9.4 (2026-11-09)
 
-### 规划（draft，实施完成后按实际情况校准）
+### 新增
 
-- 计划：ACP worker 通过 MCP 上报进度，预期向 ACP agent 注入 MCP server，暴露 `update_progress` 与 `ask_controller` 两个工具。
-- 计划：以 `update_progress` 为进度上报主路径，`session/update` 降为兜底。
-- 计划：兜底策略预期为连续 120s 未收到 `update_progress` 时，用最新一条完整回复自动触发一次进度上报，长度上限 20000 字符。
-- 计划：支持 agent 不支持 `mcpServers` 时的 fail-soft 降级。
-
-注意：以上为 draft 规划，描述均为计划/预期；实现落地后按真实交付校准（补齐条目、移除未做项、修正描述）。
+- ACP worker 注入 `wayang` MCP server，暴露 `update_progress` 与 `ask_controller` 两个工具（仅文本进度、无百分比）；`update_progress` 为进度上报主路径，`session/update` 500ms 去抖降为降级路径。
+- 进度兜底：连续 120s 无 `update_progress` 上报时，用最新一条完整回复自动补报一次（上限 20000 字符、按 reply id 去重）。
+- agent 不接受 `mcpServers` 时只重试一次并 fail-soft 降级，任务不失败。
 
 ## v0.9.3 (2026-11-07)
 
