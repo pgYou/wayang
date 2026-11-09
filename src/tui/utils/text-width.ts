@@ -126,7 +126,12 @@ export function fitWithSuffix(body: string, suffix: string, budget: number): str
   return truncateToWidth(body, bodyBudget) + suffix;
 }
 
-/** Last 4 characters of an id, used as a short visual handle (e.g. "#7xvt"). */
+/**
+ * Last 4 characters of an id, used as a short visual handle (e.g. "#7xvt").
+ * A leading dash is stripped: generated ids end in a 4-char random tail, but
+ * shorter hand-made ids (e.g. "t-run") would otherwise yield handles like
+ * "#-run" — awkward to read and to type back into `/tasks <ref>`.
+ */
 export function shortId(id: string): string {
-  return id.slice(-4);
+  return id.slice(-4).replace(/^-+/, '');
 }

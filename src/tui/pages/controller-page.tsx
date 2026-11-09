@@ -117,7 +117,9 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
   const handleSubmit = useMemoizedFn(async (input: string) => {
     let cmdResult: Awaited<ReturnType<typeof handleCommand>>;
     try {
-      cmdResult = await handleCommand(input);
+      // The overlay panel renders inside a bordered box (border + padding =
+      // 4 columns), so its inner width is what slash-command rows must fit.
+      cmdResult = await handleCommand(input, { width: chatContentWidth });
     } catch (err) {
       // RPC-backed commands (/context, /tasks, /cancel, …) reject when the
       // server is gone; surface it instead of an unhandled rejection that
