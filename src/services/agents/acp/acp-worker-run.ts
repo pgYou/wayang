@@ -26,7 +26,7 @@ import { StdioAcpTransport, type AcpTransport } from '@/services/acp/transport';
 import { AcpError, acpUserMessage } from '@/services/acp/errors';
 import { AUTH_STDERR_PATTERN } from '@/services/acp/codec';
 import { resolveAcpTimeouts, type AcpLaunchConfig } from '@/services/acp/config';
-import type { AcpHandshake, AcpSessionUpdate, AcpTurnResult } from '@/services/acp/types';
+import type { AcpHandshake, AcpMcpServer, AcpSessionUpdate, AcpTurnResult } from '@/services/acp/types';
 import { recordPermissionAudit } from '@/services/permission/permission-audit';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import { BaseAcpWorker, findExecutableOnPath, type AcpPermissionContext, type AcpWorkerEnvView } from './base-acp-worker';
@@ -34,9 +34,26 @@ import { createAcpToolAccumulator, mapSessionUpdate, snapshotToToolCallRecord, t
 import { ACP_PERMISSION_TIMEOUT_MS } from './permission-bridge';
 import { advanceGuard, classifyTurnEnd, decideNextAction, resetTurnGuard, type CancelFact } from './turn-attribution';
 import { buildReissuePrompt, finalizeTurnVerdict, joinControllerMessages, makeInjectedEntry, makeTerminalResult } from './acp-turn-prompt';
+import {
+  generateMcpToken,
+  mcpSocketPathFor,
+  resolveMcpBridgeEntryPath,
+  startMcpHost,
+  type McpHost,
+  type McpHostOptions,
+} from './mcp-host';
+import {
+  MCP_HANDSHAKE_TIMEOUT_MS,
+  MAX_CONTEXT_CHARS,
+  MAX_QUESTION_CHARS,
+  PROGRESS_FALLBACK_MS,
+  buildMcpServerDescriptor,
+  capText,
+} from './mcp-schemas';
+import { McpProgressTracker } from './mcp-progress-fallback';
 import pkg from '@/../package.json';
 
-/** Progress debounce (02 §5): aligned with the claude-code worker's 500ms. */
+/** Progress debounce (02 §5): the DEGRADED path when no MCP server is available. */
 const PROGRESS_DEBOUNCE_MS = 500;
 
 export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInstance {
@@ -44,6 +61,12 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   private _turnTextChars = 0;
   private _turnToolCalls = 0;
   private _turnToolResults = 0;
+
+  /** 120s idle fallback over full replies (MCP-available runs only). */
+  protected _mcpFallback: McpProgressTracker = new McpProgressTracker({
+    canFire: () => this.progressGuardsOpen(),
+    emit: (message) => this.reportProgress(message, 'fallback'),
+  });
 
   async run(
     task: TaskDetail & { workerId: string },
@@ -66,6 +89,12 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     this._turnGuard = resetTurnGuard(Date.now());
     this._accumulator = createAcpToolAccumulator();
     this._turnWriter.reset();
+    this._onProgress = onProgress ?? null;
+    this._mcpAvailable = false;
+    this._mcpHost = null;
+    this._mcpWarned = false;
+    this._mcpFallback.setIdleMs(this.acpUserConfig().mcp?.fallbackMs ?? PROGRESS_FALLBACK_MS);
+    this.clearPendingProgress();
 
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
     const turnEnv = this.buildTurnEnv(task);
@@ -135,7 +164,10 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       }
 
       // Step 6: session/new, with the stderr auth short-circuit (03 §2.2).
-      const sessionId = await this.openSession(client, handshake, transport);
+      // The MCP server descriptor is injected here; a rejection retries ONCE
+      // with [] and degrades to the 500ms session/update debounce.
+      const mcpServers = await this.prepareMcpHost();
+      const sessionId = await this.openSession(client, handshake, transport, mcpServers);
       this._sessionId = sessionId;
 
       // pid evidence for orphan hunting (02 §3; 0.9.0 records, does not clean up).
@@ -196,9 +228,11 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
         while (!this.abortController.signal.aborted) {
           const cancelBaseline = client.cancelSentCount;
           this.resetTurnProgress();
+          if (this._mcpAvailable) this._mcpFallback.noteNewMessage();
           const result: AcpTurnResult = await client.sessionPrompt(sessionId, [{ type: 'text', text: promptText }]);
           this._resultReceived = true;
           this.settleTurn();
+          if (this._mcpAvailable) this._mcpFallback.noteTurnEnd();
 
           const denials = this.takeTurnDenials();
           const cancelFact: CancelFact = client.cancelSentCount > cancelBaseline ? client.lastCancelReason : null;
@@ -235,6 +269,8 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           this.state.append('conversation', applyTurnEnvelope(makeInjectedEntry(promptText, injectedKind, this.ctx.sessionId), this._currentTurnEnv ?? undefined));
         }
       } finally {
+        // Turn loop over — no fallback may fire after this point.
+        this._mcpFallback.stop();
         unregisterUpdates();
         unregisterPermission();
       }
@@ -254,6 +290,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     } finally {
       this._streamEnded = true;
       this.clearPendingProgress();
+      await this.closeMcpHost();
       if (this._cancelGraceTimer) {
         clearTimeout(this._cancelGraceTimer);
         this._cancelGraceTimer = null;
@@ -293,6 +330,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   abort(): void {
     this.abortController.abort();
     this.clearPendingProgress();
+    void this.closeMcpHost();
     this.permissionHandler.cleanup();
     const client = this._client;
     if (!client || !this._sessionId || this._terminalResult) return;
@@ -312,12 +350,180 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
 
   // --- Internals ---
 
+  // --- MCP injection, fail-soft degradation and progress fallback ---
+
+  /**
+   * Build the one-shot Unix socket host and the ACP v1 stdio descriptor. A
+   * host-start failure simply means no injection (degraded path), never a
+   * failed task. Overridable in tests to inject a fake host.
+   */
+  protected createMcpHost(opts: McpHostOptions): Promise<McpHost> {
+    return startMcpHost(opts);
+  }
+
+  private async prepareMcpHost(): Promise<AcpMcpServer[]> {
+    if (this.acpUserConfig().mcp?.enabled === false) return [];
+    const socketPath = mcpSocketPathFor(this.sessionDir, this.id, generateMcpToken().slice(0, 12));
+    const token = generateMcpToken();
+    const bridgeEntryPath = resolveMcpBridgeEntryPath(import.meta.url);
+    try {
+      const host = await this.createMcpHost({
+        socketPath,
+        token,
+        workerId: this.id,
+        onProgress: (message) => this.reportProgress(message, 'mcp'),
+        ask: (question, context) => this.mcpAsk(question, context),
+        logger: this.logger,
+        serverInfo: { name: 'wayang', version: pkg.version },
+      });
+      this._mcpHost = host;
+      this._mcpAvailable = true;
+      this._mcpFallback.start(); // task start resets the idle window
+      this.armMcpHandshakeWatchdog(host);
+      this.recordAcpRuntime({ mcpAvailable: true });
+      this.logger.debug(
+        { workerId: this.id, envNames: ['WAYANG_MCP_SOCK', 'WAYANG_MCP_TOKEN', 'WAYANG_MCP_WORKER_ID'], reason: 'mcp-injected' },
+        'ACP MCP server injected',
+      );
+      return [buildMcpServerDescriptor({ socketPath, token, workerId: this.id, bridgeEntryPath })];
+    } catch (err) {
+      this.warnMcpDegrade('host-start-failed', err);
+      return [];
+    }
+  }
+
+  /** A session/new that succeeded with injection but no hello within 10s degrades. */
+  private armMcpHandshakeWatchdog(host: McpHost): void {
+    if (this._mcpHandshakeTimer) clearTimeout(this._mcpHandshakeTimer);
+    const timer = setTimeout(() => {
+      this._mcpHandshakeTimer = null;
+      if (!this._mcpAvailable || this._streamEnded || this._terminalResult !== null) return;
+      if (host.isReady()) return;
+      void this.degradeMcp('handshake-timeout');
+    }, MCP_HANDSHAKE_TIMEOUT_MS);
+    timer.unref?.();
+    this._mcpHandshakeTimer = timer;
+  }
+
+  /** Metadata-only warning: no token, path, question, answer or reply text. */
+  private warnMcpDegrade(reason: string, err?: unknown): void {
+    if (this._mcpWarned) return;
+    this._mcpWarned = true;
+    const rpcCode = err instanceof AcpError ? err.detail?.rpc?.code : undefined;
+    this.logger.warn(
+      { provider: this.config.type, workerId: this.id, reason, ...(rpcCode !== undefined && { rpcCode }), mcpAvailable: false },
+      'ACP MCP injection degraded — session/update progress is the fallback',
+    );
+  }
+
+  /** Disable MCP, stop every timer and shut the host (and thus the bridge) down. */
+  private async degradeMcp(reason: string, err?: unknown): Promise<void> {
+    if (this._mcpAvailable) {
+      this._mcpAvailable = false;
+      this._mcpFallback.stop();
+      this.recordAcpRuntime({ mcpAvailable: false });
+    }
+    await this.closeMcpHost();
+    this.warnMcpDegrade(reason, err);
+  }
+
+  private async closeMcpHost(): Promise<void> {
+    const host = this._mcpHost;
+    this._mcpHost = null;
+    if (this._mcpHandshakeTimer) {
+      clearTimeout(this._mcpHandshakeTimer);
+      this._mcpHandshakeTimer = null;
+    }
+    if (!host) return;
+    try {
+      await host.close();
+    } catch (err) {
+      this.logger.debug({ workerId: this.id, err, reason: 'mcp-host-close' }, 'ACP MCP host close failed');
+    }
+  }
+
+  /** The four guards: no progress after turn end / cancel / abort / agent exit. */
+  private progressGuardsOpen(): boolean {
+    return this._mcpAvailable
+      && this._runInFlight
+      && !this._inputClosed
+      && !this.abortController.signal.aborted
+      && !this._streamEnded
+      && this._terminalResult === null
+      && this._cancelledAt === null;
+  }
+
+  /** Single choke point for real update_progress and the 120s fallback. */
+  private reportProgress(message: string, source: 'mcp' | 'fallback'): void {
+    // Guard FIRST: a late tool call must not re-arm the fallback timer either.
+    if (!this.progressGuardsOpen()) return;
+    this._mcpFallback.noteProgress(source === 'mcp' ? 'mcp' : 'fallback');
+    this._onProgress?.(capText(message));
+  }
+
+  /** ask_controller: same blocking engine channel as ClaudeCodeWorker, with an audit entry. */
+  private async mcpAsk(question: string, context?: string): Promise<string> {
+    const ask = this._askController;
+    if (!ask || !this._mcpAvailable) {
+      return '[UNAVAILABLE] The controller inquiry channel is not available for this worker.';
+    }
+    const q = capText(question, MAX_QUESTION_CHARS);
+    const c = context === undefined ? undefined : capText(context, MAX_CONTEXT_CHARS);
+    let answer: string;
+    try {
+      answer = await ask(q, c);
+    } catch (err) {
+      answer = `[UNAVAILABLE] ${err instanceof Error ? err.message : String(err)}`;
+    }
+    this.recordInquiryAudit(q, answer);
+    return answer;
+  }
+
+  private recordInquiryAudit(question: string, answer: string): void {
+    const ts = nowISO();
+    this.state.append('conversation', applyTurnEnvelope({
+      type: EEntryType.System,
+      uuid: generateId('s'),
+      parentUuid: null,
+      sessionId: this.ctx.sessionId,
+      timestamp: ts,
+      subtype: ESystemSubtype.Inquiry,
+      content: `ask_controller: ${question}\ncontroller: ${answer}`,
+      startedAt: ts,
+      endedAt: ts,
+    } as ConversationEntry, this._currentTurnEnv ?? undefined));
+  }
+
   /**
    * session/new with the stderr login short-circuit: a stderr line hitting the
    * auth pattern rejects the race immediately (03 §2.2 — do not wait out the
    * timeout); every failure is then attributed through the isReady hook.
+   *
+   * fail-soft: if the call carrying mcpServers fails, retry ONCE with [].
+   * auth-required / cancelled / transport-closed are never retried.
    */
-  private async openSession(client: AcpClient, handshake: AcpHandshake, transport: AcpTransport): Promise<string> {
+  private async openSession(
+    client: AcpClient,
+    handshake: AcpHandshake,
+    transport: AcpTransport,
+    mcpServers: AcpMcpServer[],
+  ): Promise<string> {
+    try {
+      return await this.trySessionNew(client, mcpServers);
+    } catch (firstError) {
+      if (mcpServers.length > 0 && this.mcpRetryable(firstError, handshake, transport)) {
+        await this.degradeMcp('session-new-mcp-error', firstError);
+        try {
+          return await this.trySessionNew(client, []);
+        } catch (secondError) {
+          this.attributeSessionNewError(secondError, handshake, transport);
+        }
+      }
+      this.attributeSessionNewError(firstError, handshake, transport);
+    }
+  }
+
+  private async trySessionNew(client: AcpClient, mcpServers: AcpMcpServer[]): Promise<string> {
     const authHit = new Promise<never>((_, reject) => {
       this._sessionAuthHit = (line) =>
         reject(new AcpError('auth-required', `auth keyword on stderr during session/new: ${line}`, { stderrTail: [line] }));
@@ -326,19 +532,28 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     authHit.catch(() => undefined);
     try {
       const { sessionId } = await Promise.race([
-        client.sessionNew({ cwd: this.workspaceDir, mcpServers: [] }),
+        client.sessionNew({ cwd: this.workspaceDir, mcpServers }),
         authHit,
       ]);
       return sessionId;
-    } catch (err) {
-      const readiness = this.isReady({ handshake, phase: 'session-new', error: err, stderrTail: transport.stderrTail() });
-      if (!readiness.ready) {
-        throw new AcpError(readiness.kind ?? 'agent-error', readiness.message ?? 'agent not ready after session/new');
-      }
-      throw this.normalizeError(err, 'session-new');
     } finally {
       this._sessionAuthHit = null;
     }
+  }
+
+  private mcpRetryable(err: unknown, handshake: AcpHandshake, transport: AcpTransport): boolean {
+    const readiness = this.isReady({ handshake, phase: 'session-new', error: err, stderrTail: transport.stderrTail() });
+    if (!readiness.ready) return false;
+    if (err instanceof AcpError && ['auth-required', 'cancelled', 'transport-closed'].includes(err.code)) return false;
+    return true;
+  }
+
+  private attributeSessionNewError(err: unknown, handshake: AcpHandshake, transport: AcpTransport): never {
+    const readiness = this.isReady({ handshake, phase: 'session-new', error: err, stderrTail: transport.stderrTail() });
+    if (!readiness.ready) {
+      throw new AcpError(readiness.kind ?? 'agent-error', readiness.message ?? 'agent not ready after session/new');
+    }
+    throw this.normalizeError(err, 'session-new');
   }
 
   private handleStderrLine(line: string): void {
@@ -362,6 +577,12 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       );
       return;
     }
+    // A tool_call seals the current reply draft even when the mapper ignores
+    // that particular snapshot (first-snapshot / non-terminal-update).
+    if (this._mcpAvailable
+      && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')) {
+      this._mcpFallback.noteToolCall();
+    }
     let events: AcpMappedEvent[];
     try {
       events = mapSessionUpdate(update, this._accumulator);
@@ -376,9 +597,13 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
         case 'agent-text':
           this._turnWriter.addText(event.text);
           this._turnTextChars += event.text.length;
+          if (this._mcpAvailable) this._mcpFallback.addAgentText(event.text, event.messageId);
           break;
         case 'progress':
-          this.emitDebouncedProgress(event.text, onProgress);
+          // MCP available → update_progress is primary; session/update text is
+          // ignored here (the 120s fallback is the only text-driven path).
+          // MCP unavailable → keep the original 500ms debounce unchanged.
+          if (!this._mcpAvailable) this.emitDebouncedProgress(event.text, onProgress);
           break;
         case 'tool-call':
           this._sawToolCall = true;

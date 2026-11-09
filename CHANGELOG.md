@@ -10,6 +10,7 @@
 ### 改进
 
 - `BaseAcpWorker` 的 `buildLaunch` / `isReady` / `stopPolicy` 由 abstract 改为带默认实现的可选 override（通用启动透传、`protocolVersion === 1` 就绪检查、中性保守停止策略 5000/2000/取消后不信任），codebuddy / opencode 两个专用类的实测覆写保持不变。
+- 【v0.9.4 实现条目，合入 release/0.9.4 时移入该版本段落】ACP worker 注入 `wayang` MCP server（`update_progress` / `ask_controller` 两个工具，仅文本进度、无百分比）；`update_progress` 为主路径、`session/update` 500ms 去抖降为降级路径，连续 120s 无上报时用最新一条完整回复自动补报一次（上限 20000 字符、按 reply id 去重）；agent 不接受 `mcpServers` 时只重试一次并 fail-soft 降级，任务不失败。
 
 ## v0.9.2 (2026-11-06)
 

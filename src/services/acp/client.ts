@@ -197,7 +197,7 @@ export class AcpClient {
     );
   }
 
-  /** mcpServers is required by the v1 schema; 0.9.0 always passes []. Unknown response fields are ignored. */
+  /** mcpServers is required by the v1 schema; the worker layer passes its injection (or [] on degrade). Unknown response fields are ignored. */
   async sessionNew(input: { cwd: string; mcpServers: AcpMcpServer[] }): Promise<{ sessionId: string }> {
     const raw = await this.rpcRequest(
       'session/new',

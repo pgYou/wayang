@@ -137,6 +137,18 @@ function commandFromSnapshot(snapshot: AcpToolSnapshot): string | undefined {
  * tool name) — it asks directly.
  */
 export function classifyAcpToolCall(snapshot: AcpToolSnapshot): Classification {
+  // Wayang's OWN injected MCP server (`mcp__wayang__*` / bare names):
+  // controller-facing tools, not filesystem IO — auto-allow. Without this,
+  // an unrecognized-tool escalation would gate ask_controller itself, and an
+  // approval request that can only be answered by calling the controller
+  // deadlocks the worker (same rationale as cc/worker-permission.ts:159-168).
+  const rawName = String(snapshot.name ?? '').toLowerCase();
+  const ownTool = rawName
+    .replace(/^mcp__wayang__/, '')
+    .replace(/^wayang[._-]/, '');
+  if (ownTool === 'update_progress' || ownTool === 'ask_controller') {
+    return { type: 'direct-allow', reason: 'wayang MCP controller-facing tool' };
+  }
   const kind = snapshot.kind;
   if (kind === 'fetch' || kind === 'think' || kind === 'switch_mode') {
     return { type: 'direct-allow', reason: `non-path kind "${kind}"` };

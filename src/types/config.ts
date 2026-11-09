@@ -147,6 +147,15 @@ export interface WorkerConfig {
    * Inert for `claude-code`.
    */
   trustUpdatesAfterCancel?: boolean;
+  /**
+   * ACP only: per-run Wayang MCP injection (`update_progress` / `ask_controller`).
+   * Enabled by default; `fallbackMs` overrides the 120s idle fallback window.
+   * Inert for `claude-code` (which uses its own in-process SDK MCP server).
+   */
+  mcp?: {
+    enabled?: boolean;
+    fallbackMs?: number;
+  };
 }
 
 /**
@@ -309,7 +318,7 @@ function validateWorkerEntry(id: string, worker: WorkerConfig): string | null {
 
   // Rule 4: claude-code must not mix in the ACP launch semantics.
   if (type === 'claude-code') {
-    for (const key of ['command', 'args', 'env', 'protocol', 'trustUpdatesAfterCancel'] as const) {
+    for (const key of ['command', 'args', 'env', 'protocol', 'trustUpdatesAfterCancel', 'mcp'] as const) {
       if (worker[key] !== undefined) {
         return `${at}.${key} is not supported for type "claude-code" (claude-code uses cliPath)`;
       }
@@ -327,6 +336,22 @@ function validateWorkerEntry(id: string, worker: WorkerConfig): string | null {
     }
     if (worker.trustUpdatesAfterCancel !== undefined && typeof worker.trustUpdatesAfterCancel !== 'boolean') {
       return `${at}.trustUpdatesAfterCancel must be a boolean (got ${JSON.stringify(worker.trustUpdatesAfterCancel)})`;
+    }
+    const mcp = worker.mcp;
+    if (mcp !== undefined) {
+      if (typeof mcp !== 'object' || mcp === null || Array.isArray(mcp)) {
+        return `${at}.mcp must be an object (got ${JSON.stringify(mcp)})`;
+      }
+      const record = mcp as Record<string, unknown>;
+      for (const key of Object.keys(record)) {
+        if (key !== 'enabled' && key !== 'fallbackMs') return `${at}.mcp.${key} is not a known option (allowed: enabled, fallbackMs)`;
+      }
+      if (record.enabled !== undefined && typeof record.enabled !== 'boolean') {
+        return `${at}.mcp.enabled must be a boolean (got ${JSON.stringify(record.enabled)})`;
+      }
+      if (record.fallbackMs !== undefined && !(typeof record.fallbackMs === 'number' && Number.isFinite(record.fallbackMs) && record.fallbackMs > 0)) {
+        return `${at}.mcp.fallbackMs must be a positive number (got ${JSON.stringify(record.fallbackMs)})`;
+      }
     }
     if (worker.args !== undefined && (!Array.isArray(worker.args) || worker.args.some((a) => typeof a !== 'string'))) {
       return `${at}.args must be an array of strings (got ${JSON.stringify(worker.args)})`;

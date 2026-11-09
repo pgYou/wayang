@@ -50,7 +50,6 @@ export interface ProgressSignalPayload {
   emoji?: string;
   /** Human-readable progress message. */
   message: string;
-  percent?: number;
   /**
    * Epoch ms of the worker's newest conversation entry when this progress was
    * emitted (issue #16) — lets the controller judge liveness from the signal.

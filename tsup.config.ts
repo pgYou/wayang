@@ -1,7 +1,12 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/cli.ts'],
+  // Named entries keep both bundles flat in dist/: the CLI launches
+  // dist/mcp-bridge-entry.js as the ACP agent's stdio MCP server.
+  entry: {
+    cli: 'src/cli.ts',
+    'mcp-bridge-entry': 'src/services/agents/acp/mcp-bridge-entry.ts',
+  },
   format: ['esm'],
   target: 'node20',
   splitting: false,

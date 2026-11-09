@@ -157,6 +157,25 @@ describe('validateConfig: workers section (05 §5)', () => {
     expect(err).toContain('workers.mycli.command is required for type "acp"');
   });
 
+  it('accepts mcp.enabled=false and a positive mcp.fallbackMs on an ACP row', () => {
+    expect(validateConfig(makeConfigWithWorkers({
+      mycli: { type: 'acp', command: 'my-cli', description: 'x', mcp: { enabled: false, fallbackMs: 30_000 } },
+    }))).toBeNull();
+  });
+
+  it.each([
+    [{ enabled: 'no' }, 'mcp.enabled must be a boolean'],
+    [{ fallbackMs: 0 }, 'mcp.fallbackMs must be a positive number'],
+    [{ fallbackMs: -1 }, 'mcp.fallbackMs must be a positive number'],
+    [{ fallbackMs: 'soon' }, 'mcp.fallbackMs must be a positive number'],
+    [{ typo: true }, 'mcp.typo is not a known option'],
+  ])('rejects an invalid mcp option %j', (mcp, message) => {
+    const err = validateConfig(makeConfigWithWorkers({
+      mycli: { type: 'acp', command: 'my-cli', description: 'x', mcp },
+    } as any));
+    expect(err).toContain(message);
+  });
+
   it('rejects a non-boolean trustUpdatesAfterCancel on an ACP row', () => {
     const err = validateConfig(
       makeConfigWithWorkers({ mycli: { type: 'acp', command: 'my-cli', description: 'x', trustUpdatesAfterCancel: 'yes' } }),
@@ -203,8 +222,8 @@ describe('validateConfig: workers section (05 §5)', () => {
   });
 
   it('rejects ACP launch fields on a claude-code row (two launch semantics must not mix)', () => {
-    for (const key of ['command', 'args', 'env', 'protocol'] as const) {
-      const value = key === 'args' ? ['--acp'] : key === 'env' ? {} : key === 'protocol' ? {} : 'codebuddy';
+    for (const key of ['command', 'args', 'env', 'protocol', 'mcp'] as const) {
+      const value = key === 'args' ? ['--acp'] : key === 'env' || key === 'protocol' || key === 'mcp' ? {} : 'codebuddy';
       const err = validateConfig(
         makeConfigWithWorkers({ cc: { type: 'claude-code', description: 'x', [key]: value } }),
       );
