@@ -11,6 +11,7 @@ import type {
 import type { Subscribable } from '@/infra/state/subscribable';
 import { summarizeTranscript } from '@/services/worker-transcript';
 import { WorkerAgent } from '@/services/agents/worker-agent';
+import type { PermissionResolutionStatus } from '@/services/tools/permission-middleware';
 import { generateId } from '@/utils/id';
 import type { WorkerMessageDelivery } from './types';
 import { normalizeWorkspacePath } from '@/infra/workspace-registry';
@@ -102,14 +103,26 @@ export abstract class WorkerTrackingEngine extends TaskLifecycleEngine {
     return worker instanceof WorkerAgent ? 'delivered' : 'queued';
   }
 
-  /** Resolve a pending permission request. Returns false if not found. */
-  resolvePermission(requestId: string, approved: boolean, reason?: string): boolean {
+  /**
+   * Resolve a pending permission request (issue #69). Every return value is
+   * a definite terminal answer for the controller:
+   * - 'resolved' — this call settled a live pending request;
+   * - 'already-resolved' / 'expired' / 'worker-closed' — the request already
+   *   reached that terminal state (the worker side was released with it);
+   * - 'not-found' — no live worker's gate ever knew this id.
+   *
+   * Ids are unique across middleware instances, so at most one resolver
+   * recognizes a given id; the others answer 'not-found' without side
+   * effects. The first non-'not-found' answer wins.
+   */
+  resolvePermission(requestId: string, approved: boolean, reason?: string): PermissionResolutionStatus {
+    let known: PermissionResolutionStatus = 'not-found';
     for (const resolver of this.permissionResolvers.values()) {
-      if (resolver.resolvePermission(requestId, approved, reason)) {
-        return true;
-      }
+      const status = resolver.resolvePermission(requestId, approved, reason);
+      if (status === 'resolved') return 'resolved';
+      if (known === 'not-found') known = status;
     }
-    return false;
+    return known;
   }
 
   /**

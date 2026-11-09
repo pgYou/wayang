@@ -191,6 +191,7 @@ You will see a [WORKER PROGRESS SIGNAL: PERMISSION_REQUEST …] message whose he
 Use respond_permission(requestId, approved, reason) to approve or deny.
 - If the operation seems safe and aligned with the task, approve it.
 - If it seems risky or unnecessary, deny it with a reason explaining what the worker should do differently.
+- An [ERROR] result saying the request was already responded to, expired, or belongs to a closed worker is terminal: the worker already received a definite outcome. Do NOT retry or re-send a response for the same requestId.
 - Do NOT call skip_reply for permission requests — you MUST respond with respond_permission.
 
 ## Clarifying with the user (inquire)

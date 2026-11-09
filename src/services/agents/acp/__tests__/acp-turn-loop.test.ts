@@ -232,7 +232,7 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
 
     sendSensitivePermissionRequest(worker, 703, 'tc-user');
     const payload = queue.signals[0].payload;
-    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'too dangerous')).toBe(true);
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'too dangerous')).toBe('resolved');
     await waitForPermissionAnswer(worker.transport, 703);
     await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
 

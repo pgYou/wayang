@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TaskDetail, WorkerConfig } from '@/types/index';
+import type { PermissionResolutionStatus } from '@/services/tools/permission-middleware';
 import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx } from '@/__tests__/helpers';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
@@ -96,7 +97,7 @@ export type PermissionDecision = (payload: Record<string, any>) => boolean;
 export class RecordingSignalQueue {
   readonly signals: Array<Record<string, any>> = [];
   private readonly decide?: PermissionDecision;
-  private permissionHandler: { resolvePermission: (id: string, approved: boolean, reason?: string) => boolean } | null = null;
+  private permissionHandler: { resolvePermission: (id: string, approved: boolean, reason?: string) => PermissionResolutionStatus } | null = null;
 
   constructor(decide?: PermissionDecision) {
     this.decide = decide;

@@ -224,6 +224,11 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
         grants: this.approvalGrants,
       });
       tools = middleware.wrappedTools;
+      // A same-key resolver may still be registered (the worker was re-wired
+      // for a new stage). Its pending waits would become unreachable — every
+      // later respond_permission would miss them until their own timers
+      // fire. Settle them first so no worker-side wait is orphaned (#69).
+      this.permissionResolvers.get(workerId)?.cleanup();
       this.permissionResolvers.set(workerId, middleware);
     }
 
@@ -252,8 +257,12 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
     }
     // Controller answers flow back through the worker's own resolver
     // (respond_permission → resolvePermission) — registered for ACP workers
-    // exactly like it was for ClaudeCodeWorker.
+    // exactly like it was for ClaudeCodeWorker. A same-key resolver that is
+    // still registered (worker re-wired for a new stage) is settled first so
+    // its pending waits are not orphaned (#69); for the per-instance handler
+    // this also releases requests a finished stage left unanswered.
     if (signalCapable.permissionHandler) {
+      this.permissionResolvers.get(workerId)?.cleanup();
       this.permissionResolvers.set(workerId, signalCapable.permissionHandler);
     }
 

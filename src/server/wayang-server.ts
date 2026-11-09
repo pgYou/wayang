@@ -125,12 +125,14 @@ export async function runWayangServer(
   });
 
   rpc.register(METHOD.RESPOND_PERMISSION, (params) => {
-    const resolved = supervisor.engine.resolvePermission(
+    const status = supervisor.engine.resolvePermission(
       requiredString(params, 'requestId'),
       params.approved === true,
       typeof params.reason === 'string' ? params.reason : undefined,
     );
-    return { resolved };
+    // `resolved` kept for old clients; `status` carries the distinguishable
+    // terminal states of issue #69 (already-resolved / expired / worker-closed / not-found).
+    return { resolved: status === 'resolved', status };
   });
 
   rpc.register(METHOD.RESPOND_WORKER_INQUIRY, (params) => {

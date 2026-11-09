@@ -30,7 +30,11 @@ import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
+import {
+  permissionStatusFromOutcome,
+  type PermissionMiddlewareResult,
+  type PermissionResolutionStatus,
+} from '@/services/tools/permission-middleware';
 import type { WorkerAccessScope } from '@/services/tools/permission-rules';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
 import { BlockingRequestMap } from '@/infra/blocking-requests';
@@ -195,8 +199,16 @@ export abstract class BaseAcpWorker {
   /** Turn-loop guard (#56): reset at run start, advanced once per finished turn. */
   protected _turnGuard: TurnGuardState = resetTurnGuard(0);
   readonly permissionHandler: PermissionMiddlewareResult = {
-    resolvePermission: (requestId: string, approved: boolean, reason?: string) =>
-      this._pendingPermissions.resolve(requestId, { approved, reason }),
+    resolvePermission: (
+      requestId: string,
+      approved: boolean,
+      reason?: string,
+    ): PermissionResolutionStatus => {
+      if (this._pendingPermissions.resolve(requestId, { approved, reason })) return 'resolved';
+      // Distinguishable terminal states for a miss (#69): duplicate answer,
+      // timed-out request, or worker already gone.
+      return permissionStatusFromOutcome(this._pendingPermissions.outcomeOf(requestId));
+    },
     cleanup: () => {
       this._pendingPermissions.cleanupAll(() => ({ approved: false, reason: 'Worker aborted' }));
     },

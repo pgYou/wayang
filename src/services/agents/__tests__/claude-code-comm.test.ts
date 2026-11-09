@@ -177,7 +177,7 @@ describe('ClaudeCodeWorker controller messaging', () => {
     expect(signals).toHaveLength(1);
     const requestId = (signals[0].payload as any).requestId;
 
-    expect(worker.permissionHandler.resolvePermission(requestId, true)).toBe(true);
+    expect(worker.permissionHandler.resolvePermission(requestId, true)).toBe('resolved');
     expect(interrupt).not.toHaveBeenCalled();
 
     worker.abort();
@@ -438,7 +438,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect(payload.description).toContain('hit: .ssh');
     expect(payload.description).not.toContain('PRIVATE');
 
-    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe(true);
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe('resolved');
     expect((await pending).behavior).toBe('allow');
   });
 
@@ -461,7 +461,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect(payload.description).toContain('hit: .aws');
     expect(payload.description).toContain('op: write');
 
-    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe(true);
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe('resolved');
     expect((await pending).behavior).toBe('allow');
   });
 
@@ -526,7 +526,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect(payload.description).toContain('other-project.txt');
 
     // Approved by the controller → allow.
-    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe(true);
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe('resolved');
     expect((await pending).behavior).toBe('allow');
   });
 
@@ -670,7 +670,7 @@ describe('ClaudeCodeWorker permission policy (canUseTool)', () => {
     expect(requests).toHaveLength(1);
     const payload = requests[0].payload as any;
     expect(payload.description).toContain('not recognized');
-    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe(true);
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe('resolved');
     expect((await pending).behavior).toBe('deny');
   });
 });
