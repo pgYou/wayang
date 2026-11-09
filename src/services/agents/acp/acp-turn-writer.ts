@@ -61,6 +61,15 @@ export class AcpTurnWriter {
   }
 
   /**
+   * Read-only view of the OPEN text segment: every `agent-text` chunk the run
+   * has aggregated since the last flush. This is the single text source for
+   * progress reporting (the degraded path must never keep a second copy).
+   */
+  openText(): string {
+    return this.openTextParts.join('');
+  }
+
+  /**
    * Buffer a tool call. A same-id record (running → terminal evolution of one
    * call) replaces the previous one inside its owning step instead of piling
    * up duplicates — the entry is still unwritten, so this is not a post-hoc

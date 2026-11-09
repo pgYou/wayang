@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Run npm publish --dry-run only'
+        description: "Run npm publish --dry-run only"
         type: boolean
         default: true
 
@@ -29,7 +29,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: "24"
           cache: npm
 
       - name: Ensure npm supports trusted publishing
@@ -66,10 +66,14 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish (dry run)
+      - name: Publish to npm (DRY RUN — no upload)
+        # dry-run 仅用于 workflow_dispatch（inputs.dry_run 默认 true）；push tag 不走这条。
         if: steps.check.outputs.exists == 'false' && (github.event_name == 'workflow_dispatch' && inputs.dry_run)
         run: npm publish --provenance --access public --dry-run
 
-      - name: Publish
+      - name: Publish to npm (LIVE — uploads to registry)
+        # push v* tag 走这里：直接正式发布到 npm，没有 dry-run 兜底。
         if: steps.check.outputs.exists == 'false' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run))
-        run: npm publish --provenance --access public
+        run: |
+          echo "LIVE PUBLISH: event=${GITHUB_EVENT_NAME} version=$(node -p "require('./package.json').version")"
+          npm publish --provenance --access public

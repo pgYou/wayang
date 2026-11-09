@@ -72,7 +72,7 @@ export class StdioAcpTransport implements AcpTransport { constructor(config: Acp
 
 ```ts
 export type AcpContentBlock = { type: 'text'; text: string } | { type: 'resource_link'; name: string; uri: string };
-export type AcpMcpServer = { name: string; command: string; args?: string[]; env?: Record<string, string> }; // 0.9.0 恒传 []
+export type AcpMcpServer = { name: string; command: string; args: string[]; env?: { name: string; value: string }[] }; // 0.9.4 注入 wayang stdio server；降级时传 []
 export type AcpStopReason = 'end_turn' | 'max_tokens' | 'max_turn_requests' | 'refusal' | 'cancelled';
 export type AcpToolKind = 'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'switch_mode' | 'other';
 export type AcpToolStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
@@ -133,7 +133,7 @@ export class AcpClient {
   initialize(): Promise<AcpHandshake>;
   /** 协议原语，0.9.0 worker 层不调用（登录态归因走 §4 auth-required，不做交互引导）。 */
   authenticate(methodId: string): Promise<void>;
-  /** mcpServers 必填（v1 schema required），0.9.0 恒传 []。响应未知字段忽略（实测 codebuddy 回 models/modes/configOptions）。 */
+  /** mcpServers 必填（v1 schema required），0.9.4 注入 wayang stdio server（03 分册 §6），降级时传 []。响应未知字段忽略（实测 codebuddy 回 models/modes/configOptions）。 */
   sessionNew(input: { cwd: string; mcpServers: AcpMcpServer[] }): Promise<{ sessionId: string }>;
   /** 同 session 串行：上一回合未 settle 再调 → AcpError('protocol-mismatch')。响应 error → agent-error；error.code === -32800 → cancelled。 */
   sessionPrompt(sessionId: string, blocks: AcpContentBlock[]): Promise<AcpTurnResult>;
@@ -176,7 +176,6 @@ export interface AcpToolAccumulator {   // byToolCallId 累积；tool_call 后�
 }
 export type AcpMappedEvent =
   | { kind: 'agent-text'; text: string; messageId: string | null }
-  | { kind: 'progress'; text: string }                // 去抖 500ms，对齐 PROGRESS_DEBOUNCE_MS
   | { kind: 'tool-call'; record: ToolCallRecord }      // status: pending|in_progress→'running'、completed→'succeeded'、failed→'failed'
   | { kind: 'tool-result'; record: ToolResultRecord }   // output = content 块文本拼接，缺则 rawOutput.text
   | { kind: 'runtime-state'; key: 'plan' | 'usage'; value: unknown }
@@ -186,7 +185,7 @@ export function mapSessionUpdate(update: AcpSessionUpdate, acc: AcpToolAccumulat
 
 | 变体 | 映射 | 依据 |
 | --- | --- | --- |
-| `agent_message_chunk` | agent-text（进 AssistantEntry）+ progress（去抖 500ms）；`messageId` 分组 | 实测同一消息的 chunk 共享 messageId |
+| `agent_message_chunk` | agent-text（进 AssistantEntry，携带 `messageId` 供进度按消息聚合） | 实测同一消息的 chunk 共享 messageId |
 | `agent_thought_chunk` | ignored（debug 计数） | 不进 transcript；实测一次简单回合最多 36 条，写入即污染 |
 | `tool_call` | acc.upsert；首个快照不产出 record | 实测首事件 rawInput 可为空、kind='other'，须等后续合并 |
 | `tool_call_update` | acc.upsert；status completed/failed 时产出 tool-call + tool-result | 实测 rawOutput 为单对象 {type:'text',text} |
@@ -307,7 +306,7 @@ export function mapSessionUpdate(update: AcpSessionUpdate, acc: AcpToolAccumulat
 //    cancel 后迟到 update 仅 1 条（usage_update）；SIGTERM 后 ~60ms 退出 {code:0}；全程 stderr 0 行、非 JSON 行 0 条、fs/* 请求 0 次
 ```
 
-结论：initialize / session-new / prompt / request_permission / cancel 五项全部实测成功；本页标注「实测」的行为均来自本次输出。如实标注的未实测项：opencode 全链路（未安装）、codebuddy 的 authenticate 与 session/load、plan/notice/compaction 变体、mcpServers 注入、多回合中途消息（回合边界交付由 §8 fake 测试覆盖）。
+结论：initialize / session-new / prompt / request_permission / cancel 五项全部实测成功；本页标注「实测」的行为均来自本次输出。如实标注的未实测项：opencode 全链路（未安装）、codebuddy 的 authenticate 与 session/load、plan/notice/compaction 变体、mcpServers 注入（0.9.4 已实现，真机接受形态未实测，见 03 分册 §6）、多回合中途消息（回合边界交付由 §8 fake 测试覆盖）。
 
 ## 10. 实测勘误（2026-11-05 复测：codebuddy 2.180.0 + opencode 2.2.5）
 

@@ -46,7 +46,7 @@
 
 ### 2.4 codebuddy 的未实测项
 
-`authenticate` 与 `session/load`（0.9.0 不做交互引导，02 分册 §2.6）；`plan` / `notice` / `compaction*` 变体；`mcpServers` 注入；多回合中途消息（由 worker 层 fake 断言覆盖，06 分册 §3）；`--acp-transport streamable-http`；2.180.0 的未登录形态未单独复测（§2.2 判据沿用 2.167.0 时期实测）。
+`authenticate` 与 `session/load`（0.9.0 不做交互引导，02 分册 §2.6）；`plan` / `notice` / `compaction*` 变体；`mcpServers` 注入（0.9.4 已实现，见本文 §6；**真机形态仍未实测**）；多回合中途消息（由 worker 层 fake 断言覆盖，06 分册 §3）；`--acp-transport streamable-http`；2.180.0 的未登录形态未单独复测（§2.2 判据沿用 2.167.0 时期实测）。
 
 ## 3. opencode（`type: 'opencode-acp'`）
 
@@ -88,7 +88,7 @@
 
 ### 3.5 opencode 的未实测项
 
-`--login` 交互流程（0.9.0 不做登录引导，与 codebuddy 同策）；`session/load`；`plan` / `notice` / `compaction*` 变体；`mcpServers` 注入；多回合中途消息（worker 层 fake 断言覆盖，06 分册 §3）；常驻 `serve --service` 后台进程与 ACP 会话的相互作用（真机断言已按 pid 限定，06 分册 §5）。
+`--login` 交互流程（0.9.0 不做登录引导，与 codebuddy 同策）；`session/load`；`plan` / `notice` / `compaction*` 变体；`mcpServers` 注入（0.9.4 已实现，见本文 §6；**真机形态仍未实测**）；多回合中途消息（worker 层 fake 断言覆盖，06 分册 §3）；常驻 `serve --service` 后台进程与 ACP 会话的相互作用（真机断言已按 pid 限定，06 分册 §5）。
 
 fail-fast 文案（缺 CLI，冻结页 §4）：`ACP agent "opencode" 无法启动：<errno 摘要>。opencode：见 https://opencode.ai/docs/acp/`。**不以静默降级代替报错**：未安装就报 `cli-missing`，登录问题就报 `auth-required`，安装/登录是用户的事，wayang 不自动装、不自动引导（07 分册 §4）。
 
@@ -117,3 +117,16 @@ fail-fast 文案（缺 CLI，冻结页 §4）：`ACP agent "opencode" 无法启�
 | 取消时延 / 迟到 update | 242ms / 3 条（保留写入） | 20ms / 2 条（丢弃计数） |
 
 两个反向指标（code review 直接拦）：provider 类里出现「另一家也要的逻辑」→ 下沉到骨架或共享件；骨架里出现 `if (provider === …)` → 上移成钩子（02 分册 §8）。
+
+## 6. MCP 注入与进度降级（0.9.4 已做，替换原「不做」决议）
+
+0.9.0 把 `mcpServers` 注入列为不做 / 未实测，并在 `session/new` 里恒传 `[]`；0.9.4 起所有 ACP worker（通用 `acp` / `codebuddy` / `opencode`）都在 `session/new` 注入一个名为 `wayang` 的 stdio MCP server，暴露 `update_progress` 与 `ask_controller` 两个工具。`acp/types.ts` 的 `AcpMcpServer` 也按 ACP v1 校正为 `args` 必填、`env: {name,value}[]`（原写成对象且 0.9.0 恒传 `[]` 的注释已作废）。
+
+- **进程模型**：agent 按描述符启动 `node dist/mcp-bridge-entry.js`（tsup 第二入口）。bridge 对 agent 走 stdio 的 MCP/NDJSON，对主进程走 `<sessionDir>/.mcp/` 下每 run 一个的 Unix socket（目录 0700、socket 0600、一次性 32 字节 token 经 env 传递、首帧 `hello{token,workerId,pid}` 校验）。日志只走 stderr，stdout 只有协议帧。
+- **分层与未来 ACP v2**：工具注册表 / schema / `update_progress` 与 `ask_controller` 的语义（`mcp-schemas.ts`、`mcp-tools.ts`）以及兜底计时器（`mcp-progress-fallback.ts`）与传输完全解耦，代码里不引用 socket 路径、bridge 进程或 token；bridge / socket / token / spawn / hello / pid 清理全部收在单一传输模块 `mcp-transport.ts`，对外只暴露 `McpTransport` 与 `startStdioMcpTransport`。未来 ACP v2 的 `McpServerAcp`（type `acp`，经 `mcp/message` 把 MCP 请求隧道回父端）**只需新增一个 `McpTransport` 实现 + 能力检测**，不需要改工具层；本次不实现该 transport。
+- **工具语义**：`update_progress` 只收 `message`（≤20000 字符），是进度上报主路径；`ask_controller` 收 `question`（≤500）/ `context`（≤1000），走引擎既有的 `worker_inquiry` 阻塞通道并写一条 inquiry 审计。权限桥只对显式枚举的白名单工具 direct-allow（`SAFE_WAYANG_MCP_TOOLS`，当前为 `update_progress` / `ask_controller`，按 server 名 `wayang` + 工具短名精确匹配，不做前缀匹配），避免「问 controller 要先获批」的死锁；其余 `mcp__*`（含未来新增的 wayang 工具）与其它 server 仍 direct-ask。新增工具必须显式登记才会豁免。
+- **降级**：`session/new` 带 `mcpServers` 报错时**只重试一次**并改传 `[]`，置 `mcpAvailable=false`、关 host、ask 不可用；第二次失败按原错误上抛。`auth-required` / `cancelled` / `transport-closed` 不重试。host 启动失败、10s 内无 hello 同样降级，都只 warn 一次且不记 token / 路径 / 正文。降级后的文本进度**不逐 chunk 播报**（真机 knot 只声明 http/sse，一条回复会拆成「你」「好」「。」多个 chunk，逐 chunk 播报只剩标点碎片）：`agent_message_chunk` 只经 `AcpTurnWriter` 聚合，进度取聚合出的**完整消息**，由 120s 空闲计时器（到点播最新一条完整且未上报的消息）与回合结束（补报一次未上报的完整消息）触发，上限 20000 字符。
+- **兜底与降级共用一条计时器**（`mcp-progress-fallback.ts`）：`update_progress` 是主路径；连续 120s 没有真实 `update_progress` 时，取「最新一条完整消息」上报一次（上限 20000 字符，只截断不摘要）。文本来源是 `AcpTurnWriter` 的聚合结果（`openText()`），进度层不再自己拼 chunk；消息在「新 messageId / tool_call / turn end」处封口。判定用「水位线 + 一个 key 标量」：真实 `update_progress` 把水位线推进到当前 (turn, 本回合累计文本长度)，候选消息只有在其结束位置晚于水位线、且 key 不等于上次兜底播报的 key 时才播——因此主动上报过的内容不会被重复播成过时内容。播报后水位线与 key 一并推进到该消息的结束位置。真实上报 / 新 prompt / turn end / 任务开始重置计时；turn 循环结束、取消、abort、agent 退出后一律不再触发（`canFire()` 四道闸 + `stop()`）。降级路径额外在 turn end 补报一次（不等满 120s）。可用 `workers.<id>.mcp = { enabled: false }` 关闭注入，或用 `mcp.fallbackMs` 调整窗口。
+- **残留进程**：run finally 关 host、销毁 socket、unlink，并对 hello 上报的 bridge pid 发 SIGTERM → 2s → SIGKILL；bridge 自身遇 stdin/socket EOF 或 5s 无连接 watchdog 退出。
+
+**真机状态**：以上为 wayang 侧实现与 fake/单元验证；codebuddy 2.180.0 / opencode 2.2.5 对注入式 `mcpServers` 的实际接受形态仍未实测（见 §2.4 / §3.5），因此 fail-soft 降级是必须保留的路径，不能假定注入一定成功。

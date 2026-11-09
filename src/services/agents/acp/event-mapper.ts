@@ -58,7 +58,6 @@ export interface AcpToolAccumulator {
 /** Frozen §3 mapped-event union. */
 export type AcpMappedEvent =
   | { kind: 'agent-text'; text: string; messageId: string | null }
-  | { kind: 'progress'; text: string }
   | { kind: 'tool-call'; record: ToolCallRecord }
   | { kind: 'tool-result'; record: ToolResultRecord }
   | { kind: 'runtime-state'; key: 'plan' | 'usage'; value: unknown }
@@ -224,10 +223,7 @@ export function mapSessionUpdate(update: AcpSessionUpdate, acc: AcpToolAccumulat
     const { content, messageId } = update as { content?: AcpContentBlock; messageId?: string | null };
     const text = content && content.type === 'text' ? content.text : '';
     if (!text) return [{ kind: 'ignored', variant, reason: 'empty-chunk' }];
-    return [
-      { kind: 'agent-text', text, messageId: messageId ?? null },
-      { kind: 'progress', text },
-    ];
+    return [{ kind: 'agent-text', text, messageId: messageId ?? null }];
   }
   if (variant === 'agent_thought_chunk') {
     return [{ kind: 'ignored', variant, reason: 'thought' }];

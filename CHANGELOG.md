@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.4 (2026-11-09)
+
+### 新增
+
+- ACP worker 注入 `wayang` MCP server，暴露 `update_progress` 与 `ask_controller` 两个工具（仅文本进度、无百分比）；`update_progress` 为进度上报主路径，`session/update` 文本降为降级路径。
+- 进度兜底：连续 120s 无 `update_progress` 上报时，自动补报该回合自水位线之后的新文本（各消息段整体拼接、与 conversation 记录一致；超 2000 字符保留尾部并加省略号，上限 20000 字符）。
+- agent 不接受 `mcpServers` 时只重试一次并 fail-soft 降级，任务不失败。
+
+### 修复
+
+- ACP 降级进度改为按回合整体上报，不再只报最后一个片段：无 MCP 时原先对每个 `session/update` chunk 做 500ms 去抖，流式输出只剩单字碎片；先前的按消息上报在真实运行中仍会退化——knot 会在一条消息中途更换 messageId，把一句完整回复切成逐段碎片（实测复现「串试试。」这类尾部片段），兜底只保留最新一个 seal 段，其余全部丢失。现在 seal 段按序累积，120s 空闲与回合结束触发时播报自水位线之后全部新文本的整体拼接（文本复用 `AcpTurnWriter` 聚合，不造第二套）；纯标点不播、abort 后不播；真实 `update_progress` 推进水位线到当前位置，而兜底自身播报只把水位线推进到已报段末尾，未 seal 的开放文本不会被误吞；重复内容不再播报（#64）。
+
 ## v0.9.3 (2026-11-07)
 
 ### 新增

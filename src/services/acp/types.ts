@@ -17,11 +17,15 @@ export type AcpContentBlock =
   | { type: 'text'; text: string }
   | { type: 'resource_link'; name: string; uri: string };
 
+/**
+ * ACP v1 stdio MCP server descriptor. `env` is an ARRAY of {name,value}
+ * pairs in the protocol schema (not a record); `args` is required.
+ */
 export interface AcpMcpServer {
   name: string;
   command: string;
-  args?: string[];
-  env?: Record<string, string>;
+  args: string[];
+  env?: { name: string; value: string }[];
 }
 
 export type AcpStopReason =

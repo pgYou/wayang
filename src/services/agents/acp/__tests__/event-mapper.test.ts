@@ -139,16 +139,13 @@ describe('AcpToolAccumulator: measured merge sequence', () => {
 });
 
 describe('mapSessionUpdate: variant table (frozen §3)', () => {
-  it('agent_message_chunk → agent-text + progress (messageId carried)', () => {
+  it('agent_message_chunk → agent-text (messageId carried)', () => {
     const acc = createAcpToolAccumulator();
     const events = mapSessionUpdate(
       { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' }, messageId: 'm-1' },
       acc,
     );
-    expect(events).toEqual([
-      { kind: 'agent-text', text: 'OK', messageId: 'm-1' },
-      { kind: 'progress', text: 'OK' },
-    ]);
+    expect(events).toEqual([{ kind: 'agent-text', text: 'OK', messageId: 'm-1' }]);
   });
 
   it('agent_thought_chunk → ignored (never enters the transcript)', () => {

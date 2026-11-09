@@ -34,8 +34,10 @@ const INQUIRY_TIMEOUT_MS = 300_000;
  * §7 ②). Detected by MEMBER PRESENCE, not instanceof: every worker type that
  * implements the surface (ClaudeCodeWorker, the ACP skeleton) gets wired the
  * same way, and the engine stays free of concrete worker imports. Workers
- * without a member are simply skipped — e.g. ACP workers have no inquiry
- * channel (02 §6 `inquiry: false`), so `setInquirySupport` never fires there.
+ * without a member are simply skipped. ACP workers DO expose one now: their
+ * per-run MCP bridge serves `ask_controller` over a Unix socket, so the same
+ * blocking-request channel as ClaudeCodeWorker reaches them (02 §6's old
+ * `inquiry: false` placeholder is superseded by the MCP injection).
  */
 type InquiryCapableWorker = IWorkerInstance & {
   setInquirySupport?: (ask: (question: string, context?: string) => Promise<string>) => void;
@@ -138,7 +140,7 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
           // (accessScope) judges expanded paths with — no injection needed.
           tavilyApiKey: this.ctx.config.tavilyApiKey,
           registry: this.skills,
-          reportProgress: (msg: string, _percent?: number) => {
+          reportProgress: (msg: string) => {
             const activity = this.getWorkerActivity(workerId);
             this.enqueueWorkerSignal(workerId, {
               source: 'worker',
@@ -164,8 +166,8 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
       : {};
 
     // Third-party workers get ask_controller through their own channel when
-    // they expose one (ClaudeCodeWorker: in-process SDK MCP tool; ACP workers
-    // expose none — 02 §6 — and are skipped by the probe).
+    // they expose one (ClaudeCodeWorker: in-process SDK MCP tool; ACP workers:
+    // the per-run Wayang MCP bridge).
     const inquiryCapable = worker as InquiryCapableWorker;
     if (typeof inquiryCapable.setInquirySupport === 'function') {
       inquiryCapable.setInquirySupport(askAndWait);

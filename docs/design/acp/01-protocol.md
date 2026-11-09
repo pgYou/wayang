@@ -39,7 +39,7 @@
 
 ### 2.3 会话创建
 
-- `session/new { cwd（绝对路径）, mcpServers?: McpServer[] }` → `{ sessionId, modes?, configOptions? }`。`mcpServers` 是 v1 schema 必填，0.9.0 恒传 `[]`。
+- `session/new { cwd（绝对路径）, mcpServers: McpServer[] }` → `{ sessionId, modes?, configOptions? }`。`mcpServers` 是 v1 schema 必填；0.9.0 恒传 `[]`，0.9.4 起注入一个 `wayang` stdio server（env 为 `{name,value}[]`），失败时才降级回传 `[]`（见 03 分册 §6）。
 - `session/load` 需要 agent 声明 `loadSession`；0.9.0 不做跨 run 续接（主文档「不做」第 6 条）。
 - 实测 codebuddy 在响应里携带厂商扩展字段（`modes` / `configOptions` / `models` / `multitaskOn`）：**一律忽略未知字段**，只取 `sessionId`（冻结页 §2.4 注释、§9 ②）。
 
@@ -105,5 +105,5 @@
 - opencode 全链路（本机未安装；仅有官方文档依据，03 分册 §3）。
 - codebuddy 的 `authenticate` 与 `session/load`（0.9.0 不做交互引导，登录态归因走 `auth-required`，冻结页 §2.4 注释）。
 - `plan` / `notice` / `compaction*` 变体（官方 v1 有、实测未出现；wayang 不声明对应能力，agent 不应发，发了也按忽略处理，冻结页 §3 表）。
-- `mcpServers` 注入（0.9.0 恒传 `[]`，不实测）。
+- `mcpServers` 注入（0.9.4 已实现，见 03 分册 §6；真机形态未实测，保留 fail-soft 降级）。
 - 多回合中途消息的回合边界交付（由 06 分册 fake ACP server 用例覆盖，不依赖真机）。
