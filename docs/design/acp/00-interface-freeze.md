@@ -176,7 +176,6 @@ export interface AcpToolAccumulator {   // byToolCallId 累积；tool_call 后�
 }
 export type AcpMappedEvent =
   | { kind: 'agent-text'; text: string; messageId: string | null }
-  | { kind: 'progress'; text: string }                // 去抖 500ms，对齐 PROGRESS_DEBOUNCE_MS
   | { kind: 'tool-call'; record: ToolCallRecord }      // status: pending|in_progress→'running'、completed→'succeeded'、failed→'failed'
   | { kind: 'tool-result'; record: ToolResultRecord }   // output = content 块文本拼接，缺则 rawOutput.text
   | { kind: 'runtime-state'; key: 'plan' | 'usage'; value: unknown }
@@ -186,7 +185,7 @@ export function mapSessionUpdate(update: AcpSessionUpdate, acc: AcpToolAccumulat
 
 | 变体 | 映射 | 依据 |
 | --- | --- | --- |
-| `agent_message_chunk` | agent-text（进 AssistantEntry）+ progress（去抖 500ms）；`messageId` 分组 | 实测同一消息的 chunk 共享 messageId |
+| `agent_message_chunk` | agent-text（进 AssistantEntry，携带 `messageId` 供进度按消息聚合） | 实测同一消息的 chunk 共享 messageId |
 | `agent_thought_chunk` | ignored（debug 计数） | 不进 transcript；实测一次简单回合最多 36 条，写入即污染 |
 | `tool_call` | acc.upsert；首个快照不产出 record | 实测首事件 rawInput 可为空、kind='other'，须等后续合并 |
 | `tool_call_update` | acc.upsert；status completed/failed 时产出 tool-call + tool-result | 实测 rawOutput 为单对象 {type:'text',text} |

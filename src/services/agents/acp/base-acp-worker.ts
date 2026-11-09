@@ -214,9 +214,7 @@ export abstract class BaseAcpWorker {
   protected _approvalMemory: ApprovalMemoryMode = 'task';
   protected _currentTurnEnv: TurnEnvelope | null = null;
 
-  // --- Progress (500ms debounce is the degraded path; MCP is primary) ---
-  protected _progressTimer: ReturnType<typeof setTimeout> | null = null;
-  protected _pendingProgress: string | null = null;
+  // --- Progress (update_progress is primary; the idle tracker is the net) ---
   protected _onProgress: ((msg: string) => void) | null = null;
   protected _mcpAvailable = false;
   protected _mcpTransport: McpTransport | null = null;
@@ -477,13 +475,8 @@ export abstract class BaseAcpWorker {
     this.state.set('runtimeState', { ...prev, acp: { ...((prev.acp as Record<string, unknown>) ?? {}), ...fields } });
   }
 
-  /** Clear BOTH progress paths: the 500ms debounce and the 120s MCP fallback. */
+  /** Clear progress state: stop the idle tracker and the MCP handshake watchdog. */
   protected clearPendingProgress(): void {
-    if (this._progressTimer) {
-      clearTimeout(this._progressTimer);
-      this._progressTimer = null;
-    }
-    this._pendingProgress = null;
     this._mcpFallback?.stop();
     if (this._mcpHandshakeTimer) {
       clearTimeout(this._mcpHandshakeTimer);

@@ -117,7 +117,7 @@ run(task, tools, onProgress)
 - **累积器 `AcpToolAccumulator`**：`byToolCallId` 累积，`tool_call` 后到全量覆盖、`update` 增量合并（实测同 id 发两次 `tool_call`，01 分册 §4 第 1 条）。**首个快照不产出 record**——首事件 rawInput 可为空、kind 可为 `other`，等合并后再判定。
 - **回合结束 `flushUnsettled`**：仍未 completed/failed 的调用标 `cancelled`（status 枚举没有 cancelled 取值，01 分册 §2.5）。
 - `agent_thought_chunk` 不进 transcript（实测一次简单回合最多 36 条，写入即污染）；`plan` / `usage_update` 只透传 runtimeState；`user_message_chunk` 忽略（wayang 自写 UserEntry，不接受 agent 回显）。
-- progress 去抖 500ms，对齐 `PROGRESS_DEBOUNCE_MS`（claude-code-worker.ts:192）。
+- 文本进度不在这里逐 chunk 播报：`agent-text` 只进 `AcpTurnWriter` 聚合，进度由该聚合出的完整消息驱动（见 03 分册 §6）。
 
 ## 6. 能力视图
 

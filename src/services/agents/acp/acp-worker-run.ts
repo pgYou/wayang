@@ -42,11 +42,16 @@ import {
 } from './mcp-transport';
 import { MAX_CONTEXT_CHARS, MAX_QUESTION_CHARS, PROGRESS_FALLBACK_MS, capText } from './mcp-schemas';
 import { createWayangMcpToolInvoker } from './mcp-tools';
-import { McpProgressTracker } from './mcp-progress-fallback';
+import { McpProgressTracker, type ProgressPosition } from './mcp-progress-fallback';
 import pkg from '@/../package.json';
 
-/** Progress debounce (02 §5): the DEGRADED path when no MCP server is available. */
-const PROGRESS_DEBOUNCE_MS = 500;
+/** Whitespace/punctuation-only text (e.g. a lone "。") is not progress. */
+const PROGRESS_FILLER_RE = /[\s\p{P}]/gu;
+
+/** True when the text still has substance once whitespace/punctuation are removed. */
+function hasProgressSubstance(text: string): boolean {
+  return text.replace(PROGRESS_FILLER_RE, '').length > 0;
+}
 
 export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInstance {
   /** Per-turn work counters feeding the guard's progressSig (#56). */
@@ -54,10 +59,21 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   private _turnToolCalls = 0;
   private _turnToolResults = 0;
 
-  /** 120s idle fallback over full replies (MCP-available runs only). */
+  /**
+   * Progress bookkeeping for the CURRENT message — scalars only, the text lives
+   * in the turn writer's aggregation (AcpTurnWriter.openText). `_messageKey` is
+   * the chunk's messageId (null when the agent sends none); `_messageOffset` is
+   * how much of the open segment earlier messages of the same segment own.
+   */
+  private _messageKey: string | null = null;
+  private _messageOffset = 0;
+  /** Turn counter: the fallback key suffix when the agent sends no messageId. */
+  private _turnSeq = 0;
+
+  /** 120s idle fallback over the latest complete message (every run). */
   protected _mcpFallback: McpProgressTracker = new McpProgressTracker({
     canFire: () => this.progressGuardsOpen(),
-    emit: (message) => this.reportProgress(message, 'fallback'),
+    emit: (message) => this.reportProgress(message),
   });
 
   async run(
@@ -86,7 +102,13 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     this._mcpTransport = null;
     this._mcpWarned = false;
     this._mcpFallback.setIdleMs(this.acpUserConfig().mcp?.fallbackMs ?? PROGRESS_FALLBACK_MS);
+    this._turnSeq = 0;
+    this._messageKey = null;
+    this._messageOffset = 0;
     this.clearPendingProgress();
+    // The idle tracker serves BOTH paths: with MCP it is the 120s safety net,
+    // without MCP it is the only text-driven progress channel (02 §5).
+    this._mcpFallback.start();
 
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
     const turnEnv = this.buildTurnEnv(task);
@@ -207,7 +229,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
         return this.mapPermission(req, acpCtx);
       });
 
-      const unregisterUpdates = client.onUpdate((update) => this.handleSessionUpdate(update, onProgress));
+      const unregisterUpdates = client.onUpdate((update) => this.handleSessionUpdate(update));
 
       try {
         // Step 7: guard-driven turn loop (#56). One session/prompt per turn;
@@ -220,11 +242,18 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
         while (!this.abortController.signal.aborted) {
           const cancelBaseline = client.cancelSentCount;
           this.resetTurnProgress();
-          if (this._mcpAvailable) this._mcpFallback.noteNewMessage();
+          this._turnSeq += 1;
+          this._mcpFallback.noteNewMessage();
           const result: AcpTurnResult = await client.sessionPrompt(sessionId, [{ type: 'text', text: promptText }]);
           this._resultReceived = true;
+          // Turn end closes the last message: its text is the writer's open
+          // segment, so seal BEFORE settleTurn flushes it into the transcript.
+          this.sealMessageSegment();
           this.settleTurn();
-          if (this._mcpAvailable) this._mcpFallback.noteTurnEnd();
+          this._mcpFallback.noteTurnEnd();
+          // Degraded path: report a closed-but-unreported message right away
+          // instead of waiting out the idle window (MCP runs keep the 120s rule).
+          if (!this._mcpAvailable) this._mcpFallback.flush();
 
           const denials = this.takeTurnDenials();
           const cancelFact: CancelFact = client.cancelSentCount > cancelBaseline ? client.lastCancelReason : null;
@@ -360,7 +389,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     const invoker = createWayangMcpToolInvoker({
       workerId: this.id,
       logger: this.logger,
-      onProgress: (message) => this.reportProgress(message, 'mcp'),
+      onProgress: (message) => this.reportProgress(message),
       ask: (question, context) => this.mcpAsk(question, context),
     });
     try {
@@ -373,7 +402,6 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       });
       this._mcpTransport = transport;
       this._mcpAvailable = true;
-      this._mcpFallback.start(); // task start resets the idle window
       this.armMcpHandshakeWatchdog(transport);
       this.recordAcpRuntime({ mcpAvailable: true });
       this.logger.debug({ workerId: this.id, reason: 'mcp-injected' }, 'ACP MCP server injected');
@@ -412,7 +440,9 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   private async degradeMcp(reason: string, err?: unknown): Promise<void> {
     if (this._mcpAvailable) {
       this._mcpAvailable = false;
-      this._mcpFallback.stop();
+      // The idle tracker stays armed: after degradation session/update text is
+      // the only progress source. Just restart its window.
+      this._mcpFallback.noteNewMessage();
       this.recordAcpRuntime({ mcpAvailable: false });
     }
     await this.closeMcpTransport();
@@ -436,8 +466,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
 
   /** The four guards: no progress after turn end / cancel / abort / agent exit. */
   private progressGuardsOpen(): boolean {
-    return this._mcpAvailable
-      && this._runInFlight
+    return this._runInFlight
       && !this._inputClosed
       && !this.abortController.signal.aborted
       && !this._streamEnded
@@ -445,12 +474,23 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       && this._cancelledAt === null;
   }
 
-  /** Single choke point for real update_progress and the 120s fallback. */
-  private reportProgress(message: string, source: 'mcp' | 'fallback'): void {
+  /**
+   * Single choke point for real update_progress and the 120s fallback. Both
+   * channels only restart the idle window — the MCP channel carries no id, so
+   * it takes no part in the per-message dedupe.
+   */
+  private reportProgress(message: string): void {
     // Guard FIRST: a late tool call must not re-arm the fallback timer either.
     if (!this.progressGuardsOpen()) return;
-    this._mcpFallback.noteProgress(source === 'mcp' ? 'mcp' : 'fallback');
+    // A real report advances the watermark: everything produced so far counts
+    // as announced, so the idle window must not re-announce it later.
+    this._mcpFallback.noteProgress(this.progressPosition());
     this._onProgress?.(capText(message));
+  }
+
+  /** Where the run currently is in its own text stream (turn + chars so far). */
+  private progressPosition(): ProgressPosition {
+    return { turn: this._turnSeq, chars: this._turnTextChars };
   }
 
   /** ask_controller: same blocking engine channel as ClaudeCodeWorker, with an audit entry. */
@@ -558,7 +598,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   }
 
   /** Route one session/update through the mapper and persist/forward the result. */
-  private handleSessionUpdate(update: AcpSessionUpdate, onProgress?: (msg: string) => void): void {
+  private handleSessionUpdate(update: AcpSessionUpdate): void {
     // Late updates after a cancel (frozen §6.4): the client keeps delivering;
     // dropping is THIS layer's policy call.
     if (this._cancelledAt !== null && !this.stopPolicy().trustUpdatesAfterCancel) {
@@ -569,11 +609,10 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       );
       return;
     }
-    // A tool_call seals the current reply draft even when the mapper ignores
-    // that particular snapshot (first-snapshot / non-terminal-update).
-    if (this._mcpAvailable
-      && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')) {
-      this._mcpFallback.noteToolCall();
+    // A tool call ends the current assistant message even when the mapper
+    // ignores that particular snapshot (first-snapshot / non-terminal-update).
+    if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+      this.sealMessageSegment();
     }
     let events: AcpMappedEvent[];
     try {
@@ -586,17 +625,18 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     }
     for (const event of events) {
       switch (event.kind) {
-        case 'agent-text':
+        case 'agent-text': {
+          // A new messageId closes the previous message. The writer keeps
+          // aggregating the text; the progress layer only tracks the boundary.
+          const messageKey = event.messageId !== null && event.messageId.length > 0 ? event.messageId : null;
+          if (messageKey !== null && this._messageKey !== null && this._messageKey !== messageKey) {
+            this.sealMessageSegment();
+          }
+          if (messageKey !== null && this._messageKey === null) this._messageKey = messageKey;
           this._turnWriter.addText(event.text);
           this._turnTextChars += event.text.length;
-          if (this._mcpAvailable) this._mcpFallback.addAgentText(event.text, event.messageId);
           break;
-        case 'progress':
-          // MCP available → update_progress is primary; session/update text is
-          // ignored here (the 120s fallback is the only text-driven path).
-          // MCP unavailable → keep the original 500ms debounce unchanged.
-          if (!this._mcpAvailable) this.emitDebouncedProgress(event.text, onProgress);
-          break;
+        }
         case 'tool-call':
           this._sawToolCall = true;
           this._turnWriter.addToolCall(event.record);
@@ -627,26 +667,25 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     this._turnWriter.finishTurn();
   }
 
-  /** Progress debounce (02 §5): 500ms, dropped once the run is over. */
-  private emitDebouncedProgress(text: string, onProgress?: (msg: string) => void): void {
-    if (!onProgress) return;
-    this._pendingProgress = text.slice(0, 200);
-    if (this._progressTimer) clearTimeout(this._progressTimer);
-    this._progressTimer = setTimeout(() => {
-      this._progressTimer = null;
-      if (
-        this._pendingProgress === null
-        || this.abortController.signal.aborted
-        || this._streamEnded
-        || this._terminalResult !== null
-      ) {
-        this._pendingProgress = null;
-        return;
-      }
-      const pending = this._pendingProgress;
-      this._pendingProgress = null;
-      onProgress(pending);
-    }, PROGRESS_DEBOUNCE_MS);
+  /**
+   * A message closed (new messageId, tool call, turn end). Its text is the turn
+   * writer's own aggregation — this layer keeps no copy, only the boundary
+   * scalars — and is handed to the idle tracker as "latest complete message".
+   * Sealing NEVER emits a signal: progress is reported only when the idle
+   * window expires or, on the degraded path, at turn end.
+   */
+  private sealMessageSegment(): void {
+    const open = this._turnWriter.openText();
+    // The segment was flushed (tool call / turn end) — the window restarts.
+    if (open.length < this._messageOffset) this._messageOffset = 0;
+    const text = open.slice(this._messageOffset);
+    this._messageOffset = open.length;
+    // No messageId → turn number + text length is enough for the scalar compare.
+    const key = this._messageKey ?? `turn-${this._turnSeq}#${text.length}`;
+    this._messageKey = null;
+    if (!this.progressGuardsOpen()) return;
+    if (!hasProgressSubstance(text)) return;
+    this._mcpFallback.noteMessageSealed(key, text, this.progressPosition());
   }
 
   /** Display-ready error text with the full context (frozen §2.5 acpUserMessage). */
