@@ -9,6 +9,7 @@ import { SystemContext } from '@/infra/system-context';
 import type { SkillRegistry } from '@/services/skills/registry';
 import { assemble, buildEnvironment, buildSkillCatalog, section } from './prompt-utils';
 import { buildProjectRulesSection, findProjectRules } from './project-rules';
+import { WORK_DISCIPLINE_SECTION } from './work-discipline';
 
 // ---------------------------------------------------------------------------
 // Static sections
@@ -184,6 +185,7 @@ export function buildWorkerSystemPrompt(
     // the section, so no empty paragraph leaks into the prompt.
     buildProjectRulesSection(findProjectRules(workspaceRoot)),
     QUALITY_RULES,
+    WORK_DISCIPLINE_SECTION,
     HARD_CONSTRAINTS,
     CONTROLLER_COMMUNICATION,
     PROGRESS_REPORTING,
