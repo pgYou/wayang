@@ -107,7 +107,7 @@ wayang 启动时按下面的顺序找配置：
 - `protocol`（对象）：等待时间与行为开关，一般不用配，出现超时再调。
   - 等待时间字段（`promptMs` 允许 0 表示不限时，其余必须为正数）：`handshakeMs`（默认 15000，等 CLI 完成启动连接）、`sessionNewMs`（默认 30000，为任务开新会话）、`promptMs`（默认 0，等 CLI 完成单个任务）、`permissionMs`（默认 300000，等审批结果）、`cancelGraceMs`（默认 5000，取消后等 CLI 停下的缓冲）、`sigtermWaitMs`（默认 2000，关闭进程前的等待）。
   - `capabilities`：`{ permissionRequests?: boolean, toolCalls?: boolean }`，覆盖 wayang 观测到的该 worker 能力声明，只在观测值不准时用。
-  - `gatePermissions`（布尔值，默认 `true`）：仅 opencode 有效。`true` 时 wayang 会接管 opencode 的权限审批；`false` 则 opencode 的工具操作不经 wayang 审批。对 codebuddy 无效。
+  - `gatePermissions`（布尔值，默认 `true`）：仅 opencode 有效。`true` 时 wayang 注入 ask-all 权限闸接管 opencode 的权限审批（门禁文件写在 worker 专属目录，run 结束自动删除）；`false` 则不注入，opencode 的工具操作不经 wayang 审批。`permissionMode: "agent"` 也会跳过注入（agent 自管权限，优先级更高）。父进程已有 `OPENCODE_CONFIG` 时 wayang 会校验其内容：含 ask-all 规则才放行，否则拒绝启动并在任务结果里说明原因。对 codebuddy 无效。
 
 注意：`command` / `args` / `env` / `protocol` / `trustUpdatesAfterCancel` 写在 `claude-code` 行会导致启动校验失败。
 
@@ -191,7 +191,7 @@ wayang 启动时按下面的顺序找配置：
 }
 ```
 
-什么时候选它：安装并配置好 OpenCode CLI 之后（终端跑 `opencode --version` 确认）。默认以 `opencode acp` 启动。opencode 自身默认权限全放行，wayang 默认会接管它的权限审批；若你已在外层设置了 `OPENCODE_CONFIG`，wayang 不会覆盖并会提示一次。想完全不干预用 `"protocol": { "gatePermissions": false }`，但此后其工具操作不经 wayang 审批。
+什么时候选它：安装并配置好 OpenCode CLI 之后（终端跑 `opencode --version` 确认）。默认以 `opencode acp` 启动。opencode 自身默认权限全放行，wayang 默认会接管它的权限审批（注入 ask-all `OPENCODE_CONFIG`，run 结束自动清理）。若你已在外层设置了 `OPENCODE_CONFIG`，wayang 会校验其内容：含 ask-all 规则（`{"action":"*","resource":"*","effect":"ask"}`）才放行，否则拒绝启动并提示修复。想完全不干预用 `"protocol": { "gatePermissions": false }` 或 `"permissionMode": "agent"`，但此后其工具操作不经 wayang 审批。
 
 ## 常见配置任务
 

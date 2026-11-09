@@ -209,7 +209,7 @@ export function mapSessionUpdate(update: AcpSessionUpdate, acc: AcpToolAccumulat
 | `handshake-timeout` | initialize 在 handshakeMs 内无响应 | 可（偶发） | `与 "<command>" 握手超时（<N>s 无 initialize 响应），进程已终止。请重试；持续失败请检查 CLI 是否需要登录` |
 | `auth-required` | session/new 在 sessionNewMs 内无响应且握手 authMethods 非空；或 stderr 命中 login/auth/unauthor/token/401（命中即短路，不等超时） | 否（需登录） | `"<provider>" 未登录：先在终端运行一次 "<command>" 完成登录（<authMethods 名单>）再重试` |
 | `protocol-mismatch` | 回包 protocolVersion !== 1；或权限选项集无 allow 且无 reject；或非 JSON 行/未知变体达阈值；或退出 code 0 但回合未 settle | 否 | `与 "<command>" 的 ACP 协议不匹配（<版本 N / 畸形选项 / N 行非 JSON / 回合未收尾>）。请升级该 CLI 或提交 issue` |
-| `agent-error` | session/new、session/prompt 返回 JSON-RPC error；或 stopReason ∈ {refusal, max_tokens, max_turn_requests} | 可 | `"<provider>" 回合失败（<rpc message 或 stopReason>）` |
+| `agent-error` | session/new、session/prompt 返回 JSON-RPC error；或 stopReason ∈ {refusal, max_tokens, max_turn_requests}；或 worker 层构建的失败（如 opencode 权限闸注入失败/拒绝，#62） | 可 | `"<provider>" 回合失败（<rpc message、stopReason 或 reason>）` |
 | `cancelled` | 主动取消路径（session/cancel 后 stopReason 'cancelled'，或 kill 阶梯完成且 cancelled=true） | 可 | `任务已取消`（WorkerResult=failed('Aborted')，引擎 consumeCancelled 抑制多余信号） |
 | `transport-closed` | 进程 exit/error 时仍有未 settle 的回合或请求 | 可（偶发崩溃） | `"<command>" 进程提前退出（code=<N> signal=<S>）。stderr 尾部：<尾 20 行，截 2000 字>` |
 

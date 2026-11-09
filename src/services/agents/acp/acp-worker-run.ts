@@ -6,7 +6,7 @@
  * → session/new (stderr auth short-circuit, MCP fail-soft) →
  * permission/update wiring → turn loop (session/prompt; queued controller
  * messages delivered at turn boundaries) → stopReason mapping → close
- * (idempotent) → result entry.
+ * (idempotent) → launch cleanup (gate file, #62) → result entry.
  *
  * The MCP host lifecycle lives in acp-mcp-host.ts, the session/new rules in
  * acp-session-open.ts and the progress wiring (update_progress primary, idle
@@ -337,6 +337,10 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       }
       this._client = null;
       this._sessionAuthHit = null;
+      // Launch side effects (e.g. the opencode gate file, #62) are undone
+      // only after the client has closed — the child may still read them
+      // while it lives.
+      this.cleanupLaunch();
     }
 
     if (!this._terminalResult) {

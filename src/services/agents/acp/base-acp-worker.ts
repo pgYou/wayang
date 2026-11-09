@@ -283,6 +283,15 @@ export abstract class BaseAcpWorker {
   }
 
   /**
+   * 1b) Launch cleanup: undo buildLaunch's side effects once the run's
+   * client has closed (per-run files written for the child env, e.g. the
+   * opencode gate file, #62). The run layer calls this in its finally;
+   * providers override only when buildLaunch left something behind. Cleanup
+   * must never throw — an inert leftover beats a failed teardown.
+   */
+  protected cleanupLaunch(): void {}
+
+  /**
    * 2) Permission: the default implementation walks the shared bridge
    * (04 booklet); providers override only when they must not.
    */

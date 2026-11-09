@@ -1,19 +1,23 @@
 /**
  * Provider thin-class tests (03 booklet): hook values, the codebuddy `cbc`
  * PATH fallback, user-config overrides, the shared session-new attribution,
- * and the fail-fast wording for a missing CLI.
+ * the fail-fast wording for a missing CLI, and the opencode permission-gate
+ * behaviors (#62): the injection-failure reason reaching the task result,
+ * inherited-OPENCODE_CONFIG validation (reject unless gate-equivalent), and
+ * the gate-file lifecycle (written at launch, removed at run end).
  *
  * Discipline (06 §1): provider-difference assertions live HERE, in each
  * provider's own block; the shared assertions carry no `if provider` fork.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import type { TaskDetail, WorkerConfig } from '@/types/index';
 import { SkillRegistry } from '@/services/skills/registry';
-import { createMockCtx } from '@/__tests__/helpers';
+import { createMockCtx, makeTask } from '@/__tests__/helpers';
+import { workerDir } from '@/services/agents/worker-state';
 
 // findExecutableOnPath reads the real process PATH — mock it so the cbc
 // fallback and the fail-fast wording are deterministic on any machine.
@@ -78,6 +82,16 @@ const HANDSHAKE: AcpHandshake = {
 
 function makeProviderConfig(type: string, extra: Partial<WorkerConfig> = {}): WorkerConfig {
   return { type, description: 'provider test', ...extra } as WorkerConfig;
+}
+
+/** Task fixture for full run() assertions (the missing-CLI / gate-refusal shapes). */
+function makeRunTask(id: string): TaskDetail & { workerId: string } {
+  return { ...makeTask(`task-${id}`), workerId: `w-${id}` };
+}
+
+/** The worker-scoped gate file path of a given worker in a session dir. */
+function gatePathOf(sessionDir: string, workerId: string): string {
+  return join(workerDir(sessionDir, workerId), 'opencode-acp-gate.json');
 }
 
 describe('CodebuddyAcpWorker (main path, measured)', () => {
@@ -173,13 +187,14 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
     return (ctx.logger.warn as unknown as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[1] ?? ''));
   }
 
-  it('injects the ask-all permission gate by default: OPENCODE_CONFIG → sessionDir gate file (stale content overwritten)', () => {
+  it('injects the ask-all permission gate by default: OPENCODE_CONFIG → worker-scoped gate file (stale content overwritten)', () => {
     mockFind.mockReturnValue('/usr/local/bin/opencode');
     const worker = new ExposedOpenCode(makeProviderConfig('opencode'), tempDir, tempDir, createMockCtx() as any, skills);
+    const gatePath = gatePathOf(tempDir, worker.id);
     // A stale gate file from an earlier launch must be replaced, not trusted.
-    writeFileSync(join(tempDir, 'opencode-acp-gate.json'), '{"permissions":[]}', 'utf8');
+    mkdirSync(workerDir(tempDir, worker.id), { recursive: true });
+    writeFileSync(gatePath, '{"permissions":[]}', 'utf8');
     const launch = worker.launch(BASE_VIEW);
-    const gatePath = resolve(tempDir, 'opencode-acp-gate.json');
     expect(launch.env.OPENCODE_CONFIG).toBe(gatePath);
     expect(JSON.parse(readFileSync(gatePath, 'utf8'))).toEqual({
       permissions: [{ action: '*', resource: '*', effect: 'ask' }],
@@ -198,20 +213,23 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
     );
     const launch = worker.launch(BASE_VIEW);
     expect(launch.env.OPENCODE_CONFIG).toBeUndefined();
-    expect(existsSync(join(tempDir, 'opencode-acp-gate.json'))).toBe(false);
+    expect(existsSync(gatePathOf(tempDir, worker.id))).toBe(false);
     const warns = warnMessages(ctx).filter((m) => m.includes('bypass the wayang permission gate'));
     expect(warns).toHaveLength(1);
   });
 
-  it('keeps an existing OPENCODE_CONFIG from the parent env (no override, warn)', () => {
+  it('keeps a VALIDATED (ask-all) inherited OPENCODE_CONFIG and warns once', () => {
     mockFind.mockReturnValue('/usr/local/bin/opencode');
     const ctx = createMockCtx();
     const worker = new ExposedOpenCode(makeProviderConfig('opencode'), tempDir, tempDir, ctx as any, skills);
-    const userConfig = '/home/test-user/opencode.json';
+    const userConfig = join(tempDir, 'user-ask-all.json');
+    writeFileSync(userConfig, JSON.stringify({ permissions: [{ action: '*', resource: '*', effect: 'ask' }] }), 'utf8');
     const launch = worker.launch({ ...BASE_VIEW, env: { ...BASE_VIEW.env, OPENCODE_CONFIG: userConfig } });
     expect(launch.env.OPENCODE_CONFIG).toBe(userConfig);
-    expect(existsSync(join(tempDir, 'opencode-acp-gate.json'))).toBe(false);
-    expect(warnMessages(ctx).some((m) => m.includes('OPENCODE_CONFIG already set'))).toBe(true);
+    expect(existsSync(gatePathOf(tempDir, worker.id))).toBe(false);
+    const warns = warnMessages(ctx).filter((m) => m.includes('OPENCODE_CONFIG already set'));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('validated as gate-equivalent');
   });
 
   it('permissionMode "agent" skips the gate (the agent owns its permissions)', () => {
@@ -226,8 +244,63 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
     );
     const launch = worker.launch(BASE_VIEW);
     expect(launch.env.OPENCODE_CONFIG).toBeUndefined();
-    expect(existsSync(join(tempDir, 'opencode-acp-gate.json'))).toBe(false);
+    expect(existsSync(gatePathOf(tempDir, worker.id))).toBe(false);
     expect(warnMessages(ctx).some((m) => m.includes('permission gate not injected'))).toBe(true);
+  });
+
+  it('an unwritable gate file fails the run with the injection reason (#62 fail-closed)', async () => {
+    mockFind.mockReturnValue('/usr/local/bin/opencode');
+    const worker = new OpenCodeAcpWorker(
+      makeProviderConfig('opencode'),
+      tempDir,
+      tempDir,
+      createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any),
+      skills,
+    );
+    // A DIRECTORY where the gate file should be → the write fails (EISDIR);
+    // the subprocess must never start without its gate.
+    mkdirSync(gatePathOf(tempDir, worker.id), { recursive: true });
+    const result = await worker.run(makeRunTask('gate-write-fail'), {});
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('permission gate injection failed');
+    expect(result.error).toContain('opencode-acp-gate.json');
+  });
+
+  it('an inherited OPENCODE_CONFIG without ask rules refuses to launch (#62 rejection path)', async () => {
+    mockFind.mockReturnValue('/usr/local/bin/opencode');
+    const inherited = join(tempDir, 'user-opencode.json');
+    writeFileSync(inherited, JSON.stringify({ permissions: [{ action: '*', resource: '*', effect: 'allow' }] }), 'utf8');
+    const worker = new OpenCodeAcpWorker(
+      makeProviderConfig('opencode', { env: { OPENCODE_CONFIG: inherited } } as Partial<WorkerConfig>),
+      tempDir,
+      tempDir,
+      createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any),
+      skills,
+    );
+    const result = await worker.run(makeRunTask('gate-refuse'), {});
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('permission gate refused');
+    expect(result.error).toContain('ask-all');
+    // Ungated launch refused: no gate file, and the error names the inherited config.
+    expect(existsSync(gatePathOf(tempDir, worker.id))).toBe(false);
+  });
+
+  it('removes the gate file when the run ends — including the failure path (#62 lifecycle)', async () => {
+    mockFind.mockReturnValue(undefined); // preflight fails AFTER buildLaunch wrote the gate
+    const worker = new OpenCodeAcpWorker(
+      makeProviderConfig('opencode'),
+      tempDir,
+      tempDir,
+      createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any),
+      skills,
+    );
+    const gatePath = gatePathOf(tempDir, worker.id);
+    const result = await worker.run(makeRunTask('gate-cleanup'), {});
+    // The cli-missing wording proves buildLaunch ran first (the gate file was
+    // written); by the time run() settles it must be gone.
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('无法启动');
+    expect(existsSync(gatePath)).toBe(false);
   });
 
   it('stopPolicy: 5000 / 2000 / trustUpdatesAfterCancel FALSE (conservative drop)', () => {
@@ -244,16 +317,7 @@ describe('OpenCodeAcpWorker (experimental, unmeasured)', () => {
       createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any),
       skills,
     );
-    const task: TaskDetail & { workerId: string } = {
-      id: 'task-opencode',
-      title: 'T',
-      description: 'do something',
-      priority: 'normal',
-      status: 'pending',
-      createdAt: Date.now(),
-      workerId: 'w-opencode',
-    };
-    const result = await worker.run(task, {});
+    const result = await worker.run(makeRunTask('opencode'), {});
     expect(result.status).toBe('failed');
     expect(result.error).toContain('opencode');
     expect(result.error).toContain('https://opencode.ai/docs/acp/');

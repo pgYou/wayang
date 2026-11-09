@@ -57,6 +57,7 @@
 
 - `'client'`（默认）：注册 `onPermissionRequest` handler，走上表全链路（裁决 → 记忆 → 信号 → 审计）。
 - `'agent'`：不注册（显式放弃 client 侧管控，用于已知自带沙箱/审批的 agent）。**agent 仍发请求 → outcome `cancelled` + 审计（不静默放行）**；能力视图 `permissionRequests` 如实表达，不因 mode 而撒谎。
+- **opencode 专属（#62 起文档化）**：`permissionMode:'agent'` 同时**跳过权限闸注入**，且优先级高于 `protocol.gatePermissions`——该模式下 agent 自管权限，wayang 既不注入 ask-all `OPENCODE_CONFIG`，也不桥接 `request_permission`（收到请求一律 `cancelled` + 审计）。`gatePermissions:false` 则只关注入：权限桥仍注册，agent 自带配置触发的请求照常走裁决链路。两条跳过路径都在启动日志 warn 一次，不静默（05 分册 §3.1）。
 - 0.9.0 没有「不支持权限请求就静默降级」的路径：不支持就显式声明并在收到请求时报失配（02 分册 §6）。
 
 ## 7. 安全边界（必须写进 README / 配置示例）

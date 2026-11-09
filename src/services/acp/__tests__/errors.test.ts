@@ -45,12 +45,17 @@ describe('acpUserMessage', () => {
     );
   });
 
-  it('renders agent-error from an rpc message, falling back to stopReason', () => {
+  it('renders agent-error from an rpc message, falling back to stopReason then reason', () => {
     expect(acpUserMessage('agent-error', { provider: 'codebuddy', rpc: { code: -32603, message: 'boom' } })).toBe(
       '"codebuddy" 回合失败（boom）',
     );
     expect(acpUserMessage('agent-error', { provider: 'codebuddy', stopReason: 'refusal' })).toBe(
       '"codebuddy" 回合失败（refusal）',
+    );
+    // #62: a worker-built failure (e.g. the opencode gate injection) carries
+    // its cause in `reason` — it must reach the task result, not "未知错误".
+    expect(acpUserMessage('agent-error', { provider: 'opencode', reason: 'permission gate injection failed: EISDIR' })).toBe(
+      '"opencode" 回合失败（permission gate injection failed: EISDIR）',
     );
     expect(acpUserMessage('agent-error', {})).toBe('agent 回合失败（未知错误）');
   });
@@ -88,6 +93,12 @@ describe('AcpError', () => {
     expect(err.message).toBe('session/prompt failed: boom');
     expect(err.detail?.rpc).toEqual({ code: -32603, message: 'boom' });
     expect(err.userMessage).toBe('agent 回合失败（boom）');
+  });
+
+  it('threads the message into the userMessage when no detail reason exists (#62)', () => {
+    expect(new AcpError('agent-error', 'workers.x.command is required').userMessage).toBe(
+      'agent 回合失败（workers.x.command is required）',
+    );
   });
 
   it('builds the userMessage from exit/stderrTail details when present', () => {

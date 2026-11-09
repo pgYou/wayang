@@ -51,10 +51,12 @@ export interface AcpProtocolConfig {
 
 - **为什么必须**：opencode 2.2.5 默认 agent 权限全 allow（仅 `.env` 读取 ask）——不注入时对 bash 与文件写（**含 workspace 外**）从不发 `session/request_permission`，越界写静默落盘，权限桥被整体旁路（04 分册 §9.2）。
 - **注入内容**：`{"permissions":[{"action":"*","resource":"*","effect":"ask"}]}`（ask-all，把每次工具执行的裁决权交回 wayang 权限桥）。
-- **注入方式**：子进程 env `OPENCODE_CONFIG=<json>`，在 `buildLaunch` 的 env 合并阶段写入。实测确认**不影响用户全局 provider/model 配置**（不改写 `~/.config/opencode`）；用户也可自管 workspace 根 `opencode.json`（内容相同），两种方式均实测有效。
-- **边界行为**（两个 warn 都进启动期日志，不报错、不阻断）：
+- **注入方式**：子进程 env `OPENCODE_CONFIG` 指向**门禁文件路径**，在 `buildLaunch` 的 env 合并阶段写入。实测确认**不影响用户全局 provider/model 配置**（不改写 `~/.config/opencode`）；用户也可自管 workspace 根 `opencode.json`（内容相同），两种方式均实测有效。
+- **文件生命周期（#62）**：门禁文件写入 **worker 专属目录** `<sessionDir>/workers/<workerId>/opencode-acp-gate.json`（不放共享会话根目录——并发 opencode worker 互不干扰，清理也无竞态）；每次 launch 覆盖写入、不信任陈旧内容；run 结束（含失败、取消路径）在 finally 中删除。仅 wayang 自身异常终止时可能残留（惰性 JSON，无副作用）。
+- **边界行为**：
+  - `permissionMode:'agent'` → **不注入并 warn**（优先级高于 `gatePermissions`，04 分册 §6）：agent 自管权限，wayang 不注入闸也不桥接审批。
   - `gatePermissions:false` → **不注入并 warn**：agent 的工具执行（含越界写）将不经审批直接落地，风险由配置者承担（安全边界旁注同 §6）。
-  - 父 `process.env` 已有 `OPENCODE_CONFIG` → **不覆盖并 warn**：用户配置优先；权限闸是否生效取决于该配置的内容。
+  - 父 `process.env` / `workers.<id>.env` 已有 `OPENCODE_CONFIG` → **校验后放行或拒绝（#62，不再静默告警）**：读取该值（文件路径或内联 JSON），仅当 ruleset **含 ask-all 规则**且 `allow` 规则只涉及显式只读豁免表（`read`/`grep`/`glob`/`list`，**精确匹配**，不接受前缀/子串）时放行（warn 一次「已校验」）；否则**拒绝启动**，任务结果携带原因与修复建议（补 ask-all 规则，或改用上面两条显式接管路径）。**无匹配规则 = 默认拒绝**（fail-closed：无法证明受闸 → 不启动）。
 - **生效范围**：仅 `type:'opencode'`；`codebuddy` 原生即对副作用工具发请求，该字段忽略。
 
 ## 4. provider 默认启动方式（写在各自 `buildLaunch()` 里，不放 profile 表——表里的值必须和类里的兜底挨着看，分开放迟早对不上）
@@ -117,7 +119,7 @@ export interface AcpProtocolConfig {
 }
 ```
 
-示例旁必须注明的安全边界（04 分册 §7）：client 声明不支持 `fs/*` / `terminal/*` 后，工具由 agent 自己执行；只有 agent 主动发 `request_permission` 时 wayang 才能拦。示例里不许出现 `codebuddy-acp` / `opencode-acp` 这类旧拼写（会触发弃用告警并被规范化为新值）。opencode 行的权限闸默认开启（§3.1）；显式关闭写 `"protocol": { "gatePermissions": false }`——启动期 warn，此后 agent 的工具执行（含越界写）不经审批直接落地。
+示例旁必须注明的安全边界（04 分册 §7）：client 声明不支持 `fs/*` / `terminal/*` 后，工具由 agent 自己执行；只有 agent 主动发 `request_permission` 时 wayang 才能拦。示例里不许出现 `codebuddy-acp` / `opencode-acp` 这类旧拼写（会触发弃用告警并被规范化为新值）。opencode 行的权限闸默认开启（§3.1）；显式关闭写 `"protocol": { "gatePermissions": false }"`（或 `permissionMode: "agent"`）——启动期 warn，此后 agent 的工具执行（含越界写）不经审批直接落地；继承的 `OPENCODE_CONFIG` 会被校验，不含 ask-all 规则即拒绝启动（§3.1）。
 
 ## 7. 能力声明对 controller / TUI / 审计的影响
 
