@@ -64,7 +64,7 @@ class TestAcpWorker extends AcpWorkerRun implements IWorkerInstance {
   protected isReady(ctx: AcpReadyContext): AcpReadiness {
     return authAttributingReadiness(ctx, { provider: this.config.type, command: 'node' });
   }
-  get mcpAvailable(): boolean { return this._mcpAvailable; }
+  get mcpAvailable(): boolean { return this._mcpHost?.mcpAvailable ?? false; }
 }
 
 function respondTo(transport: FakeAgentTransport, index: number, result: unknown): void {
@@ -99,15 +99,21 @@ function sendText(worker: TestAcpWorker, text: string, messageId: string | null 
   });
 }
 
-/** A tool_call (first snapshot — the mapper ignores it, the run still seals). */
+/**
+ * A tool_call (first snapshot + same-id resend — the mature snapshot the
+ * mapper surfaces); the resend's addToolCall flushes the open text segment
+ * as its own transcript entry, which becomes the fallback candidate.
+ */
 function sendToolCall(worker: TestAcpWorker, toolCallId: string): void {
-  worker.transport.agentMessage({
+  const frame = (status: string) => worker.transport.agentMessage({
     jsonrpc: '2.0', method: 'session/update',
     params: {
       sessionId: 's-1',
-      update: { sessionUpdate: 'tool_call', toolCallId, title: 'Bash', kind: 'other', status: 'in_progress', rawInput: {} },
+      update: { sessionUpdate: 'tool_call', toolCallId, title: 'Bash', kind: 'other', status, rawInput: {} },
     },
   });
+  frame('in_progress'); // first snapshot: ignored, only accumulated
+  frame('in_progress'); // same-id resend: mature — the run layer records it
 }
 
 /**
@@ -180,9 +186,11 @@ describe('AcpWorkerRun: MCP injection', () => {
     await sleep(300);
     expect(onProgress).not.toHaveBeenCalled();
     respondTo(worker.transport, 3, { stopReason: 'end_turn' });
-    await runPromise;
-    expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(onProgress).toHaveBeenCalledWith('degraded progress text');
+    const result = await runPromise;
+    // Final turn: the reply is the result summary only — no progress duplicate.
+    expect(result.status).toBe('completed');
+    expect(result.summary).toBe('degraded progress text');
+    expect(onProgress).not.toHaveBeenCalled();
   });
 
   it('auth-required during session/new is NOT retried', async () => {
@@ -217,11 +225,9 @@ describe('AcpWorkerRun: MCP injection', () => {
     await worker.transport.waitForClientOutput(3);
 
     sendText(worker, 'the latest complete reply');
-    // A tool_call seals the reply without resetting the idle clock.
-    worker.transport.agentMessage({
-      jsonrpc: '2.0', method: 'session/update',
-      params: { sessionId: 's-1', update: { sessionUpdate: 'tool_call', toolCallId: 'tc-1', title: 'Bash', kind: 'other', status: 'in_progress', rawInput: {} } },
-    });
+    // A tool_call (first snapshot + resend) flushes the reply as a complete
+    // entry without resetting the idle clock.
+    sendToolCall(worker, 'tc-1');
     await sleep(280);
     expect(onProgress).toHaveBeenCalledWith('the latest complete reply');
     respondTo(worker.transport, 2, { stopReason: 'end_turn' });
@@ -257,20 +263,24 @@ describe('AcpWorkerRun: MCP injection', () => {
 });
 
 /**
- * Degraded progress is the turn's JOINED text, never the last fragment (#64):
- * segments come from the turn writer's own aggregation (closed by a new
- * messageId, a tool call or the turn end), the trigger is the idle window or
- * the turn-end catch-up, and the watermark keeps a real update_progress from
- * being repeated. knot's measured shape — messageId renewed MID-message, which
- * carved one reply into per-chunk fragments like 「串试试。」 — is the
- * regression case throughout.
+ * Degraded progress is the transcript layer's LATEST COMPLETE ENTRY, verbatim
+ * (never a join, never a summary): the turn writer aggregates streamed chunks
+ * into complete entries (a tool call or the turn end closes the open
+ * segment), the trigger is the idle window or the turn-end catch-up (which
+ * fires only when the run CONTINUES — a final turn's reply becomes the
+ * result summary instead, never a progress duplicate), and the watermark
+ * keeps a real update_progress from being repeated. knot's measured shape —
+ * one reply arriving as SEVERAL MESSAGES with stable messageIds, which the
+ * transcript layer joins into one entry — is the regression case throughout
+ * (#64: the old per-message fallback replayed only the last message,
+ * 「串试试。」).
  */
 describe('AcpWorkerRun: degraded progress reports the turn text', () => {
   let tempDir: string;
   beforeEach(() => { tempDir = mkdtempSync(join(tmpdir(), 'acp-progress-')); });
   afterEach(() => { rmSync(tempDir, { recursive: true, force: true }); });
 
-  it('streamed chunks of one message are announced once, joined, at turn end', async () => {
+  it('streamed chunks of one message are announced once, as one complete reply, at turn end', async () => {
     const onProgress = vi.fn();
     const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 5_000 } } as Partial<WorkerConfig>);
     const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
@@ -282,56 +292,79 @@ describe('AcpWorkerRun: degraded progress reports the turn text', () => {
     expect(onProgress).not.toHaveBeenCalled();
 
     respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
-    await runPromise;
-    expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(onProgress).toHaveBeenCalledWith('你好。');
+    const result = await runPromise;
+    // Final turn: the complete reply is the result summary only — no progress duplicate.
+    expect(onProgress).not.toHaveBeenCalled();
+    expect(result.status).toBe('completed');
+    expect(result.summary).toBe('你好。');
   });
 
-  it('knot shape: messageId renewed per chunk — the turn-end report is the joined reply, not the last fragment', async () => {
+  it('knot shape: one reply as several messages — the result is the complete reply, not a fragment', async () => {
     const onProgress = vi.fn();
     const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 5_000 } } as Partial<WorkerConfig>);
     const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
 
+    // knot's measured shape: one reply arrives as several messages, each with
+    // a stable messageId. The transcript layer aggregates them into one
+    // complete entry — the fallback replays that entry (#64 regression).
     sendText(worker, '我会先查询 TAPD', 'k-1');
-    sendText(worker, '，同时检索 iWiki', 'k-2'); // a new id closes k-1
-    sendText(worker, '。两条线并行推进。', 'k-3'); // and closes k-2
+    sendText(worker, '，同时检索 iWiki', 'k-2');
+    sendText(worker, '。两条线并行推进。', 'k-3');
     await sleep(300);
     expect(onProgress).not.toHaveBeenCalled();
 
     respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
-    await runPromise;
-    expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(onProgress).toHaveBeenCalledWith('我会先查询 TAPD，同时检索 iWiki。两条线并行推进。');
+    const result = await runPromise;
+    expect(onProgress).not.toHaveBeenCalled();
+    expect(result.summary).toBe('我会先查询 TAPD，同时检索 iWiki。两条线并行推进。');
   });
 
-  it('knot shape: the idle window reports the sealed fragments joined, then only text produced after that', async () => {
+  it('knot shape: no complete entry mid-reply → the idle window stays silent; the result carries the reply', async () => {
     const onProgress = vi.fn();
     const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 120 } } as Partial<WorkerConfig>);
     const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
 
-    // The incident (#64): 「串试试。」 was reported alone because it was the
-    // LATEST sealed fragment when the window fired; k-3 keeps streaming.
+    // One reply as several messages, NO tool call between them: there is no
+    // complete entry yet (the transcript layer has written nothing), so the
+    // window fires on nothing and stays silent — never a half message.
     sendText(worker, '空字符', 'k-1');
-    sendText(worker, '串试试。', 'k-2'); // closes k-1
-    sendText(worker, '接下来', 'k-3');   // closes k-2, still open
+    sendText(worker, '串试试。', 'k-2');
+    sendText(worker, '接下来', 'k-3');
+    await sleep(300);
+    expect(onProgress).not.toHaveBeenCalled();
+
+    // The turn end closes the open segment as ONE complete entry — carried
+    // by the result, never duplicated as progress.
+    respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
+    const result = await runPromise;
+    expect(onProgress).not.toHaveBeenCalled();
+    expect(result.summary).toBe('空字符串试试。接下来');
+  });
+
+  it('tool call segments: each window reports the latest complete entry verbatim, never joined', async () => {
+    const onProgress = vi.fn();
+    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 120 } } as Partial<WorkerConfig>);
+    const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
+
+    sendText(worker, '第一段回复');
+    sendToolCall(worker, 'tc-1'); // flushes segment one as its own entry
     await sleep(300);
     expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(onProgress).toHaveBeenCalledWith('空字符串试试。');
+    expect(onProgress).toHaveBeenLastCalledWith('第一段回复');
 
-    // A later window reports only the fragments produced since — the joined
-    // text already reported never comes back.
-    sendText(worker, '收尾', 'k-4');      // closes k-3
-    sendText(worker, 'workspace。', 'k-5'); // closes k-4
+    // The second segment: reported verbatim — not joined with the first, and
+    // the first is never reported again.
+    sendText(worker, '第二段回复');
+    sendToolCall(worker, 'tc-2');
     await sleep(400);
     expect(onProgress).toHaveBeenCalledTimes(2);
-    expect(onProgress).toHaveBeenLastCalledWith('接下来收尾');
-    expect(onProgress.mock.calls[1][0]).not.toContain('串试试');
+    expect(onProgress).toHaveBeenLastCalledWith('第二段回复');
+    expect(onProgress.mock.calls[1][0]).not.toContain('第一段');
 
     respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
     await runPromise;
-    // The turn-end catch-up closes k-5's open text and reports it.
-    expect(onProgress).toHaveBeenCalledTimes(3);
-    expect(onProgress).toHaveBeenLastCalledWith('workspace。');
+    // Turn end: the latest entry was already reported → silence.
+    expect(onProgress).toHaveBeenCalledTimes(2);
   });
 
   it('a half message (bare chunks, no close) is never a window candidate, but the turn end reports it', async () => {
@@ -344,12 +377,13 @@ describe('AcpWorkerRun: degraded progress reports the turn text', () => {
     expect(onProgress).not.toHaveBeenCalled();
 
     respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
-    await runPromise;
-    expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(onProgress).toHaveBeenCalledWith('still typing');
+    const result = await runPromise;
+    // Final turn: the entry is the result summary only — no progress duplicate.
+    expect(onProgress).not.toHaveBeenCalled();
+    expect(result.summary).toBe('still typing');
   });
 
-  it('no messageId at all: bare chunks accumulate and are reported joined at turn end', async () => {
+  it('no messageId at all: bare chunks accumulate and the turn end reports the latest complete entry', async () => {
     const onProgress = vi.fn();
     const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 5_000 } } as Partial<WorkerConfig>);
     const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
@@ -362,9 +396,33 @@ describe('AcpWorkerRun: degraded progress reports the turn text', () => {
     expect(onProgress).not.toHaveBeenCalled();
 
     respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
-    await runPromise;
+    const result = await runPromise;
+    // The turn end closes the second segment as the latest complete entry —
+    // carried by the result only, not joined with the first.
+    expect(onProgress).not.toHaveBeenCalled();
+    expect(result.summary).toBe('。两边并行推进');
+  });
+
+  it('degraded multi-turn: a CONTINUING turn flushes at turn end; the FINAL turn does not duplicate the result', async () => {
+    const onProgress = vi.fn();
+    const worker = new TestAcpWorker(tempDir, { mcp: { fallbackMs: 5_000 } } as Partial<WorkerConfig>);
+    const { runPromise, promptIndex } = await openDegradedSession(worker, onProgress);
+
+    sendText(worker, '第一回合回复');
+    // A queued controller message makes turn 1 CONTINUE (delivered at the
+    // boundary) — so the degraded turn-end catch-up fires for it.
+    worker.acceptMessage('继续补充');
+    respondTo(worker.transport, promptIndex, { stopReason: 'end_turn' });
+    await worker.transport.waitForClientOutput(5);
     expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(onProgress).toHaveBeenCalledWith('计划：先查 TAPD，再读 iWiki。两边并行推进');
+    expect(onProgress).toHaveBeenCalledWith('第一回合回复');
+
+    // Turn 2 is the final turn: its reply is the result summary only.
+    sendText(worker, '第二回合回复');
+    respondTo(worker.transport, 4, { stopReason: 'end_turn' });
+    const result = await runPromise;
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(result.summary).toBe('第二回合回复');
   });
 
   it('punctuation-only fragments (knot shape) are never progress', async () => {

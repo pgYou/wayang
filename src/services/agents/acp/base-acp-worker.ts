@@ -43,8 +43,6 @@ import { buildAcpCapabilities } from '@/services/acp/client';
 import { createAcpToolAccumulator, type AcpToolAccumulator } from './event-mapper';
 import { createAcpPermissionBridge, type AcpDenialInfo, type AcpPermissionAnswer } from './permission-bridge';
 import { AcpTurnWriter } from './acp-turn-writer';
-import type { McpTransport } from './mcp-transport';
-import type { McpProgressTracker } from './mcp-progress-fallback';
 import { classifyTurnEnd, denialKey, resetTurnGuard, sanitizeTarget, turnEndErrorText, type TurnDenial, type TurnGuardState } from './turn-attribution';
 
 // --- Hook types (frozen §2 / 02 §2) ---
@@ -216,11 +214,6 @@ export abstract class BaseAcpWorker {
 
   // --- Progress (update_progress is primary; the idle tracker is the net) ---
   protected _onProgress: ((msg: string) => void) | null = null;
-  protected _mcpAvailable = false;
-  protected _mcpTransport: McpTransport | null = null;
-  protected _mcpHandshakeTimer: ReturnType<typeof setTimeout> | null = null;
-  protected _mcpWarned = false;
-  protected _mcpFallback: McpProgressTracker | null = null;
   /** Engine-backed inquiry channel, exposed to the agent as ask_controller. */
   protected _askController: ((question: string, context?: string) => Promise<string>) | null = null;
 
@@ -473,14 +466,5 @@ export abstract class BaseAcpWorker {
   protected recordAcpRuntime(fields: Record<string, unknown>): void {
     const prev = this.state.get<Record<string, unknown>>('runtimeState') ?? {};
     this.state.set('runtimeState', { ...prev, acp: { ...((prev.acp as Record<string, unknown>) ?? {}), ...fields } });
-  }
-
-  /** Clear progress state: stop the idle tracker and the MCP handshake watchdog. */
-  protected clearPendingProgress(): void {
-    this._mcpFallback?.stop();
-    if (this._mcpHandshakeTimer) {
-      clearTimeout(this._mcpHandshakeTimer);
-      this._mcpHandshakeTimer = null;
-    }
   }
 }

@@ -20,14 +20,7 @@ export const MAX_CONTEXT_CHARS = 1_000;
 export const TRUNCATION_MARKER = '\n…[truncated]';
 
 /** Idle window before the fallback reports the latest complete reply. */
-export const PROGRESS_FALLBACK_MS = 120_000;
-/**
- * The fallback reports the turn's joined new text; when that grows past this
- * bound only the TAIL (the newest part) is kept, led in by an ellipsis — the
- * head of a long turn is the stalest progress there is. MAX_PROGRESS_CHARS
- * stays the absolute ceiling (never a summary).
- */
-export const PROGRESS_TAIL_CHARS = 2_000;
+export const PROGRESS_FALLBACK_MS = 60_000;
 /** Tool invocation ceilings (askAndWait itself times out at 300s). */
 export const MCP_PROGRESS_TIMEOUT_MS = 5_000;
 export const MCP_ASK_TIMEOUT_MS = 310_000;
@@ -89,11 +82,6 @@ export const MCP_TOOL_NAMES: readonly string[] = MCP_TOOLS.map((tool) => tool.na
 /** Cap oversized text with an explicit truncation marker. No summarising. */
 export function capText(text: string, max: number = MAX_PROGRESS_CHARS): string {
   return text.length > max ? `${text.slice(0, max)}${TRUNCATION_MARKER}` : text;
-}
-
-/** Keep the newest `tail` characters, an ellipsis marking the cut head. */
-export function tailProgressText(text: string, tail: number = PROGRESS_TAIL_CHARS): string {
-  return text.length > tail ? `…${text.slice(-tail)}` : text;
 }
 
 /* The ACP `mcpServers` descriptor / spawn spec belongs to the transport layer
