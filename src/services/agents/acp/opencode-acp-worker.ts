@@ -28,22 +28,25 @@
  * mapPermission / normalizeError keep the skeleton defaults.
  */
 
-import { writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AcpLaunchConfig } from '@/services/acp/config';
 import { AcpError } from '@/services/acp/errors';
 import { authAttributingReadiness, type AcpReadiness, type AcpReadyContext, type AcpStopPolicy, type AcpWorkerEnvView } from './base-acp-worker';
 import { AcpWorkerRun } from './acp-worker-run';
+import { workerDir } from '../worker-state';
+import { GATE_ASK_ALL_RULE, GATE_FILE_NAME, validateInheritedGateConfig } from './opencode-gate';
 
 export class OpenCodeAcpWorker extends AcpWorkerRun {
   /** Provider defaults from the official docs (unmeasured). */
   private static readonly DEFAULT_COMMAND = 'opencode';
   private static readonly DEFAULT_ARGS: readonly string[] = ['acp'];
 
-  /** Gate file written under the session dir; overwritten on every launch. */
-  private static readonly GATE_FILE_NAME = 'opencode-acp-gate.json';
   /** Ask-all permission matrix (measured #25): every tool operation must ask. */
-  private static readonly GATE_CONFIG = `${JSON.stringify({ permissions: [{ action: '*', resource: '*', effect: 'ask' }] })}\n`;
+  private static readonly GATE_CONFIG = `${JSON.stringify({ permissions: [GATE_ASK_ALL_RULE] })}\n`;
+
+  /** Gate file of the CURRENT run (worker-scoped); null when nothing was written. */
+  private _gateFile: string | null = null;
 
   protected buildLaunch(view: AcpWorkerEnvView): AcpLaunchConfig {
     const env = { ...view.env };
@@ -58,18 +61,37 @@ export class OpenCodeAcpWorker extends AcpWorkerRun {
   }
 
   /**
+   * Undo buildLaunch's side effect once the run's client has closed (#62):
+   * remove the gate file. The worker-scoped path (never the shared session
+   * root) keeps concurrent opencode workers from deleting each other's gate.
+   */
+  protected cleanupLaunch(): void {
+    const gateFile = this._gateFile;
+    if (gateFile === null) return;
+    this._gateFile = null;
+    try {
+      rmSync(gateFile, { force: true });
+      this.logger.debug({ provider: this.config.type, gateFile }, 'opencode permission gate file removed');
+    } catch (err) {
+      // Cleanup must never fail the run; an inert leftover JSON file is acceptable.
+      this.logger.debug({ err, gateFile }, 'opencode permission gate file could not be removed');
+    }
+  }
+
+  /**
    * Inject the wayang permission gate (measured #25): write the ask-all
-   * matrix to `<sessionDir>/opencode-acp-gate.json` and point the child env's
-   * `OPENCODE_CONFIG` at it. Without this, opencode's allow-all defaults mean
-   * the agent never asks and the permission bridge never runs.
+   * matrix to `<sessionDir>/workers/<workerId>/opencode-acp-gate.json` and
+   * point the child env's `OPENCODE_CONFIG` at it. Without this, opencode's
+   * allow-all defaults mean the agent never asks and the permission bridge
+   * never runs.
    *
    * Skipped (with a warning) when the user opted out
-   * (`protocol.gatePermissions: false`), when the parent env already carries
-   * an `OPENCODE_CONFIG` (user config wins — the gate then depends on that
-   * file's permission rules), and under `permissionMode: 'agent'` (the agent
-   * owns its permissions there; a forced ask would be answered 'cancelled'
-   * and block every tool operation). An unwritable gate file fails the run —
-   * never a silent ungated launch.
+   * (`permissionMode: 'agent'` — takes precedence over gatePermissions — or
+   * `protocol.gatePermissions: false`). An inherited parent `OPENCODE_CONFIG`
+   * is VALIDATED (#62): kept only when it provably gates tool operations
+   * with ask rules (see opencode-gate.ts), otherwise the launch is REFUSED —
+   * never a silent ungated run. An unwritable gate file fails the run the
+   * same way. The gate file is removed in cleanupLaunch when the run ends.
    */
   private applyPermissionGate(env: Record<string, string>): void {
     const userCfg = this.acpUserConfig();
@@ -88,21 +110,32 @@ export class OpenCodeAcpWorker extends AcpWorkerRun {
       return;
     }
     if (env.OPENCODE_CONFIG !== undefined) {
+      const verdict = validateInheritedGateConfig(env.OPENCODE_CONFIG);
+      if (!verdict.equivalent) {
+        throw new AcpError(
+          'agent-error',
+          `permission gate refused: inherited OPENCODE_CONFIG does not gate tool operations (${verdict.reason}); `
+            + `add an ask-all rule {"action":"*","resource":"*","effect":"ask"} to it, or take the gate over explicitly with permissionMode "agent" / protocol.gatePermissions=false`,
+        );
+      }
       this.logger.warn(
         { provider: this.config.type, opencodeConfig: env.OPENCODE_CONFIG },
-        'OPENCODE_CONFIG already set in the environment — kept as-is; whether opencode asks for permission depends on that config',
+        'OPENCODE_CONFIG already set in the environment — validated as gate-equivalent (ask-all rule present), kept as-is',
       );
       return;
     }
-    const gatePath = resolve(this.sessionDir, OpenCodeAcpWorker.GATE_FILE_NAME);
+    const dir = workerDir(this.sessionDir, this.id);
+    const gatePath = join(dir, GATE_FILE_NAME);
     try {
+      mkdirSync(dir, { recursive: true });
       writeFileSync(gatePath, OpenCodeAcpWorker.GATE_CONFIG, 'utf8');
     } catch (err) {
       throw new AcpError(
         'agent-error',
-        `opencode permission gate config could not be written (${gatePath}): ${err instanceof Error ? err.message : String(err)}`,
+        `permission gate injection failed: could not write ${gatePath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    this._gateFile = gatePath;
     env.OPENCODE_CONFIG = gatePath;
     this.logger.debug({ provider: this.config.type, gatePath }, 'opencode permission gate injected (ask-all permission matrix)');
   }

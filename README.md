@@ -166,7 +166,11 @@ wayang --resume --all             # list all sessions to pick
 
 ### 权限闸
 
-ACP worker 的工具调用会经 wayang 的权限闸（`decideToolAccess` + 任务级审批记忆），敏感或越界操作会弹出审批。特别注意 opencode：它自身默认权限是全放行，wayang 默认给它注入 ask-all 的 `OPENCODE_CONFIG`（写入会话目录），把裁决权收回；可用 `"protocol": { "gatePermissions": false }` 关闭，但那样 opencode 的工具操作**不经 wayang 审批**；若父进程已有 `OPENCODE_CONFIG`，wayang 不覆盖并会告警。
+ACP worker 的工具调用会经 wayang 的权限闸（`decideToolAccess` + 任务级审批记忆），敏感或越界操作会弹出审批。特别注意 opencode：它自身默认权限是全放行，wayang 默认给它注入 ask-all 的 `OPENCODE_CONFIG`（写入 worker 专属目录，run 结束自动删除），把裁决权收回。三条跳过/接管路径（均在启动日志 warn 一次）：
+
+- `"protocol": { "gatePermissions": false }`：不注入权限闸，此后 opencode 的工具操作**不经 wayang 审批**（含越界写）。
+- `"permissionMode": "agent"`：agent 自管权限，wayang 既不注入闸也不桥接审批（优先级高于 `gatePermissions`）；agent 仍发来的权限请求会被拒绝并审计。
+- 父进程已有 `OPENCODE_CONFIG`：wayang 会**校验其内容**——含 ask-all 规则（且 allow 只涉及只读工具）才放行，否则**拒绝启动**并在任务结果里说明原因与修复建议。
 
 ### 能力与限制
 

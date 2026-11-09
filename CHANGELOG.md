@@ -5,8 +5,11 @@
 ### 计划项目
 
 - fix(permission): 并发审批响应失效导致 worker 挂起（#69）
-- fix(acp): opencode 权限闸缺口收敛（#62）
 - docs(prompts): 归纳 worker 通用行为规范，减少 Controller 反复纠正（#71）
+
+### 修复
+
+- opencode 权限闸四处可靠性缺口收敛（#62）：注入失败的任务结果现包含明确原因（`agent-error` 文案回退链补 `reason`，不再显示「未知错误」）；继承的 `OPENCODE_CONFIG` 由静默告警改为 fail-closed 校验——ruleset 含 ask-all 规则且 `allow` 规则仅限显式只读豁免表（`read`/`grep`/`glob`/`list`，精确匹配、不接受前缀/子串）才放行，否则拒绝启动（无匹配规则即默认拒绝）；门禁文件移入 worker 专属目录（`workers/<workerId>/`，避免并发 worker 共享与清理竞态），run 结束统一删除；`permissionMode:'agent'`（优先级高于 `gatePermissions`）与 `gatePermissions:false` 两条跳过路径在设计文档（04/05 分册、冻结页）与 README、配置指南中补齐说明。
 
 ### 待定
 

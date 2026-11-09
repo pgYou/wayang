@@ -102,7 +102,10 @@ export function acpUserMessage(code: AcpErrorCode, ctx: AcpUserMessageContext = 
       return `与 ${commandLabel(ctx) || 'agent'} 的 ACP 协议不匹配（${reason}）。请升级该 CLI 或提交 issue`;
     }
     case 'agent-error': {
-      const cause = ctx.rpc?.message ?? ctx.stopReason ?? '未知错误';
+      // `reason` is the worker-layer fallback (#62): a worker-built failure
+      // (e.g. the opencode permission-gate injection) carries its cause here
+      // and must reach the task result — never a bare "未知错误".
+      const cause = ctx.rpc?.message ?? ctx.stopReason ?? ctx.reason ?? '未知错误';
       return `${subject(ctx)} 回合失败（${cause}）`;
     }
     case 'cancelled':
@@ -130,7 +133,9 @@ export class AcpError extends Error {
       rpc: detail?.rpc,
       exit: detail?.exit,
       stderrTail: detail?.stderrTail,
-      reason: detail?.reason,
+      // The message itself is the last-resort reason (#62): a construction
+      // site without detail fields still renders a complete userMessage.
+      reason: detail?.reason ?? message,
       seconds: detail?.seconds,
     });
   }
