@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.5 (2026-11-09) — 规划
+
+### 计划项目
+
+- fix(permission): 并发审批响应失效导致 worker 挂起（#69）
+- fix(acp): opencode 权限闸缺口收敛（#62）
+- docs(prompts): 归纳 worker 通用行为规范，减少 Controller 反复纠正（#71）
+
+### 待定
+
+- 其余 open issue 视情况纳入
+
 ## v0.9.4 (2026-11-09)
 
 ### 新增
