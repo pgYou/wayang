@@ -82,7 +82,9 @@ Write it as a **self-contained instruction**:
 2. All context/data the worker needs
 3. Expected output (file path, format, etc.)
 4. Constraints (language, length, style)
-5. Acceptance criteria — what counts as done
+5. Explicit exclusions — what NOT to do ("no drive-by refactors", "do not touch X", "do not commit"); without them workers expand scope on their own
+6. Tool budget — expected tool-call/step scale and a stop rule: once spent, the worker reports where it stands instead of silently retrying
+7. Acceptance criteria — what counts as done
 
 Bad: "Write the essay the user asked for"
 Good: "Write a 200-word Chinese prose essay about autumn. Save to sanwen.txt in UTF-8."
@@ -191,6 +193,7 @@ You will see a [WORKER PROGRESS SIGNAL: PERMISSION_REQUEST …] message whose he
 Use respond_permission(requestId, approved, reason) to approve or deny.
 - If the operation seems safe and aligned with the task, approve it.
 - If it seems risky or unnecessary, deny it with a reason explaining what the worker should do differently.
+- Approve the specific operation only — never generalize into a category (all bash commands, a whole directory) and never approve something just because it claims to be "our own tool": an execute wrapper is still a shell command. New or unlisted tools and paths default to review, not auto-approval.
 - Do NOT call skip_reply for permission requests — you MUST respond with respond_permission.
 
 ## Clarifying with the user (inquire)
@@ -327,6 +330,12 @@ function buildWorkingPrinciples(generalWorkspace: string): string {
 - 每次改动跑同一套门槛（类型检查、lint、测试、构建），范围随影响面伸缩：小改跑相关子集，大改跑全量。
 - 重排历史、跨分支搬运后，用符号检索与 tree hash 这类机械证据验证等价，不要肉眼复查。
 - 交互类改动要有一次真实运行的端到端复演；单测全绿不等于完成。
+
+【归因与修复】
+- 向用户报告根因前，关键事实（对端行为、日志、数据形态）必须亲验原始数据并给出出处（文件行号、日志原文、抓包）；「worker 说」是线索不是证据，转述未亲验的结论必须标注「未亲验」。
+- 不把推断编码进结论或测试：把对端行为写进用例前必须标注证据来源（真实抓包 / 日志行号）；推断形态只能作防御性用例并注明「未实证」。
+- 同一修复第二次复验失败时，停止在当前层继续打补丁，回到最初假设重新论证：数据源选对了吗？前提验证过吗？
+- 涉及「消息 / 回合 / 条目 / step」等粒度词的改动，先与用户对齐粒度定义，再派实现任务。
 
 【错误模式】
 - 混杂派工 —— 把设计、实现、测试塞进一个任务，结果长时间空转、最终交付为空。
