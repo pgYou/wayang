@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { createElement as h, useEffect } from 'react';
 import { render } from 'ink';
 import { SLASH_COMMANDS, useSlashCommands } from '@/tui/hooks/use-slash-commands';
-import type { SlashCommandResult } from '@/tui/hooks/use-slash-commands';
+import type { SlashCommandContext, SlashCommandResult } from '@/tui/hooks/use-slash-commands';
 import { renderShortcutList } from '@/tui/utils/shortcut-catalog';
-import type { TaskDetail } from '@/types/index';
+import { stringWidth } from '@/tui/utils/text-width';
+import type { TaskDetail, ActiveWorkerInfo } from '@/types/index';
 import type { RemoteSupervisor } from '@/client/remote-supervisor';
 
 describe('SLASH_COMMANDS', () => {
@@ -44,8 +45,8 @@ describe('handleCommand /shortcut', () => {
    * ink render stands in; /shortcut never touches the supervisor, so an
    * empty stand-in is enough.
    */
-  async function captureHandleCommand(): Promise<(input: string) => Promise<SlashCommandResult>> {
-    const box: { fn?: (input: string) => Promise<SlashCommandResult> } = {};
+  async function captureHandleCommand(): Promise<(input: string, context?: SlashCommandContext) => Promise<SlashCommandResult>> {
+    const box: { fn?: (input: string, context?: SlashCommandContext) => Promise<SlashCommandResult> } = {};
     function Probe() {
       const { handleCommand } = useSlashCommands({} as unknown as RemoteSupervisor);
       useEffect(() => {
@@ -100,8 +101,8 @@ const DEFAULT_WORKSPACE = '/w/default';
 /** Same probe as above, but with an injectable supervisor stand-in. */
 async function captureWith(
   supervisor: RemoteSupervisor,
-): Promise<(input: string) => Promise<SlashCommandResult>> {
-  const box: { fn?: (input: string) => Promise<SlashCommandResult> } = {};
+): Promise<(input: string, context?: SlashCommandContext) => Promise<SlashCommandResult>> {
+  const box: { fn?: (input: string, context?: SlashCommandContext) => Promise<SlashCommandResult> } = {};
   function Probe() {
     const { handleCommand } = useSlashCommands(supervisor);
     useEffect(() => {
@@ -131,7 +132,9 @@ async function captureWith(
 describe('handleCommand /tasks', () => {
   const makeTask = (id: string, description: string): TaskDetail => ({
     id,
-    title: 'title',
+    // Blank so the row label falls back to the description (title behavior is
+    // covered by the task-list unit tests).
+    title: '',
     description,
     priority: 'normal',
     status: 'completed',
@@ -152,7 +155,7 @@ describe('handleCommand /tasks', () => {
 
     expect(result.handled).toBe(true);
     expect(result.output!.split('\n')).toHaveLength(1);
-    expect(result.output).toContain('[completed] t-1: instruction instruction');
+    expect(result.output).toContain('[completed] #t-1: instruction instruction');
     expect(result.output).toContain('…');
     // The full instruction must never reach the renderer.
     expect(result.output).not.toContain(long);
@@ -182,8 +185,8 @@ describe('handleCommand /tasks', () => {
 
     const lines = result.output!.split('\n');
     expect(lines).toHaveLength(21);
-    expect(lines[0]).toContain('[pending] p-1: queued work');
-    expect(lines[1]).toContain('[running] r-1: running work');
+    expect(lines[0]).toContain('[pending] #p-1: queued work');
+    expect(lines[1]).toContain('[running] #r-1: running work');
     expect(lines[20]).toBe('… 显示最近 20 / 共 32 条（另有 12 条历史未显示）');
   });
 
@@ -201,7 +204,7 @@ describe('handleCommand /tasks', () => {
     const handleCommand = await captureWith(supervisor);
 
     expect((await handleCommand('/tasks')).output).toBe('No tasks');
-    expect((await handleCommand('/tasks failed')).output).toContain('[completed] t-9: boom');
+    expect((await handleCommand('/tasks failed')).output).toContain('[completed] #t-9: boom');
     expect(seen).toEqual([undefined, 'failed']);
   });
 
@@ -242,7 +245,7 @@ describe('handleCommand /tasks', () => {
 describe('handleCommand /tasks workspace marks', () => {
   const taskIn = (workspace: { path: string; slug: string }): TaskDetail => ({
     id: 't-1',
-    title: 'title',
+    title: '',
     description: 'write tests',
     priority: 'normal',
     status: 'completed',
@@ -260,13 +263,13 @@ describe('handleCommand /tasks workspace marks', () => {
     const handleCommand = await captureWith(withCtx([taskIn({ path: '/w/other', slug: 'other' })]));
 
     expect((await handleCommand('/tasks')).output)
-      .toBe('[completed] t-1: write tests — other');
+      .toBe('[completed] #t-1: write tests — other');
   });
 
   it('leaves a default-workspace task unmarked', async () => {
     const handleCommand = await captureWith(withCtx([taskIn({ path: DEFAULT_WORKSPACE, slug: 'default' })]));
 
-    expect((await handleCommand('/tasks')).output).toBe('[completed] t-1: write tests');
+    expect((await handleCommand('/tasks')).output).toBe('[completed] #t-1: write tests');
   });
 });
 
@@ -326,5 +329,206 @@ describe('handleCommand /projects', () => {
     const help = (await handleCommand('/help')).output ?? '';
 
     expect(help).toContain('/projects');
+  });
+});
+
+describe('handleCommand /tasks <ref> (detail view)', () => {
+  const failedTask: TaskDetail = {
+    id: 'task-1731000001-abcd',
+    title: 'Fix build',
+    description: 'Run the full build pipeline\nand report the result.',
+    priority: 'high',
+    status: 'failed',
+    createdAt: 1_000,
+    startedAt: 2_000,
+    completedAt: 9_000,
+    error: 'AssertionError: expected 1 to equal 2\n  at spec.ts:42',
+    workerSessionId: 'w-1731000001-ef01',
+    workerTranscriptId: 'agent-1731000001-ef01',
+    workerType: 'puppet',
+  };
+
+  const withTasks = (tasks: TaskDetail[]): RemoteSupervisor =>
+    ({
+      engine: { list: async () => tasks },
+      ctx: { workspaceDir: DEFAULT_WORKSPACE, workspaces: [] },
+    }) as unknown as RemoteSupervisor;
+
+  it('shows one task in detail for a full id, #tail handle or unique prefix', async () => {
+    const handleCommand = await captureWith(withTasks([failedTask]));
+
+    for (const ref of ['task-1731000001-abcd', '#abcd', 'task-17310']) {
+      const output = (await handleCommand(`/tasks ${ref}`)).output!;
+      expect(output).toContain('Task #abcd (task-1731000001-abcd) · failed');
+      expect(output).toContain('Fix build');
+      expect(output).toContain('worker 会话: w-1731000001-ef01');
+      expect(output).toContain('错误:');
+      expect(output).toContain('AssertionError: expected 1 to equal 2');
+      expect(output).toContain('描述:');
+    }
+  });
+
+  it('errors for a reference no task matches', async () => {
+    const handleCommand = await captureWith(withTasks([failedTask]));
+
+    const output = (await handleCommand('/tasks zzzz')).output;
+
+    expect(output).toBe('No task matches "zzzz" — run /tasks to list ids');
+  });
+
+  it('errors and lists candidates for an ambiguous reference', async () => {
+    const tasks = [
+      { ...failedTask, id: 'task-1731000001-aaaa' },
+      { ...failedTask, id: 'task-1731000002-aaaa' },
+    ];
+    const handleCommand = await captureWith(withTasks(tasks));
+
+    const output = (await handleCommand('/tasks aaaa')).output;
+
+    expect(output).toContain('matches 2 tasks');
+    expect(output).toContain('task-1731000001-aaaa');
+    expect(output).toContain('task-1731000002-aaaa');
+  });
+
+  it('registers the argument in the slash command table', () => {
+    const tasks = SLASH_COMMANDS.find(c => c.name === 'tasks');
+    expect(tasks?.args).toBe('[status] | <id>');
+  });
+});
+
+describe('handleCommand /cancel', () => {
+  const withCancel = (tasks: TaskDetail[]): { supervisor: RemoteSupervisor; cancelled: string[] } => {
+    const cancelled: string[] = [];
+    const supervisor = {
+      engine: {
+        list: async () => tasks,
+        cancel: async (id: string) => { cancelled.push(id); },
+      },
+      ctx: { workspaceDir: DEFAULT_WORKSPACE, workspaces: [] },
+    } as unknown as RemoteSupervisor;
+    return { supervisor, cancelled };
+  };
+
+  const task = (id: string): TaskDetail => ({
+    id, title: '', description: 'work', priority: 'normal', status: 'running', createdAt: 1,
+  });
+
+  it('resolves a #tail handle, prefix or full id and cancels the full id', async () => {
+    const { supervisor, cancelled } = withCancel([task('task-1731000001-abcd')]);
+    const handleCommand = await captureWith(supervisor);
+
+    const output = (await handleCommand('/cancel abcd')).output;
+
+    expect(output).toBe('Task task-1731000001-abcd cancelled');
+    expect(cancelled).toEqual(['task-1731000001-abcd']);
+  });
+
+  it('reports usage without an argument', async () => {
+    const { supervisor, cancelled } = withCancel([task('task-1731000001-abcd')]);
+    const handleCommand = await captureWith(supervisor);
+
+    expect((await handleCommand('/cancel')).output).toBe('Usage: /cancel <taskId>');
+    expect(cancelled).toEqual([]);
+  });
+
+  it('does not cancel on an ambiguous reference', async () => {
+    const { supervisor, cancelled } = withCancel([
+      task('task-1731000001-aaaa'),
+      task('task-1731000002-aaaa'),
+    ]);
+    const handleCommand = await captureWith(supervisor);
+
+    const output = (await handleCommand('/cancel aaaa')).output;
+
+    expect(output).toContain('matches 2 tasks');
+    expect(cancelled).toEqual([]);
+  });
+});
+
+describe('handleCommand /workers', () => {
+  const makeWorker = (overrides: Partial<ActiveWorkerInfo> = {}): ActiveWorkerInfo => ({
+    workerId: 'w-1731000001-ab12',
+    taskId: 'task-1731000001-cd34',
+    startedAt: 1_000,
+    workerType: 'puppet',
+    taskTitle: 'scan repo',
+    emoji: '🧸',
+    status: 'running',
+    ...overrides,
+  });
+
+  const withWorkers = (workers: ActiveWorkerInfo[]): RemoteSupervisor =>
+    ({
+      engine: { list: async () => [], getActiveWorkers: () => workers },
+      ctx: { workspaceDir: DEFAULT_WORKSPACE, workspaces: [] },
+    }) as unknown as RemoteSupervisor;
+
+  it('shows worker type, parent task and elapsed time per row', async () => {
+    const handleCommand = await captureWith(withWorkers([makeWorker()]));
+
+    const output = (await handleCommand('/workers', { width: 120 })).output;
+
+    expect(output).toContain('#ab12 [running] 🧸 puppet');
+    expect(output).toContain('task #cd34 scan repo');
+    expect(output).toContain('已运行');
+  });
+
+  it('marks an idle multi-stage worker with its idle duration and last stage', async () => {
+    const worker = makeWorker({
+      status: 'idle',
+      idleSinceMs: 5_000,
+      lastStageSummary: '第一阶段完成，产物已落盘',
+    });
+    const handleCommand = await captureWith(withWorkers([worker]));
+
+    const output = (await handleCommand('/workers')).output;
+
+    expect(output).toContain('[idle]');
+    expect(output).toContain('空闲');
+    expect(output).toContain('上阶段: 第一阶段完成');
+    expect(output).not.toContain('已运行');
+  });
+
+  it('still reports "No active workers" when none are tracked', async () => {
+    const handleCommand = await captureWith(withWorkers([]));
+
+    expect((await handleCommand('/workers')).output).toBe('No active workers');
+  });
+});
+
+describe('handleCommand row width', () => {
+  it('passes the panel width so every /tasks row fits one physical line', async () => {
+    const tasks: TaskDetail[] = [
+      {
+        id: 'task-1731000001-run1', title: 'scan repo', description: 'x',
+        priority: 'normal', status: 'running', createdAt: 1,
+        workerType: 'puppet', startedAt: Date.now() - 5_000,
+      },
+      {
+        id: 'task-1731000002-done', title: 'build', description: 'x',
+        priority: 'normal', status: 'completed', createdAt: 1,
+        workerType: 'claude-code', startedAt: 1, completedAt: 2,
+        result: 'R'.repeat(500) + '\nmore lines',
+      },
+      {
+        id: 'task-1731000003-fail', title: 'run tests', description: 'x',
+        priority: 'normal', status: 'failed', createdAt: 1,
+        workerType: 'puppet', startedAt: 1, completedAt: 2,
+        error: 'E'.repeat(500),
+      },
+    ];
+    const handleCommand = await captureWith(({
+      engine: { list: async () => tasks },
+      ctx: { workspaceDir: DEFAULT_WORKSPACE, workspaces: [] },
+    }) as unknown as RemoteSupervisor);
+
+    const lines = (await handleCommand('/tasks', { width: 76 })).output!.split('\n');
+
+    expect(lines).toHaveLength(3);
+    for (const line of lines) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(76);
+    }
+    // The 80-column budget still leaves the failed reason visible.
+    expect(lines[2]).toContain(' ✗ EEE');
   });
 });

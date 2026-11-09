@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   TASK_LIST_DESCRIPTION_MAX_WIDTH,
+  TASK_LIST_LABEL_MAX_WIDTH,
   TASK_LIST_MAX_ITEMS,
   TASK_LIST_RESULT_MAX_WIDTH,
   formatTaskList,
@@ -14,7 +15,9 @@ import type { TaskDetail } from '@/types/index';
 
 const makeTask = (overrides: Partial<TaskDetail> = {}): TaskDetail => ({
   id: 't-1',
-  title: 'title',
+  // Blank by default so the row label falls back to the description digest —
+  // the title-first behavior has its own dedicated tests below.
+  title: '',
   description: 'do the thing',
   priority: 'normal',
   status: 'completed',
@@ -244,7 +247,7 @@ describe('formatTaskRow', () => {
 
     const row = formatTaskRow(task);
 
-    expect(row).toContain('[running] t-42: ');
+    expect(row).toContain('[running] #t-42: ');
     expect(row).toContain(' — demo');
     expect(row).toContain(' → ok');
     expect(row).toContain('…');
@@ -261,7 +264,7 @@ describe('formatTaskRow', () => {
     });
 
     expect(formatTaskRow(task, { defaultWorkspacePath: '/w/default' }))
-      .toBe('[running] t-42: write tests — other → ok');
+      .toBe('[running] #t-42: write tests — other → ok');
   });
 
   it('prints a default-workspace task exactly as an unmarked task', () => {
@@ -275,7 +278,7 @@ describe('formatTaskRow', () => {
 
     const row = formatTaskRow(task, { defaultWorkspacePath: '/w/default' });
 
-    expect(row).toBe('[running] t-42: write tests → ok');
+    expect(row).toBe('[running] #t-42: write tests → ok');
     expect(row).toBe(formatTaskRow(makeTask({ id: 't-42', status: 'running', description: 'write tests', result: 'ok' })));
   });
 
@@ -286,7 +289,7 @@ describe('formatTaskRow', () => {
     });
 
     expect(formatTaskRow(task, { defaultWorkspacePath: '/w/default' }))
-      .toBe('[completed] t-1: write tests');
+      .toBe('[completed] #t-1: write tests');
   });
 
   it('keeps the slug when the default workspace is unknown', () => {
@@ -294,25 +297,25 @@ describe('formatTaskRow', () => {
     // beats silently dropping the attribution.
     const task = makeTask({ description: 'ctx', workspace: { path: '/w/impl', slug: 'impl' } });
 
-    expect(formatTaskRow(task)).toBe('[completed] t-1: ctx — impl');
+    expect(formatTaskRow(task)).toBe('[completed] #t-1: ctx — impl');
   });
 
   it('falls back to the slugified directory name when the task carries no slug', () => {
     const task = makeTask({ description: 'ctx', workspace: { path: '/w/My Project', slug: '' } });
 
     expect(formatTaskRow(task, { defaultWorkspacePath: '/w/default' }))
-      .toBe('[completed] t-1: ctx — my-project');
+      .toBe('[completed] #t-1: ctx — my-project');
   });
 
   it('appends no marker for a task without workspace identity', () => {
     expect(formatTaskRow(makeTask({ description: 'ctx' }), { defaultWorkspacePath: '/w/default' }))
-      .toBe('[completed] t-1: ctx');
+      .toBe('[completed] #t-1: ctx');
   });
 
   it('renders one line per task even for multi-line descriptions', () => {
     const row = formatTaskRow(makeTask({ description: 'a\nb\nc' }));
 
-    expect(row).toBe('[completed] t-1: a b c');
+    expect(row).toBe('[completed] #t-1: a b c');
   });
 
   it('flattens a multi-line result onto the same row', () => {
@@ -322,7 +325,7 @@ describe('formatTaskRow', () => {
       makeTask({ description: 'fix it', result: 'done:\n\t- one\n\t- two\n\n### notes\r\nend' }),
     );
 
-    expect(row).toBe('[completed] t-1: fix it → done: - one - two ### notes end');
+    expect(row).toBe('[completed] #t-1: fix it → done: - one - two ### notes end');
     expect(row).not.toContain('\n');
     expect(row).not.toContain('\t');
   });
@@ -333,7 +336,7 @@ describe('formatTaskRow', () => {
     expect(huge.length).toBeGreaterThan(1000);
 
     const row = formatTaskRow(makeTask({ description: 'd', result: huge }));
-    const digest = row.slice(' → '.length + '[completed] t-1: d'.length);
+    const digest = row.slice(' → '.length + '[completed] #t-1: d'.length);
 
     expect(row).toContain(' → ');
     expect(digest.endsWith('…')).toBe(true);
@@ -345,23 +348,23 @@ describe('formatTaskRow', () => {
   it('keeps a result that already fits verbatim, with no ellipsis', () => {
     const task = makeTask({ description: 'd', result: 'ok' });
 
-    expect(formatTaskRow(task)).toBe('[completed] t-1: d → ok');
+    expect(formatTaskRow(task)).toBe('[completed] #t-1: d → ok');
     expect(formatTaskRow(task)).not.toContain('…');
   });
 
   it('appends no arrow when the result is empty or absent', () => {
-    expect(formatTaskRow(makeTask({ description: 'd', result: '' }))).toBe('[completed] t-1: d');
-    expect(formatTaskRow(makeTask({ description: 'd' }))).toBe('[completed] t-1: d');
+    expect(formatTaskRow(makeTask({ description: 'd', result: '' }))).toBe('[completed] #t-1: d');
+    expect(formatTaskRow(makeTask({ description: 'd' }))).toBe('[completed] #t-1: d');
     // Whitespace-only collapses to nothing — a bare " → " would be noise.
-    expect(formatTaskRow(makeTask({ description: 'd', result: ' \n\t ' }))).toBe('[completed] t-1: d');
+    expect(formatTaskRow(makeTask({ description: 'd', result: ' \n\t ' }))).toBe('[completed] #t-1: d');
     expect(formatTaskRow(makeTask({ description: 'd', result: '' }))).not.toContain(' → ');
   });
 
   it('honours an explicit result width without touching the description width', () => {
     const task = makeTask({ description: 'd', result: 'abcdefghij' });
 
-    expect(formatTaskRow(task, { resultMaxWidth: 5 })).toBe('[completed] t-1: d → abcd…');
-    expect(formatTaskRow(task, { resultMaxWidth: 0 })).toBe('[completed] t-1: d');
+    expect(formatTaskRow(task, { resultMaxWidth: 5 })).toBe('[completed] #t-1: d → abcd…');
+    expect(formatTaskRow(task, { resultMaxWidth: 0 })).toBe('[completed] #t-1: d');
   });
 
   it('adds a worker-type tag and a running elapsed time when timestamps are present', () => {
@@ -374,7 +377,7 @@ describe('formatTaskRow', () => {
     });
 
     expect(formatTaskRow(task, { now: 6_000 }))
-      .toBe('[running] t-run: scan repo · 🧸 puppet · 已运行 5.0s');
+      .toBe('[running] #run: scan repo · 🧸 puppet · 已运行 5.0s');
   });
 
   it('shows the recorded total duration for a terminal task, ignoring now', () => {
@@ -390,7 +393,7 @@ describe('formatTaskRow', () => {
 
     const row = formatTaskRow(task, { now: 99_000 });
 
-    expect(row).toBe('[completed] t-done: build · 🤖 claude-code · 耗时 12.5s → ok');
+    expect(row).toBe('[completed] #done: build · 🤖 claude-code · 耗时 12.5s → ok');
     expect(row).not.toContain('已运行');
   });
 
@@ -408,7 +411,7 @@ describe('formatTaskRow', () => {
     const row = formatTaskRow(task, { now: 9_000 });
     const digest = row.split(' ✗ ')[1];
 
-    expect(row).toContain('[failed] t-fail:');
+    expect(row).toContain('[failed] #fail:');
     expect(row).toContain('耗时 3.0s');
     expect(row).toContain('✗ TypeError: x is not a function');
     expect(row).not.toContain('\n');
@@ -419,7 +422,7 @@ describe('formatTaskRow', () => {
 
   it('appends no error mark for a whitespace-only error', () => {
     expect(formatTaskRow(makeTask({ description: 'd', error: ' \n\t ' })))
-      .toBe('[completed] t-1: d');
+      .toBe('[completed] #t-1: d');
   });
 });
 
@@ -450,8 +453,8 @@ describe('formatTaskList', () => {
     const lines = formatTaskList(tasks).split('\n');
 
     expect(lines).toHaveLength(TASK_LIST_MAX_ITEMS + 1);
-    expect(lines[0]).toContain('[pending] p-1:');
-    expect(lines[1]).toContain('[running] r-1:');
+    expect(lines[0]).toContain('[pending] #p-1:');
+    expect(lines[1]).toContain('[running] #r-1:');
     // The newest history fills the remaining budget, oldest first to go.
     expect(lines[2]).toContain('h-12');
     expect(lines[TASK_LIST_MAX_ITEMS - 1]).toContain('h-29');
@@ -482,7 +485,7 @@ describe('formatTaskList', () => {
 
     expect(lines).toHaveLength(7);
     expect(lines.some(line => line.startsWith('…'))).toBe(false);
-    expect(lines.join('\n')).toContain('[pending] p-1:');
+    expect(lines.join('\n')).toContain('[pending] #p-1:');
   });
 
   it('outputs every row and no note when at or below the cap', () => {
@@ -503,11 +506,11 @@ describe('formatTaskList', () => {
 
     const lines = formatTaskList(tasks).split('\n');
 
-    // "[completed] t-1: " is 17 columns, so a capped description yields 97.
-    expect(lines[0]).toBe('[completed] t-1: first second third');
-    expect(lines[1]).toBe(`[completed] t-2: ${truncateForList(long)}`);
+    // "[completed] #t-1: " is 18 columns, so a capped description yields 98.
+    expect(lines[0]).toBe('[completed] #t-1: first second third');
+    expect(lines[1]).toBe(`[completed] #t-2: ${truncateForList(long)}`);
     expect(lines[1].endsWith('…')).toBe(true);
-    expect(stringWidth(lines[1])).toBe(17 + TASK_LIST_DESCRIPTION_MAX_WIDTH);
+    expect(stringWidth(lines[1])).toBe(18 + TASK_LIST_DESCRIPTION_MAX_WIDTH);
   });
 
   it('keeps the whole list within maxItems + 1 rows when results are huge', () => {
@@ -536,9 +539,9 @@ describe('formatTaskList', () => {
       expect(line).not.toContain('\n');
       expect(line).not.toContain('\t');
       expect(line.endsWith('…')).toBe(true);
-      // '[completed] t-24: ' = 18 columns, then description + ' → ' + result.
+      // '[completed] #t-24: ' = 19 columns, then description + ' → ' + result.
       expect(stringWidth(line)).toBeLessThanOrEqual(
-        18 + TASK_LIST_DESCRIPTION_MAX_WIDTH + 3 + TASK_LIST_RESULT_MAX_WIDTH,
+        19 + TASK_LIST_DESCRIPTION_MAX_WIDTH + 3 + TASK_LIST_RESULT_MAX_WIDTH,
       );
     }
   });
@@ -578,22 +581,193 @@ describe('formatTaskList', () => {
     expect(lines).toHaveLength(3);
     expect(lines.length).toBeLessThanOrEqual(TASK_LIST_MAX_ITEMS);
     // running: worker type + live elapsed, no result/error mark
-    expect(lines[0]).toContain('[running] t-run:');
+    expect(lines[0]).toContain('[running] #run:');
     expect(lines[0]).toContain('🧸 puppet');
     expect(lines[0]).toContain('已运行 5.0s');
     // completed: total duration + one-line truncated result
-    expect(lines[1]).toContain('[completed] t-done:');
+    expect(lines[1]).toContain('[completed] #done:');
     expect(lines[1]).toContain('🤖 claude-code');
     expect(lines[1]).toContain('耗时 20.0s');
     expect(lines[1]).toContain(' → R');
     expect(lines[1].endsWith('…')).toBe(true);
     // failed: total duration + one-line error digest (never a bare "failed")
-    expect(lines[2]).toContain('[failed] t-fail:');
+    expect(lines[2]).toContain('[failed] #fail:');
     expect(lines[2]).toContain('耗时 7.0s');
     expect(lines[2]).toContain('✗ AssertionError: expected 1 to equal 2');
     for (const line of lines) {
       expect(line).not.toContain('\n');
       expect(line).not.toContain('\t');
     }
+  });
+});
+
+describe('formatTaskRow label source', () => {
+  it('uses the task title as the primary label, ignoring the description', () => {
+    const task = makeTask({
+      id: 't-1',
+      title: 'Fix login flow',
+      description: longDescription(TASK_LIST_DESCRIPTION_MAX_WIDTH),
+    });
+
+    const row = formatTaskRow(task);
+
+    expect(row).toBe('[completed] #t-1: Fix login flow');
+    expect(row).not.toContain(task.description);
+  });
+
+  it('keeps a CJK title within the label budget, counting double columns', () => {
+    const task = makeTask({ title: '修复登录流程'.repeat(20) });
+
+    const row = formatTaskRow(task);
+    const label = row.slice('[completed] #t-1: '.length);
+
+    expect(label.endsWith('…')).toBe(true);
+    expect(stringWidth(label)).toBeLessThanOrEqual(TASK_LIST_LABEL_MAX_WIDTH);
+  });
+
+  it('falls back to the description digest for a blank or missing title', () => {
+    expect(formatTaskRow(makeTask({ title: '   ', description: 'do the thing' })))
+      .toBe('[completed] #t-1: do the thing');
+  });
+
+  it('collapses a multi-line title to one line', () => {
+    expect(formatTaskRow(makeTask({ title: 'a\nb' }))).toBe('[completed] #t-1: a b');
+  });
+
+  it('caps the label at TASK_LIST_LABEL_MAX_WIDTH via labelMaxWidth', () => {
+    const task = makeTask({ title: 'T'.repeat(80) });
+
+    expect(formatTaskRow(task, { labelMaxWidth: 10 })).toBe('[completed] #t-1: TTTTTTTTT…');
+  });
+});
+
+describe('formatTaskRow rowMaxWidth', () => {
+  // A 80-column terminal leaves 76 columns inside the overlay panel's border
+  // and padding — the budget every row must fit on one physical line.
+  const NARROW = 76;
+
+  it('renders the three acceptance tasks one line each within the narrow budget', () => {
+    const now = 100_000;
+    const tasks: TaskDetail[] = [
+      makeTask({
+        id: 't-run', status: 'running', title: 'scan repo',
+        workerType: 'puppet', startedAt: now - 5_000,
+      }),
+      makeTask({
+        id: 't-done', status: 'completed', title: 'build',
+        workerType: 'claude-code', startedAt: now - 30_000, completedAt: now - 10_000,
+        result: 'R'.repeat(500) + '\nsecond line',
+      }),
+      makeTask({
+        id: 't-fail', status: 'failed', title: 'run tests',
+        workerType: 'puppet', startedAt: now - 8_000, completedAt: now - 1_000,
+        error: 'AssertionError: expected 1 to equal 2\n  at spec.ts:42',
+      }),
+    ];
+
+    const lines = formatTaskList(tasks, { now, rowMaxWidth: NARROW }).split('\n');
+
+    expect(lines).toHaveLength(3);
+    for (const line of lines) {
+      expect(line).not.toContain('\n');
+      expect(line).not.toContain('\t');
+      expect(stringWidth(line)).toBeLessThanOrEqual(NARROW);
+    }
+    // All three are distinguishable at a glance: status, worker, timing.
+    expect(lines[0]).toContain('[running] #run: scan repo');
+    expect(lines[0]).toContain('🧸 puppet');
+    expect(lines[0]).toContain('已运行 5.0s');
+    expect(lines[1]).toContain('[completed] #done: build');
+    expect(lines[1]).toContain('耗时 20.0s');
+    expect(lines[1]).toContain(' → R');
+    expect(lines[1].endsWith('…')).toBe(true);
+    // The failed row keeps a visible error digest even on the narrow budget.
+    expect(lines[2]).toContain('[failed] #fail: run tests');
+    expect(lines[2]).toContain(' ✗ AssertionError');
+    expect(lines[2].endsWith('…')).toBe(true);
+  });
+
+  it('counts CJK as two columns and still fits the narrow budget', () => {
+    const task = makeTask({
+      id: 't-cjk',
+      status: 'failed',
+      title: '运行构建流程并输出结果',
+      workerType: 'puppet',
+      startedAt: 1_000,
+      completedAt: 61_000,
+      error: '构建失败：'.repeat(40),
+    });
+
+    const row = formatTaskRow(task, { now: 100_000, rowMaxWidth: NARROW });
+
+    expect(row).not.toContain('\n');
+    expect(stringWidth(row)).toBeLessThanOrEqual(NARROW);
+    expect(row).toContain(' ✗ 构建失败');
+  });
+
+  it('keeps an error digest on the row even when the label must shrink to its floor', () => {
+    const task = makeTask({
+      id: 't-fail',
+      status: 'failed',
+      title: 'run the integration suite',
+      error: 'E'.repeat(300),
+    });
+
+    const row = formatTaskRow(task, { rowMaxWidth: NARROW });
+    const errorDigest = row.split(' ✗ ')[1];
+
+    expect(errorDigest).toBeDefined();
+    expect(errorDigest!.endsWith('…')).toBe(true);
+    expect(stringWidth(row)).toBeLessThanOrEqual(NARROW);
+    // The label keeps its floor columns — the row stays identifiable.
+    expect(row).toContain('#fail: run');
+  });
+
+  it('drops the result digest on a very narrow row rather than wrapping', () => {
+    const task = makeTask({
+      id: 't-tiny',
+      title: 'run the whole build pipeline end to end',
+      result: 'R'.repeat(300),
+    });
+
+    const row = formatTaskRow(task, { rowMaxWidth: 30 });
+
+    expect(row).not.toContain(' → ');
+    expect(row).not.toContain('\n');
+    expect(stringWidth(row)).toBeLessThanOrEqual(30);
+  });
+
+  it('hard-caps the whole row when even the fixed columns overflow the budget', () => {
+    const task = makeTask({
+      id: 't-1731041234567-abcd',
+      status: 'running',
+      title: 'scan',
+      workerType: 'claude-code',
+      startedAt: 1_000,
+      workspace: { path: '/w/some-deep/workspace/path', slug: 'some-deep-workspace-path' },
+    });
+
+    const row = formatTaskRow(task, { now: 99_000, rowMaxWidth: 20 });
+
+    expect(stringWidth(row)).toBeLessThanOrEqual(20);
+    expect(row.endsWith('…')).toBe(true);
+  });
+});
+
+describe('formatTaskList short-handle collisions', () => {
+  it('falls back to full ids when two rendered rows share the same #tail handle', () => {
+    const tasks = [
+      makeTask({ id: 'task-1731000001-aaaa', title: 'first' }),
+      makeTask({ id: 'task-1731000002-aaaa', title: 'second' }),
+      makeTask({ id: 'task-1731000003-bbbb', title: 'third' }),
+    ];
+
+    const lines = formatTaskList(tasks).split('\n');
+
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('[completed] task-1731000001-aaaa: first');
+    expect(lines[1]).toBe('[completed] task-1731000002-aaaa: second');
+    // The unique handle still renders short.
+    expect(lines[2]).toBe('[completed] #bbbb: third');
   });
 });
