@@ -35,21 +35,13 @@ import { ACP_PERMISSION_TIMEOUT_MS } from './permission-bridge';
 import { advanceGuard, classifyTurnEnd, decideNextAction, resetTurnGuard, type CancelFact } from './turn-attribution';
 import { buildReissuePrompt, finalizeTurnVerdict, joinControllerMessages, makeInjectedEntry, makeTerminalResult } from './acp-turn-prompt';
 import {
-  generateMcpToken,
-  mcpSocketPathFor,
-  resolveMcpBridgeEntryPath,
-  startMcpHost,
-  type McpHost,
-  type McpHostOptions,
-} from './mcp-host';
-import {
   MCP_HANDSHAKE_TIMEOUT_MS,
-  MAX_CONTEXT_CHARS,
-  MAX_QUESTION_CHARS,
-  PROGRESS_FALLBACK_MS,
-  buildMcpServerDescriptor,
-  capText,
-} from './mcp-schemas';
+  startStdioMcpTransport,
+  type McpTransport,
+  type StartMcpTransportOptions,
+} from './mcp-transport';
+import { MAX_CONTEXT_CHARS, MAX_QUESTION_CHARS, PROGRESS_FALLBACK_MS, capText } from './mcp-schemas';
+import { createWayangMcpToolInvoker } from './mcp-tools';
 import { McpProgressTracker } from './mcp-progress-fallback';
 import pkg from '@/../package.json';
 
@@ -91,7 +83,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     this._turnWriter.reset();
     this._onProgress = onProgress ?? null;
     this._mcpAvailable = false;
-    this._mcpHost = null;
+    this._mcpTransport = null;
     this._mcpWarned = false;
     this._mcpFallback.setIdleMs(this.acpUserConfig().mcp?.fallbackMs ?? PROGRESS_FALLBACK_MS);
     this.clearPendingProgress();
@@ -290,7 +282,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     } finally {
       this._streamEnded = true;
       this.clearPendingProgress();
-      await this.closeMcpHost();
+      await this.closeMcpTransport();
       if (this._cancelGraceTimer) {
         clearTimeout(this._cancelGraceTimer);
         this._cancelGraceTimer = null;
@@ -330,7 +322,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   abort(): void {
     this.abortController.abort();
     this.clearPendingProgress();
-    void this.closeMcpHost();
+    void this.closeMcpTransport();
     this.permissionHandler.cleanup();
     const client = this._client;
     if (!client || !this._sessionId || this._terminalResult) return;
@@ -353,52 +345,52 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   // --- MCP injection, fail-soft degradation and progress fallback ---
 
   /**
-   * Build the one-shot Unix socket host and the ACP v1 stdio descriptor. A
-   * host-start failure simply means no injection (degraded path), never a
-   * failed task. Overridable in tests to inject a fake host.
+   * Transport factory — the ONLY seam between the worker run and the MCP
+   * plumbing. Swapping the stdio bridge for an ACP v2 `acp` tunnel means
+   * replacing this one call (plus capability detection), not the tool layer.
+   * Overridable in tests to inject a fake transport.
    */
-  protected createMcpHost(opts: McpHostOptions): Promise<McpHost> {
-    return startMcpHost(opts);
+  protected createMcpTransport(opts: StartMcpTransportOptions): Promise<McpTransport> {
+    return startStdioMcpTransport(opts);
   }
 
   private async prepareMcpHost(): Promise<AcpMcpServer[]> {
     if (this.acpUserConfig().mcp?.enabled === false) return [];
-    const socketPath = mcpSocketPathFor(this.sessionDir, this.id, generateMcpToken().slice(0, 12));
-    const token = generateMcpToken();
-    const bridgeEntryPath = resolveMcpBridgeEntryPath(import.meta.url);
+    // Tool semantics live in the invoker; the transport only carries frames.
+    const invoker = createWayangMcpToolInvoker({
+      workerId: this.id,
+      logger: this.logger,
+      onProgress: (message) => this.reportProgress(message, 'mcp'),
+      ask: (question, context) => this.mcpAsk(question, context),
+    });
     try {
-      const host = await this.createMcpHost({
-        socketPath,
-        token,
+      const transport = await this.createMcpTransport({
+        sessionDir: this.sessionDir,
         workerId: this.id,
-        onProgress: (message) => this.reportProgress(message, 'mcp'),
-        ask: (question, context) => this.mcpAsk(question, context),
+        invoker,
         logger: this.logger,
         serverInfo: { name: 'wayang', version: pkg.version },
       });
-      this._mcpHost = host;
+      this._mcpTransport = transport;
       this._mcpAvailable = true;
       this._mcpFallback.start(); // task start resets the idle window
-      this.armMcpHandshakeWatchdog(host);
+      this.armMcpHandshakeWatchdog(transport);
       this.recordAcpRuntime({ mcpAvailable: true });
-      this.logger.debug(
-        { workerId: this.id, envNames: ['WAYANG_MCP_SOCK', 'WAYANG_MCP_TOKEN', 'WAYANG_MCP_WORKER_ID'], reason: 'mcp-injected' },
-        'ACP MCP server injected',
-      );
-      return [buildMcpServerDescriptor({ socketPath, token, workerId: this.id, bridgeEntryPath })];
+      this.logger.debug({ workerId: this.id, reason: 'mcp-injected' }, 'ACP MCP server injected');
+      return [transport.descriptor];
     } catch (err) {
-      this.warnMcpDegrade('host-start-failed', err);
+      this.warnMcpDegrade('transport-start-failed', err);
       return [];
     }
   }
 
   /** A session/new that succeeded with injection but no hello within 10s degrades. */
-  private armMcpHandshakeWatchdog(host: McpHost): void {
+  private armMcpHandshakeWatchdog(transport: McpTransport): void {
     if (this._mcpHandshakeTimer) clearTimeout(this._mcpHandshakeTimer);
     const timer = setTimeout(() => {
       this._mcpHandshakeTimer = null;
       if (!this._mcpAvailable || this._streamEnded || this._terminalResult !== null) return;
-      if (host.isReady()) return;
+      if (transport.isReady()) return;
       void this.degradeMcp('handshake-timeout');
     }, MCP_HANDSHAKE_TIMEOUT_MS);
     timer.unref?.();
@@ -416,29 +408,29 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     );
   }
 
-  /** Disable MCP, stop every timer and shut the host (and thus the bridge) down. */
+  /** Disable MCP, stop every timer and shut the transport (and thus the bridge) down. */
   private async degradeMcp(reason: string, err?: unknown): Promise<void> {
     if (this._mcpAvailable) {
       this._mcpAvailable = false;
       this._mcpFallback.stop();
       this.recordAcpRuntime({ mcpAvailable: false });
     }
-    await this.closeMcpHost();
+    await this.closeMcpTransport();
     this.warnMcpDegrade(reason, err);
   }
 
-  private async closeMcpHost(): Promise<void> {
-    const host = this._mcpHost;
-    this._mcpHost = null;
+  private async closeMcpTransport(): Promise<void> {
+    const transport = this._mcpTransport;
+    this._mcpTransport = null;
     if (this._mcpHandshakeTimer) {
       clearTimeout(this._mcpHandshakeTimer);
       this._mcpHandshakeTimer = null;
     }
-    if (!host) return;
+    if (!transport) return;
     try {
-      await host.close();
+      await transport.close();
     } catch (err) {
-      this.logger.debug({ workerId: this.id, err, reason: 'mcp-host-close' }, 'ACP MCP host close failed');
+      this.logger.debug({ workerId: this.id, err, reason: 'mcp-transport-close' }, 'ACP MCP transport close failed');
     }
   }
 

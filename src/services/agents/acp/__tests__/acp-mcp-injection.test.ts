@@ -17,7 +17,7 @@ import {
   type AcpReadyContext,
   type AcpWorkerEnvView,
 } from '../base-acp-worker';
-import type { McpHost, McpHostOptions } from '../mcp-host';
+import { buildMcpServerDescriptor, type McpTransport, type StartMcpTransportOptions } from '../mcp-transport';
 import { FakeAgentTransport } from './fake-agent-transport';
 
 const skills = new SkillRegistry([]);
@@ -30,8 +30,8 @@ const TASK: TaskDetail & { workerId: string } = {
 class TestAcpWorker extends AcpWorkerRun implements IWorkerInstance {
   readonly transport = new FakeAgentTransport();
   readonly testLogger: any;
-  hostOpts: McpHostOptions | null = null;
-  hostCloseCalls = 0;
+  transportOpts: StartMcpTransportOptions | null = null;
+  transportCloseCalls = 0;
 
   constructor(sessionDir: string, config: Partial<WorkerConfig> = {}) {
     const logger: any = createMockLogger();
@@ -44,12 +44,17 @@ class TestAcpWorker extends AcpWorkerRun implements IWorkerInstance {
     this.testLogger = logger;
   }
 
-  protected createMcpHost(opts: McpHostOptions): Promise<McpHost> {
-    this.hostOpts = opts;
+  protected createMcpTransport(opts: StartMcpTransportOptions): Promise<McpTransport> {
+    this.transportOpts = opts;
+    const descriptor = buildMcpServerDescriptor({
+      socketPath: '/tmp/fake-acp-mcp.sock', token: 'one-shot-token', workerId: 'w-mcp',
+      bridgeEntryPath: '/dist/mcp-bridge-entry.js',
+    });
     return Promise.resolve({
+      descriptor,
       ready: Promise.resolve(true),
       isReady: () => true,
-      close: async () => { this.hostCloseCalls += 1; },
+      close: async () => { this.transportCloseCalls += 1; },
     });
   }
   protected createTransport(_config: AcpLaunchConfig): AcpTransport { return this.transport; }
@@ -117,8 +122,8 @@ describe('AcpWorkerRun: MCP injection', () => {
     await worker.transport.waitForClientOutput(3);
     respondTo(worker.transport, 2, { stopReason: 'end_turn' });
     await expect(runPromise).resolves.toMatchObject({ status: 'completed' });
-    expect(worker.hostOpts).not.toBeNull();
-    expect(worker.hostCloseCalls).toBe(1);
+    expect(worker.transportOpts).not.toBeNull();
+    expect(worker.transportCloseCalls).toBe(1);
   });
 
   it('fail-soft: -32602 retries ONCE with [], degrades and keeps the 500ms debounce', async () => {
@@ -130,7 +135,7 @@ describe('AcpWorkerRun: MCP injection', () => {
     await worker.transport.waitForClientOutput(3);
     expect(worker.transport.clientMessages[2].params.mcpServers).toEqual([]);
     expect(worker.mcpAvailable).toBe(false);
-    expect(worker.hostCloseCalls).toBeGreaterThanOrEqual(1);
+    expect(worker.transportCloseCalls).toBeGreaterThanOrEqual(1);
     const warnings = worker.testLogger.warn.mock.calls.filter((call: any[]) => String(call[1] ?? '').includes('degraded'));
     expect(warnings).toHaveLength(1);
 
@@ -194,17 +199,18 @@ describe('AcpWorkerRun: MCP injection', () => {
     respondTo(worker.transport, 1, { sessionId: 's-1' });
     await worker.transport.waitForClientOutput(3);
 
-    await worker.hostOpts!.onProgress('real update_progress');
+    const progressResult = await worker.transportOpts!.invoker.invoke('update_progress', { message: 'real update_progress' });
+    expect(progressResult.text).toBe('Progress reported: real update_progress');
     expect(onProgress).toHaveBeenCalledWith('real update_progress');
     sendText(worker, 'plain assistant text must not become progress');
     await sleep(600);
     expect(onProgress).toHaveBeenCalledTimes(1);
 
-    const unavailable = await worker.hostOpts!.ask('blocked?', 'tried x');
-    expect(unavailable).toContain('[UNAVAILABLE]');
+    const unavailable = await worker.transportOpts!.invoker.invoke('ask_controller', { question: 'blocked?', context: 'tried x' });
+    expect(unavailable.text).toContain('[UNAVAILABLE]');
     worker.setInquirySupport(async () => '[Controller] go ahead');
-    const answer = await worker.hostOpts!.ask('blocked?', 'tried x');
-    expect(answer).toBe('[Controller] go ahead');
+    const answer = await worker.transportOpts!.invoker.invoke('ask_controller', { question: 'blocked?', context: 'tried x' });
+    expect(answer.text).toBe('[Controller] go ahead');
     const inquiry = worker.getConversation().filter((e: any) => e.subtype === 'inquiry');
     expect(inquiry).toHaveLength(1);
 

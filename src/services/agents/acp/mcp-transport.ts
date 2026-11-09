@@ -1,5 +1,14 @@
 /**
- * Host side of the per-run Wayang MCP bridge.
+ * TRANSPORT LAYER (stdio bridge / Unix socket) — the ONE place where socket
+ * paths, one-shot tokens, the bridge process, spawn descriptors, hello/pid
+ * handling and NDJSON framing live. `startStdioMcpTransport` is the only
+ * surface the worker run layer touches; tool semantics are injected via an
+ * `McpToolInvoker` from mcp-tools.ts.
+ *
+ * Future ACP v2 `McpServerAcp` (type 'acp', MCP tunnelled over `mcp/message`)
+ * needs ONLY a second implementation of `McpTransport` plus capability
+ * detection in the worker layer — no change to the tool registry, the tool
+ * invoker, the schemas or the progress fallback timer.
  *
  * One ACP worker run owns one Unix socket inside the session directory
  * (dedicated 0700 dir, 0600 socket). The bridge — spawned by the ACP agent as
@@ -15,39 +24,59 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Logger } from '@/infra/logger';
+import type { AcpMcpServer } from '@/services/acp/types';
 import { LineCodec } from '@/rpc/transport';
-import {
-  MAX_CONTEXT_CHARS,
-  MAX_QUESTION_CHARS,
-  MCP_ASK_TIMEOUT_MS,
-  MCP_HANDSHAKE_TIMEOUT_MS,
-  MCP_MAX_CONNECTIONS,
-  MCP_PROGRESS_TIMEOUT_MS,
-  capText,
-} from './mcp-schemas';
+import { MCP_SERVER_NAME } from './mcp-schemas';
+import type { McpToolInvoker } from './mcp-tools';
 import {
   createMcpDispatcher,
   DEFAULT_MCP_SERVER_INFO,
-  type McpCallResult,
   type McpRequest,
   type McpServerInfo,
 } from './mcp-protocol';
+
+// --- Transport-only constants (shared with the bridge child process) ---
+export const MCP_ENV_SOCKET = 'WAYANG_MCP_SOCK';
+export const MCP_ENV_TOKEN = 'WAYANG_MCP_TOKEN';
+export const MCP_ENV_WORKER_ID = 'WAYANG_MCP_WORKER_ID';
+/** session/new succeeded with injection, but no bridge hello within 10s. */
+export const MCP_HANDSHAKE_TIMEOUT_MS = 10_000;
+/** Bridge exits when no host connection appears (orphan protection). */
+export const MCP_WATCHDOG_MS = 5_000;
+export const MCP_MAX_CONNECTIONS = 4;
+/** Safety net for a relayed call; real per-tool ceilings live in the tool layer. */
+export const MCP_RELAY_TIMEOUT_MS = 315_000;
 
 export interface McpHostOptions {
   socketPath: string;
   token: string;
   workerId: string;
-  onProgress: (message: string) => void | Promise<void>;
-  ask: (question: string, context?: string) => Promise<string>;
+  /** Tool semantics injected by the tool layer; transport never inspects them. */
+  invoker: McpToolInvoker;
   logger: Logger;
   serverInfo?: McpServerInfo;
   handshakeTimeoutMs?: number;
-  progressTimeoutMs?: number;
-  askTimeoutMs?: number;
+}
+
+/** The transport contract the run layer depends on — no spawn/socket details. */
+export interface McpTransport {
+  /** Descriptor injected into session/new ([] on degrade). */
+  readonly descriptor: AcpMcpServer;
+  /** Resolves true on a valid hello, false on close or handshake timeout. */
+  readonly ready: Promise<boolean>;
+  isReady(): boolean;
+  close(): Promise<void>;
+}
+
+export interface StartMcpTransportOptions {
+  sessionDir: string;
+  workerId: string;
+  invoker: McpToolInvoker;
+  logger: Logger;
+  serverInfo?: McpServerInfo;
 }
 
 export interface McpHost {
-  /** Resolves true on a valid hello, false on close or handshake timeout. */
   readonly ready: Promise<boolean>;
   isReady(): boolean;
   close(): Promise<void>;
@@ -75,39 +104,6 @@ export function resolveMcpBridgeEntryPath(importMetaUrl: string): string {
     join(dir, 'mcp-bridge-entry.ts'),
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
-}
-
-const TIMED_OUT = Symbol('mcp-host-timeout');
-const ABORTED = Symbol('mcp-host-aborted');
-
-/** Pending calls are settled on close so no invocation is left hanging. */
-function withTimeout<T>(
-  work: Promise<T>,
-  ms: number,
-  pending: Set<() => void>,
-): Promise<T | typeof TIMED_OUT | typeof ABORTED> {
-  return new Promise((resolve, reject) => {
-    let done = false;
-    const finish = (value: T | typeof TIMED_OUT | typeof ABORTED): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      pending.delete(cancel);
-      resolve(value);
-    };
-    const fail = (err: unknown): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      pending.delete(cancel);
-      reject(err);
-    };
-    const timer = setTimeout(() => finish(TIMED_OUT), ms);
-    timer.unref?.();
-    const cancel = () => finish(ABORTED);
-    pending.add(cancel);
-    work.then(finish, fail);
-  });
 }
 
 function safeEqualToken(expected: string, actual: unknown): boolean {
@@ -149,7 +145,6 @@ export async function startMcpHost(opts: McpHostOptions): Promise<McpHost> {
   const readyPromise = new Promise<boolean>((resolve) => { resolveReady = resolve; });
   const connections = new Set<Socket>();
   const bridgePids = new Set<number>();
-  const pendingCalls = new Set<() => void>();
 
   const handshakeTimer = setTimeout(() => {
     if (!closed && !ready) {
@@ -159,48 +154,11 @@ export async function startMcpHost(opts: McpHostOptions): Promise<McpHost> {
   }, opts.handshakeTimeoutMs ?? MCP_HANDSHAKE_TIMEOUT_MS);
   handshakeTimer.unref?.();
 
-  const invokeTool = async (name: string, args: Record<string, unknown>): Promise<McpCallResult> => {
-    const started = Date.now();
-    if (name === 'update_progress') {
-      if (typeof args.message !== 'string' || args.message.length === 0) {
-        return { text: '[MCP ERROR] update_progress requires a non-empty string "message"', isError: true };
-      }
-      const message = capText(args.message);
-      const settled = await withTimeout(
-        Promise.resolve().then(() => opts.onProgress(message)),
-        opts.progressTimeoutMs ?? MCP_PROGRESS_TIMEOUT_MS,
-        pendingCalls,
-      );
-      if (settled === ABORTED) return { text: '[ABORTED] Worker is shutting down.', isError: true };
-      if (settled === TIMED_OUT) {
-        return { text: '[TIMEOUT] The progress report was not delivered within 5s.', isError: true };
-      }
-      opts.logger.debug(
-        { workerId: opts.workerId, toolName: name, charLen: message.length, durationMs: Date.now() - started, mcpAvailable: true, reason: 'progress' },
-        'ACP MCP tool served',
-      );
-      return { text: `Progress reported: ${message}` };
-    }
-    if (name === 'ask_controller') {
-      const question = capText(typeof args.question === 'string' ? args.question : '', MAX_QUESTION_CHARS);
-      if (!question) return { text: '[MCP ERROR] ask_controller requires a non-empty string "question"', isError: true };
-      const context = args.context === undefined ? undefined : capText(String(args.context), MAX_CONTEXT_CHARS);
-      const settled = await withTimeout(opts.ask(question, context), opts.askTimeoutMs ?? MCP_ASK_TIMEOUT_MS, pendingCalls);
-      const answer = settled === TIMED_OUT
-        ? '[TIMEOUT] No answer from the controller within 5 minutes. Use your best judgment to continue.'
-        : settled === ABORTED
-          ? '[ABORTED] Worker is shutting down.'
-          : settled;
-      opts.logger.debug(
-        { workerId: opts.workerId, toolName: name, charLen: answer.length, durationMs: Date.now() - started, mcpAvailable: true, reason: 'ask' },
-        'ACP MCP tool served',
-      );
-      return { text: answer, isError: settled === TIMED_OUT || settled === ABORTED };
-    }
-    return { text: `Unknown tool: ${name}`, isError: true };
-  };
-
-  const dispatcher = createMcpDispatcher(invokeTool, opts.serverInfo ?? DEFAULT_MCP_SERVER_INFO);
+  // Tool semantics are injected — the transport only routes frames to them.
+  const dispatcher = createMcpDispatcher(
+    (name, args) => opts.invoker.invoke(name, args),
+    opts.serverInfo ?? DEFAULT_MCP_SERVER_INFO,
+  );
 
   const handleFrame = async (frame: McpRequest, socket: Socket): Promise<void> => {
     if (closed || typeof frame.method !== 'string') return;
@@ -271,8 +229,7 @@ export async function startMcpHost(opts: McpHostOptions): Promise<McpHost> {
     closed = true;
     clearTimeout(handshakeTimer);
     if (!ready) resolveReady(false);
-    for (const cancel of [...pendingCalls]) cancel();
-    pendingCalls.clear();
+    opts.invoker.settlePending();
     // Let settled invocations write their final (aborted) response before the
     // sockets go away — no call is left hanging on the agent side.
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -287,4 +244,51 @@ export async function startMcpHost(opts: McpHostOptions): Promise<McpHost> {
   };
 
   return { ready: readyPromise, isReady: () => ready && !closed, close };
+}
+
+/** ACP v1 stdio server descriptor: `env` is an ARRAY of {name,value}. */
+export function buildMcpServerDescriptor(opts: {
+  socketPath: string;
+  token: string;
+  workerId: string;
+  bridgeEntryPath: string;
+  nodeExecutable?: string;
+}): AcpMcpServer {
+  return {
+    name: MCP_SERVER_NAME,
+    command: opts.nodeExecutable ?? process.execPath,
+    args: [opts.bridgeEntryPath],
+    env: [
+      { name: MCP_ENV_SOCKET, value: opts.socketPath },
+      { name: MCP_ENV_TOKEN, value: opts.token },
+      { name: MCP_ENV_WORKER_ID, value: opts.workerId },
+    ],
+  };
+}
+
+/**
+ * The single transport implementation used today. Everything about the stdio
+ * bridge (socket, token, spawn path, hello, pid cleanup) stays behind this
+ * function; callers see only `McpTransport`. Swapping in ACP v2's `acp`
+ * transport means adding a sibling `startAcpTunnelMcpTransport` with the same
+ * return type — the tool layer and the worker run need no schema/tool changes.
+ */
+export async function startStdioMcpTransport(opts: StartMcpTransportOptions): Promise<McpTransport> {
+  const socketPath = mcpSocketPathFor(opts.sessionDir, opts.workerId, generateMcpToken().slice(0, 12));
+  const token = generateMcpToken();
+  const bridgeEntryPath = resolveMcpBridgeEntryPath(import.meta.url);
+  const host = await startMcpHost({
+    socketPath,
+    token,
+    workerId: opts.workerId,
+    invoker: opts.invoker,
+    logger: opts.logger,
+    serverInfo: opts.serverInfo,
+  });
+  return {
+    descriptor: buildMcpServerDescriptor({ socketPath, token, workerId: opts.workerId, bridgeEntryPath }),
+    ready: host.ready,
+    isReady: host.isReady,
+    close: host.close,
+  };
 }

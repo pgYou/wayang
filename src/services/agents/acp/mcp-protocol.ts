@@ -39,8 +39,8 @@ export interface McpCallResult {
   isError?: boolean;
 }
 
-/** Invoked for `tools/call`; the host executes it, the bridge relays it. */
-export type McpToolInvoker = (
+/** Invoked for `tools/call`; supplied by the tool layer (or a relaying transport). */
+export type McpToolCallHandler = (
   name: string,
   args: Record<string, unknown>,
 ) => Promise<McpCallResult>;
@@ -83,7 +83,7 @@ export function parseMcpToolResult(response: McpResponse): McpCallResult {
  * Build a request handler. Returns `null` for notifications (no response),
  * and a JSON-RPC response for every request. Unknown methods get -32601.
  */
-export function createMcpDispatcher(invoker: McpToolInvoker, serverInfo: McpServerInfo) {
+export function createMcpDispatcher(invoker: McpToolCallHandler, serverInfo: McpServerInfo) {
   return async (frame: McpRequest): Promise<McpResponse | null> => {
     const method = typeof frame.method === 'string' ? frame.method : '';
     // Notifications (including `notifications/initialized`) never get a reply.

@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect, type Socket } from 'node:net';
 import { createMockLogger } from '@/__tests__/helpers';
-import { generateMcpToken, mcpSocketPathFor, startMcpHost, type McpHost } from '../mcp-host';
+import { generateMcpToken, mcpSocketPathFor, startMcpHost, startStdioMcpTransport, type McpHost } from '../mcp-transport';
+import { createWayangMcpToolInvoker } from '../mcp-tools';
 import { MAX_PROGRESS_CHARS, MCP_PROTOCOL_VERSION, MCP_TOOLS } from '../mcp-schemas';
 
 class TestClient {
@@ -78,12 +79,16 @@ describe('ACP MCP host (Unix socket)', () => {
       socketPath,
       token,
       workerId: 'w1',
-      onProgress,
-      ask,
+      invoker: createWayangMcpToolInvoker({
+        workerId: 'w1',
+        logger: createMockLogger(),
+        onProgress,
+        ask,
+        progressTimeoutMs: 40,
+        askTimeoutMs: 40,
+      }),
       logger: createMockLogger(),
       handshakeTimeoutMs: 5_000,
-      progressTimeoutMs: 40,
-      askTimeoutMs: 40,
     });
   });
 
@@ -172,6 +177,25 @@ describe('ACP MCP host (Unix socket)', () => {
     const answer = await client.request(10, 'tools/call', { name: 'ask_controller', arguments: { question: 'stalled?' } });
     expect(answer.result.isError).toBe(true);
     expect(answer.result.content[0].text).toContain('[TIMEOUT]');
+  });
+
+  it('startStdioMcpTransport owns spawn/socket/token details behind McpTransport', async () => {
+    const otherDir = mkdtempSync(join(tmpdir(), 'acp-mcp-facade-'));
+    const transport = await startStdioMcpTransport({
+      sessionDir: otherDir,
+      workerId: 'w2',
+      invoker: createWayangMcpToolInvoker({ workerId: 'w2', logger: createMockLogger(), onProgress, ask }),
+      logger: createMockLogger(),
+    });
+    expect(transport.descriptor.name).toBe('wayang');
+    expect(transport.descriptor.env?.map((e) => e.name)).toEqual([
+      'WAYANG_MCP_SOCK', 'WAYANG_MCP_TOKEN', 'WAYANG_MCP_WORKER_ID',
+    ]);
+    const sockPath = transport.descriptor.env?.find((e) => e.name === 'WAYANG_MCP_SOCK')?.value ?? '';
+    expect(existsSync(sockPath)).toBe(true);
+    await transport.close();
+    expect(existsSync(sockPath)).toBe(false);
+    rmSync(otherDir, { recursive: true, force: true });
   });
 
   it('close settles pending calls with [ABORTED] and removes the socket', async () => {

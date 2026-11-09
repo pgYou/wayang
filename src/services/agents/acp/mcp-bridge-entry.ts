@@ -15,13 +15,12 @@
 import { connect, type Socket } from 'node:net';
 import pkg from '../../../../package.json';
 import {
-  MCP_ASK_TIMEOUT_MS,
   MCP_ENV_SOCKET,
   MCP_ENV_TOKEN,
   MCP_ENV_WORKER_ID,
-  MCP_PROGRESS_TIMEOUT_MS,
+  MCP_RELAY_TIMEOUT_MS,
   MCP_WATCHDOG_MS,
-} from './mcp-schemas';
+} from './mcp-transport';
 import {
   createMcpDispatcher,
   type McpRequest,
@@ -29,7 +28,6 @@ import {
 } from './mcp-protocol';
 
 const SERVER_INFO = { name: 'wayang', version: pkg.version as string };
-const RELAY_GRACE_MS = 1_000;
 
 /** NDJSON framing that tolerates split and coalesced writes. */
 class NdjsonDecoder {
@@ -138,13 +136,12 @@ function relayToHost(line: string, frame: McpRequest): void {
   }
   const id = frame.id;
   if (id !== undefined && id !== null && typeof frame.method === 'string') {
-    const params = (frame.params ?? {}) as { name?: unknown };
-    const isAsk = frame.method === 'tools/call' && params.name === 'ask_controller';
-    const ms = (isAsk ? MCP_ASK_TIMEOUT_MS : MCP_PROGRESS_TIMEOUT_MS) + RELAY_GRACE_MS;
+    // Transport-level safety net only; the real per-tool ceilings are enforced
+    // by the tool invoker on the host side (no tool names in this layer).
     const timer = setTimeout(() => {
       if (!pending.delete(id)) return;
       errorResponse(id, '[TIMEOUT] The Wayang MCP host did not answer in time.');
-    }, ms);
+    }, MCP_RELAY_TIMEOUT_MS);
     timer.unref?.();
     pending.set(id, timer);
   }

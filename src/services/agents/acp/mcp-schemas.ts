@@ -1,20 +1,17 @@
 /**
- * Shared constants, tool schemas and the ACP `mcpServers` descriptor for the
- * per-run Wayang MCP bridge. Imported by BOTH sides of the Unix socket: the
- * host (main process) and the bridge (child of the ACP agent). Keep this
- * module free of runtime `@/` imports so the bridge can be bundled alone.
+ * TOOL LAYER — the Wayang MCP tool registry: names, JSON Schemas, limits and
+ * the semantics-level ceilings. Transport-agnostic on purpose: no socket
+ * path, no bridge process, no token, no spawn descriptor lives here.
+ *
+ * A future ACP v2 `McpServerAcp` transport (typed 'acp', MCP tunnelled over
+ * `mcp/message`) reuses THIS registry and the tool invoker unchanged; only a
+ * new transport implementation plus capability detection is needed.
  */
 
-import type { AcpMcpServer } from '@/services/acp/types';
-
-/** Name the ACP agent sees in its tool catalog (`mcp__wayang__*`). */
+/** Name the agent sees in its tool catalog (`mcp__wayang__*`). */
 export const MCP_SERVER_NAME = 'wayang';
 /** MCP protocolVersion is a DATE string (ACP's protocolVersion is the number 1). */
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
-
-export const MCP_ENV_SOCKET = 'WAYANG_MCP_SOCK';
-export const MCP_ENV_TOKEN = 'WAYANG_MCP_TOKEN';
-export const MCP_ENV_WORKER_ID = 'WAYANG_MCP_WORKER_ID';
 
 /** Only protects against pathological streaming/paste sizes — never a summary. */
 export const MAX_PROGRESS_CHARS = 20_000;
@@ -24,14 +21,9 @@ export const TRUNCATION_MARKER = '\n…[truncated]';
 
 /** Idle window before the fallback reports the latest complete reply. */
 export const PROGRESS_FALLBACK_MS = 120_000;
-/** Host-side invocation ceilings (askAndWait itself times out at 300s). */
+/** Tool invocation ceilings (askAndWait itself times out at 300s). */
 export const MCP_PROGRESS_TIMEOUT_MS = 5_000;
 export const MCP_ASK_TIMEOUT_MS = 310_000;
-/** session/new succeeded with mcpServers, but no bridge hello within 10s. */
-export const MCP_HANDSHAKE_TIMEOUT_MS = 10_000;
-/** Bridge exits when no host connection appears (orphan protection). */
-export const MCP_WATCHDOG_MS = 5_000;
-export const MCP_MAX_CONNECTIONS = 4;
 
 export type McpToolName = 'update_progress' | 'ask_controller';
 
@@ -92,22 +84,5 @@ export function capText(text: string, max: number = MAX_PROGRESS_CHARS): string 
   return text.length > max ? `${text.slice(0, max)}${TRUNCATION_MARKER}` : text;
 }
 
-/** ACP v1 stdio server: `env` is an array of {name,value}, NOT a record. */
-export function buildMcpServerDescriptor(opts: {
-  socketPath: string;
-  token: string;
-  workerId: string;
-  bridgeEntryPath: string;
-  nodeExecutable?: string;
-}): AcpMcpServer {
-  return {
-    name: MCP_SERVER_NAME,
-    command: opts.nodeExecutable ?? process.execPath,
-    args: [opts.bridgeEntryPath],
-    env: [
-      { name: MCP_ENV_SOCKET, value: opts.socketPath },
-      { name: MCP_ENV_TOKEN, value: opts.token },
-      { name: MCP_ENV_WORKER_ID, value: opts.workerId },
-    ],
-  };
-}
+/* The ACP `mcpServers` descriptor / spawn spec belongs to the transport layer
+ * (see mcp-transport.ts), not here. */
