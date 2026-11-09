@@ -35,12 +35,12 @@ Wayang is a multi-agent orchestration platform — a CLI tool that coordinates m
 
 ### 发布与 tag
 
-- 发布由 tag 驱动：推送 `v*` 开头的 tag（或手动 `workflow_dispatch`）触发 `.github/workflows/release.yml`。
-- `workflow_dispatch` 的 `dry_run` 默认 `true`，只跑 `npm publish --dry-run` 做构建与检查；正式发布需显式关闭 `dry_run`。
-- tag 名必须等于 `v` + `package.json` 的 `version`，不一致会在 `Verify tag matches package.json version` 步骤失败。
-- 流水线顺序：`npm ci` → `npm run lint` → `npm test` → `npm run build` → 检查该版本是否已发布 → `npm publish --provenance --access public`（已发布则跳过 publish）。
-- 认证走 OIDC Trusted Publishing：workflow 声明 `id-token: write`，不依赖 `NPM_TOKEN`。
-- 打 tag 前置：本地跑通 `npm run lint`、`npx vitest run`、`npm run build`，且 `CHANGELOG.md` 段落已校准。
+发布由 tag 驱动，只有两种入口，语义完全不同：
+
+- push 形如 `v0.9.4` 的 tag：立即正式发布到 npm。没有 dry-run、没有二次确认，推送即生效。
+- 手动 workflow_dispatch：`dry_run` 默认 `true`，只执行 `npm publish --dry-run`；要正式发布必须把 `dry_run` 显式设为 `false`。
+
+发布前置条件：`package.json` 的 `version` 与 tag 名一致（tag 必须是 `v` + version，不一致会在 `Verify tag matches package.json version` 步骤失败）；CHANGELOG.md 已按实际交付校准；`npm run lint`、`npx vitest run`、`npm run build` 全绿。
 
 ### 工作区布局
 
