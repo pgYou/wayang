@@ -37,6 +37,7 @@ import {
 import { decideToolAccess, type ToolAccessDecision, type WorkerAccessScope } from '@/services/tools/permission-rules';
 import { generateId } from '@/utils/id';
 import type { AcpToolAccumulator, AcpToolSnapshot } from './event-mapper';
+import { MCP_SERVER_NAME, type McpToolName } from './mcp-schemas';
 
 /** Default wait for a controller answer (frozen §5: aligns with the claude-code worker and the middleware). */
 export const ACP_PERMISSION_TIMEOUT_MS = 300_000;
@@ -131,22 +132,81 @@ function commandFromSnapshot(snapshot: AcpToolSnapshot): string | undefined {
 }
 
 /**
+ * The ONLY MCP tools exempt from approval: wayang's controller-facing tools,
+ * which do no filesystem IO. An explicit enumeration on purpose — never a
+ * `mcp__wayang__*` prefix test and never an `MCP_TOOLS` sweep: a tool added to
+ * the registry stays behind the approval gate until it is listed HERE. The
+ * element type is `McpToolName`, so renaming/removing a registry tool breaks
+ * the build instead of silently drifting, and the tests cross-check every
+ * entry against `MCP_TOOLS` (`mcp-schemas.ts`) at runtime.
+ */
+export const SAFE_WAYANG_MCP_TOOLS: ReadonlySet<McpToolName> = new Set<McpToolName>([
+  'update_progress',
+  'ask_controller',
+]);
+
+/**
+ * Server-qualified identity of a declared tool name:
+ * `mcp__wayang__update_progress` → `{ server: 'wayang', tool: 'update_progress' }`.
+ * The LAST `__` separates server from tool, because a server name may itself
+ * contain underscores — `mcp__wayang_other__update_progress` is server
+ * `wayang_other`, not wayang. `wayang.update_progress` / `wayang-update_progress`
+ * name the same server. A bare name carries no server: `undefined`, never a match.
+ */
+function mcpToolIdentity(name: string): { server: string; tool: string } | undefined {
+  const lower = name.trim().toLowerCase();
+  if (lower.startsWith('mcp__')) {
+    const rest = lower.slice('mcp__'.length);
+    const sep = rest.lastIndexOf('__');
+    if (sep <= 0 || sep + 2 >= rest.length) return undefined;
+    return { server: rest.slice(0, sep), tool: rest.slice(sep + 2) };
+  }
+  const qualified = /^([a-z0-9_]+)[.-]([a-z0-9_]+)$/.exec(lower);
+  return qualified ? { server: qualified[1], tool: qualified[2] } : undefined;
+}
+
+/**
+ * The safe registry tool a snapshot claims to be: server name exactly
+ * `MCP_SERVER_NAME` ('wayang') AND short name exactly in the safe set.
+ *
+ * Measured (0.9.4 CLI run, codebuddy): the agent never fills ACP `name` — the
+ * call arrives with `kind:'other'` and the identity inside `rawInput.toolName`
+ * (`{"params":{…},"toolName":"mcp__wayang__update_progress"}`). Matching `name`
+ * alone therefore missed both tools and every call landed in the "kind could
+ * not be determined" ask. Both structural fields are read; `title` is free text
+ * and deliberately stays out of the decision.
+ */
+function safeOwnMcpTool(snapshot: AcpToolSnapshot): McpToolName | undefined {
+  const raw = snapshot.rawInput;
+  const declared =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>).toolName
+      : undefined;
+  for (const candidate of [snapshot.name, declared]) {
+    if (typeof candidate !== 'string' || candidate.length === 0) continue;
+    const identity = mcpToolIdentity(candidate);
+    if (!identity || identity.server !== MCP_SERVER_NAME) continue;
+    const tool = identity.tool as McpToolName;
+    if (SAFE_WAYANG_MCP_TOOLS.has(tool)) return tool;
+  }
+  return undefined;
+}
+
+/**
  * Merged snapshot → policy tool name + args (frozen §5 table). Pure; exported
  * for unit tests. `other`/missing kind uses shape inference, and when that
  * fails the caller must NOT feed decideToolAccess (it allows every unknown
  * tool name) — it asks directly.
  */
 export function classifyAcpToolCall(snapshot: AcpToolSnapshot): Classification {
-  // Wayang's OWN injected MCP server (`mcp__wayang__*` / bare names):
-  // controller-facing tools, not filesystem IO — auto-allow. Without this,
-  // an unrecognized-tool escalation would gate ask_controller itself, and an
-  // approval request that can only be answered by calling the controller
-  // deadlocks the worker (same rationale as cc/worker-permission.ts:159-168).
-  const rawName = String(snapshot.name ?? '').toLowerCase();
-  const ownTool = rawName
-    .replace(/^mcp__wayang__/, '')
-    .replace(/^wayang[._-]/, '');
-  if (ownTool === 'update_progress' || ownTool === 'ask_controller') {
+  // Wayang's OWN injected MCP server (`mcp__wayang__<tool>`), but ONLY for the
+  // tools explicitly registered in SAFE_WAYANG_MCP_TOOLS: controller-facing
+  // tools, not filesystem IO — auto-allow. Without this, an unrecognized-tool
+  // escalation would gate ask_controller itself, and an approval request that
+  // can only be answered by calling the controller deadlocks the worker (same
+  // rationale as cc/worker-permission.ts:159-168). Every other tool — including
+  // a future `mcp__wayang__*` one and any other server's `mcp__*` — still asks.
+  if (safeOwnMcpTool(snapshot) !== undefined) {
     return { type: 'direct-allow', reason: 'wayang MCP controller-facing tool' };
   }
   const kind = snapshot.kind;

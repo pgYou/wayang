@@ -31,12 +31,14 @@ import type { Logger } from '@/infra/logger';
 import { createMockLogger } from '@/__tests__/helpers';
 import {
   ACP_PERMISSION_TIMEOUT_MS,
+  SAFE_WAYANG_MCP_TOOLS,
   classifyAcpToolCall,
   createAcpPermissionBridge,
   type AcpPermissionAnswer,
   type AcpPermissionBridgeDeps,
 } from '@/services/agents/acp/permission-bridge';
 import { createAcpToolAccumulator } from '@/services/agents/acp/event-mapper';
+import { MCP_TOOLS } from '@/services/agents/acp/mcp-schemas';
 import type { AcpPermissionOption, AcpPermissionRequest, AcpToolCall, AcpToolCallUpdate } from '@/services/acp/types';
 import type { WorkerAccessScope } from '@/services/tools/permission-rules';
 
@@ -182,16 +184,61 @@ describe('classifyAcpToolCall: kind → policy tool mapping (frozen §5 table)',
     ).toMatchObject({ type: 'policy', toolName: 'write_file' });
   });
 
-  it('wayang MCP tools are direct-allow; other mcp__* names still fall through', () => {
-    for (const name of ['update_progress', 'ask_controller', 'mcp__wayang__update_progress', 'mcp__wayang__ask_controller']) {
+  it('the safe list is an explicit enumeration of REGISTRY names, not a prefix rule', () => {
+    // Drift guard: every exempted name must exist in the mcp-schemas registry.
+    const registryNames = MCP_TOOLS.map((tool) => tool.name);
+    for (const safe of SAFE_WAYANG_MCP_TOOLS) expect(registryNames).toContain(safe);
+    expect([...SAFE_WAYANG_MCP_TOOLS].sort()).toEqual(['ask_controller', 'update_progress']);
+  });
+
+  it('listed wayang MCP tools are direct-allow; everything else still asks', () => {
+    for (const name of ['mcp__wayang__update_progress', 'mcp__wayang__ask_controller']) {
       expect(classifyAcpToolCall({ toolCallId: 't', title: 'W', name, kind: 'other', rawInput: {} })).toMatchObject({
         type: 'direct-allow',
         reason: 'wayang MCP controller-facing tool',
       });
     }
-    expect(classifyAcpToolCall({ toolCallId: 't', title: '?', name: 'mcp__other__read_file', kind: 'other', rawInput: {} })).toMatchObject({
-      type: 'direct-ask',
-    });
+    // A registry tool that is NOT listed stays behind the gate: exemption is
+    // opt-in per tool, so adding one to mcp-schemas.ts never opens the gate.
+    for (const name of [
+      'mcp__wayang__dangerous_tool',
+      'mcp__wayang_other__update_progress', // similar prefix, other server
+      'mcp__other__update_progress',
+      'mcp__wayang__read_file',
+      'update_progress', // bare name carries no server → not proven to be wayang's
+    ]) {
+      expect(classifyAcpToolCall({ toolCallId: 't', title: '?', name, kind: 'other', rawInput: {} })).toMatchObject({
+        type: 'direct-ask',
+      });
+    }
+  });
+
+  it('measured ACP shape: no `name`, identity in rawInput.toolName → still direct-allow', () => {
+    for (const toolName of ['mcp__wayang__update_progress', 'mcp__wayang__ask_controller']) {
+      expect(
+        classifyAcpToolCall({
+          toolCallId: 't',
+          title: 'W',
+          kind: 'other',
+          rawInput: { params: { message: 'm' }, toolName },
+        }),
+      ).toMatchObject({ type: 'direct-allow', reason: 'wayang MCP controller-facing tool' });
+    }
+    // Same shape, but not a listed tool / not wayang's server → fail-closed ask.
+    for (const toolName of [
+      'mcp__wayang__dangerous_tool',
+      'mcp__wayang_other__update_progress',
+      'mcp__other__update_progress',
+    ]) {
+      expect(
+        classifyAcpToolCall({
+          toolCallId: 't',
+          title: '?',
+          kind: 'other',
+          rawInput: { params: {}, toolName },
+        }),
+      ).toMatchObject({ type: 'direct-ask' });
+    }
   });
 
   it('inference failure → direct-ask (never fed to decideToolAccess)', () => {
@@ -215,6 +262,72 @@ describe('bridge: verdict → outcome', () => {
     expect(auditRecords(logger)).toEqual([
       expect.objectContaining({ decision: 'allowed', toolName: 'execute', transport: 'acp', provider: 'codebuddy' }),
     ]);
+  });
+
+  it('session/request_permission for a listed wayang tool (identity in rawInput.toolName) → allow, no signal; unlisted/shell/file tools still ask', async () => {
+    const { handler, signals, pending, logger } = makeBridge();
+
+    // Exactly the codebuddy payload measured in the 0.9.4 run: no `name`,
+    // kind 'other', the identity inside rawInput.toolName.
+    for (const toolName of ['mcp__wayang__update_progress', 'mcp__wayang__ask_controller']) {
+      await expect(
+        handler(
+          permissionRequest({
+            toolCallId: `tc-${toolName}`,
+            title: toolName,
+            kind: 'other',
+            rawInput: { params: { message: 'm', question: 'q' }, toolName },
+          }),
+        ),
+      ).resolves.toEqual({ outcome: 'selected', optionId: 'allow' });
+    }
+    // No permission_request at all — ask_controller cannot be gated behind an
+    // approval that only ask_controller could answer (deadlock).
+    expect(signals).toHaveLength(0);
+    expect(auditRecords(logger)).toHaveLength(0); // direct-allow never audits
+
+    // The safe list must not have widened anything: an unlisted wayang MCP
+    // tool, a similar-prefix tool from another server, an unrelated server's
+    // tool, a plain file write and a shell command all still ask.
+    const unlistedOwn = handler(
+      permissionRequest({
+        toolCallId: 'tc-dangerous',
+        title: 'other',
+        kind: 'other',
+        rawInput: { params: {}, toolName: 'mcp__wayang__dangerous_tool' },
+      }),
+    );
+    const lookAlikeServer = handler(
+      permissionRequest({
+        toolCallId: 'tc-lookalike',
+        title: 'other',
+        kind: 'other',
+        rawInput: { params: {}, toolName: 'mcp__wayang_other__update_progress' },
+      }),
+    );
+    const otherServer = handler(
+      permissionRequest({
+        toolCallId: 'tc-other',
+        title: 'other',
+        kind: 'other',
+        rawInput: { params: {}, toolName: 'mcp__other__update_progress' },
+      }),
+    );
+    const fileWrite = handler(
+      permissionRequest({ toolCallId: 'tc-write', title: 'Write', kind: 'edit', rawInput: { file_path: '/etc/hosts' } }),
+    );
+    const shell = handler(
+      permissionRequest({ toolCallId: 'tc-bash', title: 'Bash', kind: 'execute', rawInput: { command: 'rm -rf /opt/data' } }),
+    );
+    expect(signals).toHaveLength(5);
+    expect(signals.map((signal) => signal.payload.toolName)).toEqual(['other', 'other', 'other', 'edit', 'execute']);
+
+    for (const signal of signals) pending.resolve(signal.payload.requestId, { approved: false });
+    await expect(unlistedOwn).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
+    await expect(lookAlikeServer).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
+    await expect(otherServer).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
+    await expect(fileWrite).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
+    await expect(shell).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
   });
 
   it('ask (outside-scope read) → permission_request signal → approve → allow + grant remembered', async () => {
