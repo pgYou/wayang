@@ -1,4 +1,5 @@
 import type { Logger } from '@/infra/logger';
+import type { SettledOutcome } from '@/infra/blocking-requests';
 import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { ApprovalMemoryMode } from '@/types/config';
@@ -144,10 +145,62 @@ interface PendingPermission {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * Outcome of routing a respond_permission call to a permission request
+ * (issue #69). Every value is a definite terminal answer for the controller:
+ *
+ * - 'resolved' — THIS call settled a pending request; the worker proceeds
+ *   with the answer.
+ * - 'already-resolved' — the request was answered earlier; the duplicate
+ *   response was ignored and the worker already continued with the first
+ *   answer.
+ * - 'expired' — the request timed out; the worker already received a
+ *   timeout error and moved on. No response is needed.
+ * - 'worker-closed' — the request was settled by worker abort/shutdown; the
+ *   worker's wait was released with a cancellation. No response is needed.
+ * - 'not-found' — no live request ever knew this id (stale id from an old
+ *   turn or a finished worker). Retrying cannot help.
+ *
+ * In every non-'resolved' case the worker-side wait has already been
+ * released (or never existed) — a controller can never leave a worker
+ * hanging by sending one of these.
+ */
+export type PermissionResolutionStatus =
+  | 'resolved'
+  | 'already-resolved'
+  | 'expired'
+  | 'worker-closed'
+  | 'not-found';
+
+/**
+ * Map a BlockingRequestMap settle outcome onto the permission status
+ * vocabulary, so the third-party permission handlers (ClaudeCodeWorker, ACP
+ * workers) report the same distinguishable semantics as the puppet
+ * middleware.
+ */
+export function permissionStatusFromOutcome(
+  outcome: SettledOutcome | undefined,
+): PermissionResolutionStatus {
+  switch (outcome) {
+    case 'responded':
+      return 'already-resolved';
+    case 'timed-out':
+      return 'expired';
+    case 'cleaned':
+      return 'worker-closed';
+    default:
+      return 'not-found';
+  }
+}
+
 export interface PermissionMiddlewareResult {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors wrapWithPermissionMiddleware's tools param (heterogeneous tool set)
   wrappedTools: Record<string, any>;
-  resolvePermission: (requestId: string, approved: boolean, reason?: string) => boolean;
+  resolvePermission: (
+    requestId: string,
+    approved: boolean,
+    reason?: string,
+  ) => PermissionResolutionStatus;
   cleanup: () => void;
 }
 
@@ -160,6 +213,13 @@ export function wrapWithPermissionMiddleware(
   deps: PermissionMiddlewareDeps,
 ): PermissionMiddlewareResult {
   const pending = new Map<string, PendingPermission>();
+  /**
+   * Requests this instance already settled, and how (issue #69). Lets a late
+   * or duplicate respond_permission return a distinguishable terminal status
+   * ('already-resolved' / 'expired' / 'worker-closed') instead of a bare
+   * not-found the controller cannot act on.
+   */
+  const settled = new Map<string, 'responded' | 'timeout' | 'aborted'>();
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const gatedSet = new Set(config.gatedTools);
   const memoryEnabled = (deps.approvalMemory ?? DEFAULT_APPROVAL_MEMORY) === 'task';
@@ -249,7 +309,15 @@ export function wrapWithPermissionMiddleware(
           return originalExecute(args, options);
         }
 
-        const requestId = generateId('perm');
+        // A duplicate id would orphan the first waiter: pending.set would
+        // silently drop its resolver, so only its own timeout timer could
+        // ever release it — the "not found, worker stuck" shape of issue
+        // #69. Ids are self-generated here, so a collision is retried with
+        // a fresh id instead of throwing (BlockingRequestMap treats the
+        // same situation as a programming error because ITS ids are
+        // caller-supplied).
+        let requestId = generateId('perm');
+        while (pending.has(requestId)) requestId = generateId('perm');
         const operation = verdict.operation ?? operationForTool(toolName);
         const baseDescription = config.describeCall(toolName, args, verdict);
         // Surface a non-obvious escalation reason (command substitution,
@@ -301,10 +369,14 @@ export function wrapWithPermissionMiddleware(
         const result = await new Promise<PermissionResult>((resolve) => {
           const timer = setTimeout(() => {
             pending.delete(requestId);
+            settled.set(requestId, 'timeout');
             resolve({ approved: false, reason: 'timeout' });
           }, timeoutMs);
 
           pending.set(requestId, {
+            // NOTE: this callback is shared by every settle path (respond,
+            // timeout, cleanup) — it must NOT record an outcome; each path
+            // labels itself on the settled map.
             resolve: (ok: boolean, reason?: string) => {
               clearTimeout(timer);
               pending.delete(requestId);
@@ -367,15 +439,30 @@ export function wrapWithPermissionMiddleware(
 
   return {
     wrappedTools,
-    resolvePermission(requestId: string, approved: boolean, reason?: string): boolean {
+    resolvePermission(
+      requestId: string,
+      approved: boolean,
+      reason?: string,
+    ): PermissionResolutionStatus {
       const entry = pending.get(requestId);
-      if (!entry) return false;
-      entry.resolve(approved, reason);
-      return true;
+      if (entry) {
+        settled.set(requestId, 'responded');
+        entry.resolve(approved, reason);
+        return 'resolved';
+      }
+      // The request existed HERE and already settled — name the terminal
+      // state it reached so the controller gets a definite answer (issue
+      // #69) instead of an ambiguous "not found".
+      const outcome = settled.get(requestId);
+      if (outcome === 'responded') return 'already-resolved';
+      if (outcome === 'timeout') return 'expired';
+      if (outcome === 'aborted') return 'worker-closed';
+      return 'not-found';
     },
     cleanup(): void {
       for (const [id, entry] of pending) {
         clearTimeout(entry.timer);
+        settled.set(id, 'aborted');
         entry.resolve(false, 'Worker aborted');
         pending.delete(id);
       }

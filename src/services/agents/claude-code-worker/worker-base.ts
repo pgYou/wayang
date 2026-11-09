@@ -14,7 +14,11 @@ import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
+import {
+  permissionStatusFromOutcome,
+  type PermissionMiddlewareResult,
+  type PermissionResolutionStatus,
+} from '@/services/tools/permission-middleware';
 import type { WorkerAccessScope } from '@/services/tools/permission-rules';
 import type { ApprovalMemory } from '@/services/permission/approval-memory';
 import type { ApprovalMemoryMode } from '@/types/config';
@@ -81,13 +85,22 @@ export class ClaudeWorkerBase {
    * schema requires.
    */
   readonly permissionHandler: PermissionMiddlewareResult = {
-    resolvePermission: (requestId: string, approved: boolean, reason?: string) => {
-      return this._pendingPermissions.resolve(
+    resolvePermission: (
+      requestId: string,
+      approved: boolean,
+      reason?: string,
+    ): PermissionResolutionStatus => {
+      const settledNow = this._pendingPermissions.resolve(
         requestId,
         approved
           ? { behavior: 'allow' }
           : { behavior: 'deny', message: reason ?? 'Denied by controller' },
       );
+      // A miss is terminal but distinguishable (#69): the map remembers how
+      // the request settled, so the controller learns whether its answer was
+      // a duplicate, too late (timeout), or for a worker already gone.
+      if (settledNow) return 'resolved';
+      return permissionStatusFromOutcome(this._pendingPermissions.outcomeOf(requestId));
     },
     cleanup: () => {
       this._pendingPermissions.cleanupAll(() => ({ behavior: 'deny', message: 'Worker aborted' }));

@@ -135,7 +135,7 @@ describe('ClaudeCodeWorker task approval memory (#58)', () => {
     await settle();
     const fresh = permissionRequests(sq).slice(before);
     for (const request of fresh) {
-      expect(worker.permissionHandler.resolvePermission((request.payload as any).requestId, approved)).toBe(true);
+      expect(worker.permissionHandler.resolvePermission((request.payload as any).requestId, approved)).toBe('resolved');
     }
     const verdict = await pending;
     return { asked: fresh.length > 0, behavior: verdict.behavior };
@@ -319,7 +319,7 @@ describe('ClaudeCodeWorker task approval memory (#58)', () => {
     const fresh = permissionRequests(signalQueue).slice(before);
     expect(fresh).toHaveLength(1);
     for (const request of fresh) {
-      expect(worker.permissionHandler.resolvePermission((request.payload as any).requestId, true)).toBe(true);
+      expect(worker.permissionHandler.resolvePermission((request.payload as any).requestId, true)).toBe('resolved');
     }
 
     const verdict = await pending;
@@ -358,7 +358,7 @@ describe('ClaudeCodeWorker task approval memory (#58)', () => {
     const fresh = permissionRequests(signalQueue).slice(before);
     expect(fresh).toHaveLength(1);
     for (const request of fresh) {
-      expect(worker.permissionHandler.resolvePermission((request.payload as any).requestId, false, 'nope')).toBe(true);
+      expect(worker.permissionHandler.resolvePermission((request.payload as any).requestId, false, 'nope')).toBe('resolved');
     }
     const denial = await pending;
     expect(denial.behavior).toBe('deny');

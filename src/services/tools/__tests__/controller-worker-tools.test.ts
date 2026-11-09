@@ -66,7 +66,7 @@ describe('chatWorkerTool', () => {
 describe('respondPermissionTool', () => {
   it('should return granted when approved', async () => {
     const tool = respondPermissionTool({
-      respondPermission: vi.fn(() => true),
+      respondPermission: vi.fn(() => 'resolved' as const),
     });
     const result = await exec(tool, { requestId: 'perm-1', approved: true });
     expect(result).toContain('granted');
@@ -75,7 +75,7 @@ describe('respondPermissionTool', () => {
 
   it('should return denied with reason', async () => {
     const tool = respondPermissionTool({
-      respondPermission: vi.fn(() => true),
+      respondPermission: vi.fn(() => 'resolved' as const),
     });
     const result = await exec(tool, { requestId: 'perm-1', approved: false, reason: 'dangerous' });
     expect(result).toContain('denied');
@@ -84,11 +84,42 @@ describe('respondPermissionTool', () => {
 
   it('should return error when requestId not found', async () => {
     const tool = respondPermissionTool({
-      respondPermission: vi.fn(() => false),
+      respondPermission: vi.fn(() => 'not-found' as const),
     });
     const result = await exec(tool, { requestId: 'nonexistent', approved: true });
     expect(result).toContain('[ERROR]');
     expect(result).toContain('not found');
+    expect(result).toContain('Do not retry');
+  });
+
+  it('should report a duplicate response as already-resolved', async () => {
+    const tool = respondPermissionTool({
+      respondPermission: vi.fn(() => 'already-resolved' as const),
+    });
+    const result = await exec(tool, { requestId: 'perm-1', approved: true });
+    expect(result).toContain('[ERROR]');
+    expect(result).toContain('already responded to');
+    expect(result).toContain('duplicate response was ignored');
+  });
+
+  it('should report a timed-out request as expired', async () => {
+    const tool = respondPermissionTool({
+      respondPermission: vi.fn(() => 'expired' as const),
+    });
+    const result = await exec(tool, { requestId: 'perm-1', approved: true });
+    expect(result).toContain('[ERROR]');
+    expect(result).toContain('expired');
+    expect(result).toContain('no response is needed');
+  });
+
+  it('should report a request of an aborted worker as worker-closed', async () => {
+    const tool = respondPermissionTool({
+      respondPermission: vi.fn(() => 'worker-closed' as const),
+    });
+    const result = await exec(tool, { requestId: 'perm-1', approved: true });
+    expect(result).toContain('[ERROR]');
+    expect(result).toContain('aborted or shut down');
+    expect(result).toContain('no response is needed');
   });
 });
 

@@ -95,7 +95,7 @@ describe('wrapWithPermissionMiddleware', () => {
     const requestId = queue.enqueue.mock.calls[0][0].payload.requestId;
 
     const resolved = result.resolvePermission(requestId, true);
-    expect(resolved).toBe(true);
+    expect(resolved).toBe('resolved');
 
     const output = await executePromise;
     expect(output).toBe('command output');
@@ -164,7 +164,7 @@ describe('wrapWithPermissionMiddleware', () => {
       signalQueue: queue as unknown as SignalQueue,
     });
 
-    expect(result.resolvePermission('nonexistent', true)).toBe(false);
+    expect(result.resolvePermission('nonexistent', true)).toBe('not-found');
   });
 
   it('should handle multiple concurrent requests', async () => {
