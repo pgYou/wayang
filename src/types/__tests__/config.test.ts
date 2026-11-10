@@ -319,17 +319,26 @@ describe('validateConfig: workers section (05 §5)', () => {
 });
 
 describe('collectWorkerWarnings (05 §4: inert fields warn, never fail)', () => {
-  it('warns about maxTurns and cliPath on *-acp rows', () => {
+  it('warns about cliPath on *-acp rows; maxTurns is NOT a config-time warning (v0.9.7: ACP debug-logs it at run site)', () => {
     const warnings = collectWorkerWarnings(
       makeConfigWithWorkers({
         codebuddy: { type: 'codebuddy', description: 'x', maxTurns: 100, cliPath: '/bin/codebuddy' },
         opencode: { type: 'opencode', description: 'x', maxTurns: 50 },
       }) as WayangConfig,
     );
-    expect(warnings).toHaveLength(3);
-    expect(warnings[0]).toContain('workers.codebuddy.maxTurns has no effect');
-    expect(warnings[1]).toContain('workers.codebuddy.cliPath has no effect');
-    expect(warnings[2]).toContain('workers.opencode.maxTurns has no effect');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('workers.codebuddy.cliPath has no effect');
+    expect(warnings.join(' ')).not.toContain('maxTurns');
+  });
+
+  it('keeps ACP rows carrying maxTurns valid (configured key never errors)', () => {
+    expect(
+      validateConfig(
+        makeConfigWithWorkers({
+          codebuddy: { type: 'codebuddy', description: 'x', maxTurns: 100 },
+        }),
+      ),
+    ).toBeNull();
   });
 
   it('is silent for claude-code rows and configs without workers', () => {

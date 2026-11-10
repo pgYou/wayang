@@ -117,6 +117,16 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       // Steps 1–2: stop policy + protocol overrides → timeouts; buildLaunch.
       const policy = this.stopPolicy();
       const userCfg = this.acpUserConfig();
+      // ACP consumes no turn cap — the agent's own config decides. A
+      // configured `maxTurns` stays accepted (backwards compatibility) but is
+      // never read as a limit: one debug line, never an error (v0.9.7
+      // unified maxTurns semantics).
+      if (this.config.maxTurns !== undefined) {
+        this.logger.debug(
+          { workerId: this.id, maxTurns: this.config.maxTurns },
+          'maxTurns configured on an ACP worker — ignored (ACP has no turn cap)',
+        );
+      }
       const timeouts = resolveAcpTimeouts({
         ...userCfg.protocol,
         cancelGraceMs: userCfg.protocol?.cancelGraceMs ?? policy.cancelGraceMs,

@@ -11,6 +11,7 @@ import { applyTurnEnvelope } from '../utils/entry-envelope';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import { buildThirdPartyPrompt } from '../prompts/index';
+import { resolveMaxTurns } from '../max-turns';
 import { ClaudeWorkerStream } from './worker-stream';
 
 /** Stream-close timeout for SDK MCP calls — must exceed the 5-min inquiry timeout. */
@@ -72,9 +73,13 @@ export class ClaudeWorkerRun extends ClaudeWorkerStream {
       // from the workspace, so injecting rules here would be duplication,
       // not coverage. Do not add settingSources without removing the puppet
       // worker's injection (or deduplicating both paths).
+      // Turn cap: `workers.<id>.maxTurns`, resolved by the SAME function as
+      // the puppet worker (unset / invalid = unlimited, one warn on invalid).
+      // Infinity omits the SDK option entirely — no cap is armed, and the
+      // old `?? 1000` fallback is gone (v0.9.7).
+      const maxTurns = resolveMaxTurns(this.config.maxTurns, this.logger, 'maxTurns');
       const options: Options = {
         cwd: this.workspaceDir,
-        maxTurns: this.config.maxTurns ?? 1000,
         permissionMode: (wirePermissions ? 'default' : 'bypassPermissions') as 'default' | 'bypassPermissions',
         abortController: this.abortController,
         // SDK MCP calls (ask_controller blocks up to 5 min waiting for the
@@ -88,6 +93,7 @@ export class ClaudeWorkerRun extends ClaudeWorkerStream {
           CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: String(INQUIRY_STREAM_CLOSE_TIMEOUT_MS),
         },
       };
+      if (maxTurns !== Infinity) options.maxTurns = maxTurns;
       if (this.config.cliPath) {
         options.pathToClaudeCodeExecutable = this.config.cliPath;
       }

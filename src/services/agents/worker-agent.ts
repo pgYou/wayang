@@ -12,7 +12,7 @@ import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import type { StateEvent } from '@/infra/state/base-state';
-import { WORKER_AGENT_MAX_STEP } from './constants';
+import { resolveMaxTurns } from './max-turns';
 import { checkControllerMessagesTool } from '@/services/tools/check-messages';
 
 import { buildWorkerSystemPrompt } from './prompts/index';
@@ -177,13 +177,18 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       check_controller_messages: checkControllerMessagesTool(),
     }, this.recorder);
 
+    // Turn cap: config `worker.maxTurns`, unset or invalid = unlimited
+    // (resolveMaxTurns warns once on invalid values). Infinity is folded to
+    // undefined so no never-matching step condition is armed at all.
+    const maxTurns = resolveMaxTurns(this.ctx.config.worker?.maxTurns, this.logger, 'worker.maxTurns');
+
     // streamLoop handles abort internally — collectLoop returns cleanly
     const result = await this.collectLoop({
       system: this.contextManager.getSystemPrompt(),
       messages: this.contextManager.getMessages(),
       tools: allTools,
       toolChoice: this.toolChoice ?? 'auto',
-      maxSteps: WORKER_AGENT_MAX_STEP,
+      maxSteps: maxTurns === Infinity ? undefined : maxTurns,
       stopTools: ['done', 'fail'],
       prepareStep: injection.prepareStep,
       onStreamError: (err) => {
@@ -228,18 +233,27 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       return { status: 'failed', error: 'Aborted' };
     }
 
-    // Loop ended without done/fail — diagnose why
+    // Loop ended without done/fail — the worker never declared success, so
+    // this is a failure, never a completion. A finite cap that was hit is a
+    // hard stop; otherwise the model simply stopped calling tools.
     const stepCount = result.steps ?? '?';
     const finish = result.finishReason ?? 'unknown';
     const lastTools = result.toolResults?.map(tr => tr.toolCallId).filter(Boolean) ?? [];
+    const capped = maxTurns !== Infinity && result.steps !== undefined && result.steps >= maxTurns;
     this.logger.warn({
       workerId: this.id,
       steps: stepCount,
       finishReason: finish,
       lastToolCount: lastTools.length,
+      capped,
       text: result.text?.slice(0, 200) || '(empty)',
-    }, 'Worker finished without done/fail');
-    return { status: 'completed', summary: result.text || '(task ended without done/fail)' };
+    }, capped ? 'Worker reached its step limit without done/fail' : 'Worker finished without done/fail');
+    return {
+      status: 'failed',
+      error: capped
+        ? `Reached step limit ${maxTurns} without done/fail (finishReason=${finish})`
+        : `Worker loop ended without done/fail (steps=${stepCount}, finishReason=${finish})`,
+    };
   }
 
   /** Called by done tool callback — saves result. Loop stops via stopWhen. */

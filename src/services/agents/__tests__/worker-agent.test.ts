@@ -26,12 +26,13 @@ vi.mock('ai', () => ({
 
 import { streamText } from 'ai';
 
-function mockStreamResponse(text: string, toolResults?: any[]) {
+function mockStreamResponse(text: string, toolResults?: any[], stepsCount?: number) {
   vi.mocked(streamText).mockReturnValue({
     textStream: (async function* () { yield text; })(),
     text: Promise.resolve(text),
     toolResults: Promise.resolve(toolResults ?? []),
     usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+    ...(stepsCount !== undefined && { steps: Array.from({ length: stepsCount }) }),
   } as any);
 }
 
@@ -89,7 +90,7 @@ describe('WorkerAgent', () => {
     expect(worker['_terminalResult']).toEqual({ status: 'failed', error: 'Something went wrong' });
   });
 
-  it('should return stream text when max steps reached without done/fail', async () => {
+  it('fails (never completed) when the loop ends without done/fail', async () => {
     mockStreamResponse('some text without calling done');
 
     const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
@@ -98,8 +99,58 @@ describe('WorkerAgent', () => {
       {},
     );
 
-    expect(result.status).toBe('completed');
-    expect(result.summary).toBe('some text without calling done');
+    // v0.9.7: the worker never declared success, so this is a failure — the
+    // leftover text is no longer promoted to a completed summary.
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('without done/fail');
+  });
+
+  it('arms no step condition when maxTurns is unset, and passes a configured cap through (Infinity is not truncated)', async () => {
+    // Unset → unlimited → collectLoop receives maxSteps: undefined (no
+    // stepCountIs condition is armed at all — resolveMaxTurns folded
+    // Infinity away before it could reach the SDK).
+    const uncapped = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const uncappedSpy = vi
+      .spyOn(uncapped as any, 'collectLoop')
+      .mockResolvedValue({ text: 'x', steps: 1 } as any);
+    await uncapped.run(
+      { id: 't-mt1', title: 'test', description: 'test', workerId: 'w-mt1', priority: 'normal', status: 'running', createdAt: Date.now() },
+      {},
+    );
+    expect((uncappedSpy.mock.calls[0][0] as { maxSteps?: number }).maxSteps).toBeUndefined();
+
+    // A valid positive integer reaches the loop as-is.
+    const capped = new WorkerAgent(
+      mockProvider,
+      createMockCtx({ config: { providers: {}, controller: {}, worker: { maxTurns: 4 } } as any }),
+      skills,
+    );
+    const cappedSpy = vi
+      .spyOn(capped as any, 'collectLoop')
+      .mockResolvedValue({ text: 'x', steps: 1 } as any);
+    await capped.run(
+      { id: 't-mt2', title: 'test', description: 'test', workerId: 'w-mt2', priority: 'normal', status: 'running', createdAt: Date.now() },
+      {},
+    );
+    expect((cappedSpy.mock.calls[0][0] as { maxSteps?: number }).maxSteps).toBe(4);
+  });
+
+  it('reports failure with the step limit when a small configured cap is exhausted', async () => {
+    mockStreamResponse('ran out of budget', [], 2);
+
+    const worker = new WorkerAgent(
+      mockProvider,
+      createMockCtx({ config: { providers: {}, controller: {}, worker: { maxTurns: 2 } } as any }),
+      skills,
+    );
+    const result = await worker.run(
+      { id: 't-mt3', title: 'test', description: 'test', workerId: 'w-mt3', priority: 'normal', status: 'running', createdAt: Date.now() },
+      {},
+    );
+
+    expect(result.status).not.toBe('completed');
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('Reached step limit 2');
   });
 
   it('should default toolChoice to auto when not configured', async () => {
