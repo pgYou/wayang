@@ -122,6 +122,17 @@ export function isWriteSegment(segment: ShellSegment): boolean {
 }
 
 /**
+ * Is the COMMAND WORD a write verb (optionally gated on a flag — `sed -i`)?
+ * Unlike `isWriteSegment` this ignores words in ARGUMENT position, so
+ * `npm install axios` (the word `install` as an argument) is not a write.
+ */
+export function isWriteCommandHead(command: string, words: readonly string[]): boolean {
+  if (BASH_WRITE_VERBS.has(command)) return true;
+  const flags = BASH_FLAGGED_WRITE_VERBS.get(command);
+  return flags !== undefined && flags.some((flag) => words.some((other) => isFlagWord(other, flag)));
+}
+
+/**
  * git subcommands that only read. `git` itself is in `READ_ONLY_COMMANDS`, so
  * everything else — `clean`, `checkout`, `reset`, `push`, `commit`, `stash`, …
  * — falls back to `unknown` and keeps the old verdict.
@@ -181,13 +192,24 @@ interface SegmentClassification {
   mode: AccessMode;
   /**
    * The head command when it is on `READ_ONLY_COMMANDS` but the deferred
-   * condition the table attaches to it failed — today only `sed` has one (a
-   * script that executes, writes, or cannot be located at all). A future
-   * condition on `find` / `git` would plug in here. Never set on a write
-   * segment: a write verb / flag / redirection settles the segment as a write
-   * FIRST, whatever the table says.
+   * condition the table attaches to it failed — `sed` (a script that executes,
+   * writes, or cannot be located at all) and `date` (`-s` / `--set` sets the
+   * clock). A future condition on `find` / `git` would plug in here. Never set
+   * on a write segment: a write verb / flag / redirection settles the segment
+   * as a write FIRST, whatever the table says.
    */
   unverified?: string;
+}
+
+/**
+ * Does this word set the system clock on `date`? `-s`, `--set`, `--set=…` and
+ * short clusters carrying the `s` (`-us`, `-ds`) — `-u` / `-d` alone only
+ * change the DISPLAY; `-s` mutates state, so it must never ride a silent
+ * classification (read-only table or inert).
+ */
+export function isDateSetFlag(word: string): boolean {
+  if (word === '-s' || word.startsWith('--set')) return true;
+  return /^-[^-]*s/.test(word);
 }
 
 /**
@@ -208,6 +230,14 @@ function classifySegment(segment: ShellSegment): SegmentClassification {
     // command), not "a reader we failed to verify". It therefore stays
     // `unknown` and keeps the historic no-candidate allow (`git clone …`).
     return { mode: isReadOnlyGitCommand(head.words) ? 'read' : 'unknown' };
+  }
+  // `date -s` / `--set` sets the clock: the read table's promise ("only
+  // reads") fails exactly like `sed -f`'s, so the shape escalates as
+  // `unverified` instead of riding the table (see `unverifiedReadOnlyCommand`).
+  if (head.command === 'date') {
+    const sets = head.words.slice(1).some(isDateSetFlag);
+    if (sets) return { mode: 'unknown', unverified: 'date' };
+    return { mode: 'read' };
   }
   // `sed` is a read only when its SCRIPT cannot execute or write: the ability
   // rides inside a script word, so it is judged here rather than by the token

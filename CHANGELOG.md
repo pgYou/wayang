@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.6 (2026-11-10)
+
+### 修复
+
+- bash 权限门由"无路径即放行"改为能力判定（#51）：每条命令按 read / write / inert / exec / network / unknown 分类；工作区内读写放行；无副作用命令（sleep / true / false / : / pwd / whoami / id / date / test / [ / exit / which / command -v / echo / printf，且整段无重定向、无 `$` / 反引号动态构造、无以 `/` 或 `~` 开头的路径参数）按 inert 静默放行，`date` 带 `-s` / `--set`（设置时钟）例外，按 read-only-unverified 升级审批；越界写、解释器与脚本内联、launcher 内层、动态构造（$ 命令位、here-doc/here-string 接 shell、进程替换、source）一律要求审批；新增 matchedRule：exec-capability / network-capability / dynamic-shell / unknown-capability / write-scope，审批记录可直接看出拦截原因。
+
 ## v0.9.5 (2026-11-09)
 
 ### 修复

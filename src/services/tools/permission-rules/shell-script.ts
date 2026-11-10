@@ -7,7 +7,12 @@ import { MAX_CMDSUBST_DEPTH } from './substitutions';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
 /** Shells whose `-c` argument is a SCRIPT this gate has to judge itself. */
-const SHELL_COMMANDS: ReadonlySet<string> = new Set(['bash', 'sh', 'dash', 'zsh']);
+/**
+ * Shells whose `-c` script `evaluateShellScripts` judges recursively. Exported
+ * for the #51 capability gate, which must not re-judge a segment whose script
+ * was already analyzed here (an allowed inner command keeps the line allowed).
+ */
+export const SHELL_COMMANDS: ReadonlySet<string> = new Set(['bash', 'sh', 'dash', 'zsh']);
 
 /** Shell options that consume the NEXT word, so it is not the script operand. */
 const SHELL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([

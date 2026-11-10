@@ -15,6 +15,12 @@ export interface CdChainResult {
   segments: ShellSegment[];
   /** Present when the slice already decided the command (an ask or a refusal). */
   decision?: ToolAccessDecision;
+  /**
+   * The cwd cursor AFTER the consumed `cd` run (#51 layer 2): relative paths in
+   * the remaining segments resolve against this directory. Undefined when the
+   * slice stopped on a decision (the caller returns it before judging the rest).
+   */
+  cwd?: string;
 }
 
 /**
@@ -121,6 +127,8 @@ export function applyCdChain(scope: WorkerAccessScope, segments: readonly ShellS
   }
 
   // Nothing consumed: the original segments go back untouched, so the #51
-  // fallback sees exactly the shape it saw before this slice existed.
-  return { segments: segments.slice(i) };
+  // fallback sees exactly the shape it saw before this slice existed. `cwd` is
+  // where the cursor ended up — the shell's directory for the remaining
+  // segments, which the #51 capability gate resolves relative paths against.
+  return { segments: segments.slice(i), cwd };
 }
