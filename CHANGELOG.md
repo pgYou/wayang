@@ -5,7 +5,8 @@
 ### 修复
 
 - add_task 的 workspace 参数补边界校验（#77）：realpath 归一后必须在 home 内、命中敏感路径拒绝、软链按真实路径判定、先校验后 mkdir；新增 permission.extraWorkspaceRoots 显式放行并在会话日志审计
-- controller 拒绝权限后 ACP worker 不再终止：拒绝以系统提示重投给 agent，仅重投预算耗尽或真取消时终止；agent 正常 end_turn 不再被 denial 覆盖（修复回归）
+- controller 拒绝权限后 ACP worker 不再终止：拒绝以系统提示重投给 agent，仅重投预算耗尽或真取消时终止；agent 正常 end_turn 不再被 denial 覆盖，被拒后的合规收尾不再被判失败（判据：本轮为重投回合且本回合有 trim 后 ≥8 字符的有效正文且非外部取消，三条件同时满足才把残留的 cancelled 判为 completed；重投证据与正文长度按回合隔离，不沿用 run 级累计）
+- 修复（安全）：bash 能力判定含未分析内层命令时不再携带 askPaths，避免审批记忆静默复用导致内层危险命令被执行（回归用例：src/services/tools/permission-rules/__tests__/permission-askpaths-reuse.test.ts）
 
 ### 变更
 

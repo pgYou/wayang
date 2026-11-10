@@ -341,6 +341,103 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     expect(result.error).toContain('unexpectedly');
   });
 
+  // 4a-e) M1: after deny + reissue + a continuing round, a later
+  // abort/cancel_task must still fail the run — the reissue history never
+  // turns a genuinely cancelled round into completed.
+  it('deny → reissue → continue → abort in a later round → failed (Aborted), not completed', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    // Round 0: controller deny → cancelled → reissue round follows.
+    sendSensitivePermissionRequest(worker, 730, 'tc-m1', 'cat /home/test-user/.ssh/id_rsa');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 730);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    // Round 1 (reissue round): compliant text + normal end; a queued message
+    // keeps the run going into a NORMAL round.
+    await nthPromptIndex(worker.transport, 1);
+    worker.acceptMessage('go-on');
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '已改用安全命令完成本阶段' }, messageId: 'm-m1-a' });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
+
+    // Round 2 (NOT a reissue round): intermediate text, then cancel_task —
+    // cancelFact must win over any reissue history.
+    await nthPromptIndex(worker.transport, 2);
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '正在整理最终结论，稍等' }, messageId: 'm-m1-b' });
+    worker.abort();
+    await worker.transport.waitForClientOutput(7); // initialize, new, prompt0, perm-answer, prompt1, prompt2, cancel
+    await respondToPrompt(worker.transport, 2, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('Aborted');
+  });
+
+  // 4a-f) M2: the §9.1 text evidence is PER TURN — round 0 carries text plus
+  // a denial, the reissue round has NO text and ends cancelled: round 1 must
+  // not inherit round 0's text. Validation: deleting the resetTurnProgress()
+  // call in acp-worker-run.ts makes this case fail (see 06-testing.md §5).
+  it('deny after in-turn text → reissue round with NO text + cancelled → failed (per-turn text isolation)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    // Round 0: intermediate text (≥ 8 trimmed chars), then a controller denial.
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '正在尝试读取密钥文件' }, messageId: 'm-m2-a' });
+    sendSensitivePermissionRequest(worker, 731, 'tc-m2', 'cat /home/test-user/.ssh/id_rsa');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 731);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    // Round 1 (reissue round): tool work only, NO text, ends cancelled — it
+    // must not be judged completed by round 0's text.
+    await nthPromptIndex(worker.transport, 1);
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-m2-mute', title: 'Bash', kind: 'execute', status: 'completed', rawInput: { command: 'echo y' } });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('unexpectedly');
+  });
+
+  // 4a-g) the §9.1 reissue evidence is per-turn, not run-sticky: after a
+  // deny+reissue cycle and a continuing round, a LATER normal round that ends
+  // cancelled with text (no external cancel) must fail — half-finished work
+  // must not ride on an old reissue.
+  it('deny → reissue → continue → later round text + cancelled (no cancel sent) → failed', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 732, 'tc-m2g', 'cat /home/test-user/.ssh/id_rsa');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 732);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    await nthPromptIndex(worker.transport, 1);
+    worker.acceptMessage('go-on');
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '已改用安全命令完成本阶段' }, messageId: 'm-m2g-a' });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
+
+    // Round 2 is a NORMAL round: intermediate text + cancelled with NO cancel
+    // from us — the turn is not a reissue round, so it cannot be completed.
+    await nthPromptIndex(worker.transport, 2);
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '正在整理最终结论，稍等' }, messageId: 'm-m2g-b' });
+    await respondToPrompt(worker.transport, 2, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('unexpectedly');
+  });
+
   // 4b) reissue budget exhaustion: alternating deny/comply rounds burn the
   // MAX_DENIAL_REISSUES budget; the 4th controller denial terminates.
   it('controller denials exhaust the reissue budget → terminate with an explicit reason', async () => {

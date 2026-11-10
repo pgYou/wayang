@@ -5,6 +5,7 @@ import {
   classifyTurnEnd,
   decideNextAction,
   denialKey,
+  MIN_RESIDUE_TURN_TEXT_CHARS,
   resetTurnGuard,
   sanitizeForPrompt,
   sanitizeTarget,
@@ -102,40 +103,45 @@ describe('classifyTurnEnd', () => {
     ).toBe('completed');
   });
 
-  // §9.1 denial residue: cancelled after a prior reissue, with this-turn text.
-  it('cancelled after a prior denial reissue, with this-turn text → completed', () => {
-    expect(classify({ priorDenialReissues: 1, hasTurnText: true })).toBe('completed');
-    expect(classify({ priorDenialReissues: 3, hasTurnText: true })).toBe('completed');
+  // §9.1 denial residue (tightened): completed ONLY when this turn is a
+  // reissue round (per-turn count > 0) AND carries an effective body
+  // (trimmed text >= MIN_RESIDUE_TURN_TEXT_CHARS) AND no cancelFact.
+  it('cancelled in a reissue round with an effective body → completed', () => {
+    expect(classify({ turnDenialReissues: 1, turnTextTrimmedChars: 20 })).toBe('completed');
+    expect(classify({ turnDenialReissues: 3, turnTextTrimmedChars: MIN_RESIDUE_TURN_TEXT_CHARS })).toBe('completed');
   });
 
-  it('cancelled with a prior reissue but NO this-turn text → agent_ended_unexpectedly', () => {
-    expect(classify({ priorDenialReissues: 1, hasTurnText: false })).toBe('agent_ended_unexpectedly');
-    expect(classify({ priorDenialReissues: 1 })).toBe('agent_ended_unexpectedly');
+  it('reissue round with whitespace-only or too-short text → agent_ended_unexpectedly', () => {
+    expect(classify({ turnDenialReissues: 1, turnTextTrimmedChars: 0 })).toBe('agent_ended_unexpectedly');
+    expect(classify({ turnDenialReissues: 1 })).toBe('agent_ended_unexpectedly');
+    expect(classify({ turnDenialReissues: 1, turnTextTrimmedChars: MIN_RESIDUE_TURN_TEXT_CHARS - 1 })).toBe(
+      'agent_ended_unexpectedly',
+    );
   });
 
-  it('cancelled with text but NO prior denial reissue → agent_ended_unexpectedly', () => {
-    expect(classify({ priorDenialReissues: 0, hasTurnText: true })).toBe('agent_ended_unexpectedly');
-    expect(classify({ hasTurnText: true })).toBe('agent_ended_unexpectedly');
+  it('effective body but NOT a reissue round (per-turn count 0) → agent_ended_unexpectedly', () => {
+    expect(classify({ turnDenialReissues: 0, turnTextTrimmedChars: 20 })).toBe('agent_ended_unexpectedly');
+    expect(classify({ turnTextTrimmedChars: 20 })).toBe('agent_ended_unexpectedly');
   });
 
   it('an external cancel beats the denial-residue rule (cancel_task stays failed)', () => {
     expect(
-      classify({ cancelFact: 'abort', priorDenialReissues: 1, hasTurnText: true }),
+      classify({ cancelFact: 'abort', turnDenialReissues: 1, turnTextTrimmedChars: 20 }),
     ).toBe('our_cancel');
     expect(
-      classify({ cancelFact: 'prompt-timeout', priorDenialReissues: 1, hasTurnText: true }),
+      classify({ cancelFact: 'prompt-timeout', turnDenialReissues: 1, turnTextTrimmedChars: 20 }),
     ).toBe('our_timeout');
   });
 
   it('an in-turn denial beats the residue rule (cancelled is attributed to the NEW denial)', () => {
     expect(
-      classify({ denials: [denial({ source: 'controller' })], priorDenialReissues: 1, hasTurnText: true }),
+      classify({ denials: [denial({ source: 'controller' })], turnDenialReissues: 1, turnTextTrimmedChars: 20 }),
     ).toBe('denied_by_user');
   });
 
   it('the residue rule applies to cancelled only — other unexpected stop reasons still fail', () => {
     expect(
-      classify({ stopReason: 'max_token_usage', priorDenialReissues: 1, hasTurnText: true }),
+      classify({ stopReason: 'max_token_usage', turnDenialReissues: 1, turnTextTrimmedChars: 20 }),
     ).toBe('agent_ended_unexpectedly');
   });
 });

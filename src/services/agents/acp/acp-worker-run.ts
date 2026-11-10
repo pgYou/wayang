@@ -53,6 +53,10 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   private _turnTextChars = 0;
   private _turnToolCalls = 0;
   private _turnToolResults = 0;
+  /** Per-turn trimmed-extent of the assistant text (§9.1 effective body):
+   * offsets of the first/last non-whitespace chars; -1 = whitespace-only. */
+  private _turnTextFirstNonWs = -1;
+  private _turnTextLastNonWs = -1;
   /** Turn counter: the turn component of the progress position. */
   private _turnSeq = 0;
 
@@ -254,6 +258,12 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
         let promptText = `${buildThirdPartyPrompt(this.skills)}${task.description}`;
         const initialQueued = this._messageQueue.splice(0, this._messageQueue.length);
         if (initialQueued.length > 0) promptText += `\n\n${joinControllerMessages(initialQueued)}`;
+        // §9.1 per-turn reissue evidence: consecutive denial reissues that led
+        // into the CURRENT turn's prompt. Zeroed on every non-reissue turn
+        // switch — the run-total budget (this._turnGuard.denialReissues) must
+        // NOT be fed to classifyTurnEnd: it is sticky, and one old reissue
+        // would let any later text-bearing cancelled turn pass as completed.
+        let turnReissueRounds = 0;
 
         while (!this.abortController.signal.aborted) {
           const cancelBaseline = client.cancelSentCount;
@@ -274,16 +284,14 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           // decideNextAction's perKey/consecutive/stagnant budgets are defined
           // against PRIOR turns (see turn-attribution.test.ts); advanceGuard
           // folds THIS turn's denials in, so decide on the pre-advance snapshot.
-          // Its denialReissues is also the run-history evidence for the §9.1
-          // denial-residue rule in classifyTurnEnd.
           const guardBefore = this._turnGuard;
           const category = classifyTurnEnd({
             stopReason: result.stopReason,
             cancelFact,
             denials,
             hasQueuedMessages,
-            priorDenialReissues: guardBefore.denialReissues,
-            hasTurnText: this._turnTextChars > 0,
+            turnDenialReissues: turnReissueRounds,
+            turnTextTrimmedChars: this.turnTextTrimmedChars(),
           });
           const progressSig = this.progressSignature();
           // P1.3 double insurance: never reissue when the denial notice is empty.
@@ -311,8 +319,10 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           const queued = this._messageQueue.splice(0, this._messageQueue.length);
           if (verdict.action === 'reissue') {
             this._turnGuard.denialReissues += 1;
+            turnReissueRounds += 1;
             promptText = buildReissuePrompt(denials, joinControllerMessages(queued));
           } else {
+            turnReissueRounds = 0;
             promptText = joinControllerMessages(queued);
           }
           const injectedKind: 'acp-denial-notice' | 'controller-delivery' = verdict.action === 'reissue' ? 'acp-denial-notice' : 'controller-delivery';
@@ -494,7 +504,9 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           // The writer aggregates every chunk into the open segment — the
           // peer's messageIds are a transcript-layer concern only.
           this._turnWriter.addText(event.text);
+          const base = this._turnTextChars;
           this._turnTextChars += event.text.length;
+          this.trackTurnTextExtent(event.text, base);
           break;
         }
         case 'tool-call':
@@ -518,8 +530,24 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     }
   }
 
-  private resetTurnProgress(): void { this._turnTextChars = 0; this._turnToolCalls = 0; this._turnToolResults = 0; }
+  private resetTurnProgress(): void {
+    this._turnTextChars = 0; this._turnToolCalls = 0; this._turnToolResults = 0;
+    this._turnTextFirstNonWs = -1; this._turnTextLastNonWs = -1;
+  }
   private progressSignature(): string { return `${this._turnTextChars}:${this._turnToolCalls}:${this._turnToolResults}`; }
+
+  /** Fold one text chunk into the per-turn trimmed extent (§9.1 effective body). */
+  private trackTurnTextExtent(text: string, base: number): void {
+    for (let i = 0; i < text.length; i += 1) {
+      if (/\s/.test(text[i] ?? '')) continue;
+      if (this._turnTextFirstNonWs < 0) this._turnTextFirstNonWs = base + i;
+      this._turnTextLastNonWs = base + i;
+    }
+  }
+  /** Trimmed length of THIS turn's assistant text (0 when whitespace-only). */
+  private turnTextTrimmedChars(): number {
+    return this._turnTextFirstNonWs < 0 ? 0 : this._turnTextLastNonWs - this._turnTextFirstNonWs + 1;
+  }
 
   /** Turn settled: flush the accumulator's unsettled calls, then the writer. */
   private settleTurn(): void {
