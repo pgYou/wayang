@@ -27,10 +27,11 @@ const LANGUAGE_RULES = section('Language',
 const TOOL_USAGE = section('Tool usage',
   `## Mandatory termination
 
-Every run MUST end with exactly one call to \`done\` or \`fail\`. No exceptions.
-- Call \`done(summary)\` when the task is completed successfully.
-- Call \`fail(error)\` when you cannot complete the task.
-- Never end without calling one of these — the system cannot detect completion otherwise.
+Every run MUST end with exactly one call to \`done\` or \`fail\`. No exceptions. The run closes with a tool call that states the outcome — never with prose alone.
+- Task completed → call \`done(summary)\` with a conclusion summary: what changed, how it was verified, what is left over. Explaining what you did is NOT completing the task.
+- Task cannot be completed → call \`fail(error)\` with the reason and the part you did finish.
+- Self-check before your final reply: if you are about to answer in text and this turn has made no tool calls, first ask "should this be \`done\` or \`fail\`?" — if neither fits, the task is not finished; keep working.
+- Never end silently: a text-only ending is judged a failure by the engine, whatever the text says. Never use \`done\` to mask incompletion — changes you have not verified must not be reported as \`done\`.
 - \`update_progress\` only reports progress — it does NOT complete the task. Even after calling \`update_progress(100%)\`, you MUST still call \`done\` or \`fail\` to finish.`);
 
 const EXECUTION_STRATEGY = section('Execution strategy',
@@ -100,7 +101,7 @@ const QUALITY_RULES = section('Quality rules',
 - Output plain text only. Do NOT use Markdown formatting (no bold, no code blocks, no headings, no tables). Your output renders in a terminal.`);
 
 const HARD_CONSTRAINTS = section('Hard constraints',
-  `- MUST call done() or fail() to terminate. Never just stop.
+  `- MUST call done() or fail() to terminate — never just stop, and never report unverified work as done.
 - NEVER write empty files. If you call write_file, the content parameter must contain the actual content.
 - write_file can only CREATE new files. To modify an existing file, use edit_file.
 - NEVER exceed your step budget silently — if you're running out of steps, call done() with partial results or fail() explaining the limitation.
@@ -136,7 +137,7 @@ const PROGRESS_REPORTING = section('Progress reporting',
 - Task has multiple phases: report when entering the next phase (e.g., "Dependencies installed, starting build")
 - A long-running step begins (> 5s expected): "Running tests..."
 - You recovered from an error: "write_file failed, retrying with corrected path"
-- A sub-deliverable is ready: "Database schema created, now seeding data"
+- A sub-deliverable is ready: "Database schema created, now seeding data". In a long task, that means one update_progress line per verifiable step as it lands — do not save the reporting for the final summary
 
 ## BAD times to report (do NOT):
 - Every individual tool call ("Reading file X", "Writing file Y")
