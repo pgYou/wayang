@@ -1,8 +1,9 @@
 // #51 layer 2 — the capability gate: every segment classifies as
-// read / write / exec / network / dynamic / unknown, and the historic
+// read / write / inert / exec / network / dynamic / unknown, and the historic
 // "no path candidate → allow" fallback is replaced by a gate that allows only
 // what the capability tables justify: reads inside the allowed directories,
-// writes whose resolved targets stay inside the workspace.
+// writes whose resolved targets stay inside the workspace, side-effect-free
+// verbs in a bare segment.
 
 import { resolve as resolvePath, sep } from 'node:path';
 import {
@@ -11,7 +12,7 @@ import {
   type ShellSegment,
 } from '@/services/tools/shell-lexer';
 import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
-import { isReadOnlySegment, isWriteCommandHead } from './bash-classification';
+import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead } from './bash-classification';
 import { headCommand } from './bash-head';
 import { SHELL_COMMANDS } from './shell-script';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
@@ -20,6 +21,7 @@ import type { ToolAccessDecision, WorkerAccessScope } from './types';
 export type SegmentCapability =
   | 'read'
   | 'write'
+  | 'inert'
   | 'exec'
   | 'network'
   | 'dynamic'
@@ -42,6 +44,18 @@ const NETWORK_COMMANDS: ReadonlySet<string> = new Set(['curl', 'wget', 'nc', 'sc
 
 /** Write verbs beyond `BASH_WRITE_VERBS` (which `isWriteSegment` reads). */
 const WRITE_CAPABILITY_COMMANDS: ReadonlySet<string> = new Set(['rsync']);
+
+/**
+ * Commands whose whole effect is their own output or exit status — no file
+ * access, no subprocess, no network. They run silently (as `inert`) when the
+ * segment is bare (see `isInertSegment`). `date` counts only without
+ * `-s` / `--set`; `command` only in its `command -v` query shape — that is
+ * exactly where `headCommand` keeps the wrapper as the head word.
+ */
+const INERT_COMMANDS: ReadonlySet<string> = new Set([
+  'sleep', 'true', 'false', ':', 'pwd', 'whoami', 'id', 'date',
+  'test', '[', 'exit', 'which', 'command', 'echo', 'printf',
+]);
 
 /**
  * Launchers `headCommand` does NOT strip (it strips sudo / env / nohup / time /
@@ -205,19 +219,45 @@ function isJudgedShellScript(head: { command: string; words: string[] }): boolea
 }
 
 /**
+ * Is this segment side-effect-free (`inert`)? The head must sit on the inert
+ * table, and the WHOLE segment must be bare: any redirection disqualifies it
+ * (`sleep 1 > out.txt` is judged as the write it is, `test < f` as a read),
+ * a `$` / backtick / command-substitution word is a dynamic construct, and an
+ * absolute or `~` operand is a path judged by the candidate sweep. Shapes that
+ * do not qualify fall back to their original classification — `echo $X` stays
+ * a table read, `sleep $N` an unknown verb.
+ */
+function isInertSegment(segment: ShellSegment, head: { command: string; words: string[] }): boolean {
+  if (!INERT_COMMANDS.has(head.command)) return false;
+  const args = head.words.slice(1);
+  if (head.command === 'date' && args.some(isDateSetFlag)) return false;
+  if (head.command === 'command' && args[0] !== '-v' && args[0] !== '-V') return false;
+  for (const token of segment.tokens) {
+    if (token.kind === 'redirect') return false;
+  }
+  for (const word of head.words) {
+    if (word.includes(CMDSUBST_PLACEHOLDER) || /[$`]/.test(word)) return false;
+    const value = stripAssignment(word);
+    if (value.startsWith('/') || value.startsWith('~')) return false;
+  }
+  return true;
+}
+
+/**
  * The capability of ONE segment. A redirection into a real file settles the
  * segment as a write FIRST (exactly like `classifySegment`); a write VERB at
  * the command position (head-based, so an `install` in argument position of
- * `npm` does not count) is a write; a verified read-only table command is a
- * read; a shell whose `-c` script was already judged recursively contributes
- * nothing; everything else is classified from its head word — exec, network,
- * dynamic, or unknown.
+ * `npm` does not count) is a write; a shell whose `-c` script was already
+ * judged recursively contributes nothing; a bare side-effect-free verb is
+ * inert; a verified read-only table command is a read; everything else is
+ * classified from its head word — exec, network, dynamic, or unknown.
  */
 export function segmentCapability(segment: ShellSegment): SegmentCapability {
   if (hasOutputRedirect(segment)) return 'write';
   const head = headCommand(segment);
   if (head !== undefined && isJudgedShellScript(head)) return 'read'; // already judged inside
   if (head !== undefined && isWriteCommandHead(head.command, head.words)) return 'write';
+  if (head !== undefined && isInertSegment(segment, head)) return 'inert';
   if (isReadOnlySegment(segment)) return 'read';
   if (head === undefined) {
     // No command word: assignments only, a wrapper that consumed everything
@@ -271,6 +311,9 @@ export function evaluateCapabilityGate(
 
   for (const segment of segments) {
     const capability = segmentCapability(segment);
+
+    // Side-effect-free by classification: no targets to keep in scope.
+    if (capability === 'inert') continue;
 
     if (capability === 'dynamic') {
       const word = headWord(segment);

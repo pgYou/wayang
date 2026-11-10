@@ -1,7 +1,7 @@
 // #51 layer 2 — the bash capability gate: exec / network / dynamic / unknown
 // verbs ask, reads inside the allowed directories and writes inside the
-// workspace allow, and write targets that escape the workspace ask with the
-// write-scope rule.
+// workspace allow, side-effect-free verbs in a bare segment allow as inert,
+// and write targets that escape the workspace ask with the write-scope rule.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -94,6 +94,56 @@ describe('evaluateBashAccess capability gate (#51 layer 2)', () => {
     ])('%s → allow', (command) => {
       const verdict = evaluateBashAccess(scope(), command);
       expect(verdict.decision).toBe('allow');
+    });
+  });
+
+  describe('inert (side-effect-free) verbs allow in a bare segment', () => {
+    it.each([
+      'sleep 1',
+      'true',
+      'false',
+      ':',
+      'pwd -P',
+      'whoami',
+      'id -u',
+      'date',
+      'date -u',
+      'date +%s',
+      'test -d src',
+      '[ -f src/index.ts ]',
+      'exit 0',
+      'which node',
+      'command -v ls',
+      'echo hi',
+      "printf '%s\\n' hi",
+      // A redirection makes the segment a write, judged by its target:
+      // inside the workspace it allows (write-scope below covers the escape).
+      'sleep 1 > out.txt',
+    ])('%s → allow', (command) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('allow');
+    });
+
+    it.each([
+      { command: 'sleep 1 > ../x', rule: 'write-scope' },
+      { command: 'echo $(id)', rule: 'dynamic-shell' },
+      { command: 'date -s now', rule: 'read-only-unverified' },
+      { command: 'date --set 2026-01-01', rule: 'read-only-unverified' },
+      { command: 'sleep $N', rule: 'unknown-capability' },
+      { command: 'sleep 1 < in.txt', rule: 'unknown-capability' },
+    ])('$command → ask ($rule)', ({ command, rule }) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe(rule);
+    });
+
+    it('an absolute path operand disqualifies inert and is judged as a path', () => {
+      const verdict = evaluateBashAccess(scope(), 'test -f /etc/passwd');
+      expect(verdict.decision).toBe('ask');
+    });
+
+    it('read-only substitutions of inert-table commands stay exempt', () => {
+      expect(evaluateBashAccess(scope(), 'echo "$(date)"').decision).toBe('allow');
     });
   });
 
