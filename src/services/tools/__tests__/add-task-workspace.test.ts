@@ -1,8 +1,9 @@
 /**
  * add_task workspace declaration — a task carries the workspace identity it
  * will execute in. A declared workspace may differ from the current one: the
- * task is created and the engine runs it there. Only an unresolvable
- * declaration (no known current workspace) is rejected.
+ * task is created and the engine runs it there. A declaration is rejected
+ * when it cannot be resolved (no known current workspace) or when it falls
+ * outside the boundary rules (issue #77 — see add-task-workspace-bounds).
  */
 
 import * as fs from 'node:fs';
@@ -20,6 +21,7 @@ async function exec(toolObj: any, args: any): Promise<string> {
   return toolObj.execute(args);
 }
 
+let userHome: string;
 let wayangDir: string;
 let scratchRoot: string;
 let workspaceDir: string;
@@ -32,15 +34,17 @@ function makeDir(base: string, name: string): string {
 }
 
 beforeEach(() => {
-  wayangDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-addtask-ws-home-'));
-  scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-addtask-ws-root-'));
+  // Declared workspaces must live inside the user home (issue #77), so the
+  // whole fixture tree — including the wayang data dir — sits under one.
+  userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wayang-addtask-ws-home-'));
+  wayangDir = makeDir(userHome, '.wayang');
+  scratchRoot = makeDir(userHome, 'scratch');
   workspaceDir = makeDir(scratchRoot, 'wayang');
   otherDir = makeDir(scratchRoot, 'other-repo');
 });
 
 afterEach(() => {
-  fs.rmSync(wayangDir, { recursive: true, force: true });
-  fs.rmSync(scratchRoot, { recursive: true, force: true });
+  fs.rmSync(userHome, { recursive: true, force: true });
 });
 
 describe('addTaskTool — workspace declaration', () => {
@@ -49,6 +53,7 @@ describe('addTaskTool — workspace declaration', () => {
     const tool = addTaskTool({
       addTask: (t) => { added.push(t); return 'w-1'; },
       workspaceDir,
+      userHome,
       wayangDir,
     });
 
@@ -92,6 +97,7 @@ describe('addTaskTool — workspace declaration', () => {
     const tool = addTaskTool({
       addTask: (t) => { added.push(t); return 'w-1'; },
       workspaceDir,
+      userHome,
       wayangDir,
     });
 
@@ -113,7 +119,7 @@ describe('addTaskTool — workspace declaration', () => {
     // Minimal in-memory task store standing in for the engine.
     const tasks: TaskDetail[] = [];
     const addTask = vi.fn((t: TaskDetail) => { tasks.push(t); return 'w-1'; });
-    const tool = addTaskTool({ addTask, workspaceDir, wayangDir });
+    const tool = addTaskTool({ addTask, workspaceDir, userHome, wayangDir });
     const listTool = listTasksTool({ listTasks: () => tasks });
 
     // One task already exists, created in the current workspace.
@@ -157,6 +163,7 @@ describe('addTaskTool — workspace declaration', () => {
     const tool = addTaskTool({
       addTask: (t) => { added.push(t); return 'w-1'; },
       workspaceDir,
+      userHome,
       wayangDir,
     });
 
@@ -176,6 +183,7 @@ describe('addTaskTool — workspace declaration', () => {
     const tool = addTaskTool({
       addTask: (t) => { added.push(t); return 'w-1'; },
       workspaceDir,
+      userHome,
       wayangDir,
     });
 
@@ -207,6 +215,7 @@ describe('addTaskTool — workspace declaration', () => {
       assignToWorker,
       validateWorkerWorkspace,
       workspaceDir,
+      userHome,
       wayangDir,
     });
 
@@ -235,6 +244,7 @@ describe('addTaskTool — workspace declaration', () => {
       assignToWorker,
       validateWorkerWorkspace,
       workspaceDir,
+      userHome,
       wayangDir,
     });
 
