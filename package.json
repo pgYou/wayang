@@ -1,6 +1,6 @@
 {
   "name": "wayang-ai",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "Multi-agent orchestration platform",
   "type": "module",
   "license": "MIT",

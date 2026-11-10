@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.7 (2026-11-10) — 规划
+
+### 计划项目
+
+- fix(security): add_task 的 workspace 参数补边界校验（home 内、denied-path、realpath 复检、先校验后创建）（#77）
+- feat(worker): 单次运行 wall time 上限提高到 60 分钟并支持任务级与全局配置（#76）
+- feat(permission): 扩充 bash 能力表：git 全量只读子命令、gh 只读查询、npx/npm 项目工具链（#51 跟进）
+
+### 待定
+
+- 其余 open issue 视情况纳入
+
 ## v0.9.6 (2026-11-10)
 
 ### 修复
