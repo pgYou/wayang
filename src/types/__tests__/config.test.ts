@@ -47,19 +47,12 @@ describe('validateConfig: contextWindowTokens', () => {
   });
 });
 
-describe('validateConfig: workerRunTimeoutMs (#76)', () => {
-  it('accepts an omitted value (existing configs unaffected)', () => {
-    expect(validateConfig(makeConfig())).toBeNull();
-  });
-
-  it('accepts a positive integer within the 6h cap', () => {
-    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 3_600_000 })).toBeNull();
-    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 21_600_000 })).toBeNull();
-  });
-
-  it.each([0, -1, 1.5, Number.NaN, '3600000', 21_600_001])('rejects %s with a clear message', (bad) => {
-    const err = validateConfig({ ...makeConfig(), workerRunTimeoutMs: bad as number });
-    expect(err).toContain('workerRunTimeoutMs must be a positive integer of milliseconds, at most 21600000 (6 hours)');
+describe('validateConfig: workerRunTimeoutMs (deprecated, #76 withdrawn)', () => {
+  it('ignores a config that still carries the removed key — no validation error', () => {
+    // v0.9.7 removed worker run wall-time limits: the key is silently
+    // ignored (loadConfig warns once), never a validation failure.
+    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 3_600_000 } as WayangConfig)).toBeNull();
+    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 0 } as WayangConfig)).toBeNull();
   });
 });
 
@@ -326,17 +319,26 @@ describe('validateConfig: workers section (05 §5)', () => {
 });
 
 describe('collectWorkerWarnings (05 §4: inert fields warn, never fail)', () => {
-  it('warns about maxTurns and cliPath on *-acp rows', () => {
+  it('warns about cliPath on *-acp rows; maxTurns is NOT a config-time warning (v0.9.7: ACP debug-logs it at run site)', () => {
     const warnings = collectWorkerWarnings(
       makeConfigWithWorkers({
         codebuddy: { type: 'codebuddy', description: 'x', maxTurns: 100, cliPath: '/bin/codebuddy' },
         opencode: { type: 'opencode', description: 'x', maxTurns: 50 },
       }) as WayangConfig,
     );
-    expect(warnings).toHaveLength(3);
-    expect(warnings[0]).toContain('workers.codebuddy.maxTurns has no effect');
-    expect(warnings[1]).toContain('workers.codebuddy.cliPath has no effect');
-    expect(warnings[2]).toContain('workers.opencode.maxTurns has no effect');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('workers.codebuddy.cliPath has no effect');
+    expect(warnings.join(' ')).not.toContain('maxTurns');
+  });
+
+  it('keeps ACP rows carrying maxTurns valid (configured key never errors)', () => {
+    expect(
+      validateConfig(
+        makeConfigWithWorkers({
+          codebuddy: { type: 'codebuddy', description: 'x', maxTurns: 100 },
+        }),
+      ),
+    ).toBeNull();
   });
 
   it('is silent for claude-code rows and configs without workers', () => {

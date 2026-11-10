@@ -6,7 +6,9 @@
 
 - fix(security): add_task 的 workspace 参数补边界校验（#77）：声明的工作区先归一（realpath，目录不存在时归一父目录再拼尾段）再校验——必须位于用户 home 内，命中 denied-path / 敏感列表直接拒绝，软链按 realpath 目标判定；校验先于 mkdir，被拒时不再创建目录；home 未知时拒绝声明（fail-closed，与 allowedDirs 一致）；错误信息注明原因（outside-home / denied-path）并给出替代（改用 allowedDirs）。
 - feat(permission): 新增 permission.extraWorkspaceRoots 配置（#77）：列出的根目录视同 add_task 工作区允许范围（默认空，仅 home 内），供仓库统一放在 home 之外的部署使用；配置做形状校验、生效时启动提示一次，每次经其放行都写入会话审计日志（audit:"workspace"，记录命中的根、归一后路径与原始声明）；敏感目录列表仍优先于该配置。文档补充 workspace 与 allowedDirs 的校验差异及该配置用法。
-- feat(worker): 单次运行 wall time 上限提高到 60 分钟并支持任务级与全局配置（#76）
+- feat(worker): 移除运行时长限制（#76 撤回，维护者决定）：删除 wall-time watchdog 与结构化超时报告，`workerRunTimeoutMs`（全局配置）与 `add_task` 的 `runTimeoutMs`（任务参数）废弃——旧配置/旧调用带入时不报错、提示一次后忽略；ACP 硬编码轮数上限一并移除，长运行只受权限与进度归因约束，不再有基于运行时长的终止。
+- feat(worker): maxTurns 统一语义（resolveMaxTurns 单一解析点）：puppet 的 `worker.maxTurns` 与 claude-code 的 `workers.<id>.maxTurns` 统一为"未配置=不限、非法值（非正整数或超过 1000000）=不限并 warn 一次、合法正整数=原值生效"；puppet 不再有默认 1000 步兜底，claude-code 未配置时不再注入 1000；ACP 类型不消费该键（配置存在仅打一条 debug 日志，不报错）。
+- fix(worker): puppet 步数耗尽不再是 completed：达到配置上限仍未调用 done/fail 时按失败收尾，error 注明 `Reached step limit N`；未配置上限时循环自然结束同样视为失败（worker 从未声明成功），不再把残余文本当 summary 计为完成。
 - feat(permission): 扩充 bash 能力表：git 全量只读子命令、gh 只读查询、npx/npm 项目工具链（#51 跟进）
 
 ### 待定

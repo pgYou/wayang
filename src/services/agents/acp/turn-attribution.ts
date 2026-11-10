@@ -10,19 +10,13 @@ export interface TurnDenial {
 }
 export type TurnEndCategory = 'our_cancel' | 'our_timeout' | 'denied_by_policy' | 'denied_by_timeout' | 'denied_by_user' | 'agent_ended_unexpectedly' | 'completed';
 export interface TurnGuardState {
-  turnSeq: number; denialReissues: number; perKey: Map<string, number>;
-  consecutiveDenialTurns: number; runStartedAt: number;
+  denialReissues: number; perKey: Map<string, number>;
+  consecutiveDenialTurns: number;
   lastProgressSig: string; stagnantTurns: number;
-  /**
-   * Wall-time budget (ms) of this run (#76): task `runTimeoutMs` >
-   * config `workerRunTimeoutMs` > `MAX_RUN_WALL_MS` (default 60 min).
-   * Stamped once at run start; the guard's other budgets stay untouched.
-   */
-  wallLimitMs: number;
 }
 export const TURN_LIMITS = {
-  MAX_TURNS: 12, MAX_DENIAL_REISSUES: 3, MAX_PER_KEY: 1,
-  MAX_CONSECUTIVE_DENIAL_TURNS: 2, MAX_RUN_WALL_MS: 3_600_000, MAX_STAGNANT_TURNS: 2,
+  MAX_DENIAL_REISSUES: 3, MAX_PER_KEY: 1,
+  MAX_CONSECUTIVE_DENIAL_TURNS: 2, MAX_STAGNANT_TURNS: 2,
 } as const;
 
 export interface ClassifyTurnEndInput { stopReason: string; cancelFact: CancelFact; denials: TurnDenial[]; hasQueuedMessages: boolean }
@@ -128,16 +122,13 @@ export function buildDenialNotice(denials: TurnDenial[], locale: string = 'zh'):
   return notice.length <= NOTICE_MAX_CHARS ? notice : notice.slice(0, NOTICE_MAX_CHARS);
 }
 
-export function resetTurnGuard(now: number, wallLimitMs: number = TURN_LIMITS.MAX_RUN_WALL_MS): TurnGuardState {
+export function resetTurnGuard(): TurnGuardState {
   return {
-    turnSeq: 0,
     denialReissues: 0,
     perKey: new Map<string, number>(),
     consecutiveDenialTurns: 0,
-    runStartedAt: now,
     lastProgressSig: '',
     stagnantTurns: 0,
-    wallLimitMs,
   };
 }
 
@@ -145,7 +136,6 @@ export interface AdvanceGuardInput {
   category: TurnEndCategory;
   denials: TurnDenial[];
   progressSig: string;
-  now: number;
 }
 
 /** Fold one finished turn into a fresh guard state. denialReissues is owned by the caller. */
@@ -163,7 +153,6 @@ export function advanceGuard(guard: TurnGuardState, input: AdvanceGuardInput): T
 
   return {
     ...guard,
-    turnSeq: guard.turnSeq + 1,
     perKey,
     consecutiveDenialTurns: category.startsWith('denied_by_')
       ? guard.consecutiveDenialTurns + 1
@@ -179,22 +168,16 @@ export interface TurnNextAction {
 }
 
 /**
- * Decide what to do after a turn ended. `now` is injectable so callers/tests can
- * keep wall-clock checks deterministic; the default is Date.now() as specified.
+ * Decide what to do after a turn ended. No wall-clock or turn-count ceiling
+ * applies (v0.9.7 removed run-duration limits): the guard only carries the
+ * denial budgets and the no-progress detector.
  */
 export function decideNextAction(
   guard: TurnGuardState,
   category: TurnEndCategory,
   hasQueuedMessages: boolean,
   denials: TurnDenial[] = [],
-  now: number = Date.now(),
 ): TurnNextAction {
-  if (guard.turnSeq >= TURN_LIMITS.MAX_TURNS) {
-    return { action: 'terminate', reason: `turn limit reached (${TURN_LIMITS.MAX_TURNS})` };
-  }
-  if (now - guard.runStartedAt > guard.wallLimitMs) {
-    return { action: 'terminate', reason: 'run wall time exceeded' };
-  }
   if (guard.stagnantTurns >= TURN_LIMITS.MAX_STAGNANT_TURNS) {
     return {
       action: 'terminate',

@@ -60,11 +60,4 @@ export interface TaskDetail {
    * absent means no extra directories were granted.
    */
   taskAllowedDirs?: string[];
-  /**
-   * Wall-time limit (ms) for this task's worker run (#76). Overrides the
-   * global `workerRunTimeoutMs` config for THIS run; validated at add_task
-   * time (positive integer, at most 6 hours). Absent means "use the global
-   * config or the default".
-   */
-  runTimeoutMs?: number;
 }

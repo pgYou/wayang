@@ -159,13 +159,6 @@ export interface WorkerConfig {
 }
 
 /**
- * Upper bound accepted for `workerRunTimeoutMs` (and add_task's
- * `runTimeoutMs`): 6 hours. A guard value, not a working default — it exists
- * so a mistyped value cannot silently pin a worker forever.
- */
-export const MAX_RUN_TIMEOUT_MS = 21_600_000;
-
-/**
  * How sensitive (credential/tool-config) paths are handled.
  * - 'ask' (default): a hit in EITHER direction — read or write — requests
  *   controller approval. The request and the audit record name the matched
@@ -265,6 +258,14 @@ export interface WayangConfig {
      * `tool_choice: "required"` with HTTP 400; set to 'auto' for those.
      */
     toolChoice?: ToolChoice;
+    /**
+     * Turn cap for the puppet worker's LLM step loop. Unset = unlimited.
+     * Invalid values (non-positive, non-integer, beyond 1e6) are treated as
+     * unset with one warn (see resolveMaxTurns). Inert for third-party
+     * workers — claude-code uses `workers.<id>.maxTurns`, ACP ignores the
+     * key entirely.
+     */
+    maxTurns?: number;
   };
   /** Third-party worker definitions, keyed by worker ID. */
   workers?: Record<string, WorkerConfig>;
@@ -274,14 +275,6 @@ export interface WayangConfig {
   skillsDirs?: string[];
   /** Idle timeout (ms) for multi-stage workers before they are reaped. Defaults to 30 min. */
   idleTimeoutMs?: number;
-  /**
-   * Wall-time limit (ms) for ONE worker run (#76): when it expires the run is
-   * terminated and reported. Positive integer, at most 6 hours
-   * (`MAX_RUN_TIMEOUT_MS`). Per-task `add_task` `runTimeoutMs` overrides it;
-   * default 3600000 (60 min). A warning progress is sent once 5 minutes
-   * before expiry.
-   */
-  workerRunTimeoutMs?: number;
   /**
    * Number of processed (read/discarded) signals retained in the hot window.
    * Unread signals are always kept. Defaults to 2000.
@@ -452,11 +445,6 @@ export function validateConfig(config: WayangConfig): string | null {
       if (err) return err;
     }
   }
-  const runTimeout = config.workerRunTimeoutMs;
-  if (runTimeout !== undefined
-    && !(Number.isInteger(runTimeout) && runTimeout > 0 && runTimeout <= MAX_RUN_TIMEOUT_MS)) {
-    return `workerRunTimeoutMs must be a positive integer of milliseconds, at most ${MAX_RUN_TIMEOUT_MS} (6 hours) (got ${JSON.stringify(runTimeout)})`;
-  }
   const permission = config.permission;
   if (permission !== undefined && permission !== null) {
     // `deniedDirs` is the deprecated alias of `sensitiveDirs`; both are read,
@@ -494,20 +482,20 @@ export function validateConfig(config: WayangConfig): string | null {
 }
 
 /**
- * Collect non-fatal `workers` warnings (05 §4): `maxTurns` and `cliPath` have
- * no effect on `*-acp` rows (ACP has no turn cap — the agent's own config
- * decides; the executable is chosen via `command`). Existing configs must
- * keep loading, so these warn instead of failing validation. The caller
+ * Collect non-fatal `workers` warnings (05 §4): `cliPath` has no effect on
+ * `*-acp` rows (the executable is chosen via `command`). Existing configs
+ * must keep loading, so these warn instead of failing validation. The caller
  * prints them once at config load.
+ *
+ * `maxTurns` on `*-acp` rows is deliberately NOT here (v0.9.7): ACP ignores
+ * the key, and the notice is a debug log at the worker's run site — not a
+ * config-time warning.
  */
 export function collectWorkerWarnings(config: WayangConfig): string[] {
   const warnings: string[] = [];
   for (const [id, worker] of Object.entries(config.workers ?? {})) {
     if (typeof worker !== 'object' || worker === null) continue;
     if (!isAcpWorkerType(worker.type)) continue;
-    if (worker.maxTurns !== undefined) {
-      warnings.push(`workers.${id}.maxTurns has no effect on type "${worker.type}" (ACP has no turn cap)`);
-    }
     if (worker.cliPath !== undefined) {
       warnings.push(`workers.${id}.cliPath has no effect on type "${worker.type}" (ACP workers use "command")`);
     }

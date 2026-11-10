@@ -24,7 +24,7 @@
  * - getLiveStatus flags across the run.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -341,6 +341,28 @@ describe('BaseAcpWorker: end-to-end turn (frozen §8 case 1 shape)', () => {
     // worded by turnEndErrorText instead of the old agent-error template.
     expect(result.error).toContain('refusal');
     expect(result.error).toContain('unexpectedly');
+  });
+
+  it('ignores a configured maxTurns: no cap, no error — one debug line (v0.9.7)', async () => {
+    const worker = new TestAcpWorker({}, { maxTurns: 3 }, tempDir, tempDir);
+    worker.setSignalContext({
+      signalQueue: new RecordingSignalQueue() as any,
+      workerId: 'w-mt',
+      taskId: TASK.id,
+      taskTitle: TASK.title,
+    });
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+    await worker.transport.waitForClientOutput(3);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
+    const result = await runPromise;
+    // The run ends by the agent's own end_turn — a configured maxTurns never
+    // terminated it, and the config never failed validation.
+    expect(result.status).toBe('completed');
+    const debug = vi.mocked((worker as any).ctx.logger.debug);
+    const ignored = debug.mock.calls.filter((call: any[]) => String(call[1]).includes('no turn cap'));
+    expect(ignored).toHaveLength(1);
+    expect(ignored[0][0]).toMatchObject({ maxTurns: 3 });
   });
 
   it('auth keyword on stderr during session/new short-circuits to auth-required', async () => {

@@ -217,6 +217,14 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
   // `mergeSensitiveDirs`), and a config that uses it gets one pointer to the
   // new key per process — warn only when the legacy key is really populated.
   warnDeprecatedPermissionKeys(config.permission, (message) => console.warn(`Warning: ${message}`));
+  // Config-key compatibility: `workerRunTimeoutMs` is deprecated — v0.9.7
+  // removed worker run wall-time limits. A config still carrying the key is
+  // not an error: it is silently ignored, with one warning.
+  if ((config as unknown as Record<string, unknown>).workerRunTimeoutMs !== undefined) {
+    console.warn(
+      'Warning: workerRunTimeoutMs is deprecated and ignored — worker run wall-time limits were removed; the key can be deleted from the config.',
+    );
+  }
   // issue #77: an active workspace-boundary extension must be visible, not
   // silent — one line at startup naming the configured roots. Each workspace
   // admitted through them is additionally audited on the session log.
