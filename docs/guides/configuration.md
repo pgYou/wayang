@@ -56,6 +56,7 @@ wayang 启动时按下面的顺序找配置：
 | `tavilyApiKey` | 字符串 | 否 | — | 网页搜索工具的 Tavily key，未设置时该工具返回错误 |
 | `skillsDirs` | 字符串数组 | 否 | — | 额外的技能扫描目录（全局与工作区之外） |
 | `idleTimeoutMs` | 数字 | 否 | 1800000 | 常驻 worker 空闲多久后被回收（默认 30 分钟） |
+| `workerRunTimeoutMs` | 数字 | 否 | 3600000 | worker 单次运行的 wall time 上限（毫秒），正整数且不超过 21600000（6 小时） |
 | `signalWindowSize` | 数字 | 否 | 2000 | 已处理消息保留的热窗口大小 |
 | `permission` | 对象 | 否 | 默认策略 | 路径权限策略，见下 |
 | `logging` | 对象 | 否 | 默认策略 | 会话日志滚动策略 |
@@ -91,6 +92,16 @@ wayang 启动时按下面的顺序找配置：
 - 需要让任务访问工作区以外的目录，用 `allowedDirs`，不要试图把工作区指到别处。
 
 `logging` 子字段：`maxFileSizeBytes`（默认 10485760）、`maxFiles`（默认 3），均为正整数。
+
+### worker 单次运行时长上限（workerRunTimeoutMs）
+
+ACP 类 worker（type 为 `acp` / `codebuddy` / `opencode`）的每次 run 有一个 wall time 上限，到期后运行被终止并向 controller 发出结构化报告。上限的取值优先级：
+
+1. 任务参数：`add_task` 的 `runTimeoutMs`（毫秒，正整数，上限同为 21600000；非法值会导致任务创建失败并返回明确错误）；
+2. 全局配置：`workerRunTimeoutMs`；
+3. 默认值：`3600000`（60 分钟）。
+
+到期前剩余 5 分钟时，controller 会收到一条含已运行时长与剩余时长的 progress 告警（每次运行只发一次）。超时终止的报告写明：运行时长、工作区当前分支与 HEAD、是否有未提交改动、是否有未推送提交、最后一次 worker progress 文本（若有）；已提交、已推送的成果不受影响。
 
 ### workers.<id> 字段
 

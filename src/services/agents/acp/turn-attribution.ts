@@ -13,10 +13,16 @@ export interface TurnGuardState {
   turnSeq: number; denialReissues: number; perKey: Map<string, number>;
   consecutiveDenialTurns: number; runStartedAt: number;
   lastProgressSig: string; stagnantTurns: number;
+  /**
+   * Wall-time budget (ms) of this run (#76): task `runTimeoutMs` >
+   * config `workerRunTimeoutMs` > `MAX_RUN_WALL_MS` (default 60 min).
+   * Stamped once at run start; the guard's other budgets stay untouched.
+   */
+  wallLimitMs: number;
 }
 export const TURN_LIMITS = {
   MAX_TURNS: 12, MAX_DENIAL_REISSUES: 3, MAX_PER_KEY: 1,
-  MAX_CONSECUTIVE_DENIAL_TURNS: 2, MAX_RUN_WALL_MS: 1_800_000, MAX_STAGNANT_TURNS: 2,
+  MAX_CONSECUTIVE_DENIAL_TURNS: 2, MAX_RUN_WALL_MS: 3_600_000, MAX_STAGNANT_TURNS: 2,
 } as const;
 
 export interface ClassifyTurnEndInput { stopReason: string; cancelFact: CancelFact; denials: TurnDenial[]; hasQueuedMessages: boolean }
@@ -122,7 +128,7 @@ export function buildDenialNotice(denials: TurnDenial[], locale: string = 'zh'):
   return notice.length <= NOTICE_MAX_CHARS ? notice : notice.slice(0, NOTICE_MAX_CHARS);
 }
 
-export function resetTurnGuard(now: number): TurnGuardState {
+export function resetTurnGuard(now: number, wallLimitMs: number = TURN_LIMITS.MAX_RUN_WALL_MS): TurnGuardState {
   return {
     turnSeq: 0,
     denialReissues: 0,
@@ -131,6 +137,7 @@ export function resetTurnGuard(now: number): TurnGuardState {
     runStartedAt: now,
     lastProgressSig: '',
     stagnantTurns: 0,
+    wallLimitMs,
   };
 }
 
@@ -185,7 +192,7 @@ export function decideNextAction(
   if (guard.turnSeq >= TURN_LIMITS.MAX_TURNS) {
     return { action: 'terminate', reason: `turn limit reached (${TURN_LIMITS.MAX_TURNS})` };
   }
-  if (now - guard.runStartedAt > TURN_LIMITS.MAX_RUN_WALL_MS) {
+  if (now - guard.runStartedAt > guard.wallLimitMs) {
     return { action: 'terminate', reason: 'run wall time exceeded' };
   }
   if (guard.stagnantTurns >= TURN_LIMITS.MAX_STAGNANT_TURNS) {
