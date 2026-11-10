@@ -243,11 +243,12 @@ describe('evaluateBashAccess', () => {
       expect(verdict.decision).toBe('allow');
       expect(verdict.matchedRule).toBe('no-path');
 
-      // The shapes the slice does NOT resolve keep the #51 fail-closed ask.
+      // The shapes the slice does NOT resolve keep the #51 fail-closed ask
+      // (inside the capability gate's unknown path now).
       for (const unresolved of [`cd ${ws}; git diff v0.4.0 HEAD`, 'cd $DIR && git diff HEAD']) {
         const ask = evaluateBashAccess(scope(), unresolved);
         expect(ask.decision).toBe('ask');
-        expect(ask.matchedRule).toBe('dynamic-shell');
+        expect(ask.matchedRule).toBe('unknown-capability');
         expect(ask.reason).toContain('cd <dir>');
       }
     });
@@ -700,7 +701,7 @@ describe('evaluateBashAccess', () => {
       // the old silent allow (same scope as xargs / find -exec, issue #51).
       const verdict = evaluateBashAccess(scope(), 'bash script.sh');
       expect(verdict.decision).toBe('ask');
-      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.matchedRule).toBe('unknown-capability');
       expect(verdict.reason).toContain('script file');
       // A sensitive operand still wins over the fallback tier.
       expect(evaluateBashAccess(scope(), 'bash script.sh ~/.ssh/id_rsa').matchedRule).toBe('sensitive-list');
@@ -1021,6 +1022,10 @@ describe('evaluateBashAccess', () => {
    * recursion is added: recognizing the shape is enough to fail closed, and the
    * reason names the shape so the controller can act on it. A static `-c`
    * script is NOT in this set — it is already judged recursively (0.8.4).
+   *
+   * The tier lives INSIDE the capability gate now: its verdict is the gate's
+   * `unknown-capability` (one merged path), and the reason text is the only
+   * thing distinguishing an inner-command shape from an unknown verb.
    */
   describe('#51 fail-closed fallback for unanalyzed inner commands', () => {
     describe('every shape asks and names the shape in the reason', () => {
@@ -1042,7 +1047,9 @@ describe('evaluateBashAccess', () => {
       ])('%s → ask (reason names %s)', (command, shape) => {
         const verdict = evaluateBashAccess(scope(), command);
         expect(verdict.decision).toBe('ask');
-        expect(verdict.matchedRule).toBe('dynamic-shell');
+        // One merged path with the unknown verbs; the reason text is what
+        // distinguishes an inner-command shape from an unknown verb.
+        expect(verdict.matchedRule).toBe('unknown-capability');
         expect(verdict.reason).toContain(shape);
       });
     });
@@ -1149,7 +1156,7 @@ describe('evaluateBashAccess', () => {
     it('(f) `cd $X && ls` keeps the #51 fail-closed ask (target not literal)', () => {
       const verdict = evaluateBashAccess(scope(), 'cd $X && ls');
       expect(verdict.decision).toBe('ask');
-      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.matchedRule).toBe('unknown-capability');
       expect(verdict.reason).toContain('fail-closed');
       expect(verdict.reason).toContain('issue #51');
     });
@@ -1157,13 +1164,13 @@ describe('evaluateBashAccess', () => {
     it('(g) `cd a; cd b && ls` asks: a `;` chain is never crossed', () => {
       const verdict = evaluateBashAccess(scope(), 'cd a; cd b && ls');
       expect(verdict.decision).toBe('ask');
-      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.matchedRule).toBe('unknown-capability');
     });
 
     it('(h) `(cd <workspace> && ls)` asks: a subshell restores the old cwd', () => {
       const verdict = evaluateBashAccess(scope(), `(cd ${ws} && ls)`);
       expect(verdict.decision).toBe('ask');
-      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.matchedRule).toBe('unknown-capability');
     });
 
     it('(i) `cd <workspace> && rm -rf build` still asks (dangerous tier)', () => {
@@ -1208,7 +1215,7 @@ describe('evaluateBashAccess', () => {
       // carries an unanalyzed cwd change, so the fail-closed ask stands.
       const verdict = evaluateBashAccess(scope(), `cd ${ws} && cd - && ls`);
       expect(verdict.decision).toBe('ask');
-      expect(verdict.matchedRule).toBe('dynamic-shell');
+      expect(verdict.matchedRule).toBe('unknown-capability');
       expect(verdict.reason).toContain('cd <dir>');
     });
   });
