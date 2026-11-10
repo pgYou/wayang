@@ -213,6 +213,17 @@ export interface PermissionConfig {
   /** How sensitive hits are handled. Defaults to 'ask'. */
   sensitiveMode?: SensitiveMode;
   /**
+   * Extra roots a declared `add_task` workspace may resolve to OUTSIDE the
+   * user home (issue #77) — e.g. a deployment that keeps repositories under
+   * a dedicated mount. Defaults to empty: only the home directory admits a
+   * declared workspace. Entries normalize like the other permission lists
+   * (relative entries resolve against the user's home). The denied-path /
+   * sensitive list still outranks these roots, an active list is surfaced
+   * once at startup, and every workspace admitted through it is recorded on
+   * the session audit log.
+   */
+  extraWorkspaceRoots?: string[];
+  /**
    * Whether an approval is remembered within the task it was given in.
    * Defaults to 'task' (read grants per task, cleared when the task ends);
    * 'off' restores plain one-approval-per-call. See `ApprovalMemoryMode`.
@@ -429,8 +440,9 @@ export function validateConfig(config: WayangConfig): string | null {
   const permission = config.permission;
   if (permission !== undefined && permission !== null) {
     // `deniedDirs` is the deprecated alias of `sensitiveDirs`; both are read,
-    // so both get the same shape check.
-    const keys = ['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs'] as const;
+    // so both get the same shape check. `extraWorkspaceRoots` extends the
+    // add_task workspace boundary (issue #77) and gets the same shape check.
+    const keys = ['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs', 'extraWorkspaceRoots'] as const;
     for (const key of keys) {
       const value = permission[key];
       if (value === undefined) continue;

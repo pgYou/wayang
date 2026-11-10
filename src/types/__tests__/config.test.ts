@@ -67,6 +67,8 @@ describe('validateConfig: permission', () => {
           // Deprecated alias of sensitiveDirs — still accepted and validated.
           deniedDirs: ['/data/secrets'],
           sensitiveMode: 'deny',
+          // Workspace-boundary extension (issue #77) — same shape rule.
+          extraWorkspaceRoots: ['/codev'],
         }),
       ),
     ).toBeNull();
@@ -78,12 +80,13 @@ describe('validateConfig: permission', () => {
     ['autoAllowRoots', 42],
     ['sensitiveDirs', { path: '/data/keys' }],
     ['deniedDirs', { path: '/data/secrets' }],
+    ['extraWorkspaceRoots', '/codev'],
   ])('rejects %s when it is not an array', (key, value) => {
     const err = validateConfig(makeConfigWithPermission({ [key]: value }));
     expect(err).toContain(`permission.${key} must be an array of strings`);
   });
 
-  it.each(['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs'])('rejects %s containing a non-string', (key) => {
+  it.each(['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs', 'extraWorkspaceRoots'])('rejects %s containing a non-string', (key) => {
     const err = validateConfig(makeConfigWithPermission({ [key]: ['/data/shared', 7] }));
     expect(err).toContain(`permission.${key} must be an array of strings`);
     expect(err).toContain('7');

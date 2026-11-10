@@ -113,6 +113,9 @@ export class ControllerAgent extends ControllerTurnRun implements Subscribable {
       // against the built-in sensitive list plus these configured
       // sensitiveDirs (the deprecated deniedDirs alias is merged in).
       permissionConfig: opts.config.permission,
+      // Session logger: add_task audits every workspace admitted through
+      // permission.extraWorkspaceRoots (issue #77).
+      logger: ctx.logger,
       getNotebook: () => state.get<string>('runtimeState.notebook') ?? '',
       setNotebook: (content, mode) => {
         const current = state.get<string>('runtimeState.notebook') ?? '';
