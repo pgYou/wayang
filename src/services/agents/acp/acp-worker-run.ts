@@ -271,12 +271,21 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           const denials = this.takeTurnDenials();
           const cancelFact: CancelFact = client.cancelSentCount > cancelBaseline ? client.lastCancelReason : null;
           const hasQueuedMessages = this._messageQueue.length > 0;
-          const category = classifyTurnEnd({ stopReason: result.stopReason, cancelFact, denials, hasQueuedMessages });
-          const progressSig = this.progressSignature();
           // decideNextAction's perKey/consecutive/stagnant budgets are defined
           // against PRIOR turns (see turn-attribution.test.ts); advanceGuard
           // folds THIS turn's denials in, so decide on the pre-advance snapshot.
+          // Its denialReissues is also the run-history evidence for the §9.1
+          // denial-residue rule in classifyTurnEnd.
           const guardBefore = this._turnGuard;
+          const category = classifyTurnEnd({
+            stopReason: result.stopReason,
+            cancelFact,
+            denials,
+            hasQueuedMessages,
+            priorDenialReissues: guardBefore.denialReissues,
+            hasTurnText: this._turnTextChars > 0,
+          });
+          const progressSig = this.progressSignature();
           // P1.3 double insurance: never reissue when the denial notice is empty.
           const verdict = finalizeTurnVerdict(
             decideNextAction(guardBefore, category, hasQueuedMessages, denials), denials,
