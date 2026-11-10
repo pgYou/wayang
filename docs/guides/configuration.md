@@ -56,7 +56,6 @@ wayang 启动时按下面的顺序找配置：
 | `tavilyApiKey` | 字符串 | 否 | — | 网页搜索工具的 Tavily key，未设置时该工具返回错误 |
 | `skillsDirs` | 字符串数组 | 否 | — | 额外的技能扫描目录（全局与工作区之外） |
 | `idleTimeoutMs` | 数字 | 否 | 1800000 | 常驻 worker 空闲多久后被回收（默认 30 分钟） |
-| `workerRunTimeoutMs` | 数字 | 否 | 3600000 | worker 单次运行的 wall time 上限（毫秒），正整数且不超过 21600000（6 小时） |
 | `signalWindowSize` | 数字 | 否 | 2000 | 已处理消息保留的热窗口大小 |
 | `permission` | 对象 | 否 | 默认策略 | 路径权限策略，见下 |
 | `logging` | 对象 | 否 | 默认策略 | 会话日志滚动策略 |
@@ -66,6 +65,7 @@ wayang 启动时按下面的顺序找配置：
 - `provider`（必填，字符串）：worker 默认使用的 provider 名，必须存在于 `providers`。
 - `maxConcurrency`（必填，数字）：最多同时运行几个 worker。建议 1–10 之间；wayang 不校验这个值，请自己填 ≥1 的整数。
 - `toolChoice`（可选，`'auto' | 'required' | 'none'`，默认 `'auto'`）：worker 调用工具的模式。部分模型服务（DeepSeek/GLM）会拒绝 `required`；仅当端点支持时用 `required` 强制每步都调用工具以保证收尾。
+- `maxTurns`（可选，正整数，默认不限）：puppet worker 的 LLM 步数上限。未配置即不限制；非法值（非正整数、超过 1000000）视为不限并 warn 一次。达到上限仍未调用 done/fail 时按失败收尾。仅对 puppet 生效——claude-code 用 `workers.<id>.maxTurns`，ACP 类型不消费该键。
 
 `providers.<name>` 子字段：
 
@@ -93,15 +93,9 @@ wayang 启动时按下面的顺序找配置：
 
 `logging` 子字段：`maxFileSizeBytes`（默认 10485760）、`maxFiles`（默认 3），均为正整数。
 
-### worker 单次运行时长上限（workerRunTimeoutMs）
+### 运行时长限制已移除
 
-ACP 类 worker（type 为 `acp` / `codebuddy` / `opencode`）的每次 run 有一个 wall time 上限，到期后运行被终止并向 controller 发出结构化报告。上限的取值优先级：
-
-1. 任务参数：`add_task` 的 `runTimeoutMs`（毫秒，正整数，上限同为 21600000；非法值会导致任务创建失败并返回明确错误）；
-2. 全局配置：`workerRunTimeoutMs`；
-3. 默认值：`3600000`（60 分钟）。
-
-到期前剩余 5 分钟时，controller 会收到一条含已运行时长与剩余时长的 progress 告警（每次运行只发一次）。超时终止的报告写明：运行时长、工作区当前分支与 HEAD、是否有未提交改动、是否有未推送提交、最后一次 worker progress 文本（若有）；已提交、已推送的成果不受影响。
+v0.9.7 移除了 worker 单次运行的 wall time 上限（原 #76 能力撤回）：全局配置 `workerRunTimeoutMs` 与 `add_task` 的 `runTimeoutMs` 均已废弃，不再有任何基于运行时长的终止。旧配置仍带入这两个键时不会报错——加载时提示一次弃用告警后忽略，可以安全地从配置里删掉。
 
 ### workers.<id> 字段
 
@@ -112,7 +106,7 @@ ACP 类 worker（type 为 `acp` / `codebuddy` / `opencode`）的每次 run 有�
 | `enable` | 布尔值 | 否 | `true` | 是否启用这个 worker |
 | `emoji` | 字符串 | 否 | 按类型 | 界面显示图标；缺省为 🤖（claude-code）/ 🧩（acp）/ 🐧（codebuddy）/ 🦉（opencode） |
 | `capabilities` | 字符串数组 | 否 | — | 能力标签，供 controller 路由任务时参考 |
-| `maxTurns` | 数字 | 否 | — | 单个任务的最大轮数；只对 claude-code 有意义，写在其他类型上无效（会提示一次 no effect） |
+| `maxTurns` | 数字 | 否 | — | 单个任务的最大轮数；只对 claude-code 有意义（未配置即不限制），写在 ACP 类型上不生效（仅在 worker 运行时打一条 debug 日志） |
 | `cliPath` | 字符串 | 否 | 自动探测 | Claude Code CLI 可执行文件路径，仅 claude-code 使用 |
 | `permissionMode` | `'client' \| 'agent'` | 否 | `'client'` | `client`：权限请求经 wayang 审批；`agent`：worker 自己管权限，漏过来的请求会被取消并记录，绝不静默放行 |
 

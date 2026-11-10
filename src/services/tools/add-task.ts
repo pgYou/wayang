@@ -12,6 +12,9 @@ import { defineTool, safeExecute } from './common';
 import { expandHome } from './permission-rules';
 import { buildWorkspaceRulesSummary } from './workspace-rules';
 
+/** One-per-process flag for the deprecated `runTimeoutMs` add_task param. */
+let warnedRunTimeoutMs = false;
+
 export interface AddTaskToolDeps {
   /**
    * Add a task and attempt to schedule it. Returns the engine worker id when
@@ -384,11 +387,24 @@ export function addTaskTool(deps: AddTaskToolDeps) {
       allowedDirs: z.array(z.string()).optional().describe(
         'Extra directories this task may access, in addition to its workspace. Only this task is affected — the grant is NOT inherited by other tasks. Each entry must be inside the user home and off the denied-path list (credentials, tool config); an invalid entry fails the whole call and no task is created. Paths are normalized; relative entries resolve against the task workspace.',
       ),
+      runTimeoutMs: z.number().optional().describe(
+        'Deprecated and ignored — run-duration limits were removed in v0.9.7. Do not set it.',
+      ),
     }),
     execute: safeExecute('add_task', async (
-      { title, description, priority, workerType, multiStage, assignToWorker, workspace, allowedDirs },
+      { title, description, priority, workerType, multiStage, assignToWorker, workspace, allowedDirs, runTimeoutMs },
       options,
     ) => {
+      // `runTimeoutMs` is deprecated (v0.9.7 removed run-duration limits).
+      // Old controller prompts still carry it; accepting it here keeps them
+      // working — never an error, ignored, ONE warn per process.
+      if (runTimeoutMs !== undefined && !warnedRunTimeoutMs) {
+        warnedRunTimeoutMs = true;
+        deps.logger?.warn(
+          { deprecated: 'add_task.runTimeoutMs', value: runTimeoutMs },
+          'add_task runTimeoutMs is deprecated and ignored — run-duration limits were removed; the worker runs without a wall-time cap',
+        );
+      }
       const resolvedType = workerType || 'puppet';
 
       // Workspace stamp: the declared workspace, or the process workspace when
