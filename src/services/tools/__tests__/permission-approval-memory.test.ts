@@ -161,7 +161,7 @@ function caller(gate: Gate) {
     if (requests.length > 0) {
       if (answer === undefined) throw new Error(`unanswered permission_request from ${toolName}`);
       for (const request of requests) {
-        expect(gate.middleware.resolvePermission(request.requestId, answer)).toBe(true);
+        expect(gate.middleware.resolvePermission(request.requestId, answer)).toBe('resolved');
       }
     }
     const output = (await pending) as string;

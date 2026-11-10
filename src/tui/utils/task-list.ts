@@ -4,14 +4,24 @@
  * A task's description is the full instruction handed to a worker — routinely
  * thousands of characters, often with embedded newlines. Rendering it verbatim
  * made Ink re-layout tens of thousands of characters per `/tasks` call and hang
- * the TUI. The list therefore shows a one-line digest of each description, and
- * caps the number of rows — keeping pending/running tasks ahead of older
- * history — while every other column stays exactly as it was.
+ * the TUI. The list therefore shows a one-line digest of each task, and caps
+ * the number of rows — keeping pending/running tasks ahead of older history.
  *
- * `task.result` is the other free-form field on a row: it holds the worker's
- * final report, which is just as often multi-kilobyte and multi-line. It gets
- * the exact same one-line digest treatment (see `TASK_LIST_RESULT_MAX_WIDTH`),
- * so one finished task can never wrap the panel into hundreds of rows.
+ * The primary label is the task's LLM-generated title (≤50 chars by contract);
+ * tasks without one fall back to a one-line digest of the description. Rows
+ * address tasks by their short handle (`#<id tail>`), so a 20-char generated id
+ * cannot eat the row budget; colliding handles escalate to the full id (see
+ * `formatTaskList`).
+ *
+ * `task.result` / `task.error` are the other free-form fields on a row: they
+ * get the same one-line digest treatment, and a failed task's error outranks
+ * the label when a narrow row forces a choice — the whole point of the panel
+ * is telling failed work apart at a glance.
+ *
+ * With `rowMaxWidth` (the overlay panel's inner width) the label and the
+ * digest share that column budget, so every row is exactly one physical line
+ * at any terminal width — no wrapping, no reflow jitter. Without it the
+ * historical independent caps apply (wide-output behavior).
  *
  * Pure formatting only — no RPC shape changes, no task data mutation.
  */
@@ -19,10 +29,10 @@
 import type { TaskDetail } from '@/types/index';
 import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { formatDuration } from '@/services/worker-transcript';
-import { collapseWhitespace, truncateToWidth } from '@/tui/utils/text-width';
+import { collapseWhitespace, shortId, stringWidth, truncateToWidth } from '@/tui/utils/text-width';
 import { formatTaskWorkspaceMark } from '@/tui/utils/workspace-display';
 
-/** Max display columns for one description in the list (CJK/emoji count double). */
+/** Max display columns for one description digest in the list (CJK/emoji count double). */
 export const TASK_LIST_DESCRIPTION_MAX_WIDTH = 80;
 
 /**
@@ -31,6 +41,18 @@ export const TASK_LIST_DESCRIPTION_MAX_WIDTH = 80;
  * "what came out of it" summary, not the instruction the user needs to verify.
  */
 export const TASK_LIST_RESULT_MAX_WIDTH = 60;
+
+/** Max display columns for the primary label — the LLM-generated task title. */
+export const TASK_LIST_LABEL_MAX_WIDTH = 50;
+
+/**
+ * Floor kept for the label when a digest competes for a narrow row budget: a
+ * row must stay identifiable even when its error digest takes most of the room.
+ */
+export const TASK_LIST_MIN_LABEL_WIDTH = 12;
+
+/** Smallest digest worth its arrow; below this the fragment is dropped instead. */
+export const TASK_LIST_MIN_DIGEST_WIDTH = 8;
 
 /** Max rows rendered by `/tasks`; older entries collapse into a trailing note. */
 export const TASK_LIST_MAX_ITEMS = 20;
@@ -133,6 +155,8 @@ function noteFor(total: number, shown: number): string {
 
 export interface TaskRowOptions {
   descriptionMaxWidth?: number;
+  /** Max display columns for the title label; defaults to TASK_LIST_LABEL_MAX_WIDTH. */
+  labelMaxWidth?: number;
   /** Max display columns for the result digest; same one-line rule as the description. */
   resultMaxWidth?: number;
   /**
@@ -144,6 +168,15 @@ export interface TaskRowOptions {
   defaultWorkspacePath?: string;
   /** Epoch ms used as "now" for a running task's elapsed time; defaults to Date.now(). */
   now?: number;
+  /**
+   * Total display-column budget for the whole row (the overlay panel's inner
+   * width). When set, the label and the result/error digest share this budget
+   * so the row can never wrap onto a second physical line; when absent, the
+   * label and digest caps apply independently (wide-output behavior).
+   */
+  rowMaxWidth?: number;
+  /** Render the full task id instead of the short handle (collision fallback). */
+  useFullId?: boolean;
 }
 
 /**
@@ -174,7 +207,21 @@ function formatDurationMark(task: TaskDetail, now: number): string {
   return '';
 }
 
-/** One list row: existing columns plus optional worker/duration/error marks. */
+/** The row's id column: the short `#tail` handle, or the full id on collision. */
+function formatIdMark(task: TaskDetail, useFullId: boolean | undefined): string {
+  return useFullId ? task.id : `#${shortId(task.id)}`;
+}
+
+/**
+ * One list row: `[status] #tail: <label> — <workspace> · <worker> · <elapsed>
+ * [→ <result> | ✗ <error>]`.
+ *
+ * The label is the task title (one line, capped); a task without a title falls
+ * back to a digest of its description. The trailing digest is the worker's
+ * result, or — for failed work — the error, which is the information the panel
+ * exists to surface. Both the label and the digest are single-line and
+ * column-capped, so one task can only ever occupy one rendered row.
+ */
 export function formatTaskRow(
   task: TaskDetail,
   options: TaskRowOptions = {},
@@ -183,31 +230,95 @@ export function formatTaskRow(
   // default workspace shows it; default-workspace and legacy tasks append
   // nothing (never "undefined").
   const workspacePart = formatTaskWorkspaceMark(task.workspace, options.defaultWorkspacePath);
-  const description = truncateForList(task.description, options.descriptionMaxWidth);
-  // The result is the worker's free-form report — flatten and cap it exactly
-  // like the description, so it can only ever contribute columns, never rows.
-  // An absent, empty or whitespace-only result appends nothing at all.
-  const result = task.result
-    ? truncateForList(task.result, options.resultMaxWidth ?? TASK_LIST_RESULT_MAX_WIDTH)
-    : '';
-  // A failed task's error is just as free-form (and often multi-line): give it
-  // the same one-line digest so the reason is visible instead of a bare
-  // "failed" status. Whitespace-only errors collapse to nothing.
-  const error = task.error
-    ? truncateForList(task.error, options.resultMaxWidth ?? TASK_LIST_RESULT_MAX_WIDTH)
-    : '';
   const workerPart = formatWorkerMark(task.workerType);
   const durationPart = formatDurationMark(task, options.now ?? Date.now());
-  return `[${task.status}] ${task.id}: ${description}${workspacePart}${workerPart}${durationPart}${result ? ` → ${result}` : ''}${error ? ` ✗ ${error}` : ''}`;
+  const prefix = `[${task.status}] ${formatIdMark(task, options.useFullId)}: `;
+  const meta = `${workspacePart}${workerPart}${durationPart}`;
+
+  // Label source: the LLM-generated title, else a one-line description digest.
+  const title = collapseWhitespace(task.title);
+  const labelSource = title || collapseWhitespace(task.description);
+  const labelCap = title
+    ? options.labelMaxWidth ?? TASK_LIST_LABEL_MAX_WIDTH
+    : options.descriptionMaxWidth ?? TASK_LIST_DESCRIPTION_MAX_WIDTH;
+
+  // Digest source: a failed task's error outranks everything else on the row;
+  // otherwise the result, when the worker produced one. Whitespace-only
+  // values collapse to nothing and drop the fragment entirely.
+  const error = collapseWhitespace(task.error ?? '');
+  const result = collapseWhitespace(task.result ?? '');
+  const digestSource = error || result;
+  const digestCap = options.resultMaxWidth ?? TASK_LIST_RESULT_MAX_WIDTH;
+  const arrow = error ? ' ✗ ' : ' → ';
+
+  let labelBudget: number;
+  let digestBudget: number;
+  if (options.rowMaxWidth === undefined) {
+    // Wide-output behavior: each field capped independently.
+    labelBudget = labelCap;
+    digestBudget = digestSource ? digestCap : 0;
+  } else {
+    // Width-budgeted behavior: label and digest split what is left of the row
+    // after the fixed columns (prefix + workspace/worker/duration marks).
+    const budget = Math.max(1, options.rowMaxWidth);
+    const avail = budget - stringWidth(prefix) - stringWidth(meta);
+    if (!digestSource) {
+      labelBudget = Math.min(labelCap, Math.max(0, avail));
+      digestBudget = 0;
+    } else if (error) {
+      // Error first: it keeps at least MIN_DIGEST columns (down to the floor)
+      // while the label keeps MIN_LABEL — a failed row without its reason
+      // would be exactly the bare "failed" the panel is meant to fix.
+      digestBudget = Math.min(digestCap, Math.max(TASK_LIST_MIN_DIGEST_WIDTH, avail - arrow.length - TASK_LIST_MIN_LABEL_WIDTH));
+      labelBudget = Math.min(labelCap, Math.max(0, avail - arrow.length - digestBudget));
+    } else {
+      // Label first (it identifies the row); the result fills the rest.
+      labelBudget = Math.min(labelCap, Math.max(TASK_LIST_MIN_LABEL_WIDTH, avail - arrow.length - digestCap));
+      digestBudget = Math.min(digestCap, Math.max(0, avail - arrow.length - labelBudget));
+      if (digestBudget < TASK_LIST_MIN_DIGEST_WIDTH) digestBudget = 0;
+    }
+    // Explicit caps from options still apply on top of the computed budgets.
+    labelBudget = Math.min(labelBudget, labelCap);
+    digestBudget = Math.min(digestBudget, digestCap);
+  }
+
+  const label = truncateToWidth(labelSource, Math.max(0, labelBudget));
+  const digest = digestBudget > 0 && digestSource
+    ? truncateToWidth(digestSource, digestBudget)
+    : '';
+
+  let row = `${prefix}${label}${meta}${digest ? `${arrow}${digest}` : ''}`;
+  // Final safety: an over-long id or metadata run (extreme narrow terminals)
+  // must still not wrap — one hard cut keeps the row one physical line.
+  if (options.rowMaxWidth !== undefined && stringWidth(row) > options.rowMaxWidth) {
+    row = truncateToWidth(row, options.rowMaxWidth);
+  }
+  return row;
 }
 
-/** Render the whole `/tasks` output: capped rows plus an optional note line. */
+/**
+ * Render the whole `/tasks` output: capped rows plus an optional note line.
+ *
+ * Rows whose short handle (`#tail`) collides with another rendered row fall
+ * back to their full task id — two rows showing the same handle would make
+ * `/tasks <ref>` and `/cancel <ref>` ambiguous, which is worse than a wide row.
+ */
 export function formatTaskList(
   tasks: readonly TaskDetail[],
   options: TaskRowOptions & { maxItems?: number } = {},
 ): string {
   const limited = limitForList(tasks, options.maxItems, { isActive: isActiveTask });
-  const lines = limited.items.map(task => formatTaskRow(task, options));
+  const tailCounts = new Map<string, number>();
+  for (const task of limited.items) {
+    const tail = shortId(task.id);
+    tailCounts.set(tail, (tailCounts.get(tail) ?? 0) + 1);
+  }
+  const lines = limited.items.map(task =>
+    formatTaskRow(task, {
+      ...options,
+      useFullId: (tailCounts.get(shortId(task.id)) ?? 0) > 1,
+    }),
+  );
   if (limited.note) lines.push(limited.note);
   return lines.join('\n');
 }

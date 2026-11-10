@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.5 (2026-11-09)
+
+### 修复
+
+- 并发审批响应失效导致 worker 挂起（#69）：`respond_permission` 不再把一切未命中折叠成单一的 false，而是区分 `resolved` / `already-resolved` / `expired` / `worker-closed` / `not-found` 五种结果回给 Controller，worker 不再陷入无解的等待；审批请求 id 改为防碰撞分配并校验重复登记（重复 id 不再静默覆盖待决条目而丢掉首个等待者），worker 重新接线时先结算并清理旧的 resolver 再登记新的。
+
+- opencode 权限闸四处缺口（#62）：注入失败的任务结果透传具体原因（`agent-error` 文案回退链补 `reason`，不再显示「未知错误」）；继承的 `OPENCODE_CONFIG` 由静默告警改为 fail-closed 校验——ruleset 含 ask-all 规则且 `allow` 规则仅限显式只读豁免表（`read`/`grep`/`glob`/`list`，精确匹配、不接受前缀/子串）才放行，否则拒绝启动（无匹配规则即默认拒绝）；门禁文件移入 worker 专属目录（`workers/<workerId>/`），不再与并发 worker 共享、也不再有清理竞态，run 结束统一删除；`permissionMode:'agent'`（优先级高于 `gatePermissions`）会跳过权限闸注入这一行为，在设计文档（04/05 分册、冻结页）、README 与配置指南中补齐说明。
+
+- wayang 自家 MCP 工具白名单漏判真实工具名：deferred-executor 包装层把真实工具名放在 `rawInput.params.toolName`，白名单原先只读外层 `name` 与 `rawInput.toolName`，导致 `update_progress` / `ask_controller` 被当成普通工具走审批。现按 `params.toolName` → `rawInput.toolName` → `name` 顺序解析并规范化，白名单仍是 `update_progress` / `ask_controller` 的精确枚举；解析不出身份、仿冒服务器名或未列出的自家工具一律 fail-closed 转审批。
+
+### 改进
+
+- `/tasks` 与 `/workers` 展示信息补齐（#49，展示层范围）：每行改用短 id（`#尾号`，重号回退全 id）与任务标题（缺失回退描述首行摘要），标题/结果/错误按面板宽度自适应分配列宽，80 列下每任务仍为单行不溢出；新增 `/tasks <id>`（全 id / 前缀 / `#尾号`，歧义时列出候选）按需详情视图：完整描述、错误与结果换行展示并封顶，worker 会话与 transcript id、时间戳、workspace；`/workers` 每行补充 worker 类型、所属任务标题与运行/空闲时长（多阶段 worker 显示上阶段摘要）；斜杠面板从单个 Text 块改为逐行渲染并以 `wrap="truncate"` 兜底；`/cancel` 同样支持 id 引用解析。
+
+### 文档
+
+- worker 通用行为规范并入 prompts（#71）：把 0.9.4 期间 Controller 反复纠正的问题收敛成一份共享的 Work discipline 段落，注入 puppet prompt 与第三方 worker 的 `<Rules>` 块，覆盖改动边界（只改任务范围内文件）、Git 与工作区卫生（不丢弃他人改动、只暂存自己的变更）、取证效率（先定位再读文件、不做全仓扫描、预算与卡住的调用如实上报）、敏感数据脱敏、以证据支撑的验收报告。Controller 侧同步补齐归因规范：任务描述固定写明排除项与工具预算，`respond_permission` 只批准具体操作而不再按类别或「自家工具」整类放行，输出根因前必须有第一手证据，二次复验失败时回到最初假设。
+
 ## v0.9.4 (2026-11-09)
 
 ### 新增

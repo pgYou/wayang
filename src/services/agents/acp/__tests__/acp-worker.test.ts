@@ -270,7 +270,7 @@ describe('BaseAcpWorker: end-to-end turn (frozen §8 case 1 shape)', () => {
     expect(payload.taskId).toBe(TASK.id);
 
     // The controller approves through the SAME handler the engine wires.
-    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe(true);
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, true)).toBe('resolved');
     // The client answers the peer request (line 4).
     await worker.transport.waitForClientOutput(4);
     const answer = worker.transport.clientMessages[3];
@@ -540,7 +540,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     const payload = queue.signals[0].payload;
 
     // The controller DENIES (respond_permission approved=false).
-    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'too dangerous')).toBe(true);
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'too dangerous')).toBe('resolved');
     await worker.transport.waitForClientOutput(4);
     expect(worker.transport.clientMessages[3]).toMatchObject({
       id: 502,
@@ -643,7 +643,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     // Simulate the approval wait expiring (reason 'timeout') through the same
     // permissionHandler channel — deterministic under the fake transport.
     const payload = queue.signals[0].payload;
-    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'timeout')).toBe(true);
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'timeout')).toBe('resolved');
     await waitForPermissionAnswer(worker.transport, 505);
 
     await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });

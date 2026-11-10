@@ -241,6 +241,59 @@ describe('classifyAcpToolCall: kind → policy tool mapping (frozen §5 table)',
     }
   });
 
+  it('deferred-executor wrapper: identity in rawInput.params.toolName → direct-allow (0.9.5 measured)', () => {
+    // Exactly the payloads measured in the 0.9.5 run: no `name`, kind 'other',
+    // rawInput.toolName names the DISPATCHER and the real tool sits one level
+    // deeper, in rawInput.params.toolName. Both serializations seen on the wire:
+    // nested tool arguments…
+    expect(
+      classifyAcpToolCall({
+        toolCallId: 't',
+        title: 'W',
+        kind: 'other',
+        rawInput: {
+          toolName: 'DeferExecuteTool',
+          params: { toolName: 'mcp__wayang__update_progress', params: { message: 'm' } },
+        },
+      }),
+    ).toMatchObject({ type: 'direct-allow', reason: 'wayang MCP controller-facing tool' });
+    // …and arguments flattened beside the identity.
+    expect(
+      classifyAcpToolCall({
+        toolCallId: 't',
+        title: 'W',
+        kind: 'other',
+        rawInput: {
+          toolName: 'DeferExecuteTool',
+          params: { message: 'm', toolName: 'mcp__wayang__ask_controller' },
+        },
+      }),
+    ).toMatchObject({ type: 'direct-allow', reason: 'wayang MCP controller-facing tool' });
+
+    // params missing, or params without a usable identity: the wrapper name
+    // ("DeferExecuteTool") proves nothing → fail-closed ask.
+    for (const rawInput of [
+      { toolName: 'DeferExecuteTool' },
+      { toolName: 'DeferExecuteTool', params: { message: 'm' } },
+    ]) {
+      expect(classifyAcpToolCall({ toolCallId: 't', title: '?', kind: 'other', rawInput })).toMatchObject({
+        type: 'direct-ask',
+      });
+    }
+
+    // A forged server or an unlisted own tool behind the same wrapper → ask.
+    for (const toolName of ['mcp__other__update_progress', 'mcp__wayang__dangerous_tool']) {
+      expect(
+        classifyAcpToolCall({
+          toolCallId: 't',
+          title: '?',
+          kind: 'other',
+          rawInput: { toolName: 'DeferExecuteTool', params: { toolName, params: {} } },
+        }),
+      ).toMatchObject({ type: 'direct-ask' });
+    }
+  });
+
   it('inference failure → direct-ask (never fed to decideToolAccess)', () => {
     expect(classifyAcpToolCall({ toolCallId: 't', title: '?', kind: 'other', rawInput: {} })).toMatchObject({
       type: 'direct-ask',
@@ -328,6 +381,44 @@ describe('bridge: verdict → outcome', () => {
     await expect(otherServer).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
     await expect(fileWrite).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
     await expect(shell).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
+  });
+
+  it('deferred-executor wrapper (identity in rawInput.params.toolName) → allow, no signal; unresolved/forged/unlisted identities still ask', async () => {
+    const { handler, signals, pending, logger } = makeBridge();
+    const wrapper = (toolCallId: string, inner: Record<string, unknown>): AcpToolCall => ({
+      toolCallId,
+      title: 'other',
+      kind: 'other',
+      rawInput: { toolName: 'DeferExecuteTool', params: inner },
+    });
+
+    // The 0.9.5 measured shapes: both whitelisted tools resolve through
+    // rawInput.params.toolName and never reach the controller.
+    for (const toolName of ['mcp__wayang__update_progress', 'mcp__wayang__ask_controller']) {
+      await expect(
+        handler(permissionRequest(wrapper(`tc-${toolName}`, { toolName, params: { message: 'm' } }))),
+      ).resolves.toEqual({ outcome: 'selected', optionId: 'allow' });
+    }
+    expect(signals).toHaveLength(0);
+    expect(auditRecords(logger)).toHaveLength(0); // direct-allow never audits
+
+    // params missing, a forged server and an unlisted own tool: the wrapper
+    // resolves nothing safe → the approval gate (permission_request signals).
+    const gated = [
+      handler(
+        permissionRequest({
+          toolCallId: 'tc-no-params',
+          title: 'other',
+          kind: 'other',
+          rawInput: { toolName: 'DeferExecuteTool' },
+        }),
+      ),
+      handler(permissionRequest(wrapper('tc-other-server', { toolName: 'mcp__other__update_progress', params: {} }))),
+      handler(permissionRequest(wrapper('tc-unlisted', { toolName: 'mcp__wayang__dangerous_tool', params: {} }))),
+    ];
+    expect(signals).toHaveLength(3);
+    for (const signal of signals) pending.resolve(signal.payload.requestId, { approved: false });
+    for (const promise of gated) await expect(promise).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
   });
 
   it('ask (outside-scope read) → permission_request signal → approve → allow + grant remembered', async () => {

@@ -26,6 +26,7 @@ import { updateProgressTool } from './update-progress';
 import { chatWorkerTool } from './chat-worker';
 import { respondPermissionTool } from './respond-permission';
 import { respondInquiryTool } from './respond-inquiry';
+import type { PermissionResolutionStatus } from './permission-middleware';
 import { useSkillTool } from './use-skill';
 import type { SkillRegistry } from '@/services/skills/registry';
 
@@ -98,8 +99,8 @@ export interface ControllerToolDeps {
   inquire: (question: InquireQuestion) => Promise<string>;
   /** Send a message to a running worker's inbox. */
   sendMessageToWorker: (workerId: string, message: string) => import('@/services/task-execute-engine').WorkerMessageDelivery;
-  /** Respond to a worker's permission request. */
-  resolvePermission: (requestId: string, approved: boolean, reason?: string) => boolean;
+  /** Respond to a worker's permission request. Every status is terminal (issue #69). */
+  resolvePermission: (requestId: string, approved: boolean, reason?: string) => PermissionResolutionStatus;
   /** Answer a worker's pending ask_controller question. */
   resolveInquiry: (inquiryId: string, answer: string) => import('./respond-inquiry').RespondInquiryStatus;
   /** Shared skill registry backing the use_skill tool. */

@@ -7,6 +7,7 @@
 
 import type { SkillRegistry } from '@/services/skills/registry';
 import { buildSkillCatalog } from './prompt-utils';
+import { WORK_DISCIPLINE_RULES } from './work-discipline';
 
 const RULES = [
   '<Rules>',
@@ -16,6 +17,7 @@ const RULES = [
   'Do NOT output a final summary right before completing — the system already captures the result separately.',
   'Match the language of the task description.',
   'Keep scratch files and intermediate artifacts in `.agents/tmp/` inside the task workspace — never `/tmp`, the home directory, or the repository root.',
+  ...WORK_DISCIPLINE_RULES,
   '</Rules>',
 ].join('\n');
 
