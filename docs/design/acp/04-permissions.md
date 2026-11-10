@@ -74,14 +74,17 @@ client 在 `initialize` 里声明不支持 `fs/*`、`terminal/*`、`elicitation`
 
 **实测事实**：用户拒绝权限后，两家 agent 都让回合以 `stopReason:'cancelled'` 收尾——codebuddy 附 `_meta.codebuddy.ai/outcome:'PERMISSION_DENIED'` 与 `errorMessage` `"Permission denied for tool(s): unknown"`，距拒绝响应约 285ms；opencode 同为 `cancelled`。**因此 cancelled ≠ 用户取消**：单看 stopReason 无法区分「用户点了拒绝」与「用户取消了任务」。
 
-**映射规则（worker 层，收窄 02 分册 §4 的 cancelled 行与冻结页 §4）**——按**本回合拒绝次数**区分：
+**映射规则（worker 层 `classifyTurnEnd`，收窄 02 分册 §4 的 cancelled 行与冻结页 §4）**——按优先级从上到下，首条命中即定：
 
-| 本回合拒绝次数 | stopReason 'cancelled' 的归因 | WorkerResult |
-| --- | --- | --- |
-| ≥1（permission 审计已落 `denied`） | 权限被用户拒绝 | `failed('Permission denied by user: <tool>')` |
-| 0 | 用户/上层主动取消 | `failed('Aborted')`（引擎 `consumeCancelled` 既有路径） |
+| 优先级 | 判据 | 归因 | WorkerResult |
+| --- | --- | --- | --- |
+| 1 | 本回合被外部 cancel/abort 打断（cancelFact，我们发出的 `session/cancel`） | 主动取消 | `failed('Aborted')` / 超时文案 |
+| 2 | `stopReason:'end_turn'` | agent 看到拒绝后正常收尾 | `completed`（拒绝不覆盖正常收尾） |
+| 3 | 本回合拒绝 ≥1（permission 审计已落 `denied`） | 权限被拒 | `failed('Permission denied by user/policy: <tool>')`，随后重投 |
+| 4 | §9.1 残留完成：`cancelled` 且**本轮是重投回合**（紧邻上一回合因拒绝重投、按回合计数，随回合切换清零，绝不用 run 级累计——run 级粘滞会把后续被取消的半成品误判成功）且**本回合有效正文**（trim 后 ≥8 字符，单个标点/单字只是中间话，不算最终答案） | cancelled 是拒绝回声 | `completed`（结论保留） |
+| 5 | 其余 `cancelled`（非重投回合，或重投回合但无有效正文） | 意外收尾 | `failed('ACP worker ended the turn unexpectedly')` |
 
-拒绝发生在回合 settle 之前（审计先落 `denied` source `'controller'`），计数在收口时天然可得；`_meta` 厂商字段只作旁证，不作判据（01 分册 §4 第 5 条）。
+拒绝发生在回合 settle 之前（审计先落 `denied` source `'controller'`），计数在收口时天然可得；`_meta` 厂商字段只作旁证，不作判据（01 分册 §4 第 5 条）。重投证据与正文长度均按回合隔离（回合切换清零），回归用例见 06 分册 §5。
 
 ### 9.2 哪些工具会请求权限（实测触发面）
 
