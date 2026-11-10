@@ -4,8 +4,7 @@
 
 ### 计划项目
 
-- fix(permission): bash 能力判定取代"无路径即放行"，解释器/launcher/动态构造一律审批（#51）
-- feat(sandbox): 命令执行沙箱（bubblewrap）能力评估与落地（待定：是否进本版）
+- fix(permission): bash 能力判定取代"无路径即放行"，解释器/launcher/动态构造与越界写一律审批（#51）
 
 ### 待定
 
