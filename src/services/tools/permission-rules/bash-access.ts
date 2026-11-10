@@ -1,14 +1,14 @@
 // The bash gate proper: candidate sweep + destructive tier + `-c` / substitution recursion.
 
 import { classifyRedirections, tokenizeShellLite } from '@/services/tools/shell-lexer';
-import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
+import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { evaluateCapabilityGate, redirectWriteScopeAsk } from './bash-capability';
-import { segmentAccess, unanalyzedInnerCommand, unverifiedReadOnlyCommand } from './bash-classification';
+import { segmentAccess, unverifiedReadOnlyCommand } from './bash-classification';
 import { isDangerousCommandLine } from './bash-head';
 import { commandAccess, extractPathCandidates, type BashCandidate } from './bash-paths';
 import { applyCdChain } from './cd-chain';
 import { expandHome, expandHomeVars } from './home-expansion';
-import { evaluateShellScripts, unanalyzedScriptFile } from './shell-script';
+import { evaluateShellScripts } from './shell-script';
 import { evaluateSubstitutions } from './substitutions';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
@@ -47,12 +47,12 @@ function fallbackSensitiveHit(
  * silent run), and under `sensitiveMode: 'deny'` one denied candidate refuses
  * it. A candidate carries the access its OWN segment justifies: `write` for a
  * write verb / redirection segment, `read` when the segment's head command is on
- * `READ_ONLY_COMMANDS`, `unknown` for everything the gate has not been taught
+ * the command table's `read` capability, `unknown` for everything the gate has not been taught
  * (the strict mode: "inside home" alone never justifies a write either).
  *
  * The read classification does NOT widen what runs silently: the policy still
  * judges each path, and a policy allow that rests solely on "reads inside home"
- * is narrowed to an approval here (see `narrowHomeRead`) — the same narrowing
+ * arrives as the policy's `read-within-home` ask (`allowReadWithinHome: false`) — the same narrowing
  * `evaluateFileAccess` applies to file tools. Only the DIRECTION changes, from
  * `unknown` (which could not even reach that rule) to a named `read`.
  *
@@ -63,10 +63,11 @@ function fallbackSensitiveHit(
  * redirection into a real file, a command the lexer cannot parse) → the
  * read-only-unverified escalation (a table command that failed its deferred
  * condition) → the `cd` slice's verdict for a chain that lands somewhere it may
- * not go (see `applyCdChain`) → the #51 fail-closed tier for shapes carrying an
- * unanalyzed inner command (see `unanalyzedInnerCommand` /
- * `unanalyzedScriptFile`) → remaining `ask` candidates (a sensitive ask first,
- * then the ordinary ones) → allow.
+ * not go (see `applyCdChain`) → remaining `ask` candidates (a sensitive ask
+ * first, then the ordinary ones) → the capability gate, whose
+ * `unknown-capability` path carries BOTH the unknown verbs and the #51
+ * fail-closed shapes with an unanalyzed inner command (see
+ * `unanalyzedInnerCommand` / `unanalyzedScriptFile`) → allow.
  * A hard refusal therefore outranks the destructive-command heuristic, and a
  * sensitive `ask` carries its hit into the approval request.
  *
@@ -164,7 +165,10 @@ export function evaluateBashCommand(
   for (const candidate of candidates) {
     const verdict = decidePath(scope, candidate.path, candidate.access);
     if (verdict.decision === 'deny') return toToolDecision(verdict, candidate.access);
-    const narrowed = narrowHomeRead(verdict, candidate);
+    // A home read arrives as the policy's `read-within-home` ask already
+    // (`allowReadWithinHome: false` on decidePath), so the map below needs no
+    // post-hoc narrowing — an ask is kept as the ask it is, an allow as is.
+    const narrowed = withAskPaths(toToolDecision(verdict, candidate.access));
     if (narrowed.decision === 'ask') {
       const ask: ToolAccessDecision = {
         ...narrowed,
@@ -308,32 +312,17 @@ export function evaluateBashCommand(
   // scope" is the actionable answer, not "this runs an inner command".
   if (cdAsk) return cdAsk;
 
-  // #51 fail-closed fallback: shapes that carry an inner command this gate
-  // never analyzes (xargs, find -exec / -execdir / -ok, eval, cd && ..., a
-  // script file, a compound shell keyword). Their outer word yields no path
-  // candidate, so they used to fall through to `allow (no-path)` even though
-  // an unjudged command runs inside. No parser or recursion is added — the
-  // shape alone escalates, and the reason names it. The tiers above keep their
-  // priority (a sensitive hit still names its entry, a real path still asks,
-  // read-only-unverified keeps its own reason); only what would otherwise be
-  // an allow becomes an ask, with no `askPaths` (not a one-path decision).
-  const innerShape = unanalyzedInnerCommand(segments) ?? unanalyzedScriptFile(segments);
-  if (innerShape !== undefined) {
-    return {
-      decision: 'ask',
-      matchedRule: 'dynamic-shell',
-      reason: `${innerShape} runs an inner command this gate does not analyze — controller approval is required (fail-closed, issue #51)`,
-      access: lineAccess,
-    };
-  }
-
   if (firstAsk) return firstAsk;
 
-  // #51 layer 2 — the capability gate. The historic "no path candidate →
+  // #51 layers 1 + 2 — the capability gate. The historic "no path candidate →
   // allow" fallback is gone: a line runs silently only when every segment sits
   // in a capability table AND its targets stay in scope (reads inside the
   // allowed directories, writes inside the workspace). Exec / network /
-  // dynamic constructs and unknown verbs ask, naming the capability class.
+  // dynamic constructs, unknown verbs AND the unanalyzed-inner-command shapes
+  // (xargs, find -exec / -execdir / -ok, eval, `cd && ...`, a script file, a
+  // compound keyword — the old layer-1 fail-closed tier, now merged into the
+  // gate's `unknown-capability` path, distinguished only by its reason text)
+  // ask, naming the shape or the capability class.
   const capabilityAsk = evaluateCapabilityGate(scope, segments, cdChain.cwd ?? scope.workspace);
   if (capabilityAsk) return { ...capabilityAsk, access: lineAccess };
 

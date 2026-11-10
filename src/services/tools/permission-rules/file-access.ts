@@ -16,13 +16,14 @@ const READ_ONLY_FILE_TOOLS: ReadonlySet<string> = new Set(['read_file', 'search_
  * reads; `write_file` / `edit_file` are writes. A call without a usable `path`
  * has nothing to judge and is allowed (the tool then uses its own cwd).
  *
- * NARROWER THAN THE POLICY ON PURPOSE: `read-within-home` is downgraded to
- * `ask`. The controller may read anywhere under home (its own read scope, 4b),
- * but a WORKER's silence-worthy scope is its workspace, its task allowedDirs
- * and the explicitly configured roots. The sensitive list only covers
- * credentials and tool config — `.env` files, SSH keys inside a project, other
- * projects' sources are all "inside home" and must not be readable without an
- * approval.
+ * NARROWER THAN THE POLICY ON PURPOSE: a read inside home asks, never runs.
+ * The controller may read anywhere under home (its own read scope, 4b), but a
+ * WORKER's silence-worthy scope is its workspace, its task allowedDirs and the
+ * explicitly configured roots. The sensitive list only covers credentials and
+ * tool config — `.env` files, SSH keys inside a project, other projects'
+ * sources are all "inside home" and must not be readable without an
+ * approval. `decidePath` passes `allowReadWithinHome: false`, so the policy
+ * itself returns the `read-within-home` ask — there is no downgrade step here.
  */
 export function evaluateFileAccess(
   scope: WorkerAccessScope,
@@ -44,18 +45,5 @@ export function evaluateFileAccess(
     };
   }
 
-  const verdict = decidePath(scope, expanded.path, access);
-  // Downgrade when — and only when — the allow rests SOLELY on the policy's
-  // "read inside home" rule. Structured check (withinReadScope), not the
-  // matchedRule string literal, so renaming the rule cannot widen access.
-  if (verdict.decision === 'allow' && verdict.withinReadScope) {
-    return {
-      decision: 'ask',
-      matchedRule: 'read-within-home',
-      resolvedPath: verdict.resolvedPath,
-      access,
-      ...(verdict.resolvedPath !== undefined && { askPaths: [verdict.resolvedPath] }),
-    };
-  }
-  return withAskPaths(toToolDecision(verdict, access));
+  return withAskPaths(toToolDecision(decidePath(scope, expanded.path, access), access));
 }

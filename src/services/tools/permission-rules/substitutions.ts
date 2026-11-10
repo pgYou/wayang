@@ -28,7 +28,7 @@ function collectSubstitutions(segments: ShellSegment[]): ShellSubstitution[] {
 /**
  * Is a substituted command read-only, so that the substitution itself needs no
  * approval? Every segment in it must be a read by the SAME rules the top level
- * uses — head command on `READ_ONLY_COMMANDS` (`isReadOnlySegment`), no write
+ * uses — head command a table read (`isReadOnlySegment`), no write
  * verb, no write flag such as `sed -i` / `find -delete`, no redirection into a
  * real file. One table, two callers: a command taught to read here is a read
  * at the top level too, and vice versa.

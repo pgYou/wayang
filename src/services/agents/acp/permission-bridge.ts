@@ -26,7 +26,14 @@ import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { SignalTurnLineage, PermissionRequestSignalPayload } from '@/types/index';
 import type { ApprovalMemoryMode } from '@/types/config';
 import type { Logger } from '@/infra/logger';
-import { approvalKey, type ApprovalMemory } from '@/services/permission/approval-memory';
+import {
+  DEFAULT_PERMISSION_TIMEOUT_MS,
+  PermissionTransport,
+  denialSourceOf,
+  reusableGrantKeys,
+  type PermissionAnswer,
+} from '@/services/permission/permission-transport';
+import type { ApprovalMemory } from '@/services/permission/approval-memory';
 import {
   auditAccessFor,
   operationForTool,
@@ -39,14 +46,13 @@ import { generateId } from '@/utils/id';
 import type { AcpToolAccumulator, AcpToolSnapshot } from './event-mapper';
 import { MCP_SERVER_NAME, type McpToolName } from './mcp-schemas';
 
-/** Default wait for a controller answer (frozen §5: aligns with the claude-code worker and the middleware). */
-export const ACP_PERMISSION_TIMEOUT_MS = 300_000;
+/** Default wait for a controller answer — the shared transport constant. */
 
-/** What the blocking wait settles with (same shape the permission middleware uses). */
-export interface AcpPermissionAnswer {
-  approved: boolean;
-  reason?: string;
-}
+/**
+ * What the blocking wait settles with — the transport's canonical answer
+ * under the ACP-facing name this module's callers already use.
+ */
+export type AcpPermissionAnswer = PermissionAnswer;
 
 /** Why a turn was refused (#56): the source that decides the failure wording. */
 export type AcpDenialSource = 'policy' | 'timeout' | 'controller';
@@ -272,21 +278,6 @@ export function classifyAcpToolCall(snapshot: AcpToolSnapshot): Classification {
   };
 }
 
-/** The grants a verdict may reuse, or `[]` when this call must ask again (issue #46 rule). */
-function reusableGrantKeys(verdict: ToolAccessDecision): string[] {
-  if (verdict.decision !== 'ask') return [];
-  if (verdict.access !== 'read') return [];
-  if (verdict.sensitive === true) return [];
-  const paths = verdict.askPaths ?? [];
-  if (paths.length === 0) return [];
-  const keys: string[] = [];
-  for (const path of paths) {
-    const key = approvalKey('read', path);
-    if (!keys.includes(key)) keys.push(key);
-  }
-  return keys;
-}
-
 /** toolName the signal/audit carry (04 §8: `toolCall.name ?? kind`). */
 function bridgeToolName(snapshot: AcpToolSnapshot): string {
   return snapshot.name || snapshot.kind || 'unknown';
@@ -295,12 +286,12 @@ function bridgeToolName(snapshot: AcpToolSnapshot): string {
 /**
  * Why an unapproved wait settled (#25): the controller denied, the wait timed
  * out, or the run was aborted (the cleanup settles pending waits). Only the
- * first is a user rejection.
+ * first is a user rejection — the triage itself is the transport's
+ * `denialSourceOf`, so the audit source and the denial ledger agree with the
+ * other gates.
  */
-function denialSource(reason: string | undefined): 'timeout' | 'aborted' | 'controller' {
-  if (reason === 'timeout') return 'timeout';
-  if (reason === 'Worker aborted') return 'aborted';
-  return 'controller';
+function denialSource(answer: AcpPermissionAnswer): 'timeout' | 'aborted' | 'controller' {
+  return denialSourceOf(answer);
 }
 
 /** toolArgs for the signal payload: the merged rawInput, or locations when absent. */
@@ -343,20 +334,24 @@ function describeRequest(
  * Build the ACP permission handler. Returns the function handed to
  * `AcpClient.onPermissionRequest`; every path ends in a concrete outcome —
  * the client writes the JSON-RPC response from it.
+ *
+ * `pendingPermissions` is the worker's shared `PermissionTransport`: the
+ * bridge parks its asks there (the same spine the puppet middleware and the
+ * Claude Code gate use) and inherits the canonical timeout settle.
  */
 export function createAcpPermissionBridge(
   deps: AcpPermissionBridgeDeps,
-  pendingPermissions: { wait: (id: string, timeoutMs: number, makeTimeoutValue: () => AcpPermissionAnswer) => Promise<AcpPermissionAnswer> },
+  pendingPermissions: PermissionTransport,
 ): (req: AcpPermissionRequest) => Promise<AcpPermissionOutcome> {
-  const permissionMs = deps.permissionMs ?? ACP_PERMISSION_TIMEOUT_MS;
+  const permissionMs = deps.permissionMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
   const memoryEnabled = deps.approvalMemory !== 'off';
   const audit = (entry: Parameters<typeof recordPermissionAudit>[1]) =>
     recordPermissionAudit(deps.logger, { ...entry, transport: 'acp', provider: deps.provider });
 
   /** Emit a structured refusal (#56). An 'aborted' settle is run teardown, not a denial. */
-  const emitWaitDenial = (reason: string | undefined, toolName: string, target: string, matchedRule?: string): void => {
-    const source = denialSource(reason);
-    if (source !== 'aborted') deps.onDenial?.({ source, toolName, reason: reason ?? '', target, matchedRule });
+  const emitWaitDenial = (answer: AcpPermissionAnswer, toolName: string, target: string, matchedRule?: string): void => {
+    const source = denialSource(answer);
+    if (source !== 'aborted') deps.onDenial?.({ source, toolName, reason: answer.reason ?? '', target, matchedRule });
   };
 
   const baseAuditFields = (toolName: string, snapshot: AcpToolSnapshot, classification: Classification) => ({
@@ -515,10 +510,7 @@ export function createAcpPermissionBridge(
         ...(deps.turnLineage ?? {}),
       });
 
-      const result = await pendingPermissions.wait(requestId, permissionMs, () => ({
-        approved: false,
-        reason: 'timeout',
-      } as AcpPermissionAnswer));
+      const result = await pendingPermissions.wait(requestId, permissionMs);
 
       audit({
         ...base,
@@ -528,7 +520,7 @@ export function createAcpPermissionBridge(
         matchedRule: ask.matchedRule,
         matchedEntry: ask.matchedEntry,
         matchedSource: ask.matchedSource,
-        ...(!result.approved && { source: denialSource(result.reason) }),
+        ...(!result.approved && { source: denialSource(result) }),
       });
 
       if (result.approved) {
@@ -538,7 +530,7 @@ export function createAcpPermissionBridge(
         }
         return outcomeFor('allow');
       }
-      emitWaitDenial(result.reason, toolName, denialTarget, ask.matchedRule);
+      emitWaitDenial(result, toolName, denialTarget, ask.matchedRule);
       return outcomeFor('reject');
     }
 
@@ -562,19 +554,16 @@ export function createAcpPermissionBridge(
       ...(deps.turnLineage ?? {}),
     });
 
-    const result = await pendingPermissions.wait(requestId, permissionMs, () => ({
-      approved: false,
-      reason: 'timeout',
-    } as AcpPermissionAnswer));
+    const result = await pendingPermissions.wait(requestId, permissionMs);
 
     audit({
       ...base,
       decision: result.approved ? 'approved' : 'denied',
       access: 'unknown',
-      ...(!result.approved && { source: denialSource(result.reason) }),
+      ...(!result.approved && { source: denialSource(result) }),
     });
 
-    if (!result.approved) emitWaitDenial(result.reason, toolName, denialTarget, ask.matchedRule);
+    if (!result.approved) emitWaitDenial(result, toolName, denialTarget, ask.matchedRule);
     return result.approved ? outcomeFor('allow') : outcomeFor('reject');
   };
 }

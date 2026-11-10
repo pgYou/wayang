@@ -25,16 +25,17 @@ import { describe, it, expect } from 'vitest';
 import { realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { SignalQueue } from '@/services/signal/signal-queue';
-import { BlockingRequestMap } from '@/infra/blocking-requests';
+import {
+  DEFAULT_PERMISSION_TIMEOUT_MS,
+  PermissionTransport,
+} from '@/services/permission/permission-transport';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
 import type { Logger } from '@/infra/logger';
 import { createMockLogger } from '@/__tests__/helpers';
 import {
-  ACP_PERMISSION_TIMEOUT_MS,
   SAFE_WAYANG_MCP_TOOLS,
   classifyAcpToolCall,
   createAcpPermissionBridge,
-  type AcpPermissionAnswer,
   type AcpPermissionBridgeDeps,
 } from '@/services/agents/acp/permission-bridge';
 import { createAcpToolAccumulator } from '@/services/agents/acp/event-mapper';
@@ -90,7 +91,7 @@ interface BridgeHarness {
   accumulator: ReturnType<typeof createAcpToolAccumulator>;
   signals: Array<Record<string, any>>;
   grants: ApprovalMemory;
-  pending: BlockingRequestMap<AcpPermissionAnswer>;
+  pending: PermissionTransport;
   logger: Logger & { info: { mock: { calls: any[] } }; warn: { mock: { calls: any[] } } };
 }
 
@@ -103,7 +104,7 @@ function makeBridge(overrides: Partial<AcpPermissionBridgeDeps> = {}): BridgeHar
     },
   } as unknown as SignalQueue;
   const grants = new ApprovalMemory();
-  const pending = new BlockingRequestMap<AcpPermissionAnswer>();
+  const pending = new PermissionTransport();
   const logger = createMockLogger() as BridgeHarness['logger'];
   const deps: AcpPermissionBridgeDeps = {
     accumulator,
@@ -114,7 +115,7 @@ function makeBridge(overrides: Partial<AcpPermissionBridgeDeps> = {}): BridgeHar
     approvalMemory: 'task',
     logger,
     provider: 'codebuddy',
-    permissionMs: ACP_PERMISSION_TIMEOUT_MS,
+    permissionMs: DEFAULT_PERMISSION_TIMEOUT_MS,
     ...overrides,
   };
   return { handler: createAcpPermissionBridge(deps, pending), accumulator, signals, grants, pending, logger };
@@ -375,7 +376,7 @@ describe('bridge: verdict → outcome', () => {
     expect(signals).toHaveLength(5);
     expect(signals.map((signal) => signal.payload.toolName)).toEqual(['other', 'other', 'other', 'edit', 'execute']);
 
-    for (const signal of signals) pending.resolve(signal.payload.requestId, { approved: false });
+    for (const signal of signals) pending.resolve(signal.payload.requestId, false);
     await expect(unlistedOwn).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
     await expect(lookAlikeServer).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
     await expect(otherServer).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
@@ -417,7 +418,7 @@ describe('bridge: verdict → outcome', () => {
       handler(permissionRequest(wrapper('tc-unlisted', { toolName: 'mcp__wayang__dangerous_tool', params: {} }))),
     ];
     expect(signals).toHaveLength(3);
-    for (const signal of signals) pending.resolve(signal.payload.requestId, { approved: false });
+    for (const signal of signals) pending.resolve(signal.payload.requestId, false);
     for (const promise of gated) await expect(promise).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
   });
 
@@ -438,7 +439,7 @@ describe('bridge: verdict → outcome', () => {
     expect(payload.description).toContain('/etc/passwd');
     expect(payload.requestId).toBeDefined();
 
-    pending.resolve(payload.requestId, { approved: true });
+    pending.resolve(payload.requestId, true);
     await expect(promise).resolves.toEqual({ outcome: 'selected', optionId: 'allow' });
     // The read approval opened a grant for the asking path.
     expect(grants.has('task-1', `read:${canonical('/etc/passwd')}`)).toBe(true);
@@ -450,7 +451,7 @@ describe('bridge: verdict → outcome', () => {
       permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/etc/passwd' } }),
     );
     const requestId = signals[0].payload.requestId;
-    pending.resolve(requestId, { approved: false });
+    pending.resolve(requestId, false);
     await expect(promise).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
     expect(auditRecords(logger)).toEqual([expect.objectContaining({ decision: 'denied', source: 'controller' })]);
     // A refusal is a decision about THIS request — nothing is remembered.
@@ -467,14 +468,14 @@ describe('bridge: verdict → outcome', () => {
 
     // A controller denial is a user rejection — recorded with source + tool name.
     const denied = handler(read());
-    pending.resolve(signals[0].payload.requestId, { approved: false });
+    pending.resolve(signals[0].payload.requestId, false);
     await denied;
     expect(denials).toEqual(['controller:read']);
 
     // The abort cleanup ('Worker aborted') also settles unapproved, but it is
     // the run being torn down, not a refusal — it emits no denial event.
     const aborted = handler(read());
-    pending.resolve(signals[1].payload.requestId, { approved: false, reason: 'Worker aborted' });
+    pending.resolve(signals[1].payload.requestId, false, 'Worker aborted');
     await aborted;
     expect(denials).toEqual(['controller:read']);
   });
@@ -513,7 +514,7 @@ describe('bridge: verdict → outcome', () => {
 
     // First read: asks and is approved.
     const first = handler(req());
-    pending.resolve(signals[0].payload.requestId, { approved: true });
+    pending.resolve(signals[0].payload.requestId, true);
     await first;
 
     // Second read of the SAME path in the SAME task: no signal, memory grant.
@@ -541,14 +542,14 @@ describe('bridge: verdict → outcome', () => {
     expect(signals).toHaveLength(1);
     expect(signals[0].payload.sensitive).toBe(true);
     expect(signals[0].payload.matchedRule).toBe('sensitive-list');
-    pending.resolve(signals[0].payload.requestId, { approved: true });
+    pending.resolve(signals[0].payload.requestId, true);
     await first;
     expect(grants.has('task-1', 'read:/home/test-user/.ssh/id_rsa')).toBe(false);
 
     // Second sensitive read asks AGAIN (sensitive hits never reuse a grant).
     const second = handler(sensitiveRead());
     expect(signals).toHaveLength(2);
-    pending.resolve(signals[1].payload.requestId, { approved: true });
+    pending.resolve(signals[1].payload.requestId, true);
     await second;
     expect(auditRecords(logger).some((record) => record.decision === 'hard-denied')).toBe(false);
   });
@@ -589,7 +590,7 @@ describe('bridge: verdict → outcome', () => {
     });
     await Promise.resolve();
     expect(settled).toBe(false);
-    pending.resolve(signals[0].payload.requestId, { approved: true });
+    pending.resolve(signals[0].payload.requestId, true);
     await expect(promise).resolves.toEqual({ outcome: 'selected', optionId: 'allow' });
   });
 
@@ -624,7 +625,7 @@ describe('bridge: merged-snapshot judging (frozen §5 input merge)', () => {
     expect(signals).toHaveLength(1);
     expect(signals[0].payload.toolName).toBe('execute');
     expect(signals[0].payload.sensitive).toBe(true);
-    pending.resolve(signals[0].payload.requestId, { approved: false });
+    pending.resolve(signals[0].payload.requestId, false);
     await expect(promise).resolves.toEqual({ outcome: 'selected', optionId: 'reject' });
   });
 
@@ -633,13 +634,13 @@ describe('bridge: merged-snapshot judging (frozen §5 input merge)', () => {
     const req = () =>
       permissionRequest({ toolCallId: 'tc', title: 'Read', kind: 'read', rawInput: { file_path: '/etc/passwd' } });
     const first = handler(req());
-    pending.resolve(signals[0].payload.requestId, { approved: true });
+    pending.resolve(signals[0].payload.requestId, true);
     await first;
     expect(grants.has('task-1', 'read:/etc/passwd')).toBe(false);
 
     const second = handler(req());
     expect(signals).toHaveLength(2); // asks again — nothing was remembered
-    pending.resolve(signals[1].payload.requestId, { approved: true });
+    pending.resolve(signals[1].payload.requestId, true);
     await second;
   });
 });

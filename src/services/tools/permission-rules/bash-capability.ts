@@ -5,16 +5,18 @@
 // writes whose resolved targets stay inside the workspace, side-effect-free
 // verbs in a bare segment.
 
-import { resolve as resolvePath, sep } from 'node:path';
+import { resolve as resolvePath } from 'node:path';
+import { isPathWithin } from '@/infra/permission/policy';
 import {
   CMDSUBST_PLACEHOLDER,
   isDiscardRedirectTarget,
   type ShellSegment,
 } from '@/services/tools/shell-lexer';
-import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
-import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead } from './bash-classification';
+import { commandEntry, isInertCommand } from './command-tables';
+import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
+import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead, unanalyzedInnerCommand } from './bash-classification';
 import { headCommand } from './bash-head';
-import { SHELL_COMMANDS } from './shell-script';
+import { SHELL_COMMANDS, unanalyzedScriptFile } from './shell-script';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
 /** What ONE segment is capable of, beyond the read/write access split. */
@@ -28,41 +30,12 @@ export type SegmentCapability =
   | 'unknown';
 
 /**
- * Shells and interpreters at the command position: what they actually do is
- * decided by the script they run, not by the verb, so the verb alone cannot
- * justify a silent allow — `python -c '…'`, `awk 'BEGIN{system(…)}'` and
- * `bash <<EOF` all ask. `bash -c` scripts were already judged recursively by
- * `evaluateShellScripts` before this gate runs.
- */
-const INTERPRETER_COMMANDS: ReadonlySet<string> = new Set([
-  'bash', 'sh', 'dash', 'zsh', 'ksh', 'busybox',
-  'python', 'python3', 'node', 'perl', 'ruby', 'awk', 'php', 'lua',
-]);
-
-/** Commands whose primary effect is reaching the network. */
-const NETWORK_COMMANDS: ReadonlySet<string> = new Set(['curl', 'wget', 'nc', 'scp']);
-
-/** Write verbs beyond `BASH_WRITE_VERBS` (which `isWriteSegment` reads). */
-const WRITE_CAPABILITY_COMMANDS: ReadonlySet<string> = new Set(['rsync']);
-
-/**
- * Commands whose whole effect is their own output or exit status — no file
- * access, no subprocess, no network. They run silently (as `inert`) when the
- * segment is bare (see `isInertSegment`). `date` counts only without
- * `-s` / `--set`; `command` only in its `command -v` query shape — that is
- * exactly where `headCommand` keeps the wrapper as the head word.
- */
-const INERT_COMMANDS: ReadonlySet<string> = new Set([
-  'sleep', 'true', 'false', ':', 'pwd', 'whoami', 'id', 'date',
-  'test', '[', 'exit', 'which', 'command', 'echo', 'printf',
-]);
-
-/**
- * Launchers `headCommand` does NOT strip (it strips sudo / env / nohup / time /
- * nice / ionice / command / exec / builtin): the inner command sits behind the
- * launcher's own arguments, so the head word itself must be unfolded here.
- * `ssh` is folded in: with no remote command it is pure network, with one it
- * launches that command on the far side.
+ * Launchers `headCommand` does NOT strip (it strips the wrapper-marked
+ * prefixes — sudo / env / nohup / time / nice / ionice / command / exec /
+ * builtin): the inner command sits behind the launcher's own arguments, so the
+ * head word itself must be unfolded here. `ssh` is folded in: with no remote
+ * command it is pure network, with one it launches that command on the far
+ * side.
  */
 const LAUNCHER_COMMANDS: ReadonlySet<string> = new Set([
   'script', 'su', 'setsid', 'watch', 'timeout', 'ssh',
@@ -141,8 +114,10 @@ function relativeInputTargets(segment: ShellSegment): string[] {
 
 /** Is `abs` the workspace itself or somewhere underneath it? */
 function insideWorkspace(scope: WorkerAccessScope, abs: string): boolean {
-  const workspace = resolvePath(scope.workspace);
-  return abs === workspace || abs.startsWith(`${workspace}${sep}`);
+  // The policy's own containment check is segment-boundary aware (`/a/b`
+  // never matches `/a/bc`), so the write-scope boundary keeps its exact
+  // semantics — including the `/workspace` vs `/workspace-x` trap.
+  return isPathWithin(resolvePath(scope.workspace), abs);
 }
 
 /** Classify a word list from its first non-assignment word (the command). */
@@ -193,9 +168,19 @@ function capabilityOfHead(command: string, words: readonly string[]): SegmentCap
   // `env -S <string>` builds a command line from the string: a shell shape.
   if (command === 'env' && words.includes('-S')) return 'exec';
   if (LAUNCHER_COMMANDS.has(command)) return launcherCapability(command, words);
-  if (INTERPRETER_COMMANDS.has(command)) return 'exec';
-  if (NETWORK_COMMANDS.has(command)) return 'network';
-  if (WRITE_CAPABILITY_COMMANDS.has(command)) return 'write';
+  const entry = commandEntry(command);
+  if (entry === undefined) return 'unknown';
+  if (entry.capability === 'exec') return 'exec';
+  if (entry.capability === 'network') return 'network';
+  // A write the DIRECTION split does not know (`rsync`): the head classifier
+  // itself must say write, or a launcher interior (`timeout 5 rsync a b`)
+  // would lose the verdict. Direction write verbs (`rm`, `mv`, …) do NOT take
+  // this branch — in a launcher interior they keep the historic `unknown`
+  // ask, and on the direct path `isWriteCommandHead` settles them earlier.
+  if (entry.capability === 'write' && entry.capabilityOnlyWrite === true) return 'write';
+  // `read` / `inert` entries reaching this point failed their own gate (a
+  // non-bare inert verb, an unverified read, a `wrapper` / `danger` entry) —
+  // `unknown`, exactly the verdict they kept before the tables merged.
   return 'unknown';
 }
 
@@ -220,15 +205,19 @@ function isJudgedShellScript(head: { command: string; words: string[] }): boolea
 
 /**
  * Is this segment side-effect-free (`inert`)? The head must sit on the inert
- * table, and the WHOLE segment must be bare: any redirection disqualifies it
- * (`sleep 1 > out.txt` is judged as the write it is, `test < f` as a read),
- * a `$` / backtick / command-substitution word is a dynamic construct, and an
- * absolute or `~` operand is a path judged by the candidate sweep. Shapes that
- * do not qualify fall back to their original classification — `echo $X` stays
- * a table read, `sleep $N` an unknown verb.
+ * capability in the command table, and the WHOLE segment must be bare: any
+ * redirection disqualifies it (`sleep 1 > out.txt` is judged as the write it
+ * is, `test < f` as a read), a `$` / backtick / command-substitution word is a
+ * dynamic construct, and an absolute or `~` operand is a path judged by the
+ * candidate sweep. Shapes that do not qualify fall back to their original
+ * classification — `sleep $N` stays an unknown verb. The six verbs that used
+ * to sit on both the read and the inert tables (`echo`, `printf`, `date`,
+ * `pwd`, `which`, `command`) are reads now: a bare shape still allows (its
+ * operands resolve against the in-workspace cursor), but its operands go
+ * through the policy instead of riding the inert allow.
  */
 function isInertSegment(segment: ShellSegment, head: { command: string; words: string[] }): boolean {
-  if (!INERT_COMMANDS.has(head.command)) return false;
+  if (!isInertCommand(head.command)) return false;
   const args = head.words.slice(1);
   if (head.command === 'date' && args.some(isDateSetFlag)) return false;
   if (head.command === 'command' && args[0] !== '-v' && args[0] !== '-V') return false;
@@ -295,6 +284,16 @@ function ask(matchedRule: ToolAccessDecision['matchedRule'], reason: string): To
  * silently — every segment sits in a capability table AND its targets stay in
  * scope — or the escalation to surface instead of the historic allow.
  *
+ * Two shapes share the `unknown-capability` path, distinguished only by the
+ * reason text:
+ *  - inner-command fail-closed (#51 layer 1): a segment carries an unanalyzed
+ *    inner command (xargs, find -exec, eval, a `cd` shape, a script FILE, a
+ *    compound keyword). Checked BEFORE the per-segment loop so a mixed line
+ *    reports the same shape it did when the tier stood on its own, and so a
+ *    shape whose own segment classifies differently (`find -exec` is a
+ *    direction write, `bash script.sh` an exec) can never ride that verdict.
+ *  - unknown verbs: a head word no capability table knows.
+ *
  * Ordering across segments: a dynamic construct or an out-of-workspace write
  * target (the two shapes that say something specific about WHAT runs) wins
  * over a read path ask, which wins over the capability classes exec → network
@@ -305,6 +304,16 @@ export function evaluateCapabilityGate(
   segments: readonly ShellSegment[],
   cursor: string,
 ): ToolAccessDecision | undefined {
+  // The merged #51 fail-closed tier: shapes that carry an inner command this
+  // gate never analyzes (see `unanalyzedInnerCommand` / `unanalyzedScriptFile`).
+  const innerShape = unanalyzedInnerCommand(segments) ?? unanalyzedScriptFile(segments);
+  if (innerShape !== undefined) {
+    return ask(
+      'unknown-capability',
+      `${innerShape} runs an inner command this gate does not analyze — controller approval is required (fail-closed, issue #51)`,
+    );
+  }
+
   let execAsk: ToolAccessDecision | undefined;
   let networkAsk: ToolAccessDecision | undefined;
   let unknownAsk: ToolAccessDecision | undefined;
@@ -345,7 +354,9 @@ export function evaluateCapabilityGate(
         const abs = resolvePath(cursor, operand);
         const verdict = decidePath(scope, abs, 'read');
         if (verdict.decision === 'deny') return toToolDecision(verdict, 'read');
-        const narrowed = narrowHomeRead(verdict, { path: abs, access: 'read' });
+        // A home read arrives as the policy's `read-within-home` ask already
+        // (`allowReadWithinHome: false` on decidePath) — no downgrade here.
+        const narrowed = withAskPaths(toToolDecision(verdict, 'read'));
         if (narrowed.decision === 'ask') {
           return { ...narrowed, askPaths: [narrowed.resolvedPath ?? abs] };
         }

@@ -2,11 +2,18 @@
 
 import type { AccessMode } from '@/infra/permission/policy';
 import { isDiscardRedirectTarget, type ShellSegment } from '@/services/tools/shell-lexer';
+import {
+  GIT_READ_SUBCOMMANDS,
+  isReadCommand,
+  isWriteCommand,
+  writeFlagsOf,
+} from './command-tables';
 import { headCommand } from './bash-head';
 import { isReadOnlySedScript, sedScriptsOf } from './sed-analysis';
 
 /**
- * Commands that only READ what they are pointed at.
+ * Commands that only READ what they are pointed at — the `read` capability of
+ * the command table (see `command-tables.ts`).
  *
  * Membership is opt-in — "no write feature found" is NOT enough to be a read,
  * so `python`, `make` and `npm` stay outside the table and keep their previous
@@ -34,55 +41,31 @@ import { isReadOnlySedScript, sedScriptsOf } from './sed-analysis';
  * Classifying a read never widens what a worker may touch on its own: the
  * policy still judges every path, and a policy allow that rests solely on
  * "reads inside home" is still narrowed to an approval for bash candidates
- * (see `narrowHomeRead`), exactly as `evaluateFileAccess` does for file tools.
+ * (the policy's `allowReadWithinHome: false`), exactly as `evaluateFileAccess` does for file tools.
  * The classification exists to get the DIRECTION right — the audit trail and
  * the approval request then say read / write / unknown instead of calling
  * every `cat` unknown.
  */
-const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
-  'cat', 'ls', 'head', 'tail', 'wc', 'grep', 'rg', 'stat', 'file', 'readlink',
-  'which', 'command', 'echo', 'printf', 'date', 'pwd', 'tree', 'du', 'df',
-  'cut', 'sort', 'uniq', 'tr', 'diff', 'sed', 'find', 'git',
-]);
 
 /**
- * Commands that write to the paths they name. A candidate in the same command
- * segment as one of these is judged as a WRITE (so a sensitive target asks as
- * an approved-once write, or is refused outright under `sensitiveMode: 'deny'`).
+ * Commands that write to the paths they name — the `write` capability of the
+ * command table. A candidate in the same command segment as one of these is
+ * judged as a WRITE (so a sensitive target asks as an approved-once write, or
+ * is refused outright under `sensitiveMode: 'deny'`).
  *
  * This is the write half of the direction split: `rm ~/.ssh/x` and
  * `cat ~/.ssh/x` both escalate, but the first reports `access: write` and the
  * second `access: read`, and a refusal names the direction it refused.
  * A command missing from this table loses no safety —
- * it is judged `unknown` (see `READ_ONLY_COMMANDS` for the read half), which the
- * policy treats as a write for scope purposes.
+ * it is judged `unknown` (see the read half above), which the policy treats
+ * as a write for scope purposes.
  */
-const BASH_WRITE_VERBS: ReadonlySet<string> = new Set([
-  'rm', 'rmdir', 'mv', 'cp', 'ln', 'tee', 'dd', 'truncate', 'install',
-  'mkdir', 'touch', 'chmod', 'chown', 'chgrp', 'shred', 'unlink', 'chattr',
-  'mkfs', 'mkswap', 'mount', 'umount',
-]);
 
 /**
- * Verbs that write only with a specific flag (`sed -i`, `find -delete`, …).
- * Both the verb and one of its flags must appear in the same segment.
- *
- * `find` needs the full write set because it is a read-only command otherwise
- * (see `READ_ONLY_COMMANDS`): every option that creates, deletes, truncates or
- * hands a file WRITE handle to another command lives here. `/…/ -ok` prompts but
- * still runs a command, so it belongs in the write tier with `-exec`.
+ * Verbs that write only with a specific flag (`sed -i`, `find -delete`, …) —
+ * the table's `writeFlags`. Both the verb and one of its flags must appear in
+ * the same segment.
  */
-const BASH_FLAGGED_WRITE_VERBS: ReadonlyMap<string, readonly string[]> = new Map([
-  ['sed', ['-i', '--in-place']],
-  ['perl', ['-i']],
-  ['ruby', ['-i']],
-  [
-    'find',
-    [
-      '-delete', '-fprint', '-fprint0', '-fls', '-fprintf', '-exec', '-execdir', '-ok', '-okdir',
-    ],
-  ],
-]);
 
 /**
  * Does `word` spell the option `flag`? Three spellings count: the flag itself,
@@ -114,8 +97,8 @@ export function isWriteSegment(segment: ShellSegment): boolean {
     return true;
   }
   for (const word of words) {
-    if (BASH_WRITE_VERBS.has(word)) return true;
-    const flags = BASH_FLAGGED_WRITE_VERBS.get(word);
+    if (isWriteCommand(word)) return true;
+    const flags = writeFlagsOf(word);
     if (flags && flags.some((flag) => words.some((other) => isFlagWord(other, flag)))) return true;
   }
   return false;
@@ -127,20 +110,17 @@ export function isWriteSegment(segment: ShellSegment): boolean {
  * `npm install axios` (the word `install` as an argument) is not a write.
  */
 export function isWriteCommandHead(command: string, words: readonly string[]): boolean {
-  if (BASH_WRITE_VERBS.has(command)) return true;
-  const flags = BASH_FLAGGED_WRITE_VERBS.get(command);
+  if (isWriteCommand(command)) return true;
+  const flags = writeFlagsOf(command);
   return flags !== undefined && flags.some((flag) => words.some((other) => isFlagWord(other, flag)));
 }
 
 /**
- * git subcommands that only read. `git` itself is in `READ_ONLY_COMMANDS`, so
+ * git subcommands that only read — `GIT_READ_SUBCOMMANDS`, derived from the
+ * command table's `git` entry. `git` itself is a `read`-capability command, so
  * everything else — `clean`, `checkout`, `reset`, `push`, `commit`, `stash`, …
  * — falls back to `unknown` and keeps the old verdict.
  */
-const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
-  'status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'blame', 'grep',
-  'describe', 'shortlog',
-]);
 
 /**
  * Subcommands whose BARE form reads but whose flags mutate (`git branch -D`,
@@ -170,7 +150,7 @@ function isReadOnlyGitCommand(words: readonly string[]): boolean {
   }
   const subcommand = args[i];
   if (subcommand === undefined) return false;
-  if (GIT_READ_ONLY_SUBCOMMANDS.has(subcommand)) return true;
+  if (GIT_READ_SUBCOMMANDS.has(subcommand)) return true;
   const listFlags = GIT_LIST_ONLY_FLAGS.get(subcommand);
   if (listFlags === undefined) return false;
   const flags = args.slice(i + 1).filter((word) => word.startsWith('-'));
@@ -191,12 +171,12 @@ interface SegmentClassification {
   /** The access this segment justifies — see `classifySegment`. */
   mode: AccessMode;
   /**
-   * The head command when it is on `READ_ONLY_COMMANDS` but the deferred
-   * condition the table attaches to it failed — `sed` (a script that executes,
-   * writes, or cannot be located at all) and `date` (`-s` / `--set` sets the
-   * clock). A future condition on `find` / `git` would plug in here. Never set
-   * on a write segment: a write verb / flag / redirection settles the segment
-   * as a write FIRST, whatever the table says.
+   * The head command when it is a table read but the deferred condition
+   * attached to it failed — `sed` (a script that executes, writes, or cannot
+   * be located at all) and `date` (`-s` / `--set` sets the clock). A future
+   * condition on `find` / `git` would plug in here. Never set on a write
+   * segment: a write verb / flag / redirection settles the segment as a
+   * write FIRST, whatever the table says.
    */
   unverified?: string;
 }
@@ -215,15 +195,15 @@ export function isDateSetFlag(word: string): boolean {
 /**
  * Classify one segment: `write` when it certainly writes (write verb, write
  * flag, or a redirection into a real file — `isWriteSegment`), `read` when its
- * head command is on `READ_ONLY_COMMANDS` AND every deferred condition that
- * table attaches to it holds, `unknown` otherwise. Segments are judged
- * independently so a `cat` next to a `tee` keeps its own direction.
+ * head command is a table read AND every deferred condition attached to it
+ * holds, `unknown` otherwise. Segments are judged independently so a `cat`
+ * next to a `tee` keeps its own direction.
  */
 function classifySegment(segment: ShellSegment): SegmentClassification {
   if (isWriteSegment(segment)) return { mode: 'write' };
   const head = headCommand(segment);
   if (head === undefined) return { mode: 'unknown' };
-  if (!READ_ONLY_COMMANDS.has(head.command)) return { mode: 'unknown' };
+  if (!isReadCommand(head.command)) return { mode: 'unknown' };
   if (head.command === 'git') {
     // `git`'s subcommand check is a classifier, not a deferred condition: a
     // non-read subcommand is DETERMINED not to be a read (like an off-table
@@ -273,13 +253,12 @@ export function segmentAccess(segment: ShellSegment): AccessMode {
 }
 
 /**
- * The first head command that is on `READ_ONLY_COMMANDS` but FAILED the
- * deferred condition the table attaches to it (see `classifySegment`), or
- * undefined. This is the fail-closed signal for the top level: such a line
- * must not run silently just because it produced no asking path candidate
- * (relative operands only) or only candidates the policy would allow — the
- * table's promise ("this command only reads") is exactly what failed to
- * verify.
+ * The first head command that is a table read but FAILED the deferred
+ * condition attached to it (see `classifySegment`), or undefined. This is the
+ * fail-closed signal for the top level: such a line must not run silently
+ * just because it produced no asking path candidate (relative operands only)
+ * or only candidates the policy would allow — the table's promise ("this
+ * command only reads") is exactly what failed to verify.
  */
 export function unverifiedReadOnlyCommand(segments: readonly ShellSegment[]): string | undefined {
   for (const segment of segments) {
