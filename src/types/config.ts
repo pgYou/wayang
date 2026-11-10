@@ -33,7 +33,7 @@ export interface ProviderConfig {
   /**
    * Context window budget (input side) for this provider's model — NOT the
    * OpenAI-protocol `max_tokens` (which caps output). Drives controller
-   * compaction, which triggers at 90% of this budget (workers do not compact
+   * compaction, which triggers at 60% of this budget (workers do not compact
    * yet). Optional — defaults to 256k tokens; set it for smaller-window
    * models (e.g. 128k), otherwise the provider rejects the request before
    * compaction ever triggers. Must be a positive integer.

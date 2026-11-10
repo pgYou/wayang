@@ -41,7 +41,7 @@ import {
   verdictDetailSuffix,
   type PermissionOperation,
 } from '@/services/permission/permission-audit';
-import { decideToolAccess, type ToolAccessDecision, type WorkerAccessScope } from '@/services/tools/permission-rules';
+import { decideToolAccess, type WorkerAccessScope } from '@/services/tools/permission-rules';
 import { generateId } from '@/utils/id';
 import type { AcpToolAccumulator, AcpToolSnapshot } from './event-mapper';
 import { MCP_SERVER_NAME, type McpToolName } from './mcp-schemas';

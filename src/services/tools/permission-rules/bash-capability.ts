@@ -14,9 +14,9 @@ import {
 } from '@/services/tools/shell-lexer';
 import { commandEntry, isInertCommand } from './command-tables';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
-import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead, unanalyzedInnerCommand } from './bash-classification';
+import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead } from './bash-classification';
 import { headCommand } from './bash-head';
-import { SHELL_COMMANDS, unanalyzedScriptFile } from './shell-script';
+import { SHELL_COMMANDS } from './shell-script';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
 /** What ONE segment is capable of, beyond the read/write access split. */
@@ -284,15 +284,13 @@ function ask(matchedRule: ToolAccessDecision['matchedRule'], reason: string): To
  * silently — every segment sits in a capability table AND its targets stay in
  * scope — or the escalation to surface instead of the historic allow.
  *
- * Two shapes share the `unknown-capability` path, distinguished only by the
- * reason text:
- *  - inner-command fail-closed (#51 layer 1): a segment carries an unanalyzed
- *    inner command (xargs, find -exec, eval, a `cd` shape, a script FILE, a
- *    compound keyword). Checked BEFORE the per-segment loop so a mixed line
- *    reports the same shape it did when the tier stood on its own, and so a
- *    shape whose own segment classifies differently (`find -exec` is a
- *    direction write, `bash script.sh` an exec) can never ride that verdict.
- *  - unknown verbs: a head word no capability table knows.
+ * The unanalyzed-inner-command shapes (#51 layer 1) are NOT checked here:
+ * `evaluateBashCommand` runs that tier before its path-candidate asks, so a
+ * line with an inner command never reaches this gate — its ask must not be
+ * outranked by, or carry the `askPaths` of, a path-candidate ask the approval
+ * memory could reuse. What this gate adds is everything else: dynamic
+ * constructs, out-of-workspace write / read targets, exec / network classes
+ * and unknown verbs (a head word no capability table knows).
  *
  * Ordering across segments: a dynamic construct or an out-of-workspace write
  * target (the two shapes that say something specific about WHAT runs) wins
@@ -304,16 +302,6 @@ export function evaluateCapabilityGate(
   segments: readonly ShellSegment[],
   cursor: string,
 ): ToolAccessDecision | undefined {
-  // The merged #51 fail-closed tier: shapes that carry an inner command this
-  // gate never analyzes (see `unanalyzedInnerCommand` / `unanalyzedScriptFile`).
-  const innerShape = unanalyzedInnerCommand(segments) ?? unanalyzedScriptFile(segments);
-  if (innerShape !== undefined) {
-    return ask(
-      'unknown-capability',
-      `${innerShape} runs an inner command this gate does not analyze — controller approval is required (fail-closed, issue #51)`,
-    );
-  }
-
   let execAsk: ToolAccessDecision | undefined;
   let networkAsk: ToolAccessDecision | undefined;
   let unknownAsk: ToolAccessDecision | undefined;
