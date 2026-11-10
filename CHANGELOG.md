@@ -1,14 +1,10 @@
 # Changelog
 
-## v0.9.6 (2026-11-10) — 规划
+## v0.9.6 (2026-11-10)
 
-### 计划项目
+### 修复
 
-- fix(permission): bash 能力判定取代"无路径即放行"，解释器/launcher/动态构造与越界写一律审批（#51）
-
-### 待定
-
-- 其余 open issue 视情况纳入
+- bash 权限门由"无路径即放行"改为能力判定（#51）：每条命令按 read / write / exec / network / unknown 分类；工作区内读写放行，越界写、解释器与脚本内联、launcher 内层、动态构造（$ 命令位、here-doc/here-string 接 shell、进程替换、source）一律要求审批；新增 matchedRule：exec-capability / network-capability / dynamic-shell / unknown-capability / write-scope，审批记录可直接看出拦截原因。
 
 ## v0.9.5 (2026-11-09)
 
