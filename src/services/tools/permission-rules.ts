@@ -24,7 +24,7 @@
  *   - how a bash command string is reduced to path candidates (expanding
  *     `$HOME` / `${HOME}` first) and whether each candidate sits in a
  *     read-only, write-capable or unclassifiable command segment (see
- *     `READ_ONLY_COMMANDS` and `segmentAccess`),
+ *     the command table's `read` capability and `segmentAccess`),
  *   - the destructive-command heuristic, which stays an "ask the controller"
  *     tier on top of the policy (the policy only judges paths) and is read at
  *     the SAME command position the path rules use (wrapper prefixes stripped),

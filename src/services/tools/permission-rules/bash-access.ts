@@ -47,7 +47,7 @@ function fallbackSensitiveHit(
  * silent run), and under `sensitiveMode: 'deny'` one denied candidate refuses
  * it. A candidate carries the access its OWN segment justifies: `write` for a
  * write verb / redirection segment, `read` when the segment's head command is on
- * `READ_ONLY_COMMANDS`, `unknown` for everything the gate has not been taught
+ * the command table's `read` capability, `unknown` for everything the gate has not been taught
  * (the strict mode: "inside home" alone never justifies a write either).
  *
  * The read classification does NOT widen what runs silently: the policy still
