@@ -217,6 +217,15 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
   // `mergeSensitiveDirs`), and a config that uses it gets one pointer to the
   // new key per process — warn only when the legacy key is really populated.
   warnDeprecatedPermissionKeys(config.permission, (message) => console.warn(`Warning: ${message}`));
+  // issue #77: an active workspace-boundary extension must be visible, not
+  // silent — one line at startup naming the configured roots. Each workspace
+  // admitted through them is additionally audited on the session log.
+  const extraWorkspaceRoots = config.permission?.extraWorkspaceRoots;
+  if (Array.isArray(extraWorkspaceRoots) && extraWorkspaceRoots.length > 0) {
+    console.warn(
+      `Warning: permission.extraWorkspaceRoots is active (${extraWorkspaceRoots.join(', ')}) — add_task workspaces under these roots are allowed beyond the home boundary; every such admission is audited on the session log.`,
+    );
+  }
   // `*-acp` rows accept `maxTurns`/`cliPath` for backwards compatibility, but
   // neither has any effect there (05 §4) — surface that once at load instead
   // of failing configs that used to work.

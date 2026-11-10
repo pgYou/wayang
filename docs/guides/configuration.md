@@ -82,6 +82,13 @@ wayang 启动时按下面的顺序找配置：
 - `deniedDirs: string[]`：已废弃的旧写法，仍会被读取并与 `sensitiveDirs` 合并，启动时会提示一次。
 - `sensitiveMode`：`'ask'`（默认，命中即请求 controller 审批）或 `'deny'`（直接拒绝，从不询问）。
 - `approvalMemory`：`'task'`（默认，同一任务内已批准的读路径不再重复询问）或 `'off'`。
+- `extraWorkspaceRoots: string[]`：add_task 声明的工作区（`workspace` 参数）允许落在 home 之外的根目录，默认空（仅 home 内）。给仓库统一放在 home 之外的部署用（如 `/codev`）。生效时启动会提示一次，且每次经由它放行的工作区都会写入会话审计日志（`audit: "workspace"`）；敏感目录列表仍优先生效。
+
+`workspace` 与 `allowedDirs` 的校验差异（两者都只收 home 内路径，`extraWorkspaceRoots` 是共同的例外出口）：
+
+- `workspace` 是任务的执行根：归一化（含软链解析）后必须位于 home 内或某个 `extraWorkspaceRoots` 根下，且不得命中敏感目录列表；不在范围内时直接拒绝创建任务，也不会创建目录。任务工作区内的读写按"工作区内"放行。
+- `allowedDirs` 是任务工作区之外的补充授权：逐条校验（home 内、不碰敏感列表），一条非法即整单拒绝；授予的目录享受与工作区同级的放行，但敏感目录列表同样优先。
+- 需要让任务访问工作区以外的目录，用 `allowedDirs`，不要试图把工作区指到别处。
 
 `logging` 子字段：`maxFileSizeBytes`（默认 10485760）、`maxFiles`（默认 3），均为正整数。
 
@@ -198,6 +205,7 @@ wayang 启动时按下面的顺序找配置：
 - 定并发数：`worker.maxConcurrency` 是全局上限——最多同时跑几个 worker，与 worker 个数无关。受机器与 provider 限流约束，建议从 3 起，看到限流报错再调。
 - 给 worker 加能力：把标签写进 `capabilities`（如 `"test"`、`"docs"`），并在 `description` 里说清楚，controller 按这些信息决定把任务分给谁。
 - 限制可见目录：用 `permission.allowedDirs`（始终允许）与 `permission.sensitiveDirs`（命中需审批）。敏感目录列表优先级高于一切 allow 规则，只能选"问"或"拒"（`sensitiveMode`）。
+- 让 add_task 的工作区落在 home 外：`permission.extraWorkspaceRoots` 列出根目录（如 `/codev`），声明的 `workspace` 指向其内路径才放行；默认一律拒绝并提示改用 `allowedDirs`。
 - controller 与 worker 用不同模型：定义两个 provider，分别绑定 `controller.provider` 与 `worker.provider`：
 
 ```json

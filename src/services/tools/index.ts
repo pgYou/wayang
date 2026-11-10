@@ -1,6 +1,7 @@
 import type { TaskDetail, ControllerSignal, InquireQuestion, ActiveWorkerInfo, WorkerLiveStatus } from '@/types/index';
 import type { PermissionConfig } from '@/types/config';
 import type { ConversationEntry } from '@/types/conversation';
+import type { Logger } from '@/infra/logger';
 import { addTaskTool } from './add-task';
 import { listTasksTool } from './list-tasks';
 import { cancelTaskTool } from './cancel-task';
@@ -74,6 +75,11 @@ export interface ControllerToolDeps {
    * sensitive list when validating `allowedDirs`.
    */
   permissionConfig?: PermissionConfig;
+  /**
+   * Session logger — add_task records every workspace admitted through
+   * `permission.extraWorkspaceRoots` on it (issue #77 audit trail).
+   */
+  logger?: Logger;
   /** Get worker conversation entries for a task. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors TaskExecuteEngine.getWorkerConversation's defensive any[]
   getWorkerConversation?: (taskId: string) => any[];
@@ -156,6 +162,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
       generalWorkspaceDir: deps.generalWorkspaceDir,
       userHome: deps.userHome,
       permissionConfig: deps.permissionConfig,
+      logger: deps.logger,
     }),
     list_tasks: listTasksTool({ listTasks: deps.listTasks }),
     cancel_task: cancelTaskTool({

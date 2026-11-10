@@ -5,6 +5,7 @@
 ### 计划项目
 
 - fix(security): add_task 的 workspace 参数补边界校验（#77）：声明的工作区先归一（realpath，目录不存在时归一父目录再拼尾段）再校验——必须位于用户 home 内，命中 denied-path / 敏感列表直接拒绝，软链按 realpath 目标判定；校验先于 mkdir，被拒时不再创建目录；home 未知时拒绝声明（fail-closed，与 allowedDirs 一致）；错误信息注明原因（outside-home / denied-path）并给出替代（改用 allowedDirs）。
+- feat(permission): 新增 permission.extraWorkspaceRoots 配置（#77）：列出的根目录视同 add_task 工作区允许范围（默认空，仅 home 内），供仓库统一放在 home 之外的部署使用；配置做形状校验、生效时启动提示一次，每次经其放行都写入会话审计日志（audit:"workspace"，记录命中的根、归一后路径与原始声明）；敏感目录列表仍优先于该配置。文档补充 workspace 与 allowedDirs 的校验差异及该配置用法。
 - feat(worker): 单次运行 wall time 上限提高到 60 分钟并支持任务级与全局配置（#76）
 - feat(permission): 扩充 bash 能力表：git 全量只读子命令、gh 只读查询、npx/npm 项目工具链（#51 跟进）
 

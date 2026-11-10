@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { z } from 'zod';
 import type { TaskDetail } from '@/types/index';
 import type { PermissionConfig } from '@/types/config';
+import type { Logger } from '@/infra/logger';
 import { normalizeWorkspacePath, resolveWorkspaceRef } from '@/infra/workspace-registry';
 import { defaultSensitivePaths, isDenied, isPathWithin, normalizePath } from '@/infra/permission/policy';
 import { mergeSensitiveDirs } from '@/infra/permission/permission-config';
@@ -68,6 +69,12 @@ export interface AddTaskToolDeps {
    * workspace.
    */
   generalWorkspaceDir?: string;
+  /**
+   * Session logger for workspace-boundary audit records (issue #77): every
+   * workspace admitted through `permission.extraWorkspaceRoots` is recorded
+   * here. Optional — auditing must never break the dispatch path.
+   */
+  logger?: Logger;
 }
 
 /**
@@ -104,10 +111,10 @@ function ensureWorkspaceDir(dirPath: string): string | null {
  * the realpath of the deepest existing ancestor plus the missing tail — is
  * what gets judged, so a symlink is judged by where it lands, not by how it
  * is spelled. The normalized path must sit inside the user's home directory
- * and must not match the denied-path/sensitive list (built-in plus
- * configured, exactly the list `allowedDirs` is checked against). Validation
- * runs BEFORE anything is created; a rejected declaration leaves the
- * filesystem untouched.
+ * or under a configured `permission.extraWorkspaceRoots` entry, and must not
+ * match the denied-path/sensitive list (built-in plus configured, exactly the
+ * list `allowedDirs` is checked against). Validation runs BEFORE anything is
+ * created; a rejected declaration leaves the filesystem untouched.
  *
  * Mirrors `resolveTaskAllowedDirs`: when the home directory is unknown there
  * is no boundary to check, so the declaration is rejected outright instead of
@@ -127,13 +134,17 @@ function validateDeclaredWorkspace(
 
   const home = normalizePath(userHome);
   const normalized = normalizePath(declared);
+  const extraRoots = (deps.permissionConfig?.extraWorkspaceRoots ?? [])
+    .filter((root) => typeof root === 'string' && root.trim() !== '')
+    .map((root) => normalizePath(root, { base: home }));
 
-  if (!isPathWithin(home, normalized)) {
+  const admittingRoot = [home, ...extraRoots].find((root) => isPathWithin(root, normalized));
+  if (admittingRoot === undefined) {
     return {
       error:
         `Invalid workspace "${raw}" (resolved to ${normalized}, reason: outside-home): it is outside the user home ` +
-        `(${home}). A task workspace must stay inside the home directory; to grant a task access to directories ` +
-        `beyond it, use allowedDirs instead. The task was NOT created.`,
+        `(${home}) and not under any permission.extraWorkspaceRoots entry. A task workspace must stay inside the home ` +
+        `directory; to grant a task access to directories beyond it, use allowedDirs instead. The task was NOT created.`,
     };
   }
 
@@ -149,6 +160,24 @@ function validateDeclaredWorkspace(
         `sensitive list (matched ${matchedEntry} — a protected location such as credentials or tool config). ` +
         `The task was NOT created.`,
     };
+  }
+
+  // Audited admission (issue #77): a boundary extension is only as safe as its
+  // use is traceable, so every workspace let in by an extra root — not home —
+  // leaves a session-log record naming the root and the admitted path.
+  if (admittingRoot !== home) {
+    deps.logger?.info(
+      {
+        audit: 'workspace',
+        decision: 'allowed',
+        matchedRule: 'extra-workspace-roots',
+        matchedEntry: admittingRoot,
+        resolvedPath: normalized,
+        requestedPath: raw,
+        ts: new Date().toISOString(),
+      },
+      'workspace admitted via permission.extraWorkspaceRoots',
+    );
   }
 
   return { normalized };
@@ -350,7 +379,7 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         'Dispatch this task to an existing idle worker (the workerId returned from a prior multiStage task). The worker resumes with its accumulated context. Omit for a fresh worker.',
       ),
       workspace: z.string().optional().describe(
-        `Target workspace path; defaults to the current workspace. A different path runs this task there — the worker, its tools and its permission checks use it as their root. A leading ~ or $HOME expands to the home directory, and a missing directory is created. The normalized path (symlinks resolved) must stay inside the user home directory and off the denied-path list; to grant a task access to other directories, use allowedDirs instead.${generalWorkspaceNote}`,
+        `Target workspace path; defaults to the current workspace. A different path runs this task there — the worker, its tools and its permission checks use it as their root. A leading ~ or $HOME expands to the home directory, and a missing directory is created. The normalized path (symlinks resolved) must stay inside the user home directory — or under a root the user configured in permission.extraWorkspaceRoots — and off the denied-path list; to grant a task access to other directories, use allowedDirs instead.${generalWorkspaceNote}`,
       ),
       allowedDirs: z.array(z.string()).optional().describe(
         'Extra directories this task may access, in addition to its workspace. Only this task is affected — the grant is NOT inherited by other tasks. Each entry must be inside the user home and off the denied-path list (credentials, tool config); an invalid entry fails the whole call and no task is created. Paths are normalized; relative entries resolve against the task workspace.',
