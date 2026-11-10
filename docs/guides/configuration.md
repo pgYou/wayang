@@ -73,7 +73,7 @@ wayang 启动时按下面的顺序找配置：
 - `apiKey`（必填，字符串）：可留空，留空时由环境变量 `WAYANG_LLM_API_KEY` 补齐。
 - `modelName`（必填，字符串）：模型名。
 - `temperature`、`maxOutputTokens`（可选，数字）：目前仅记录，不影响运行。
-- `contextWindowTokens`（可选，正整数，默认 256000）：模型上下文窗口大小（输入侧预算）。controller 在用到 90% 时会自动压缩对话；小窗口模型请显式设置（如 128000），否则请求会在压缩前被 provider 拒绝。
+- `contextWindowTokens`（可选，正整数，默认 256000）：模型上下文窗口大小（输入侧预算）。controller 在用到 60% 时会自动压缩对话；小窗口模型请显式设置（如 128000），否则请求会在压缩前被 provider 拒绝。
 
 `permission` 子字段（全部可选，相对路径以你的 home 目录解析）：
 
