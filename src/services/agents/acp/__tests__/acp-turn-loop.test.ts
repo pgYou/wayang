@@ -271,6 +271,76 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
   });
 
+  // 4a-b) §9.1 denial residue: after a controller denial + reissue, the agent
+  // complies AND delivers its final text, yet the turn still ends
+  // stopReason='cancelled' → completed with the conclusion kept.
+  it('deny → agent continues with final text → stopReason=cancelled → completed', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 705, 'tc-residue');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'use a safer command')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 705);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    const text = await promptTextAt(worker.transport, 1);
+    expect(text).toContain('[SYSTEM NOTICE]');
+
+    // The reissue round: a compliant command plus the final conclusion — but
+    // the turn ends with the §9.1 residue stopReason instead of end_turn.
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-safe', title: 'Bash', kind: 'execute', status: 'completed', rawInput: { command: 'echo safe' } });
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '改用 echo safe 完成，结论：probe-ok' }, messageId: 'm-final' });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('completed');
+    expect(result.summary).toContain('probe-ok');
+    expect(result.error).toBeUndefined();
+  });
+
+  // 4a-c) external cancel keeps failing even when the turn produced final
+  // text: cancelFact wins before any stopReason reasoning.
+  it('abort with final text in the turn → still "Aborted" (cancel_task unaffected)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    worker.setSignalContext(signalContext());
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '最终结论' }, messageId: 'm-abort' });
+    worker.abort();
+    await worker.transport.waitForClientOutput(4);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('Aborted');
+  });
+
+  // 4a-d) the residue rule requires this-turn text: a text-less cancelled
+  // turn after a reissue still fails.
+  it('deny → reissue round with NO text → stopReason=cancelled → still failed', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 706, 'tc-notext');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 706);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    await nthPromptIndex(worker.transport, 1);
+    // The reissue round does tool work but never produces text, then ends cancelled.
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-mute', title: 'Bash', kind: 'execute', status: 'completed', rawInput: { command: 'echo x' } });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('unexpectedly');
+  });
+
   // 4b) reissue budget exhaustion: alternating deny/comply rounds burn the
   // MAX_DENIAL_REISSUES budget; the 4th controller denial terminates.
   it('controller denials exhaust the reissue budget → terminate with an explicit reason', async () => {

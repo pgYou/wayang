@@ -19,7 +19,18 @@ export const TURN_LIMITS = {
   MAX_CONSECUTIVE_DENIAL_TURNS: 2, MAX_STAGNANT_TURNS: 2,
 } as const;
 
-export interface ClassifyTurnEndInput { stopReason: string; cancelFact: CancelFact; denials: TurnDenial[]; hasQueuedMessages: boolean }
+export interface ClassifyTurnEndInput {
+  stopReason: string; cancelFact: CancelFact; denials: TurnDenial[]; hasQueuedMessages: boolean;
+  /**
+   * Denial reissues from PRIOR turns of this run (guard.denialReissues before
+   * advanceGuard folds this turn). Run-history evidence that a permission was
+   * refused earlier: per 04-permissions §9.1 the agent's stopReason
+   * 'cancelled' may then be a denial residue rather than a real cancellation.
+   */
+  priorDenialReissues?: number;
+  /** THIS turn produced non-empty assistant text (the final answer evidence). */
+  hasTurnText?: boolean;
+}
 const SOURCE_PRIORITY: readonly DenialSource[] = ['policy', 'timeout', 'controller'];
 const CATEGORY_BY_SOURCE: Record<DenialSource, TurnEndCategory> = {
   policy: 'denied_by_policy', timeout: 'denied_by_timeout', controller: 'denied_by_user',
@@ -27,7 +38,9 @@ const CATEGORY_BY_SOURCE: Record<DenialSource, TurnEndCategory> = {
 
 /** Cancel facts win over everything; a normal end_turn beats denials (the agent
  * saw the refusal and chose to wrap up — that is a completed turn); denials
- * beat other stop reasons. */
+ * beat other stop reasons; a cancelled stopReason after a prior denial
+ * reissue, with this-turn final text, is a completed turn (04-permissions
+ * §9.1: the agent's 'cancelled' is a denial residue, not a cancellation). */
 export function classifyTurnEnd(input: ClassifyTurnEndInput): TurnEndCategory {
   const { stopReason, cancelFact, denials } = input;
   if (cancelFact === 'abort') return 'our_cancel';
@@ -36,6 +49,16 @@ export function classifyTurnEnd(input: ClassifyTurnEndInput): TurnEndCategory {
   if (denials.length > 0) {
     const present = new Set(denials.map((d) => d.source));
     return CATEGORY_BY_SOURCE[SOURCE_PRIORITY.find((s) => present.has(s)) ?? 'controller'];
+  }
+  // Denial residue (04-permissions §9.1): after a permission was refused in an
+  // earlier turn (a reissue round followed), the agent may comply with the
+  // notice, deliver its final text, and STILL end with stopReason 'cancelled'
+  // — the stopReason echoes the refused tool call and cannot self-certify a
+  // cancellation. Run-history evidence (prior reissue) plus this turn's final
+  // text outrank it. External cancels never reach here (cancelFact won above)
+  // and a turn without text still ends unexpectedly.
+  if (stopReason === 'cancelled' && (input.priorDenialReissues ?? 0) > 0 && input.hasTurnText === true) {
+    return 'completed';
   }
   return 'agent_ended_unexpectedly';
 }

@@ -101,6 +101,43 @@ describe('classifyTurnEnd', () => {
       classify({ stopReason: 'end_turn', denials: [denial({ source: 'controller' })] }),
     ).toBe('completed');
   });
+
+  // §9.1 denial residue: cancelled after a prior reissue, with this-turn text.
+  it('cancelled after a prior denial reissue, with this-turn text → completed', () => {
+    expect(classify({ priorDenialReissues: 1, hasTurnText: true })).toBe('completed');
+    expect(classify({ priorDenialReissues: 3, hasTurnText: true })).toBe('completed');
+  });
+
+  it('cancelled with a prior reissue but NO this-turn text → agent_ended_unexpectedly', () => {
+    expect(classify({ priorDenialReissues: 1, hasTurnText: false })).toBe('agent_ended_unexpectedly');
+    expect(classify({ priorDenialReissues: 1 })).toBe('agent_ended_unexpectedly');
+  });
+
+  it('cancelled with text but NO prior denial reissue → agent_ended_unexpectedly', () => {
+    expect(classify({ priorDenialReissues: 0, hasTurnText: true })).toBe('agent_ended_unexpectedly');
+    expect(classify({ hasTurnText: true })).toBe('agent_ended_unexpectedly');
+  });
+
+  it('an external cancel beats the denial-residue rule (cancel_task stays failed)', () => {
+    expect(
+      classify({ cancelFact: 'abort', priorDenialReissues: 1, hasTurnText: true }),
+    ).toBe('our_cancel');
+    expect(
+      classify({ cancelFact: 'prompt-timeout', priorDenialReissues: 1, hasTurnText: true }),
+    ).toBe('our_timeout');
+  });
+
+  it('an in-turn denial beats the residue rule (cancelled is attributed to the NEW denial)', () => {
+    expect(
+      classify({ denials: [denial({ source: 'controller' })], priorDenialReissues: 1, hasTurnText: true }),
+    ).toBe('denied_by_user');
+  });
+
+  it('the residue rule applies to cancelled only — other unexpected stop reasons still fail', () => {
+    expect(
+      classify({ stopReason: 'max_token_usage', priorDenialReissues: 1, hasTurnText: true }),
+    ).toBe('agent_ended_unexpectedly');
+  });
 });
 
 describe('decideNextAction', () => {
