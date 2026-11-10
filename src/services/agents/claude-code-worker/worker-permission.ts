@@ -12,7 +12,13 @@ import {
   type PermissionOperation,
 } from '@/services/permission/permission-audit';
 import { decideToolAccess, type ToolAccessDecision, type WorkerAccessScope } from '@/services/tools/permission-rules';
-import { reusableGrantKeys } from '@/services/permission/permission-transport';
+import {
+  DEFAULT_PERMISSION_TIMEOUT_MS,
+  PERMISSION_ABORT_REASON,
+  PERMISSION_TIMEOUT_REASON,
+  reusableGrantKeys,
+  type PermissionAnswer,
+} from '@/services/permission/permission-transport';
 import { generateId } from '@/utils/id';
 import { homedir } from 'node:os';
 import { ClaudeWorkerBase } from './worker-base';
@@ -34,9 +40,35 @@ interface PermissionAsk {
   access?: 'read' | 'write' | 'unknown';
 }
 
-export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
-  private static readonly PERMISSION_TIMEOUT_MS = 300_000;
+/**
+ * Adapt the shared transport's canonical answer (permission-transport.ts)
+ * onto the SDK's `PermissionResult`.
+ *
+ * The controller answers with a bare allow/deny (it has no input to echo),
+ * but the SDK's CLI rejects an allow whose `updatedInput` is missing — a bare
+ * `{ behavior: 'allow' }` reaches the worker as
+ * "Tool permission request failed: ZodError: invalid_union". The original
+ * tool `input` is therefore attached here, unchanged: "no edit".
+ *
+ * The settle reasons keep their historic messages: the canonical timeout and
+ * abort markers map onto the exact texts the SDK gate always built, and a
+ * controller denial carries the responder's reason (with the same fallback).
+ */
+function permissionResultFromAnswer(
+  answer: PermissionAnswer,
+  input: Record<string, unknown>,
+): PermissionResult {
+  if (answer.approved) return { behavior: 'allow', updatedInput: input };
+  const message =
+    answer.reason === PERMISSION_TIMEOUT_REASON
+      ? 'Permission request timed out'
+      : answer.reason === PERMISSION_ABORT_REASON
+        ? 'Worker aborted'
+        : answer.reason ?? 'Denied by controller';
+  return { behavior: 'deny', message };
+}
 
+export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
   // --- Permission control via canUseTool ---
 
   /**
@@ -316,21 +348,11 @@ export class ClaudeWorkerPermissionGate extends ClaudeWorkerBase {
       ...this._turnLineage,
     });
 
-    const answer = await this._pendingPermissions.wait(
-      requestId,
-      ClaudeWorkerPermissionGate.PERMISSION_TIMEOUT_MS,
-      () => ({ behavior: 'deny', message: 'Permission request timed out' }) as PermissionResult,
-    );
-
-    // The controller answers with a bare allow/deny (it has no input to echo),
-    // but the SDK's CLI rejects an allow whose `updatedInput` is missing — the
-    // very approval this gate exists for would then surface to the worker as
-    // "Tool permission request failed: ZodError: invalid_union". Attach the
-    // untouched input here; without it there is no way back to this point.
-    const result: PermissionResult =
-      answer.behavior === 'allow' && answer.updatedInput === undefined
-        ? { ...answer, updatedInput: input }
-        : answer;
+    // The shared transport parks the wait with the canonical timeout settle;
+    // the adapter maps the answer back onto the SDK's PermissionResult,
+    // attaching the untouched input the CLI's reply schema requires.
+    const answer = await this._pendingPermissions.wait(requestId, DEFAULT_PERMISSION_TIMEOUT_MS);
+    const result = permissionResultFromAnswer(answer, input);
 
     // Audit approvals AND refusals with the same fields the puppet worker
     // uses — one record per gated call, no file content.

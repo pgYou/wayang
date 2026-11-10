@@ -37,7 +37,7 @@ import { recordPermissionAudit } from '@/services/permission/permission-audit';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import { BaseAcpWorker, findExecutableOnPath, type AcpPermissionContext, type AcpWorkerEnvView } from './base-acp-worker';
 import { createAcpToolAccumulator, mapSessionUpdate, snapshotToToolCallRecord, type AcpMappedEvent } from './event-mapper';
-import { ACP_PERMISSION_TIMEOUT_MS } from './permission-bridge';
+import { DEFAULT_PERMISSION_TIMEOUT_MS } from '@/services/permission/permission-transport';
 import { advanceGuard, classifyTurnEnd, decideNextAction, resetTurnGuard, type CancelFact } from './turn-attribution';
 import { buildReissuePrompt, finalizeTurnVerdict, joinControllerMessages, makeInjectedEntry, makeTerminalResult } from './acp-turn-prompt';
 import { startStdioMcpTransport, type StartMcpTransportOptions, type McpTransport } from './mcp-transport';
@@ -230,7 +230,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           turnLineage: this._turnLineage,
           grants: this._grants,
           approvalMemory: this._approvalMemory,
-          permissionMs: timeouts.permissionMs ?? ACP_PERMISSION_TIMEOUT_MS,
+          permissionMs: timeouts.permissionMs ?? DEFAULT_PERMISSION_TIMEOUT_MS,
         };
         return this.mapPermission(req, acpCtx);
       });

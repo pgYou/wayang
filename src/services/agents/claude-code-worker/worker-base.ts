@@ -15,7 +15,7 @@ import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import {
-  permissionStatusFromOutcome,
+  PermissionTransport,
   type PermissionResolutionStatus,
 } from '@/services/permission/permission-transport';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
@@ -23,7 +23,6 @@ import type { WorkerAccessScope } from '@/services/tools/permission-rules';
 import type { ApprovalMemory } from '@/services/permission/approval-memory';
 import type { ApprovalMemoryMode } from '@/types/config';
 import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
-import { BlockingRequestMap } from '@/infra/blocking-requests';
 import type { SkillRegistry } from '@/services/skills/registry';
 import type { SignalTurnLineage } from '@/types/index';
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
@@ -73,7 +72,14 @@ export class ClaudeWorkerBase {
   protected _askController: ((question: string, context?: string) => Promise<string>) | null = null;
 
   // --- Permission control via canUseTool ---
-  protected readonly _pendingPermissions = new BlockingRequestMap<PermissionResult>();
+  /**
+   * The worker's permission transport: the shared pending registry the
+   * canUseTool gate waits on and the engine's respond_permission path settles
+   * (permission-transport.ts) — the same spine the puppet middleware and the
+   * ACP bridge use. The gate adapts the transport's `PermissionAnswer` onto
+   * the SDK's `PermissionResult` (see worker-permission.ts).
+   */
+  protected readonly _pendingPermissions = new PermissionTransport();
 
   /**
    * Exposed for engine to resolve pending permission requests.
@@ -89,21 +95,13 @@ export class ClaudeWorkerBase {
       requestId: string,
       approved: boolean,
       reason?: string,
-    ): PermissionResolutionStatus => {
-      const settledNow = this._pendingPermissions.resolve(
-        requestId,
-        approved
-          ? { behavior: 'allow' }
-          : { behavior: 'deny', message: reason ?? 'Denied by controller' },
-      );
-      // A miss is terminal but distinguishable (#69): the map remembers how
-      // the request settled, so the controller learns whether its answer was
-      // a duplicate, too late (timeout), or for a worker already gone.
-      if (settledNow) return 'resolved';
-      return permissionStatusFromOutcome(this._pendingPermissions.outcomeOf(requestId));
-    },
+    ): PermissionResolutionStatus =>
+      // Settle + #69 status in one call — 'resolved', or the terminal state an
+      // earlier settle left ('already-resolved' / 'expired' / 'worker-closed'),
+      // or 'not-found' for an id this worker never parked.
+      this._pendingPermissions.resolve(requestId, approved, reason),
     cleanup: () => {
-      this._pendingPermissions.cleanupAll(() => ({ behavior: 'deny', message: 'Worker aborted' }));
+      this._pendingPermissions.cleanup();
     },
     wrappedTools: {}, // not used for ClaudeCodeWorker
   };

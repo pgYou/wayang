@@ -31,13 +31,12 @@ import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import {
-  permissionStatusFromOutcome,
+  PermissionTransport,
   type PermissionResolutionStatus,
 } from '@/services/permission/permission-transport';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import type { WorkerAccessScope } from '@/services/tools/permission-rules';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
-import { BlockingRequestMap } from '@/infra/blocking-requests';
 import type { SkillRegistry } from '@/services/skills/registry';
 import { AcpError, acpUserMessage } from '@/services/acp/errors';
 import { AUTH_STDERR_PATTERN } from '@/services/acp/codec';
@@ -45,7 +44,7 @@ import { type AcpTimeouts, type AcpLaunchConfig } from '@/services/acp/config';
 import type { AcpCapabilities, AcpHandshake, AcpPermissionOutcome, AcpPermissionRequest } from '@/services/acp/types';
 import { buildAcpCapabilities } from '@/services/acp/client';
 import { createAcpToolAccumulator, type AcpToolAccumulator } from './event-mapper';
-import { createAcpPermissionBridge, type AcpDenialInfo, type AcpPermissionAnswer } from './permission-bridge';
+import { createAcpPermissionBridge, type AcpDenialInfo } from './permission-bridge';
 import { AcpTurnWriter } from './acp-turn-writer';
 import { classifyTurnEnd, denialKey, resetTurnGuard, sanitizeTarget, turnEndErrorText, type TurnDenial, type TurnGuardState } from './turn-attribution';
 
@@ -188,7 +187,13 @@ export abstract class BaseAcpWorker {
   protected _inputClosed = false;
 
   // --- Permission plumbing (same shape as ClaudeCodeWorker.permissionHandler) ---
-  protected readonly _pendingPermissions = new BlockingRequestMap<AcpPermissionAnswer>();
+  /**
+   * The worker's permission transport: the shared pending registry both the
+   * bridge and the engine's respond_permission path settle through
+   * (permission-transport.ts) — the same spine the puppet middleware and the
+   * Claude Code gate use.
+   */
+  protected readonly _pendingPermissions = new PermissionTransport();
   /**
    * Structured permission refusals in the CURRENT turn (#56): the run layer
    * takes and clears this ledger at every turn end. A denial means the
@@ -203,14 +208,13 @@ export abstract class BaseAcpWorker {
       requestId: string,
       approved: boolean,
       reason?: string,
-    ): PermissionResolutionStatus => {
-      if (this._pendingPermissions.resolve(requestId, { approved, reason })) return 'resolved';
-      // Distinguishable terminal states for a miss (#69): duplicate answer,
-      // timed-out request, or worker already gone.
-      return permissionStatusFromOutcome(this._pendingPermissions.outcomeOf(requestId));
-    },
+    ): PermissionResolutionStatus =>
+      // Settle + #69 status in one call — 'resolved', or the terminal state an
+      // earlier settle left ('already-resolved' / 'expired' / 'worker-closed'),
+      // or 'not-found' for an id this worker never parked.
+      this._pendingPermissions.resolve(requestId, approved, reason),
     cleanup: () => {
-      this._pendingPermissions.cleanupAll(() => ({ approved: false, reason: 'Worker aborted' }));
+      this._pendingPermissions.cleanup();
     },
     wrappedTools: {}, // not used for ACP workers
   };
