@@ -159,6 +159,13 @@ export interface WorkerConfig {
 }
 
 /**
+ * Upper bound accepted for `workerRunTimeoutMs` (and add_task's
+ * `runTimeoutMs`): 6 hours. A guard value, not a working default — it exists
+ * so a mistyped value cannot silently pin a worker forever.
+ */
+export const MAX_RUN_TIMEOUT_MS = 21_600_000;
+
+/**
  * How sensitive (credential/tool-config) paths are handled.
  * - 'ask' (default): a hit in EITHER direction — read or write — requests
  *   controller approval. The request and the audit record name the matched
@@ -256,6 +263,14 @@ export interface WayangConfig {
   skillsDirs?: string[];
   /** Idle timeout (ms) for multi-stage workers before they are reaped. Defaults to 30 min. */
   idleTimeoutMs?: number;
+  /**
+   * Wall-time limit (ms) for ONE worker run (#76): when it expires the run is
+   * terminated and reported. Positive integer, at most 6 hours
+   * (`MAX_RUN_TIMEOUT_MS`). Per-task `add_task` `runTimeoutMs` overrides it;
+   * default 3600000 (60 min). A warning progress is sent once 5 minutes
+   * before expiry.
+   */
+  workerRunTimeoutMs?: number;
   /**
    * Number of processed (read/discarded) signals retained in the hot window.
    * Unread signals are always kept. Defaults to 2000.
@@ -425,6 +440,11 @@ export function validateConfig(config: WayangConfig): string | null {
       const err = validateWorkerEntry(id, worker);
       if (err) return err;
     }
+  }
+  const runTimeout = config.workerRunTimeoutMs;
+  if (runTimeout !== undefined
+    && !(Number.isInteger(runTimeout) && runTimeout > 0 && runTimeout <= MAX_RUN_TIMEOUT_MS)) {
+    return `workerRunTimeoutMs must be a positive integer of milliseconds, at most ${MAX_RUN_TIMEOUT_MS} (6 hours) (got ${JSON.stringify(runTimeout)})`;
   }
   const permission = config.permission;
   if (permission !== undefined && permission !== null) {

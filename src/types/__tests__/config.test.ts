@@ -47,6 +47,22 @@ describe('validateConfig: contextWindowTokens', () => {
   });
 });
 
+describe('validateConfig: workerRunTimeoutMs (#76)', () => {
+  it('accepts an omitted value (existing configs unaffected)', () => {
+    expect(validateConfig(makeConfig())).toBeNull();
+  });
+
+  it('accepts a positive integer within the 6h cap', () => {
+    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 3_600_000 })).toBeNull();
+    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 21_600_000 })).toBeNull();
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, '3600000', 21_600_001])('rejects %s with a clear message', (bad) => {
+    const err = validateConfig({ ...makeConfig(), workerRunTimeoutMs: bad as number });
+    expect(err).toContain('workerRunTimeoutMs must be a positive integer of milliseconds, at most 21600000 (6 hours)');
+  });
+});
+
 /** Same minimal valid config, plus a deliberately loosely-typed permission section. */
 function makeConfigWithPermission(permission: unknown): WayangConfig {
   return { ...makeConfig(), permission: permission as WayangConfig['permission'] };

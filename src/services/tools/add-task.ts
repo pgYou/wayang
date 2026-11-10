@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { z } from 'zod';
 import type { TaskDetail } from '@/types/index';
 import type { PermissionConfig } from '@/types/config';
+import { MAX_RUN_TIMEOUT_MS } from '@/types/config';
 import { normalizeWorkspacePath, resolveWorkspaceRef } from '@/infra/workspace-registry';
 import { defaultSensitivePaths, isDenied, isPathWithin, normalizePath } from '@/infra/permission/policy';
 import { mergeSensitiveDirs } from '@/infra/permission/permission-config';
@@ -281,9 +282,12 @@ export function addTaskTool(deps: AddTaskToolDeps) {
       allowedDirs: z.array(z.string()).optional().describe(
         'Extra directories this task may access, in addition to its workspace. Only this task is affected — the grant is NOT inherited by other tasks. Each entry must be inside the user home and off the denied-path list (credentials, tool config); an invalid entry fails the whole call and no task is created. Paths are normalized; relative entries resolve against the task workspace.',
       ),
+      runTimeoutMs: z.number().optional().describe(
+        `Wall-time limit in milliseconds for this task's worker run; overrides the global workerRunTimeoutMs config. Positive integer, at most ${MAX_RUN_TIMEOUT_MS} (6 hours). When the limit expires the run is terminated and reported; committed/pushed work is preserved.`,
+      ),
     }),
     execute: safeExecute('add_task', async (
-      { title, description, priority, workerType, multiStage, assignToWorker, workspace, allowedDirs },
+      { title, description, priority, workerType, multiStage, assignToWorker, workspace, allowedDirs, runTimeoutMs },
       options,
     ) => {
       const resolvedType = workerType || 'puppet';
@@ -301,6 +305,14 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         deps,
       );
       if ('error' in allowedDirsResolution) return allowedDirsResolution.error;
+
+      // Wall-time limit override for THIS run (#76): same rules as the global
+      // workerRunTimeoutMs (positive integer, 6h cap), validated before the
+      // task is created so no half-created task can exist.
+      if (runTimeoutMs !== undefined
+        && !(Number.isInteger(runTimeoutMs) && runTimeoutMs > 0 && runTimeoutMs <= MAX_RUN_TIMEOUT_MS)) {
+        return `Invalid runTimeoutMs ${JSON.stringify(runTimeoutMs)}: must be a positive integer of milliseconds (e.g. 3600000 for 1 hour), at most ${MAX_RUN_TIMEOUT_MS} (6 hours). The task was NOT created.`;
+      }
 
       // The workspace this task will really run in: the declared one, or the
       // process workspace. Used for worker-reuse validation, the rules summary
@@ -350,6 +362,7 @@ export function addTaskTool(deps: AddTaskToolDeps) {
         assignToWorker,
         ...(workspaceResolution.workspace !== undefined && { workspace: workspaceResolution.workspace }),
         ...(allowedDirsResolution.allowedDirs !== undefined && { taskAllowedDirs: allowedDirsResolution.allowedDirs }),
+        ...(runTimeoutMs !== undefined && { runTimeoutMs }),
         ...(turnCtx?.turnId !== undefined && { turnId: turnCtx.turnId }),
         ...(turnCtx?.rootTurnId !== undefined && { rootTurnId: turnCtx.rootTurnId }),
         ...((toolCallId ?? turnCtx?.causationId) !== undefined && { causationId: toolCallId ?? turnCtx?.causationId }),

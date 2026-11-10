@@ -173,6 +173,20 @@ describe('decideNextAction', () => {
     expect(result.reason).toBe('run wall time exceeded');
   });
 
+  it('default wall budget is 60 minutes (#76 raised from 30)', () => {
+    expect(TURN_LIMITS.MAX_RUN_WALL_MS).toBe(3_600_000);
+  });
+
+  it('a custom wallLimitMs (task/config override) governs, not the default', () => {
+    // 60s elapsed against a 30s budget → terminate.
+    const tight = guard({ runStartedAt: NOW - 60_000, wallLimitMs: 30_000 });
+    expect(decideNextAction(tight, 'completed', true, [], NOW)).toEqual({
+      action: 'terminate', reason: 'run wall time exceeded',
+    });
+    // The same 60s elapsed against the 60-min default budget → continue.
+    expect(decideNextAction(guard({ runStartedAt: NOW - 60_000 }), 'completed', true, [], NOW).action).toBe('continue');
+  });
+
   it('our_cancel → terminate "Aborted"; our_timeout → "request timed out"', () => {
     expect(decideNextAction(guard(), 'our_cancel', false, [], NOW)).toEqual({
       action: 'terminate', reason: 'Aborted',
@@ -232,7 +246,17 @@ describe('resetTurnGuard / advanceGuard', () => {
       runStartedAt: NOW,
       lastProgressSig: '',
       stagnantTurns: 0,
+      wallLimitMs: TURN_LIMITS.MAX_RUN_WALL_MS,
     });
+  });
+
+  it('resetTurnGuard stamps the run wall budget (task/config override, #76)', () => {
+    expect(resetTurnGuard(NOW, 90_000).wallLimitMs).toBe(90_000);
+    // The budget survives advanceGuard (…guard spread) unchanged.
+    const advanced = advanceGuard(resetTurnGuard(NOW, 90_000), {
+      category: 'completed', denials: [], progressSig: 'p', now: NOW,
+    });
+    expect(advanced.wallLimitMs).toBe(90_000);
   });
 
   it('advanceGuard increments turnSeq, perKey and consecutive denial turns without mutating input', () => {
