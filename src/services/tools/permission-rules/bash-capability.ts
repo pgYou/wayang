@@ -5,7 +5,8 @@
 // writes whose resolved targets stay inside the workspace, side-effect-free
 // verbs in a bare segment.
 
-import { resolve as resolvePath, sep } from 'node:path';
+import { resolve as resolvePath } from 'node:path';
+import { isPathWithin } from '@/infra/permission/policy';
 import {
   CMDSUBST_PLACEHOLDER,
   isDiscardRedirectTarget,
@@ -113,8 +114,10 @@ function relativeInputTargets(segment: ShellSegment): string[] {
 
 /** Is `abs` the workspace itself or somewhere underneath it? */
 function insideWorkspace(scope: WorkerAccessScope, abs: string): boolean {
-  const workspace = resolvePath(scope.workspace);
-  return abs === workspace || abs.startsWith(`${workspace}${sep}`);
+  // The policy's own containment check is segment-boundary aware (`/a/b`
+  // never matches `/a/bc`), so the write-scope boundary keeps its exact
+  // semantics — including the `/workspace` vs `/workspace-x` trap.
+  return isPathWithin(resolvePath(scope.workspace), abs);
 }
 
 /** Classify a word list from its first non-assignment word (the command). */
