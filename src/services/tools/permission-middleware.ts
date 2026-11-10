@@ -1,10 +1,14 @@
 import type { Logger } from '@/infra/logger';
-import type { SettledOutcome } from '@/infra/blocking-requests';
 import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { ApprovalMemoryMode } from '@/types/config';
 import type { SignalTurnLineage } from '@/types/index';
 import { generateId } from '@/utils/id';
+import {
+  DEFAULT_PERMISSION_TIMEOUT_MS,
+  reusableGrantKeys,
+  type PermissionResolutionStatus,
+} from '@/services/permission/permission-transport';
 import {
   approvalKey,
   sharedApprovalMemory,
@@ -104,93 +108,16 @@ export interface PermissionMiddlewareDeps {
 }
 
 /**
- * Shape the reuse rule reads. Both `PermissionVerdict` (puppet middleware) and
- * `ToolAccessDecision` (the shared policy claude-code uses) satisfy it, so one
- * exported function can serve both gates instead of drifting into two copies
- * of the rule (issue #58).
+ * The grants a verdict may reuse, the five-state vocabulary and the
+ * permission wait bound live in the shared transport module
+ * (permission-transport.ts, issues #46/#58/#69) — the same rule and the same
+ * statuses serve the ACP bridge and the Claude Code gate, so no per-gate
+ * copy of any of them exists anywhere.
  */
-export type GrantReuseVerdict = Pick<
-  PermissionVerdict,
-  'decision' | 'access' | 'sensitive' | 'askPaths'
->;
-
-/**
- * The grants a verdict may reuse, or `[]` when this call must ask again.
- *
- * The rule is the whole contract of the feature (issue #46):
- *   - only `ask` reaches here (`allow` already ran, `deny` never runs);
- *   - only READ — a write approval is never carried to a later write;
- *   - never a sensitive hit — `~/.ssh` is asked about every single time, even
- *     under the default `sensitiveMode: 'ask'` where the hit IS approvable;
- *   - and the call must name at least one concrete path, so escalations that
- *     are not about a single path (`dangerous-bash`, `dynamic-shell`,
- *     `home-other-user`) can never be covered by an old grant.
- */
-export function reusableGrantKeys(verdict: GrantReuseVerdict): string[] {
-  if (verdict.decision !== 'ask') return [];
-  if (verdict.access !== 'read') return [];
-  if (verdict.sensitive === true) return [];
-  const paths = verdict.askPaths ?? [];
-  if (paths.length === 0) return [];
-  const keys: string[] = [];
-  for (const path of paths) {
-    const key = approvalKey('read', path);
-    if (!keys.includes(key)) keys.push(key);
-  }
-  return keys;
-}
 
 interface PendingPermission {
   resolve: (approved: boolean, reason?: string) => void;
   timer: ReturnType<typeof setTimeout>;
-}
-
-/**
- * Outcome of routing a respond_permission call to a permission request
- * (issue #69). Every value is a definite terminal answer for the controller:
- *
- * - 'resolved' — THIS call settled a pending request; the worker proceeds
- *   with the answer.
- * - 'already-resolved' — the request was answered earlier; the duplicate
- *   response was ignored and the worker already continued with the first
- *   answer.
- * - 'expired' — the request timed out; the worker already received a
- *   timeout error and moved on. No response is needed.
- * - 'worker-closed' — the request was settled by worker abort/shutdown; the
- *   worker's wait was released with a cancellation. No response is needed.
- * - 'not-found' — no live request ever knew this id (stale id from an old
- *   turn or a finished worker). Retrying cannot help.
- *
- * In every non-'resolved' case the worker-side wait has already been
- * released (or never existed) — a controller can never leave a worker
- * hanging by sending one of these.
- */
-export type PermissionResolutionStatus =
-  | 'resolved'
-  | 'already-resolved'
-  | 'expired'
-  | 'worker-closed'
-  | 'not-found';
-
-/**
- * Map a BlockingRequestMap settle outcome onto the permission status
- * vocabulary, so the third-party permission handlers (ClaudeCodeWorker, ACP
- * workers) report the same distinguishable semantics as the puppet
- * middleware.
- */
-export function permissionStatusFromOutcome(
-  outcome: SettledOutcome | undefined,
-): PermissionResolutionStatus {
-  switch (outcome) {
-    case 'responded':
-      return 'already-resolved';
-    case 'timed-out':
-      return 'expired';
-    case 'cleaned':
-      return 'worker-closed';
-    default:
-      return 'not-found';
-  }
 }
 
 export interface PermissionMiddlewareResult {
@@ -203,8 +130,6 @@ export interface PermissionMiddlewareResult {
   ) => PermissionResolutionStatus;
   cleanup: () => void;
 }
-
-const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 
 export function wrapWithPermissionMiddleware(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous tool set (zod-inferred per tool); see common.ts relaxation boundary
@@ -220,7 +145,7 @@ export function wrapWithPermissionMiddleware(
    * not-found the controller cannot act on.
    */
   const settled = new Map<string, 'responded' | 'timeout' | 'aborted'>();
-  const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
   const gatedSet = new Set(config.gatedTools);
   const memoryEnabled = (deps.approvalMemory ?? DEFAULT_APPROVAL_MEMORY) === 'task';
   const grants = deps.grants ?? sharedApprovalMemory;

@@ -26,7 +26,7 @@ import { updateProgressTool } from './update-progress';
 import { chatWorkerTool } from './chat-worker';
 import { respondPermissionTool } from './respond-permission';
 import { respondInquiryTool } from './respond-inquiry';
-import type { PermissionResolutionStatus } from './permission-middleware';
+import type { PermissionResolutionStatus } from '@/services/permission/permission-transport';
 import { useSkillTool } from './use-skill';
 import type { SkillRegistry } from '@/services/skills/registry';
 

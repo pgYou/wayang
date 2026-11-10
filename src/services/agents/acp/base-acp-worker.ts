@@ -32,9 +32,9 @@ import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import {
   permissionStatusFromOutcome,
-  type PermissionMiddlewareResult,
   type PermissionResolutionStatus,
-} from '@/services/tools/permission-middleware';
+} from '@/services/permission/permission-transport';
+import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import type { WorkerAccessScope } from '@/services/tools/permission-rules';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
 import { BlockingRequestMap } from '@/infra/blocking-requests';

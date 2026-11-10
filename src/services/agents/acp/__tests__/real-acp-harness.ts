@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TaskDetail, WorkerConfig } from '@/types/index';
-import type { PermissionResolutionStatus } from '@/services/tools/permission-middleware';
+import type { PermissionResolutionStatus } from '@/services/permission/permission-transport';
 import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx } from '@/__tests__/helpers';
 import { ApprovalMemory } from '@/services/permission/approval-memory';

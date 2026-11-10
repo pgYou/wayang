@@ -35,6 +35,11 @@ export class BlockingRequestMap<T> {
     return this.pending.size;
   }
 
+  /** True while `id` is parked (settled / unknown ids answer false). */
+  has(id: string): boolean {
+    return this.pending.has(id);
+  }
+
   /**
    * How `id` last settled, or `undefined` when it is unknown or still parked.
    * Survives the settle itself, so a late resolve() caller can be told WHY the

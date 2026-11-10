@@ -12,7 +12,7 @@ import {
   type PermissionOperation,
 } from '@/services/permission/permission-audit';
 import { decideToolAccess, type ToolAccessDecision, type WorkerAccessScope } from '@/services/tools/permission-rules';
-import { reusableGrantKeys } from '@/services/tools/permission-middleware';
+import { reusableGrantKeys } from '@/services/permission/permission-transport';
 import { generateId } from '@/utils/id';
 import { homedir } from 'node:os';
 import { ClaudeWorkerBase } from './worker-base';

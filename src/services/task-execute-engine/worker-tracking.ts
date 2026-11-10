@@ -11,7 +11,7 @@ import type {
 import type { Subscribable } from '@/infra/state/subscribable';
 import { summarizeTranscript } from '@/services/worker-transcript';
 import { WorkerAgent } from '@/services/agents/worker-agent';
-import type { PermissionResolutionStatus } from '@/services/tools/permission-middleware';
+import type { PermissionResolutionStatus } from '@/services/permission/permission-transport';
 import { generateId } from '@/utils/id';
 import type { WorkerMessageDelivery } from './types';
 import { normalizeWorkspacePath } from '@/infra/workspace-registry';
