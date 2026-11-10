@@ -340,7 +340,11 @@ export abstract class BaseAcpWorker {
       reason: info.reason,
       sanitizedTarget,
       key,
-      injectable: info.injectable ?? (info.source !== 'controller'),
+      // A controller denial is injectable too: the refusal must reach the
+      // agent as a SYSTEM NOTICE so it can pick another approach. Explicit
+      // injectable=false (permissionMode 'agent') still blocks the notice;
+      // the source field stays for the audit trail and notice wording.
+      injectable: info.injectable ?? true,
     });
   }
 

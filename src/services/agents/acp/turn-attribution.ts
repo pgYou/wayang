@@ -31,16 +31,19 @@ const CATEGORY_BY_SOURCE: Record<DenialSource, TurnEndCategory> = {
   policy: 'denied_by_policy', timeout: 'denied_by_timeout', controller: 'denied_by_user',
 };
 
-/** Cancel facts win over denials; denials win over stopReason. */
+/** Cancel facts win over everything; a normal end_turn beats denials (the agent
+ * saw the refusal and chose to wrap up — that is a completed turn); denials
+ * beat other stop reasons. */
 export function classifyTurnEnd(input: ClassifyTurnEndInput): TurnEndCategory {
   const { stopReason, cancelFact, denials } = input;
   if (cancelFact === 'abort') return 'our_cancel';
   if (cancelFact === 'prompt-timeout') return 'our_timeout';
+  if (stopReason === 'end_turn') return 'completed';
   if (denials.length > 0) {
     const present = new Set(denials.map((d) => d.source));
     return CATEGORY_BY_SOURCE[SOURCE_PRIORITY.find((s) => present.has(s)) ?? 'controller'];
   }
-  return stopReason === 'end_turn' ? 'completed' : 'agent_ended_unexpectedly';
+  return 'agent_ended_unexpectedly';
 }
 function normalizeForKey(value: string): string { return value.toLowerCase().replace(/\s+/g, ' ').trim(); }
 /** Stable budget identity: lower case, whitespace collapsed, source|tool|target. */
@@ -152,7 +155,7 @@ export interface AdvanceGuardInput {
 export function advanceGuard(guard: TurnGuardState, input: AdvanceGuardInput): TurnGuardState {
   const { category, denials, progressSig } = input;
   const perKey = new Map(guard.perKey);
-  if (category === 'denied_by_policy' || category === 'denied_by_timeout') {
+  if (category.startsWith('denied_by_')) {
     for (const d of denials) {
       const key = denialKey(d);
       perKey.set(key, (perKey.get(key) ?? 0) + 1);
@@ -203,9 +206,12 @@ export function decideNextAction(
   }
   if (category === 'our_cancel') return { action: 'terminate', reason: 'Aborted' };
   if (category === 'our_timeout') return { action: 'terminate', reason: 'request timed out' };
-  if (category === 'denied_by_user') return { action: 'terminate', reason: 'denied by user' };
 
-  if (category === 'denied_by_policy' || category === 'denied_by_timeout') {
+  if (category === 'denied_by_policy' || category === 'denied_by_timeout' || category === 'denied_by_user') {
+    // Every denial source shares the reissue machinery: the refusal goes back
+    // to the agent as an injectable SYSTEM NOTICE and the agent decides
+    // whether to try a different approach or end. Only an exhausted reissue
+    // budget (or a real cancel/timeout above) terminates.
     // Protocol-level denials (permissionMode 'agent') carry injectable=false:
     // there is nothing to put in a follow-up notice. Even though the category
     // is still denied_by_policy, a turn whose denials are ALL non-injectable
@@ -228,7 +234,8 @@ export function decideNextAction(
         reason: `consecutive denial turns reached (${TURN_LIMITS.MAX_CONSECUTIVE_DENIAL_TURNS})`,
       };
     }
-    const source: DenialSource = category === 'denied_by_policy' ? 'policy' : 'timeout';
+    const source: DenialSource =
+      category === 'denied_by_policy' ? 'policy' : category === 'denied_by_timeout' ? 'timeout' : 'controller';
     for (const d of denials.filter((item) => item.source === source)) {
       for (const key of [d.key, denialKey(d)]) {
         if ((guard.perKey.get(key) ?? 0) >= TURN_LIMITS.MAX_PER_KEY) {

@@ -519,7 +519,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     ]);
   }
 
-  it('a controller denial maps a cancelled turn to failed "Permission denied by user: <tool>"', async () => {
+  it('a controller denial reissues with a notice; the reject outcome is still answered, then completes', async () => {
     const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
     const queue = new RecordingSignalQueue();
     worker.setSignalContext({
@@ -550,13 +550,14 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     // opencode ends the turn as 'cancelled' on a rejected permission
     // (measured #25) — the denial, not a user abort, is the cause.
     await respondToPrompt(worker.transport, 0, { stopReason:'cancelled' });
+    // The denial no longer terminates the run: the refusal is reissued to the
+    // agent as a SYSTEM NOTICE, and the agent can wrap up normally.
+    const idx = await nthPromptIndex(worker.transport, 1);
+    const text = (worker.transport.clientMessages[idx] as any).params.prompt[0].text as string;
+    expect(text).toContain('[SYSTEM NOTICE]');
+    await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
     const result = await runPromise;
-    expect(result.status).toBe('failed');
-    expect(result.error).toBe('Permission denied by user: execute');
-    // #56: a user denial ALWAYS terminates — no reissue round, no notice.
-    const prompts = worker.transport.clientMessages.filter((m) => m.method === 'session/prompt');
-    expect(prompts).toHaveLength(1);
-    expect(prompts.some((m) => JSON.stringify(m).includes('[SYSTEM NOTICE]'))).toBe(false);
+    expect(result.status).toBe('completed');
   });
 
   it('a denial from an EARLIER turn does not relabel a later real cancel (per-turn ledger)', async () => {
@@ -568,8 +569,9 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
       taskId: TASK.id,
       taskTitle: TASK.title,
       workerType: 'codebuddy',
-      // #56: a controller denial now terminates immediately, so drive turn 1
-      // with a POLICY denial instead — that is what opens the reissue round.
+      // Drive turn 1 with a POLICY denial — that opens the reissue round just
+      // like a controller denial does now; the policy source keeps this test
+      // about the per-turn ledger, not about any specific denial source.
       accessScope: { ...SCOPE, permission: { sensitiveMode: 'deny' } },
       grants: new ApprovalMemory(),
       approvalMemory: 'task',

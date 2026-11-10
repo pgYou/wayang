@@ -95,10 +95,13 @@ describe('classifyTurnEnd', () => {
     ).toBe('our_timeout');
   });
 
-  it('denials beat stopReason end_turn', () => {
+  it('a normal end_turn beats denials (the agent saw the refusal and wrapped up)', () => {
     expect(
       classify({ stopReason: 'end_turn', denials: [denial({ source: 'timeout' })] }),
-    ).toBe('denied_by_timeout');
+    ).toBe('completed');
+    expect(
+      classify({ stopReason: 'end_turn', denials: [denial({ source: 'controller' })] }),
+    ).toBe('completed');
   });
 });
 
@@ -196,10 +199,24 @@ describe('decideNextAction', () => {
     });
   });
 
-  it('denied_by_user → terminate "denied by user"', () => {
-    expect(decideNextAction(guard(), 'denied_by_user', true, [], NOW)).toEqual({
-      action: 'terminate', reason: 'denied by user',
+  it('denied_by_user → reissue like the other sources; budgets still terminate', () => {
+    expect(decideNextAction(guard(), 'denied_by_user', true, [], NOW)).toEqual({ action: 'reissue' });
+    const budget = decideNextAction(guard({ denialReissues: 3 }), 'denied_by_user', true, [], NOW);
+    expect(budget).toEqual({
+      action: 'terminate',
+      reason: 'denial reissue budget exhausted (3/3)',
     });
+  });
+
+  it('denied_by_user: a same-key retry terminates via the per-key budget', () => {
+    const d = denial({ source: 'controller', toolName: 'bash' });
+    const afterFirst = advanceGuard(resetTurnGuard(NOW), {
+      category: 'denied_by_user', denials: [d], progressSig: 'p1', now: NOW,
+    });
+    expect(afterFirst.perKey.get(denialKey(d))).toBe(1);
+    const retry = decideNextAction(afterFirst, 'denied_by_user', true, [d], NOW);
+    expect(retry.action).toBe('terminate');
+    expect(retry.reason).toContain('per-key budget exhausted');
   });
 
   it('fresh policy/timeout denial → reissue', () => {

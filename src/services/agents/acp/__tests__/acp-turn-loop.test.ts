@@ -222,8 +222,9 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(2);
   });
 
-  // 4) denied_by_user → terminate, no second prompt, no SYSTEM NOTICE.
-  it('denied_by_user terminates with no reissue round and no SYSTEM NOTICE', async () => {
+  // 4) controller denial → reissue with a SYSTEM NOTICE (source 用户); the
+  // agent switches command in the notice round and completes.
+  it('controller denial → reissue with SYSTEM NOTICE → agent switches command → completed', async () => {
     const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
     const queue = new RecordingSignalQueue();
     worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
@@ -236,12 +237,75 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     await waitForPermissionAnswer(worker.transport, 703);
     await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
 
+    const text = await promptTextAt(worker.transport, 1);
+    expect(text).toContain('[SYSTEM NOTICE]');
+    expect(text).toContain('拒绝来源=用户'); // denialSource=controller kept for the notice/audit
+    expect(text).toContain('too dangerous');
+
+    // The reissue round: the agent picks a DIFFERENT (compliant) command and
+    // finishes normally — no permission request, no new denial.
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-alt', title: 'Bash', kind: 'execute', status: 'completed', rawInput: { command: 'echo safe' } });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
+    const result = await runPromise;
+    expect(result.status).toBe('completed');
+  });
+
+  // 4a) controller deny + end_turn in the SAME turn → completed, not FAILED.
+  it('controller denial + end_turn → completed (a denial never overrides a normal end)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 704, 'tc-user-end');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'nope')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 704);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
+
+    const result = await runPromise;
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
+    // The agent ended normally — no reissue round was needed.
+    expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+  });
+
+  // 4b) reissue budget exhaustion: alternating deny/comply rounds burn the
+  // MAX_DENIAL_REISSUES budget; the 4th controller denial terminates.
+  it('controller denials exhaust the reissue budget → terminate with an explicit reason', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    for (let round = 0; round < 7; round++) {
+      await nthPromptIndex(worker.transport, round);
+      if (round % 2 === 0) {
+        // A controller denial; a fresh tool name each round keeps every
+        // denial KEY distinct (the sanitized target folds id_rsa_N together),
+        // so only the REISSUE budget is at play.
+        const reqId = 720 + round;
+        sendSensitivePermissionRequest(worker, reqId, `tc-budget-${round}`, 'cat /home/test-user/.ssh/id_rsa', `budget-${round}`);
+        const payload = queue.signals[queue.signals.length - 1].payload;
+        expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'denied again')).toBe('resolved');
+        await waitForPermissionAnswer(worker.transport, reqId);
+        await respondToPrompt(worker.transport, round, { stopReason: 'cancelled' });
+      } else {
+        // The agent complies: fresh progress text + a queued controller
+        // message keep the loop going without touching the denial budgets.
+        worker.acceptMessage(`continue-${round}`);
+        sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'x'.repeat(round + 1) }, messageId: `m-${round}` });
+        await respondToPrompt(worker.transport, round, { stopReason: 'end_turn' });
+      }
+    }
+
     const result = await runPromise;
     expect(result.status).toBe('failed');
     expect(result.error).toContain('Permission denied by user');
-    const prompts = worker.transport.clientMessages.filter((m) => m.method === 'session/prompt');
-    expect(prompts).toHaveLength(1);
-    expect(prompts.some((m) => JSON.stringify(m).includes('[SYSTEM NOTICE]'))).toBe(false);
+    expect(result.error).toContain('denial reissue budget exhausted (3/3)');
+    expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(7);
   });
 
   // 4b) permissionMode 'agent': a protocol-level denial is recorded but NOT injected.
