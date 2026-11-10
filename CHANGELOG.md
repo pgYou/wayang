@@ -12,6 +12,7 @@
 - 移除 worker 运行时长限制：删除墙钟判定、RunWallWatchdog、硬编码的 12 轮上限；交互类超时（审批、inquiry、LLM idle、握手）保留
 - maxTurns 语义统一：未配置或非法值即不限制（非法值打一条 warn），合法正整数生效；puppet 改为读配置，claude-code 共用同一解析；ACP 不消费该配置
 - puppet 步数耗尽不再报 completed，改为失败并注明 Reached step limit
+- 上下文压缩触发阈值从 90% 调整为 60%：上下文用到 60% 即压缩，更早释放上下文
 
 ### 重构
 

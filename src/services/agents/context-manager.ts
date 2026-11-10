@@ -11,8 +11,8 @@ import { nowISO } from '@/utils/time';
 /** Default context window budget: 256k tokens (fits most current models). */
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000;
 
-/** Trigger compaction at 90% of the context window, reserving 10% for output. */
-const COMPACT_THRESHOLD_RATIO = 0.9;
+/** Trigger compaction at 60% of the context window, reserving 40% for output. */
+const COMPACT_THRESHOLD_RATIO = 0.6;
 
 /**
  * Token budget for recent entries to keep alongside the summary.
