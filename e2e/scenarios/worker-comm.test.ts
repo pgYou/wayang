@@ -46,32 +46,16 @@ describe('e2e: controller message injection', () => {
     setup = await setupE2E([
       { match: isControllerRequest, toolCalls: [{ name: 'add_task', args: { title: 'Echo correction', description: 'Run the steps then finish', priority: 'normal' } }] },
       { match: isControllerRequest, toolCalls: [{ name: 'chat_worker', args: runningWorkerId }] },
-      { match: isControllerRequest, text: 'Correction delivered.' },
-      // #51 capability gate: `sleep` is an unknown verb, so the bash step asks.
-      // The controller acknowledges the permission wake; approval itself is
-      // driven via RPC below (the permission.test.ts pattern).
-      { match: isControllerRequest, text: 'Noted; approval handled out of band.' },
       { match: isControllerRequest, text: 'Task finished.' },
       { match: isWorkerRequest, toolCalls: [{ name: 'update_progress', args: { message: 'starting' } }] },
-      // Long-running tool: the worker parks on the permission approval (and
-      // then sleeps), so the correction is delivered mid-task — the progress
-      // signal above wakes the controller for the chat_worker call.
+      // Long-running tool: the correction is sent while this runs (the
+      // progress signal above wakes the controller for the chat_worker call).
       { match: isWorkerRequest, toolCalls: [{ name: 'bash', args: { command: 'sleep 2' } }] },
       { match: isWorkerRequest, toolCalls: [{ name: 'done', args: echoSummary }] },
     ]);
     ref.setup = setup;
 
     await setup.submit('do the echo test');
-
-    // Approve the gated bash step: the worker is blocked on this approval,
-    // which is exactly the mid-task window the correction lands in.
-    await setup.waitFor('bash permission requested', (s) =>
-      s.signals.some((sig) => sig.type === 'permission_request'));
-    const request = setup.state.signals.find((sig) => sig.type === 'permission_request')!;
-    const requestId = String(request.payload!.requestId);
-    const respondResult = await setup.client.request<{ resolved: boolean }>(
-      'respond_permission', { requestId, approved: true });
-    expect(respondResult.resolved).toBe(true);
 
     await setup.waitFor('task completed with the correction applied', (s) =>
       s.history.length === 1 && s.history[0].status === 'completed'
