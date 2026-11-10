@@ -18,7 +18,12 @@ export type WorkerMatchedRule =
   | 'no-path'
   | 'home-other-user'
   | 'dynamic-shell'
-  | 'read-only-unverified';
+  | 'read-only-unverified'
+  // #51 layer 2 — the capability gate's escalation classes.
+  | 'unknown-capability'
+  | 'exec-capability'
+  | 'network-capability'
+  | 'write-scope';
 
 /** Everything the shared policy needs to know about ONE worker run's boundary. */
 export interface WorkerAccessScope {

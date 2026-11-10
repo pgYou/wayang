@@ -122,6 +122,17 @@ export function isWriteSegment(segment: ShellSegment): boolean {
 }
 
 /**
+ * Is the COMMAND WORD a write verb (optionally gated on a flag — `sed -i`)?
+ * Unlike `isWriteSegment` this ignores words in ARGUMENT position, so
+ * `npm install axios` (the word `install` as an argument) is not a write.
+ */
+export function isWriteCommandHead(command: string, words: readonly string[]): boolean {
+  if (BASH_WRITE_VERBS.has(command)) return true;
+  const flags = BASH_FLAGGED_WRITE_VERBS.get(command);
+  return flags !== undefined && flags.some((flag) => words.some((other) => isFlagWord(other, flag)));
+}
+
+/**
  * git subcommands that only read. `git` itself is in `READ_ONLY_COMMANDS`, so
  * everything else — `clean`, `checkout`, `reset`, `push`, `commit`, `stash`, …
  * — falls back to `unknown` and keeps the old verdict.
