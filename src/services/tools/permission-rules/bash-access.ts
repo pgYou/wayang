@@ -2,6 +2,7 @@
 
 import { classifyRedirections, tokenizeShellLite } from '@/services/tools/shell-lexer';
 import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
+import { evaluateCapabilityGate, redirectWriteScopeAsk } from './bash-capability';
 import { segmentAccess, unanalyzedInnerCommand, unverifiedReadOnlyCommand } from './bash-classification';
 import { isDangerousCommandLine } from './bash-head';
 import { commandAccess, extractPathCandidates, type BashCandidate } from './bash-paths';
@@ -249,14 +250,18 @@ export function evaluateBashCommand(
     };
   }
 
-  // A redirection into a real file: the policy may well allow the target
-  // (inside the workspace), but a redirected write is never silent.
+  // A redirection into a real file (#51 layer 2): the write is allowed exactly
+  // when every RELATIVE target resolves inside the workspace — a target that
+  // escapes it asks with the write-scope rule. Absolute / `~` targets were
+  // already judged as path candidates above, so only the relative spellings —
+  // the ones the candidate sweep never sees — are judged here.
   if (redirections.writeTargets.length > 0 && !firstAsk && !sensitiveAsk) {
-    return {
-      decision: 'ask',
-      matchedRule: 'dynamic-shell',
-      reason: `output redirection writes a file ("${redirections.writeTargets.join('", "')}")`,
-    };
+    const scopeAsk = redirectWriteScopeAsk(
+      scope,
+      redirections.writeTargets,
+      cdChain.cwd ?? scope.workspace,
+    );
+    if (scopeAsk) return { ...scopeAsk, access: lineAccess };
   }
 
   // Another user's home cannot be resolved — ask, never a silent allow. The
@@ -323,10 +328,18 @@ export function evaluateBashCommand(
   }
 
   if (firstAsk) return firstAsk;
+
+  // #51 layer 2 — the capability gate. The historic "no path candidate →
+  // allow" fallback is gone: a line runs silently only when every segment sits
+  // in a capability table AND its targets stay in scope (reads inside the
+  // allowed directories, writes inside the workspace). Exec / network /
+  // dynamic constructs and unknown verbs ask, naming the capability class.
+  const capabilityAsk = evaluateCapabilityGate(scope, segments, cdChain.cwd ?? scope.workspace);
+  if (capabilityAsk) return { ...capabilityAsk, access: lineAccess };
+
   if (firstAllow) return firstAllow;
-  // No candidate to judge: the verdict is the historic one, but the line still
-  // reports the direction its segments justify, so the audit trail can tell a
-  // read-only line (`git status`) from one the gate does not understand
-  // (`npm run build`).
+  // No candidate to judge: the line is a verified read or a write whose
+  // targets all landed inside the workspace — allow, still reporting the
+  // direction its segments justify for the audit trail.
   return { decision: 'allow', matchedRule: 'no-path', access: lineAccess };
 }

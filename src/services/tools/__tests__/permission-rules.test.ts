@@ -261,31 +261,44 @@ describe('evaluateBashAccess', () => {
       'mkdir -p build/out',
       'stat -f %z dist/cli.js',
       'wc -l < src/cli.ts',
-      'npx vitest run src/services/tools/permission-rules.test.ts',
       'git diff v0.4.0 HEAD -- package.json src/types/config.ts src/types/index.ts tsconfig.json',
     ])('%s → allow (no path candidate)', (command) => {
       const verdict = evaluateBashAccess(scope(), command);
       expect(verdict.decision).toBe('allow');
       expect(verdict.matchedRule).toBe('no-path');
     });
+
+    // #51 layer 2: `npx` is not on the capability tables, so it asks on the
+    // unknown-capability rule — the point of the regression (no bogus absolute
+    // path candidate) still holds: the reason is the verb, not a path.
+    it('npx asks on the capability gate, not on a bogus path candidate', () => {
+      const verdict = evaluateBashAccess(scope(), 'npx vitest run src/services/tools/permission-rules.test.ts');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('unknown-capability');
+    });
   });
 
   describe('regression: URLs are not filesystem paths', () => {
+    // #51 layer 2: these still never produce a PATH candidate — the ask comes
+    // from the capability gate (network / unknown), not from a path rule.
     it.each([
-      'curl -s https://api.example.com/v1/data',
-      'git clone https://github.com/foo/bar.git',
-      'open https://github.com/foo/bar',
-      'npm install axios',
-    ])('%s → allow', (command) => {
-      expect(evaluateBashAccess(scope(), command).decision).toBe('allow');
+      { command: 'curl -s https://api.example.com/v1/data', rule: 'network-capability' },
+      { command: 'git clone https://github.com/foo/bar.git', rule: 'unknown-capability' },
+      { command: 'open https://github.com/foo/bar', rule: 'unknown-capability' },
+      { command: 'npm install axios', rule: 'unknown-capability' },
+    ])('$command → ask ($rule), never a path rule', ({ command, rule }) => {
+      const verdict = evaluateBashAccess(scope(), command);
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe(rule);
     });
   });
 
   it('plain commands run', () => {
     expect(evaluateBashAccess(scope(), 'ls -la').decision).toBe('allow');
-    expect(evaluateBashAccess(scope(), 'npm test').decision).toBe('allow');
     expect(evaluateBashAccess(scope(), 'cat package.json').decision).toBe('allow');
     expect(evaluateBashAccess(scope(), 'git status').decision).toBe('allow');
+    // #51 layer 2: an off-table verb asks on the capability gate.
+    expect(evaluateBashAccess(scope(), 'npm test').matchedRule).toBe('unknown-capability');
   });
 
   describe('the sensitive list outranks every allow: reads ask, writes are refused', () => {
@@ -436,16 +449,19 @@ describe('evaluateBashAccess', () => {
       expect(verdict.reason).toContain('command substitution');
     });
 
-    it("awk '{print $1}' file is NOT command substitution and does not force an ask", () => {
+    it("awk '{print $1}' file is NOT command substitution — #51 layer 2 asks on exec, not on $", () => {
+      // `$1` inside the awk script is still not a command substitution; the
+      // ask comes from the capability gate (awk is an interpreter verb).
       const verdict = evaluateBashAccess(scope(), "awk '{print $1}' file");
-      expect(verdict.decision).toBe('allow');
-      expect(verdict.matchedRule).toBe('no-path');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('exec-capability');
     });
 
-    it('a write into the workspace via redirection still asks (target is not statically trusted)', () => {
+    it('a write into the workspace via redirection allows (#51 layer 2)', () => {
+      // The redirected write is judged by the write-scope rule: inside the
+      // workspace it runs, outside it asks.
       const verdict = evaluateBashAccess(scope(), 'echo hi > notes.txt');
-      expect(verdict.decision).toBe('ask');
-      expect(verdict.reason).toContain('output redirection');
+      expect(verdict.decision).toBe('allow');
     });
 
     it('fd duplication (2>&1) is not mistaken for a file redirection', () => {
@@ -485,23 +501,24 @@ describe('evaluateBashAccess', () => {
         'command -v waya >/dev/null 2>&1 && readlink -f "$(command -v waya)"',
       );
       expect(probe.decision).toBe('allow');
+      // #51 layer 2: `npm` is an unknown-capability verb, so this line now
+      // asks on the capability gate (the grep read next to it no longer launders it).
       const listing = evaluateBashAccess(scope(), 'npm ls -g --depth=0 2>/dev/null | grep -i waya');
-      expect(listing.decision).toBe('allow');
+      expect(listing.decision).toBe('ask');
+      expect(listing.matchedRule).toBe('unknown-capability');
     });
 
-    it('a redirection into a real file still asks (workspace, absolute, mixed)', () => {
-      // Inside the workspace the policy would allow the write; a redirected
-      // write is still not something the gate runs silently.
-      const relative = evaluateBashAccess(scope(), 'echo hi > out.txt');
-      expect(relative.decision).toBe('ask');
-      expect(relative.reason).toContain('output redirection');
-      expect(evaluateBashAccess(scope(), `echo hi > ${ws}/out.txt`).decision).toBe('ask');
+    it('a redirection into a real file asks only when it escapes the workspace (#51 layer 2)', () => {
+      // Inside the workspace the redirected write is allowed: the capability
+      // gate classifies the segment as a write whose target stays in scope.
+      expect(evaluateBashAccess(scope(), 'echo hi > out.txt').decision).toBe('allow');
+      expect(evaluateBashAccess(scope(), `echo hi > ${ws}/out.txt`).decision).toBe('allow');
       // …and out of the workspace it keeps its policy verdict.
       expect(evaluateBashAccess(scope(), 'echo hi > /etc/passwd').decision).toBe('ask');
-      // Only the real target is to blame in a mixed command line.
-      const mixed = evaluateBashAccess(scope(), 'ls -la >/dev/null && echo x > real.txt');
-      expect(mixed.decision).toBe('ask');
-      expect(mixed.reason).toContain('real.txt');
+      // A target that escapes via `..` asks on the write-scope rule.
+      const escape = evaluateBashAccess(scope(), 'ls -la >/dev/null && echo x > ../real.txt');
+      expect(escape.decision).toBe('ask');
+      expect(escape.matchedRule).toBe('write-scope');
     });
 
     it('an fd copy of a discard target is not a path candidate', () => {
@@ -975,11 +992,11 @@ describe('evaluateBashAccess', () => {
 
     it("git's subcommand check stays a classifier, not a deferred condition (scope guard)", () => {
       // A non-read git subcommand is "determined not a read", like an
-      // off-table command — it keeps the historic no-candidate allow.
+      // off-table command — #51 layer 2 escalates it on the capability gate.
       for (const command of ['git clone https://github.com/foo/bar.git', 'git push', 'git clean -fdx']) {
         const verdict = evaluateBashAccess(scope(), command);
-        expect(verdict.decision).toBe('allow');
-        expect(verdict.matchedRule).toBe('no-path');
+        expect(verdict.decision).toBe('ask');
+        expect(verdict.matchedRule).toBe('unknown-capability');
         expect(verdict.access).toBe('unknown');
       }
     });
@@ -1042,7 +1059,7 @@ describe('evaluateBashAccess', () => {
     });
 
     it('no-path read-only commands still allow with no reason', () => {
-      for (const command of ['ls -la', 'npm test', 'git status', 'pwd']) {
+      for (const command of ['ls -la', 'git status', 'pwd']) {
         const verdict = evaluateBashAccess(scope(), command);
         expect(verdict.decision).toBe('allow');
         expect(verdict.matchedRule).toBe('no-path');
