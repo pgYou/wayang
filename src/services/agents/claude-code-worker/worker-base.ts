@@ -25,7 +25,6 @@ import type { ApprovalMemoryMode } from '@/types/config';
 import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
 import type { SkillRegistry } from '@/services/skills/registry';
 import type { SignalTurnLineage } from '@/types/index';
-import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 
 export class ClaudeWorkerBase {
   readonly id: string;
