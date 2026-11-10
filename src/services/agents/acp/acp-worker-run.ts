@@ -46,9 +46,6 @@ import type { ProgressPosition } from './mcp-progress-fallback';
 import { AcpProgress } from './acp-progress';
 import { AcpMcpHost } from './acp-mcp-host';
 import { openAcpSession } from './acp-session-open';
-import {
-  buildWallTimeoutReport, collectVcsSnapshot, resolveRunWallLimitMs, RunWallWatchdog, type VcsSnapshot,
-} from './acp-run-wall';
 import pkg from '@/../package.json';
 
 export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInstance {
@@ -63,10 +60,6 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   protected _progress: AcpProgress | null = null;
   /** Per-run MCP host lifecycle (injection / watchdog / degradation). */
   protected _mcpHost: AcpMcpHost | null = null;
-  /** Wall-time watchdog of the current run (#76): 5-min warning + hard expiry. */
-  private _runWall: RunWallWatchdog | null = null;
-  /** Last progress text this run produced (feeds the timeout report, #76). */
-  private _lastProgressMsg: string | null = null;
 
   async run(
     task: TaskDetail & { workerId: string },
@@ -86,21 +79,10 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     this._sawToolCall = false;
     this._sawPermissionRequest = false;
     this._turnDenials = [];
-    this._lastProgressMsg = null;
-    // Wall-time budget of THIS run (#76): task param > global config > default.
-    const runStartedAt = Date.now();
-    this._runWall = new RunWallWatchdog({
-      limitMs: resolveRunWallLimitMs(task, this.ctx.config),
-      startedAt: runStartedAt,
-      onWarn: (message) => { this._onProgress?.(message); },
-      onExpiry: () => this.enforceWallLimit(),
-    });
-    this._turnGuard = resetTurnGuard(runStartedAt, this._runWall.limitMs);
+    this._turnGuard = resetTurnGuard();
     this._accumulator = createAcpToolAccumulator();
     this._turnWriter.reset();
-    this._onProgress = onProgress
-      ? (msg) => { this._lastProgressMsg = msg; onProgress(msg); }
-      : null;
+    this._onProgress = onProgress ?? null;
     this._turnSeq = 0;
     this._progress = new AcpProgress({
       canFire: () => this.progressGuardsOpen(),
@@ -112,7 +94,6 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
     // The idle tracker serves BOTH paths: with MCP it is the 120s safety net,
     // without MCP it is the only text-driven progress channel (02 §5).
     this._progress.start();
-    this._runWall.arm();
 
     this.state.set('runtimeState.task', { id: task.id, description: task.description });
     const turnEnv = this.buildTurnEnv(task);
@@ -265,7 +246,6 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
         if (initialQueued.length > 0) promptText += `\n\n${joinControllerMessages(initialQueued)}`;
 
         while (!this.abortController.signal.aborted) {
-          if (await this.terminateOnWall()) break;
           const cancelBaseline = client.cancelSentCount;
           this.resetTurnProgress();
           this._turnSeq += 1;
@@ -277,7 +257,6 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           this.settleTurn();
           this._progress!.recordReply();
           this._progress!.noteTurnEnd();
-          if (await this.terminateOnWall()) break;
 
           const denials = this.takeTurnDenials();
           const cancelFact: CancelFact = client.cancelSentCount > cancelBaseline ? client.lastCancelReason : null;
@@ -292,7 +271,7 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
           const verdict = finalizeTurnVerdict(
             decideNextAction(guardBefore, category, hasQueuedMessages, denials), denials,
           );
-          this._turnGuard = advanceGuard(guardBefore, { category, denials, progressSig, now: Date.now() });
+          this._turnGuard = advanceGuard(guardBefore, { category, denials, progressSig });
 
           if (verdict.action === 'terminate') {
             this._inputClosed = true;
@@ -330,25 +309,18 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       this._inputClosed = true;
       const acpError = this.normalizeError(err, 'prompt');
       if (!this._terminalResult) {
-        if (this._runWall?.isExpired()) {
-          // Wall-limit teardown reached the catch path (the cancelled prompt
-          // threw): the structured report replaces the error wording (#76).
-          this._terminalResult = await this.buildWallTimeoutResult();
-        } else {
-          const aborted = this.abortController.signal.aborted;
-          this._terminalResult = {
-            status: 'failed',
-            error:
-              aborted && (acpError.code === 'cancelled' || acpError.code === 'transport-closed')
-                ? 'Aborted'
-                : this.userFacingError(acpError),
-          };
-        }
+        const aborted = this.abortController.signal.aborted;
+        this._terminalResult = {
+          status: 'failed',
+          error:
+            aborted && (acpError.code === 'cancelled' || acpError.code === 'transport-closed')
+              ? 'Aborted'
+              : this.userFacingError(acpError),
+        };
       }
     } finally {
       this._streamEnded = true;
       this.clearPendingProgress();
-      this._runWall?.clear();
       await this._mcpHost?.close();
       if (this._cancelGraceTimer) {
         clearTimeout(this._cancelGraceTimer);
@@ -417,59 +389,6 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
   protected clearPendingProgress(): void {
     this._progress?.stop();
     this._mcpHost?.stopWatchdog();
-  }
-
-  // --- Wall-time limit (#76) ---
-
-  /**
-   * Hard expiry (#76): cancel the session exactly like abort() does (the
-   * client auto-answers pending permissions 'cancelled') and arm the same
-   * grace ladder. Inert when abort() already owns the teardown or the run is
-   * ending anyway; the turn loop / catch then produces the report.
-   */
-  private enforceWallLimit(): void {
-    this.logger.warn({ workerId: this.id }, 'ACP worker run exceeded its wall-time limit — cancelling session');
-    const client = this._client;
-    if (!client || !this._sessionId || this._terminalResult || this._cancelGraceTimer) return;
-    client.sessionCancel(this._sessionId, 'abort');
-    const policy = this.stopPolicy();
-    this._cancelGraceTimer = setTimeout(() => {
-      this._cancelGraceTimer = null;
-      this.logger.warn({ workerId: this.id }, 'ACP wall-limit cancel grace elapsed without settle — closing (SIGTERM ladder)');
-      void client.close('cancel').catch(() => undefined);
-    }, policy.cancelGraceMs);
-  }
-
-  /**
-   * Wall-limit terminal path (#76): returns true (after installing the
-   * structured timeout report as the terminal result) when the limit is
-   * reached — the run must end instead of starting / classifying another turn.
-   */
-  private async terminateOnWall(): Promise<boolean> {
-    if (!this._runWall?.isExpired()) return false;
-    this._inputClosed = true;
-    this._terminalResult = await this.buildWallTimeoutResult();
-    return true;
-  }
-
-  private async buildWallTimeoutResult(): Promise<WorkerResult> {
-    const wall = this._runWall!;
-    return {
-      status: 'failed',
-      error: buildWallTimeoutReport({
-        startedAt: wall.startedAt,
-        reportedAt: Date.now(),
-        limitMs: wall.limitMs,
-        workspaceDir: this.workspaceDir,
-        snapshot: await this.collectReportSnapshot(this.workspaceDir),
-        lastProgress: this._lastProgressMsg,
-      }),
-    };
-  }
-
-  /** VCS facts for the timeout report; overridable in tests (no real git). */
-  protected collectReportSnapshot(workspaceDir: string): Promise<VcsSnapshot | null> {
-    return collectVcsSnapshot(workspaceDir).catch(() => null);
   }
 
   /** The four guards: no progress after turn end / cancel / abort / agent exit. */

@@ -202,7 +202,7 @@ export abstract class BaseAcpWorker {
    */
   protected _turnDenials: TurnDenial[] = [];
   /** Turn-loop guard (#56): reset at run start, advanced once per finished turn. */
-  protected _turnGuard: TurnGuardState = resetTurnGuard(0);
+  protected _turnGuard: TurnGuardState = resetTurnGuard();
   readonly permissionHandler: PermissionMiddlewareResult = {
     resolvePermission: (
       requestId: string,

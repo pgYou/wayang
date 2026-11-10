@@ -331,21 +331,31 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     expect(injected).toHaveLength(1);
   });
 
-  // 7a) MAX_TURNS.
-  it('MAX_TURNS terminates with the turn-limit reason', async () => {
+  // 7a) no turn-count ceiling (v0.9.7 removed the hardcoded 12-turn cap):
+  // 13 turns with fresh progress must end naturally, never on a turn limit.
+  it('13 turns with fresh progress do not hit any turn-count ceiling', async () => {
     const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
     worker.setSignalContext(signalContext());
     const runPromise = worker.run(TASK, {});
     await openFakeSession(worker);
-    // Vary the text length each turn so the progress signature is never stagnant.
-    for (let i = 0; i < 13; i++) {
-      worker.acceptMessage(`go-${i}`);
+    // Prompt 0 (the initial task prompt) is already in flight. One queued
+    // follow-up per turn keeps the loop going; the follow-up is accepted only
+    // after the next prompt exists (turn i-1's decision already consumed the
+    // queue), so each turn's verdict sees exactly its own message.
+    worker.acceptMessage('go-0');
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'x', messageId: 'm-0' } });
+    await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
+    for (let i = 1; i < 13; i++) {
+      await nthPromptIndex(worker.transport, i);
+      if (i < 12) worker.acceptMessage(`go-${i}`);
       sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'x'.repeat(i + 1) }, messageId: `m-${i}` });
       await respondToPrompt(worker.transport, i, { stopReason: 'end_turn' });
     }
     const result = await runPromise;
-    expect(result.status).toBe('failed');
-    expect(result.error).toContain('turn limit reached');
+    // 13 full turns — one past the removed 12-turn cap — and the run still
+    // completed naturally instead of being cut off by a turn limit.
+    expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(13);
+    expect(result.status).toBe('completed');
   });
 
   // 7b) consecutive denial turns (different keys).

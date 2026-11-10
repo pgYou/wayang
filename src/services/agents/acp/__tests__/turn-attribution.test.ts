@@ -17,8 +17,6 @@ import type {
   TurnGuardState,
 } from '@/services/agents/acp/turn-attribution';
 
-const NOW = 1_700_000_000_000;
-
 function denial(overrides: Partial<TurnDenial> = {}): TurnDenial {
   const base: Omit<TurnDenial, 'key'> = {
     source: 'policy',
@@ -32,7 +30,7 @@ function denial(overrides: Partial<TurnDenial> = {}): TurnDenial {
 }
 
 function guard(overrides: Partial<TurnGuardState> = {}): TurnGuardState {
-  return { ...resetTurnGuard(NOW), ...overrides };
+  return { ...resetTurnGuard(), ...overrides };
 }
 
 function classify(overrides: Partial<Parameters<typeof classifyTurnEnd>[0]> = {}) {
@@ -111,7 +109,6 @@ describe('decideNextAction', () => {
       'denied_by_policy',
       true,
       [d],
-      NOW,
     );
     expect(result.action).toBe('terminate');
     expect(result.reason).toContain(key);
@@ -124,7 +121,6 @@ describe('decideNextAction', () => {
       'denied_by_timeout',
       true,
       [denial({ source: 'timeout' })],
-      NOW,
     );
     expect(result.action).toBe('terminate');
     expect(result.reason).toContain('budget');
@@ -139,164 +135,127 @@ describe('decideNextAction', () => {
       'denied_by_policy',
       true,
       [d2],
-      NOW,
     );
     expect(isolated.action).toBe('terminate');
 
-    let chained = resetTurnGuard(NOW);
+    let chained = resetTurnGuard();
     chained = advanceGuard(chained, {
-      category: 'denied_by_policy', denials: [d1], progressSig: 'sig-1', now: NOW,
+      category: 'denied_by_policy', denials: [d1], progressSig: 'sig-1',
     });
     chained = advanceGuard(chained, {
-      category: 'denied_by_policy', denials: [d2], progressSig: 'sig-2', now: NOW,
+      category: 'denied_by_policy', denials: [d2], progressSig: 'sig-2',
     });
     expect(chained.consecutiveDenialTurns).toBe(2);
-    expect(decideNextAction(chained, 'denied_by_policy', true, [d2], NOW).action).toBe('terminate');
+    expect(decideNextAction(chained, 'denied_by_policy', true, [d2]).action).toBe('terminate');
   });
 
   it('stagnantTurns at 2 (same progressSig) → terminate', () => {
-    const result = decideNextAction(guard({ stagnantTurns: 2 }), 'completed', true, [], NOW);
+    const result = decideNextAction(guard({ stagnantTurns: 2 }), 'completed', true, []);
     expect(result.action).toBe('terminate');
     expect(result.reason).toBe('no progress across 2 turns');
   });
 
-  it('turnSeq at 12 → terminate with the turn limit reason', () => {
-    const result = decideNextAction(guard({ turnSeq: 12 }), 'completed', true, [], NOW);
-    expect(result.action).toBe('terminate');
-    expect(result.reason).toBe('turn limit reached (12)');
-  });
-
-  it('runStartedAt far in the past → wall-time terminate', () => {
-    const g = guard({ runStartedAt: NOW - TURN_LIMITS.MAX_RUN_WALL_MS - 1 });
-    const result = decideNextAction(g, 'completed', true, [], NOW);
-    expect(result.action).toBe('terminate');
-    expect(result.reason).toBe('run wall time exceeded');
-  });
-
-  it('default wall budget is 60 minutes (#76 raised from 30)', () => {
-    expect(TURN_LIMITS.MAX_RUN_WALL_MS).toBe(3_600_000);
-  });
-
-  it('a custom wallLimitMs (task/config override) governs, not the default', () => {
-    // 60s elapsed against a 30s budget → terminate.
-    const tight = guard({ runStartedAt: NOW - 60_000, wallLimitMs: 30_000 });
-    expect(decideNextAction(tight, 'completed', true, [], NOW)).toEqual({
-      action: 'terminate', reason: 'run wall time exceeded',
-    });
-    // The same 60s elapsed against the 60-min default budget → continue.
-    expect(decideNextAction(guard({ runStartedAt: NOW - 60_000 }), 'completed', true, [], NOW).action).toBe('continue');
+  it('no wall-time or turn-count ceiling: a long run with varying progress keeps continuing', () => {
+    // v0.9.7 removed run-duration limits: folding MANY turns (each with fresh
+    // progress) must never produce a terminate verdict — the guard carries no
+    // clock and no turn counter any more.
+    let g = resetTurnGuard();
+    for (let i = 0; i < 50; i++) {
+      g = advanceGuard(g, { category: 'completed', denials: [], progressSig: `sig-${i}` });
+      expect(decideNextAction(g, 'completed', true, [])).toEqual({ action: 'continue' });
+    }
+    expect(g.stagnantTurns).toBe(0);
   });
 
   it('our_cancel → terminate "Aborted"; our_timeout → "request timed out"', () => {
-    expect(decideNextAction(guard(), 'our_cancel', false, [], NOW)).toEqual({
+    expect(decideNextAction(guard(), 'our_cancel', false, [])).toEqual({
       action: 'terminate', reason: 'Aborted',
     });
-    expect(decideNextAction(guard(), 'our_timeout', false, [], NOW)).toEqual({
+    expect(decideNextAction(guard(), 'our_timeout', false, [])).toEqual({
       action: 'terminate', reason: 'request timed out',
     });
   });
 
   it('denied_by_user → terminate "denied by user"', () => {
-    expect(decideNextAction(guard(), 'denied_by_user', true, [], NOW)).toEqual({
+    expect(decideNextAction(guard(), 'denied_by_user', true, [])).toEqual({
       action: 'terminate', reason: 'denied by user',
     });
   });
 
   it('fresh policy/timeout denial → reissue', () => {
-    expect(decideNextAction(guard(), 'denied_by_policy', true, [], NOW)).toEqual({ action: 'reissue' });
-    expect(decideNextAction(guard(), 'denied_by_timeout', true, [], NOW)).toEqual({ action: 'reissue' });
+    expect(decideNextAction(guard(), 'denied_by_policy', true, [])).toEqual({ action: 'reissue' });
+    expect(decideNextAction(guard(), 'denied_by_timeout', true, [])).toEqual({ action: 'reissue' });
   });
 
   it('all denials non-injectable → terminate (category still denied_by_policy)', () => {
     const d = denial({ toolName: 'bash', injectable: false });
     expect(classify({ denials: [d] })).toBe('denied_by_policy');
-    expect(decideNextAction(guard(), 'denied_by_policy', true, [d], NOW)).toEqual({
+    expect(decideNextAction(guard(), 'denied_by_policy', true, [d])).toEqual({
       action: 'terminate', reason: 'non-injectable denial: bash',
     });
   });
 
   it('unexpected end: queued messages → continue, otherwise terminate with reason', () => {
-    expect(decideNextAction(guard(), 'agent_ended_unexpectedly', true, [], NOW)).toEqual({
+    expect(decideNextAction(guard(), 'agent_ended_unexpectedly', true, [])).toEqual({
       action: 'continue',
     });
-    expect(decideNextAction(guard(), 'agent_ended_unexpectedly', false, [], NOW)).toEqual({
+    expect(decideNextAction(guard(), 'agent_ended_unexpectedly', false, [])).toEqual({
       action: 'terminate', reason: 'agent ended the turn unexpectedly',
     });
   });
 
   it('completed: queued messages → continue, otherwise terminate', () => {
-    expect(decideNextAction(guard(), 'completed', true, [], NOW)).toEqual({ action: 'continue' });
-    expect(decideNextAction(guard(), 'completed', false, [], NOW)).toEqual({ action: 'terminate' });
-  });
-
-  it('turnSeq 11 with queued messages still continues (boundary below the limit)', () => {
-    expect(decideNextAction(guard({ turnSeq: 11 }), 'completed', true, [], NOW)).toEqual({
-      action: 'continue',
-    });
+    expect(decideNextAction(guard(), 'completed', true, [])).toEqual({ action: 'continue' });
+    expect(decideNextAction(guard(), 'completed', false, [])).toEqual({ action: 'terminate' });
   });
 });
 
 describe('resetTurnGuard / advanceGuard', () => {
   it('resetTurnGuard returns the exact initial state', () => {
-    expect(resetTurnGuard(NOW)).toEqual({
-      turnSeq: 0,
+    expect(resetTurnGuard()).toEqual({
       denialReissues: 0,
       perKey: new Map<string, number>(),
       consecutiveDenialTurns: 0,
-      runStartedAt: NOW,
       lastProgressSig: '',
       stagnantTurns: 0,
-      wallLimitMs: TURN_LIMITS.MAX_RUN_WALL_MS,
     });
   });
 
-  it('resetTurnGuard stamps the run wall budget (task/config override, #76)', () => {
-    expect(resetTurnGuard(NOW, 90_000).wallLimitMs).toBe(90_000);
-    // The budget survives advanceGuard (…guard spread) unchanged.
-    const advanced = advanceGuard(resetTurnGuard(NOW, 90_000), {
-      category: 'completed', denials: [], progressSig: 'p', now: NOW,
-    });
-    expect(advanced.wallLimitMs).toBe(90_000);
-  });
-
-  it('advanceGuard increments turnSeq, perKey and consecutive denial turns without mutating input', () => {
+  it('advanceGuard increments perKey and consecutive denial turns without mutating input', () => {
     const d = denial({ source: 'timeout', toolName: 'bash' });
-    const g0 = resetTurnGuard(NOW);
+    const g0 = resetTurnGuard();
     const g1 = advanceGuard(g0, {
-      category: 'denied_by_timeout', denials: [d], progressSig: 'p1', now: NOW,
+      category: 'denied_by_timeout', denials: [d], progressSig: 'p1',
     });
-    expect(g1.turnSeq).toBe(1);
     expect(g1.perKey.get(denialKey(d))).toBe(1);
     expect(g1.consecutiveDenialTurns).toBe(1);
     expect(g1.lastProgressSig).toBe('p1');
     expect(g1.stagnantTurns).toBe(0);
     expect(g1.denialReissues).toBe(0);
-    expect(g1.runStartedAt).toBe(NOW);
-    expect(g0.turnSeq).toBe(0);
     expect(g0.perKey.size).toBe(0);
     expect(g0.lastProgressSig).toBe('');
   });
 
   it('advanceGuard counts stagnation only for a repeated non-empty progressSig', () => {
-    let g = resetTurnGuard(NOW);
-    g = advanceGuard(g, { category: 'completed', denials: [], progressSig: 'p1', now: NOW });
+    let g = resetTurnGuard();
+    g = advanceGuard(g, { category: 'completed', denials: [], progressSig: 'p1' });
     expect(g.stagnantTurns).toBe(0);
-    g = advanceGuard(g, { category: 'completed', denials: [], progressSig: 'p1', now: NOW });
+    g = advanceGuard(g, { category: 'completed', denials: [], progressSig: 'p1' });
     expect(g.stagnantTurns).toBe(1);
-    g = advanceGuard(g, { category: 'completed', denials: [], progressSig: 'p1', now: NOW });
+    g = advanceGuard(g, { category: 'completed', denials: [], progressSig: 'p1' });
     expect(g.stagnantTurns).toBe(2);
-    g = advanceGuard(g, { category: 'completed', denials: [], progressSig: '', now: NOW });
+    g = advanceGuard(g, { category: 'completed', denials: [], progressSig: '' });
     expect(g.stagnantTurns).toBe(0);
     expect(g.lastProgressSig).toBe('');
   });
 
   it('advanceGuard resets consecutiveDenialTurns on a non-denial turn', () => {
-    const g1 = advanceGuard(resetTurnGuard(NOW), {
-      category: 'denied_by_user', denials: [], progressSig: 'x', now: NOW,
+    const g1 = advanceGuard(resetTurnGuard(), {
+      category: 'denied_by_user', denials: [], progressSig: 'x',
     });
     expect(g1.consecutiveDenialTurns).toBe(1);
     const g2 = advanceGuard(g1, {
-      category: 'completed', denials: [], progressSig: 'y', now: NOW,
+      category: 'completed', denials: [], progressSig: 'y',
     });
     expect(g2.consecutiveDenialTurns).toBe(0);
     expect(g2.denialReissues).toBe(0);

@@ -47,19 +47,12 @@ describe('validateConfig: contextWindowTokens', () => {
   });
 });
 
-describe('validateConfig: workerRunTimeoutMs (#76)', () => {
-  it('accepts an omitted value (existing configs unaffected)', () => {
-    expect(validateConfig(makeConfig())).toBeNull();
-  });
-
-  it('accepts a positive integer within the 6h cap', () => {
-    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 3_600_000 })).toBeNull();
-    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 21_600_000 })).toBeNull();
-  });
-
-  it.each([0, -1, 1.5, Number.NaN, '3600000', 21_600_001])('rejects %s with a clear message', (bad) => {
-    const err = validateConfig({ ...makeConfig(), workerRunTimeoutMs: bad as number });
-    expect(err).toContain('workerRunTimeoutMs must be a positive integer of milliseconds, at most 21600000 (6 hours)');
+describe('validateConfig: workerRunTimeoutMs (deprecated, #76 withdrawn)', () => {
+  it('ignores a config that still carries the removed key — no validation error', () => {
+    // v0.9.7 removed worker run wall-time limits: the key is silently
+    // ignored (loadConfig warns once), never a validation failure.
+    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 3_600_000 } as WayangConfig)).toBeNull();
+    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 0 } as WayangConfig)).toBeNull();
   });
 });
 
