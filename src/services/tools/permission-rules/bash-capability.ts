@@ -12,7 +12,7 @@ import {
   type ShellSegment,
 } from '@/services/tools/shell-lexer';
 import { commandEntry, isInertCommand } from './command-tables';
-import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
+import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead } from './bash-classification';
 import { headCommand } from './bash-head';
 import { SHELL_COMMANDS } from './shell-script';
@@ -331,7 +331,9 @@ export function evaluateCapabilityGate(
         const abs = resolvePath(cursor, operand);
         const verdict = decidePath(scope, abs, 'read');
         if (verdict.decision === 'deny') return toToolDecision(verdict, 'read');
-        const narrowed = narrowHomeRead(verdict, { path: abs, access: 'read' });
+        // A home read arrives as the policy's `read-within-home` ask already
+        // (`allowReadWithinHome: false` on decidePath) — no downgrade here.
+        const narrowed = withAskPaths(toToolDecision(verdict, 'read'));
         if (narrowed.decision === 'ask') {
           return { ...narrowed, askPaths: [narrowed.resolvedPath ?? abs] };
         }

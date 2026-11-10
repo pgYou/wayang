@@ -2,7 +2,7 @@
 
 import { normalizePath } from '@/infra/permission/policy';
 import { CMDSUBST_PLACEHOLDER, type ShellSegment } from '@/services/tools/shell-lexer';
-import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
+import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { expandHome } from './home-expansion';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
@@ -113,9 +113,10 @@ export function applyCdChain(scope: WorkerAccessScope, segments: readonly ShellS
     if (verdict.decision === 'deny') {
       return { segments: segments.slice(i), decision: toToolDecision(verdict, 'read') };
     }
-    // The policy allows reads anywhere under home; a worker's silent scope is
-    // narrower (see `narrowHomeRead`), so the same narrowing applies here.
-    const narrowed = narrowHomeRead(verdict, { path: abs, access: 'read' });
+    // A home target arrives as the policy's `read-within-home` ask already
+    // (`allowReadWithinHome: false` on decidePath) — the worker's silent scope
+    // is narrower than the policy's, so the same ask surfaces here.
+    const narrowed = withAskPaths(toToolDecision(verdict, 'read'));
     if (narrowed.decision === 'ask') {
       return {
         segments: segments.slice(i),

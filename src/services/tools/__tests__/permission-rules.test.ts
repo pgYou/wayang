@@ -1119,8 +1119,9 @@ describe('evaluateBashAccess', () => {
 
     it('(c) `cd ~/docs && ls` asks: the policy allows the read, the worker scope does not', () => {
       // Real semantics, not an assumption: `~/docs` is inside the POLICY home
-      // (rule 6 allows the read) but outside the worker's silent scope, so the
-      // same `narrowHomeRead` that governs file tools turns it into an ask.
+      // (rule 6 would allow the read) but outside the worker's silent scope,
+      // so the same `allowReadWithinHome: false` that governs file tools
+      // makes the policy itself return the `read-within-home` ask.
       const verdict = evaluateBashAccess(scope(), 'cd ~/docs && ls');
       expect(verdict.decision).toBe('ask');
       expect(verdict.matchedRule).toBe('read-within-home');

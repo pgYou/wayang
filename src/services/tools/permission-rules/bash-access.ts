@@ -1,7 +1,7 @@
 // The bash gate proper: candidate sweep + destructive tier + `-c` / substitution recursion.
 
 import { classifyRedirections, tokenizeShellLite } from '@/services/tools/shell-lexer';
-import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
+import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { evaluateCapabilityGate, redirectWriteScopeAsk } from './bash-capability';
 import { segmentAccess, unanalyzedInnerCommand, unverifiedReadOnlyCommand } from './bash-classification';
 import { isDangerousCommandLine } from './bash-head';
@@ -52,7 +52,7 @@ function fallbackSensitiveHit(
  *
  * The read classification does NOT widen what runs silently: the policy still
  * judges each path, and a policy allow that rests solely on "reads inside home"
- * is narrowed to an approval here (see `narrowHomeRead`) — the same narrowing
+ * arrives as the policy's `read-within-home` ask (`allowReadWithinHome: false`) — the same narrowing
  * `evaluateFileAccess` applies to file tools. Only the DIRECTION changes, from
  * `unknown` (which could not even reach that rule) to a named `read`.
  *
@@ -164,7 +164,10 @@ export function evaluateBashCommand(
   for (const candidate of candidates) {
     const verdict = decidePath(scope, candidate.path, candidate.access);
     if (verdict.decision === 'deny') return toToolDecision(verdict, candidate.access);
-    const narrowed = narrowHomeRead(verdict, candidate);
+    // A home read arrives as the policy's `read-within-home` ask already
+    // (`allowReadWithinHome: false` on decidePath), so the map below needs no
+    // post-hoc narrowing — an ask is kept as the ask it is, an allow as is.
+    const narrowed = withAskPaths(toToolDecision(verdict, candidate.access));
     if (narrowed.decision === 'ask') {
       const ask: ToolAccessDecision = {
         ...narrowed,

@@ -12,7 +12,7 @@
  *   3. the task's own `allowedDirs`,
  *   4. the task workspace,
  *   5. "reads inside home are fine, writes are not" — DELIBERATELY NARROWED
- *      here (see `evaluateFileAccess` and `narrowHomeRead`): a worker is
+ *      here (see `evaluateFileAccess`; the policy's `allowReadWithinHome: false`): a worker is
  *      auto-allowed only inside its workspace / task allowedDirs / configured
  *      roots. Reading the rest of the user's home still asks, because the
  *      sensitive list covers credentials and tool config, not `.env` files,

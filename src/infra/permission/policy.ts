@@ -150,6 +150,16 @@ export interface DecideAccessInput {
    * prompt. Neither mode can make a sensitive hit pass silently.
    */
   sensitiveMode?: SensitiveMode;
+  /**
+   * May a read inside the home directory run silently (rule 6)? The default
+   * `true` keeps the policy's own scope. A caller whose silent scope is
+   * narrower than home — the worker gates, whose silence-worthy scope is the
+   * workspace / task allowedDirs / configured roots — passes `false` and rule 6
+   * returns its ask directly, so no caller ever needs to post-hoc downgrade an
+   * allow. The flag ONLY touches rule 6: every other rule (sensitive list,
+   * allowedDirs, autoAllowRoots, workspace) is unchanged either way.
+   */
+  allowReadWithinHome?: boolean;
 }
 
 export interface DecideAccessResult {
@@ -168,12 +178,13 @@ export interface DecideAccessResult {
   /** True exactly when the verdict came from the sensitive list. */
   sensitive?: boolean;
   /**
-   * True exactly when the decision is an `allow` whose ONLY justification is
-   * rule 6 ("read inside home"). Consumers that deliberately narrow home-wide
-   * reads (e.g. the worker file tools) key off this boolean instead of the
-   * `matchedRule` string literal, so a future rename of the rule cannot
-   * silently widen access. Optional for backward compatibility: it is only set
-   * on the read-within-home result, absent (undefined/falsy) everywhere else.
+   * True exactly when rule 6 ("read inside home") decided the verdict: by
+   * default that is an `allow` whose ONLY justification is the home read
+   * scope; with `allowReadWithinHome: false` it is the ask the rule escalates
+   * to. Consumers key off this boolean instead of the `matchedRule` string
+   * literal, so a future rename of the rule cannot silently widen access.
+   * Optional for backward compatibility: absent (undefined/falsy) on every
+   * result any other rule produced.
    */
   withinReadScope?: boolean;
 }
@@ -483,8 +494,14 @@ export function decideAccess(input: DecideAccessInput): DecideAccessResult {
   // 6. Reads inside home are fine (minus the sensitive list). Writes are not,
   //    and `unknown` does not qualify either: "inside home" must never be
   //    sufficient to justify a write, and a caller that cannot prove the
-  //    operation is a read has not proven it either.
+  //    operation is a read has not proven it either. With
+  //    `allowReadWithinHome: false` the rule returns its ask DIRECTLY — the
+  //    worker gates ask for exactly this verdict shape, so no caller ever
+  //    downgrades a home-read allow after the fact.
   if (input.access === 'read' && isPathWithin(userHome, resolvedPath)) {
+    if (input.allowReadWithinHome === false) {
+      return { decision: 'ask', matchedRule: 'read-within-home', resolvedPath, withinReadScope: true };
+    }
     return { decision: 'allow', matchedRule: 'read-within-home', resolvedPath, withinReadScope: true };
   }
 

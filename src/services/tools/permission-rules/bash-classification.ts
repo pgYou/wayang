@@ -41,7 +41,7 @@ import { isReadOnlySedScript, sedScriptsOf } from './sed-analysis';
  * Classifying a read never widens what a worker may touch on its own: the
  * policy still judges every path, and a policy allow that rests solely on
  * "reads inside home" is still narrowed to an approval for bash candidates
- * (see `narrowHomeRead`), exactly as `evaluateFileAccess` does for file tools.
+ * (the policy's `allowReadWithinHome: false`), exactly as `evaluateFileAccess` does for file tools.
  * The classification exists to get the DIRECTION right — the audit trail and
  * the approval request then say read / write / unknown instead of calling
  * every `cat` unknown.

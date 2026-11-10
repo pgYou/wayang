@@ -735,3 +735,102 @@ describe('decideAccess: sensitiveMode', () => {
     }
   });
 });
+
+/**
+ * `allowReadWithinHome` (worker scope narrowing, moved INTO the policy): the
+ * worker gates pass `false` because their silent scope is the workspace /
+ * task allowedDirs / configured roots — not the whole home. The flag must only
+ * touch rule 6: every other rule keeps its verdict either way, and a `false`
+ * home read must arrive as the SAME ask shape the callers used to build by
+ * downgrading the allow after the fact.
+ */
+describe('allowReadWithinHome', () => {
+  it('defaults to true: a read inside home allows', () => {
+    const result = decideAccess({ path: join(home, 'documents', 'note.md'), access: 'read', userHome: home });
+    expect(result.decision).toBe('allow');
+    expect(result.matchedRule).toBe('read-within-home');
+    expect(result.withinReadScope).toBe(true);
+  });
+
+  it('an explicit true behaves exactly like the default', () => {
+    const read = { path: join(home, 'documents', 'note.md'), access: 'read' } as const;
+    expect(decideAccess({ ...read, userHome: home, allowReadWithinHome: true })).toEqual(
+      decideAccess({ ...read, userHome: home }),
+    );
+  });
+
+  it('false: the same read arrives as the read-within-home ASK, no downgrade step', () => {
+    const result = decideAccess({
+      path: join(home, 'documents', 'note.md'),
+      access: 'read',
+      userHome: home,
+      allowReadWithinHome: false,
+    });
+    expect(result.decision).toBe('ask');
+    expect(result.matchedRule).toBe('read-within-home');
+    expect(result.withinReadScope).toBe(true);
+    expect(result.resolvedPath).toBe(join(home, 'documents', 'note.md'));
+  });
+
+  it('false: a write inside home is untouched (rule 6 never covered writes)', () => {
+    const result = decideAccess({
+      path: join(home, 'documents', 'note.md'),
+      access: 'write',
+      userHome: home,
+      allowReadWithinHome: false,
+    });
+    expect(result.decision).toBe('ask');
+    expect(result.matchedRule).toBe('outside-all');
+    expect(result.withinReadScope).toBeFalsy();
+  });
+
+  it('false: rules ABOVE rule 6 keep their allows (workspace, allowedDirs, roots)', () => {
+    const inWorkspace = decideAccess({
+      path: join(work, 'src', 'index.ts'),
+      access: 'read',
+      userHome: home,
+      taskWorkspace: work,
+      allowReadWithinHome: false,
+    });
+    expect(inWorkspace.decision).toBe('allow');
+    expect(inWorkspace.matchedRule).toBe('task-workspace');
+
+    const inAllowed = decideAccess({
+      path: join(home, 'docs'),
+      access: 'read',
+      userHome: home,
+      configAllowedDirs: [join(home, 'docs')],
+      allowReadWithinHome: false,
+    });
+    expect(inAllowed.decision).toBe('allow');
+    expect(inAllowed.matchedRule).toBe('config-allowed');
+
+    const inRoot = decideAccess({
+      path: outside,
+      access: 'read',
+      userHome: home,
+      autoAllowRoots: [outside],
+      allowReadWithinHome: false,
+    });
+    expect(inRoot.decision).toBe('allow');
+    expect(inRoot.matchedRule).toBe('auto-allow-root');
+  });
+
+  it('false: a read outside home is the ordinary outside-all ask either way', () => {
+    const result = decideAccess({ path: outside, access: 'read', userHome: home, allowReadWithinHome: false });
+    expect(result.decision).toBe('ask');
+    expect(result.matchedRule).toBe('outside-all');
+  });
+
+  it('false: a sensitive home read still asks as a sensitive hit (rule 1 outranks rule 6)', () => {
+    const result = decideAccess({
+      path: join(home, '.ssh', 'id_rsa'),
+      access: 'read',
+      userHome: home,
+      allowReadWithinHome: false,
+    });
+    expect(result.decision).toBe('ask');
+    expect(result.matchedRule).toBe('sensitive-list');
+    expect(result.withinReadScope).toBeFalsy();
+  });
+});
