@@ -1,19 +1,21 @@
 # Changelog
 
-## v0.9.7 (2026-11-10) — 规划
+## v0.9.7 (2026-11-10)
 
-### 计划项目
+### 修复
 
-- fix(security): add_task 的 workspace 参数补边界校验（#77）：声明的工作区先归一（realpath，目录不存在时归一父目录再拼尾段）再校验——必须位于用户 home 内，命中 denied-path / 敏感列表直接拒绝，软链按 realpath 目标判定；校验先于 mkdir，被拒时不再创建目录；home 未知时拒绝声明（fail-closed，与 allowedDirs 一致）；错误信息注明原因（outside-home / denied-path）并给出替代（改用 allowedDirs）。
-- feat(permission): 新增 permission.extraWorkspaceRoots 配置（#77）：列出的根目录视同 add_task 工作区允许范围（默认空，仅 home 内），供仓库统一放在 home 之外的部署使用；配置做形状校验、生效时启动提示一次，每次经其放行都写入会话审计日志（audit:"workspace"，记录命中的根、归一后路径与原始声明）；敏感目录列表仍优先于该配置。文档补充 workspace 与 allowedDirs 的校验差异及该配置用法。
-- feat(worker): 移除运行时长限制（#76 撤回，维护者决定）：删除 wall-time watchdog 与结构化超时报告，`workerRunTimeoutMs`（全局配置）与 `add_task` 的 `runTimeoutMs`（任务参数）废弃——旧配置/旧调用带入时不报错、提示一次后忽略；ACP 硬编码轮数上限一并移除，长运行只受权限与进度归因约束，不再有基于运行时长的终止。
-- feat(worker): maxTurns 统一语义（resolveMaxTurns 单一解析点）：puppet 的 `worker.maxTurns` 与 claude-code 的 `workers.<id>.maxTurns` 统一为"未配置=不限、非法值（非正整数或超过 1000000）=不限并 warn 一次、合法正整数=原值生效"；puppet 不再有默认 1000 步兜底，claude-code 未配置时不再注入 1000；ACP 类型不消费该键（配置存在仅打一条 debug 日志，不报错）。
-- fix(worker): puppet 步数耗尽不再是 completed：达到配置上限仍未调用 done/fail 时按失败收尾，error 注明 `Reached step limit N`；未配置上限时循环自然结束同样视为失败（worker 从未声明成功），不再把残余文本当 summary 计为完成。
-- feat(permission): 扩充 bash 能力表：git 全量只读子命令、gh 只读查询、npx/npm 项目工具链（#51 跟进）
+- add_task 的 workspace 参数补边界校验（#77）：realpath 归一后必须在 home 内、命中敏感路径拒绝、软链按真实路径判定、先校验后 mkdir；新增 permission.extraWorkspaceRoots 显式放行并在会话日志审计
+- controller 拒绝权限后 ACP worker 不再终止：拒绝以系统提示重投给 agent，仅重投预算耗尽或真取消时终止；agent 正常 end_turn 不再被 denial 覆盖（修复回归）
 
-### 待定
+### 变更
 
-- 其余 open issue 视情况纳入
+- 移除 worker 运行时长限制：删除墙钟判定、RunWallWatchdog、硬编码的 12 轮上限；交互类超时（审批、inquiry、LLM idle、握手）保留
+- maxTurns 语义统一：未配置或非法值即不限制（非法值打一条 warn），合法正整数生效；puppet 改为读配置，claude-code 共用同一解析；ACP 不消费该配置
+- puppet 步数耗尽不再报 completed，改为失败并注明 Reached step limit
+
+### 重构
+
+- 权限层收敛：八张命令表合并为 command-tables 单一来源；三套传输层（middleware / ACP bridge / claude-code）统一到 PermissionTransport；home 读收窄改为校验入参；复用 isPathWithin；内层命令 fail-closed 并入 unknown 能力
 
 ## v0.9.6 (2026-11-10)
 
