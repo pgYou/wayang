@@ -22,25 +22,41 @@ export const TURN_LIMITS = {
 export interface ClassifyTurnEndInput {
   stopReason: string; cancelFact: CancelFact; denials: TurnDenial[]; hasQueuedMessages: boolean;
   /**
-   * Denial reissues from PRIOR turns of this run (guard.denialReissues before
-   * advanceGuard folds this turn). Run-history evidence that a permission was
-   * refused earlier: per 04-permissions §9.1 the agent's stopReason
-   * 'cancelled' may then be a denial residue rather than a real cancellation.
+   * Consecutive denial reissues that led into THIS turn's prompt (per-turn:
+   * zeroed on every non-reissue turn switch). Deliberately NOT the run-total
+   * budget in TurnGuardState.denialReissues — that counter is sticky and
+   * would let a much later cancelled turn ride on an old reissue.
    */
-  priorDenialReissues?: number;
-  /** THIS turn produced non-empty assistant text (the final answer evidence). */
-  hasTurnText?: boolean;
+  turnDenialReissues?: number;
+  /**
+   * Trimmed length of THIS turn's assistant text (leading/trailing
+   * whitespace excluded). §9.1 effective-body evidence: a residue-completed
+   * turn must carry a real final answer, not a lone punctuation mark or
+   * acknowledgment token.
+   */
+  turnTextTrimmedChars?: number;
 }
 const SOURCE_PRIORITY: readonly DenialSource[] = ['policy', 'timeout', 'controller'];
 const CATEGORY_BY_SOURCE: Record<DenialSource, TurnEndCategory> = {
   policy: 'denied_by_policy', timeout: 'denied_by_timeout', controller: 'denied_by_user',
 };
 
+/**
+ * §9.1 residue rule: a turn whose stopReason is 'cancelled' counts as
+ * completed only when ALL three hold —
+ * 1. this turn is a denial-reissue round (per-turn reissue count > 0);
+ * 2. this turn carries an effective body: trimmed text of at least
+ *    MIN_RESIDUE_TURN_TEXT_CHARS chars (a lone mark or acknowledgment token
+ *    is intermediate chatter, not a final answer);
+ * 3. no external cancel/abort interrupted the turn (cancelFact wins above).
+ */
+export const MIN_RESIDUE_TURN_TEXT_CHARS = 8;
+
 /** Cancel facts win over everything; a normal end_turn beats denials (the agent
  * saw the refusal and chose to wrap up — that is a completed turn); denials
- * beat other stop reasons; a cancelled stopReason after a prior denial
- * reissue, with this-turn final text, is a completed turn (04-permissions
- * §9.1: the agent's 'cancelled' is a denial residue, not a cancellation). */
+ * beat other stop reasons; a cancelled stopReason in a denial-reissue round
+ * with this-turn effective text is a completed turn (04-permissions §9.1:
+ * the agent's 'cancelled' is a denial residue, not a cancellation). */
 export function classifyTurnEnd(input: ClassifyTurnEndInput): TurnEndCategory {
   const { stopReason, cancelFact, denials } = input;
   if (cancelFact === 'abort') return 'our_cancel';
@@ -54,10 +70,15 @@ export function classifyTurnEnd(input: ClassifyTurnEndInput): TurnEndCategory {
   // earlier turn (a reissue round followed), the agent may comply with the
   // notice, deliver its final text, and STILL end with stopReason 'cancelled'
   // — the stopReason echoes the refused tool call and cannot self-certify a
-  // cancellation. Run-history evidence (prior reissue) plus this turn's final
-  // text outrank it. External cancels never reach here (cancelFact won above)
-  // and a turn without text still ends unexpectedly.
-  if (stopReason === 'cancelled' && (input.priorDenialReissues ?? 0) > 0 && input.hasTurnText === true) {
+  // cancellation. Per-turn reissue evidence plus this turn's effective text
+  // outrank it. External cancels never reach here (cancelFact won above); a
+  // non-reissue turn or a turn without an effective body still ends
+  // unexpectedly.
+  if (
+    stopReason === 'cancelled' &&
+    (input.turnDenialReissues ?? 0) > 0 &&
+    (input.turnTextTrimmedChars ?? 0) >= MIN_RESIDUE_TURN_TEXT_CHARS
+  ) {
     return 'completed';
   }
   return 'agent_ended_unexpectedly';
