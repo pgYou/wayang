@@ -222,8 +222,9 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(2);
   });
 
-  // 4) denied_by_user → terminate, no second prompt, no SYSTEM NOTICE.
-  it('denied_by_user terminates with no reissue round and no SYSTEM NOTICE', async () => {
+  // 4) controller denial → reissue with a SYSTEM NOTICE (source 用户); the
+  // agent switches command in the notice round and completes.
+  it('controller denial → reissue with SYSTEM NOTICE → agent switches command → completed', async () => {
     const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
     const queue = new RecordingSignalQueue();
     worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
@@ -236,12 +237,242 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     await waitForPermissionAnswer(worker.transport, 703);
     await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
 
+    const text = await promptTextAt(worker.transport, 1);
+    expect(text).toContain('[SYSTEM NOTICE]');
+    expect(text).toContain('拒绝来源=用户'); // denialSource=controller kept for the notice/audit
+    expect(text).toContain('too dangerous');
+
+    // The reissue round: the agent picks a DIFFERENT (compliant) command and
+    // finishes normally — no permission request, no new denial.
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-alt', title: 'Bash', kind: 'execute', status: 'completed', rawInput: { command: 'echo safe' } });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
+    const result = await runPromise;
+    expect(result.status).toBe('completed');
+  });
+
+  // 4a) controller deny + end_turn in the SAME turn → completed, not FAILED.
+  it('controller denial + end_turn → completed (a denial never overrides a normal end)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 704, 'tc-user-end');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'nope')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 704);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
+
+    const result = await runPromise;
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
+    // The agent ended normally — no reissue round was needed.
+    expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+  });
+
+  // 4a-b) §9.1 denial residue: after a controller denial + reissue, the agent
+  // complies AND delivers its final text, yet the turn still ends
+  // stopReason='cancelled' → completed with the conclusion kept.
+  it('deny → agent continues with final text → stopReason=cancelled → completed', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 705, 'tc-residue');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'use a safer command')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 705);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    const text = await promptTextAt(worker.transport, 1);
+    expect(text).toContain('[SYSTEM NOTICE]');
+
+    // The reissue round: a compliant command plus the final conclusion — but
+    // the turn ends with the §9.1 residue stopReason instead of end_turn.
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-safe', title: 'Bash', kind: 'execute', status: 'completed', rawInput: { command: 'echo safe' } });
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '改用 echo safe 完成，结论：probe-ok' }, messageId: 'm-final' });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('completed');
+    expect(result.summary).toContain('probe-ok');
+    expect(result.error).toBeUndefined();
+  });
+
+  // 4a-c) external cancel keeps failing even when the turn produced final
+  // text: cancelFact wins before any stopReason reasoning.
+  it('abort with final text in the turn → still "Aborted" (cancel_task unaffected)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    worker.setSignalContext(signalContext());
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '最终结论' }, messageId: 'm-abort' });
+    worker.abort();
+    await worker.transport.waitForClientOutput(4);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('Aborted');
+  });
+
+  // 4a-d) the residue rule requires this-turn text: a text-less cancelled
+  // turn after a reissue still fails.
+  it('deny → reissue round with NO text → stopReason=cancelled → still failed', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 706, 'tc-notext');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 706);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    await nthPromptIndex(worker.transport, 1);
+    // The reissue round does tool work but never produces text, then ends cancelled.
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-mute', title: 'Bash', kind: 'execute', status: 'completed', rawInput: { command: 'echo x' } });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('unexpectedly');
+  });
+
+  // 4a-e) M1: after deny + reissue + a continuing round, a later
+  // abort/cancel_task must still fail the run — the reissue history never
+  // turns a genuinely cancelled round into completed.
+  it('deny → reissue → continue → abort in a later round → failed (Aborted), not completed', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    // Round 0: controller deny → cancelled → reissue round follows.
+    sendSensitivePermissionRequest(worker, 730, 'tc-m1', 'cat /home/test-user/.ssh/id_rsa');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 730);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    // Round 1 (reissue round): compliant text + normal end; a queued message
+    // keeps the run going into a NORMAL round.
+    await nthPromptIndex(worker.transport, 1);
+    worker.acceptMessage('go-on');
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '已改用安全命令完成本阶段' }, messageId: 'm-m1-a' });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
+
+    // Round 2 (NOT a reissue round): intermediate text, then cancel_task —
+    // cancelFact must win over any reissue history.
+    await nthPromptIndex(worker.transport, 2);
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '正在整理最终结论，稍等' }, messageId: 'm-m1-b' });
+    worker.abort();
+    await worker.transport.waitForClientOutput(7); // initialize, new, prompt0, perm-answer, prompt1, prompt2, cancel
+    await respondToPrompt(worker.transport, 2, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('Aborted');
+  });
+
+  // 4a-f) M2: the §9.1 text evidence is PER TURN — round 0 carries text plus
+  // a denial, the reissue round has NO text and ends cancelled: round 1 must
+  // not inherit round 0's text. Validation: deleting the resetTurnProgress()
+  // call in acp-worker-run.ts makes this case fail (see 06-testing.md §5).
+  it('deny after in-turn text → reissue round with NO text + cancelled → failed (per-turn text isolation)', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    // Round 0: intermediate text (≥ 8 trimmed chars), then a controller denial.
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '正在尝试读取密钥文件' }, messageId: 'm-m2-a' });
+    sendSensitivePermissionRequest(worker, 731, 'tc-m2', 'cat /home/test-user/.ssh/id_rsa');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 731);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    // Round 1 (reissue round): tool work only, NO text, ends cancelled — it
+    // must not be judged completed by round 0's text.
+    await nthPromptIndex(worker.transport, 1);
+    sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-m2-mute', title: 'Bash', kind: 'execute', status: 'completed', rawInput: { command: 'echo y' } });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('unexpectedly');
+  });
+
+  // 4a-g) the §9.1 reissue evidence is per-turn, not run-sticky: after a
+  // deny+reissue cycle and a continuing round, a LATER normal round that ends
+  // cancelled with text (no external cancel) must fail — half-finished work
+  // must not ride on an old reissue.
+  it('deny → reissue → continue → later round text + cancelled (no cancel sent) → failed', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    sendSensitivePermissionRequest(worker, 732, 'tc-m2g', 'cat /home/test-user/.ssh/id_rsa');
+    const payload = queue.signals[0].payload;
+    expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'no')).toBe('resolved');
+    await waitForPermissionAnswer(worker.transport, 732);
+    await respondToPrompt(worker.transport, 0, { stopReason: 'cancelled' });
+
+    await nthPromptIndex(worker.transport, 1);
+    worker.acceptMessage('go-on');
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '已改用安全命令完成本阶段' }, messageId: 'm-m2g-a' });
+    await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
+
+    // Round 2 is a NORMAL round: intermediate text + cancelled with NO cancel
+    // from us — the turn is not a reissue round, so it cannot be completed.
+    await nthPromptIndex(worker.transport, 2);
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '正在整理最终结论，稍等' }, messageId: 'm-m2g-b' });
+    await respondToPrompt(worker.transport, 2, { stopReason: 'cancelled' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('unexpectedly');
+  });
+
+  // 4b) reissue budget exhaustion: alternating deny/comply rounds burn the
+  // MAX_DENIAL_REISSUES budget; the 4th controller denial terminates.
+  it('controller denials exhaust the reissue budget → terminate with an explicit reason', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    const queue = new RecordingSignalQueue();
+    worker.setSignalContext(signalContext({ signalQueue: queue as any, accessScope: SCOPE, grants: new ApprovalMemory(), approvalMemory: 'task' }));
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+
+    for (let round = 0; round < 7; round++) {
+      await nthPromptIndex(worker.transport, round);
+      if (round % 2 === 0) {
+        // A controller denial; a fresh tool name each round keeps every
+        // denial KEY distinct (the sanitized target folds id_rsa_N together),
+        // so only the REISSUE budget is at play.
+        const reqId = 720 + round;
+        sendSensitivePermissionRequest(worker, reqId, `tc-budget-${round}`, 'cat /home/test-user/.ssh/id_rsa', `budget-${round}`);
+        const payload = queue.signals[queue.signals.length - 1].payload;
+        expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'denied again')).toBe('resolved');
+        await waitForPermissionAnswer(worker.transport, reqId);
+        await respondToPrompt(worker.transport, round, { stopReason: 'cancelled' });
+      } else {
+        // The agent complies: fresh progress text + a queued controller
+        // message keep the loop going without touching the denial budgets.
+        worker.acceptMessage(`continue-${round}`);
+        sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'x'.repeat(round + 1) }, messageId: `m-${round}` });
+        await respondToPrompt(worker.transport, round, { stopReason: 'end_turn' });
+      }
+    }
+
     const result = await runPromise;
     expect(result.status).toBe('failed');
     expect(result.error).toContain('Permission denied by user');
-    const prompts = worker.transport.clientMessages.filter((m) => m.method === 'session/prompt');
-    expect(prompts).toHaveLength(1);
-    expect(prompts.some((m) => JSON.stringify(m).includes('[SYSTEM NOTICE]'))).toBe(false);
+    expect(result.error).toContain('denial reissue budget exhausted (3/3)');
+    expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(7);
   });
 
   // 4b) permissionMode 'agent': a protocol-level denial is recorded but NOT injected.
@@ -331,21 +562,31 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     expect(injected).toHaveLength(1);
   });
 
-  // 7a) MAX_TURNS.
-  it('MAX_TURNS terminates with the turn-limit reason', async () => {
+  // 7a) no turn-count ceiling (v0.9.7 removed the hardcoded 12-turn cap):
+  // 13 turns with fresh progress must end naturally, never on a turn limit.
+  it('13 turns with fresh progress do not hit any turn-count ceiling', async () => {
     const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
     worker.setSignalContext(signalContext());
     const runPromise = worker.run(TASK, {});
     await openFakeSession(worker);
-    // Vary the text length each turn so the progress signature is never stagnant.
-    for (let i = 0; i < 13; i++) {
-      worker.acceptMessage(`go-${i}`);
+    // Prompt 0 (the initial task prompt) is already in flight. One queued
+    // follow-up per turn keeps the loop going; the follow-up is accepted only
+    // after the next prompt exists (turn i-1's decision already consumed the
+    // queue), so each turn's verdict sees exactly its own message.
+    worker.acceptMessage('go-0');
+    sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'x', messageId: 'm-0' } });
+    await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
+    for (let i = 1; i < 13; i++) {
+      await nthPromptIndex(worker.transport, i);
+      if (i < 12) worker.acceptMessage(`go-${i}`);
       sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'x'.repeat(i + 1) }, messageId: `m-${i}` });
       await respondToPrompt(worker.transport, i, { stopReason: 'end_turn' });
     }
     const result = await runPromise;
-    expect(result.status).toBe('failed');
-    expect(result.error).toContain('turn limit reached');
+    // 13 full turns — one past the removed 12-turn cap — and the run still
+    // completed naturally instead of being cut off by a turn limit.
+    expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(13);
+    expect(result.status).toBe('completed');
   });
 
   // 7b) consecutive denial turns (different keys).

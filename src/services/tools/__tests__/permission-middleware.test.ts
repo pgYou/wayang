@@ -125,6 +125,41 @@ describe('wrapWithPermissionMiddleware', () => {
     expect(tools.bash.execute).not.toHaveBeenCalled();
   });
 
+  // Regression guard for the ACP deny-continue fix: on the puppet path a
+  // controller denial stays a normal tool error — only THAT call is refused
+  // and the worker loop keeps going (the next call proceeds as usual).
+  it('should keep the loop running after a controller denial: tool error, then the next call proceeds', async () => {
+    const tools = mockTool('bash', 'second output');
+    const result = wrapWithPermissionMiddleware(tools, {
+      gatedTools: ['bash'],
+      decide: alwaysBlock,
+      describeCall: (name, args) => `Execute: ${args.command}`,
+    }, {
+      workerId: 'w1',
+      taskId: 't1',
+      taskTitle: 'Test',
+      signalQueue: queue as unknown as SignalQueue,
+    });
+
+    // First call: the controller denies → refusal text is the tool RESULT.
+    const deniedPromise = result.wrappedTools.bash.execute({ command: 'rm file.txt' });
+    const deniedId = queue.enqueue.mock.calls[0][0].payload.requestId;
+    result.resolvePermission(deniedId, false, 'dangerous command');
+    const deniedOutput = await deniedPromise;
+    expect(deniedOutput).toContain('[ERROR]');
+    expect(deniedOutput).toContain('Permission denied');
+    expect(tools.bash.execute).not.toHaveBeenCalled();
+
+    // Second call (a different command): the worker is still running — the
+    // denial did not fail the task; the new call is gated again and runs once
+    // approved.
+    const retryPromise = result.wrappedTools.bash.execute({ command: 'ls' });
+    const retryId = queue.enqueue.mock.calls[1][0].payload.requestId;
+    result.resolvePermission(retryId, true);
+    expect(await retryPromise).toBe('second output');
+    expect(tools.bash.execute).toHaveBeenCalledTimes(1);
+  });
+
   it('should selectively block based on the decide callback', async () => {
     const tools = mockTool('bash', 'ls output');
     const result = wrapWithPermissionMiddleware(tools, {

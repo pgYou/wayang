@@ -33,7 +33,7 @@ export interface ProviderConfig {
   /**
    * Context window budget (input side) for this provider's model — NOT the
    * OpenAI-protocol `max_tokens` (which caps output). Drives controller
-   * compaction, which triggers at 90% of this budget (workers do not compact
+   * compaction, which triggers at 60% of this budget (workers do not compact
    * yet). Optional — defaults to 256k tokens; set it for smaller-window
    * models (e.g. 128k), otherwise the provider rejects the request before
    * compaction ever triggers. Must be a positive integer.
@@ -213,6 +213,17 @@ export interface PermissionConfig {
   /** How sensitive hits are handled. Defaults to 'ask'. */
   sensitiveMode?: SensitiveMode;
   /**
+   * Extra roots a declared `add_task` workspace may resolve to OUTSIDE the
+   * user home (issue #77) — e.g. a deployment that keeps repositories under
+   * a dedicated mount. Defaults to empty: only the home directory admits a
+   * declared workspace. Entries normalize like the other permission lists
+   * (relative entries resolve against the user's home). The denied-path /
+   * sensitive list still outranks these roots, an active list is surfaced
+   * once at startup, and every workspace admitted through it is recorded on
+   * the session audit log.
+   */
+  extraWorkspaceRoots?: string[];
+  /**
    * Whether an approval is remembered within the task it was given in.
    * Defaults to 'task' (read grants per task, cleared when the task ends);
    * 'off' restores plain one-approval-per-call. See `ApprovalMemoryMode`.
@@ -247,6 +258,14 @@ export interface WayangConfig {
      * `tool_choice: "required"` with HTTP 400; set to 'auto' for those.
      */
     toolChoice?: ToolChoice;
+    /**
+     * Turn cap for the puppet worker's LLM step loop. Unset = unlimited.
+     * Invalid values (non-positive, non-integer, beyond 1e6) are treated as
+     * unset with one warn (see resolveMaxTurns). Inert for third-party
+     * workers — claude-code uses `workers.<id>.maxTurns`, ACP ignores the
+     * key entirely.
+     */
+    maxTurns?: number;
   };
   /** Third-party worker definitions, keyed by worker ID. */
   workers?: Record<string, WorkerConfig>;
@@ -429,8 +448,9 @@ export function validateConfig(config: WayangConfig): string | null {
   const permission = config.permission;
   if (permission !== undefined && permission !== null) {
     // `deniedDirs` is the deprecated alias of `sensitiveDirs`; both are read,
-    // so both get the same shape check.
-    const keys = ['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs'] as const;
+    // so both get the same shape check. `extraWorkspaceRoots` extends the
+    // add_task workspace boundary (issue #77) and gets the same shape check.
+    const keys = ['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs', 'extraWorkspaceRoots'] as const;
     for (const key of keys) {
       const value = permission[key];
       if (value === undefined) continue;
@@ -462,20 +482,20 @@ export function validateConfig(config: WayangConfig): string | null {
 }
 
 /**
- * Collect non-fatal `workers` warnings (05 §4): `maxTurns` and `cliPath` have
- * no effect on `*-acp` rows (ACP has no turn cap — the agent's own config
- * decides; the executable is chosen via `command`). Existing configs must
- * keep loading, so these warn instead of failing validation. The caller
+ * Collect non-fatal `workers` warnings (05 §4): `cliPath` has no effect on
+ * `*-acp` rows (the executable is chosen via `command`). Existing configs
+ * must keep loading, so these warn instead of failing validation. The caller
  * prints them once at config load.
+ *
+ * `maxTurns` on `*-acp` rows is deliberately NOT here (v0.9.7): ACP ignores
+ * the key, and the notice is a debug log at the worker's run site — not a
+ * config-time warning.
  */
 export function collectWorkerWarnings(config: WayangConfig): string[] {
   const warnings: string[] = [];
   for (const [id, worker] of Object.entries(config.workers ?? {})) {
     if (typeof worker !== 'object' || worker === null) continue;
     if (!isAcpWorkerType(worker.type)) continue;
-    if (worker.maxTurns !== undefined) {
-      warnings.push(`workers.${id}.maxTurns has no effect on type "${worker.type}" (ACP has no turn cap)`);
-    }
     if (worker.cliPath !== undefined) {
       warnings.push(`workers.${id}.cliPath has no effect on type "${worker.type}" (ACP workers use "command")`);
     }

@@ -520,6 +520,38 @@ describe('ClaudeCodeWorker', () => {
     expect(debug).toHaveBeenCalledTimes(1);
   });
 
+  it('resolves maxTurns like the puppet worker: unset = no SDK cap, valid = value, invalid = unlimited + one warn', async () => {
+    const capture = (): { options: Record<string, any> | undefined; ctx: ReturnType<typeof createMockCtx> } => {
+      const holder: { options: Record<string, any> | undefined; ctx: ReturnType<typeof createMockCtx> } = {
+        options: undefined,
+        ctx: createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any),
+      };
+      mockQuery.mockImplementation(((args: any) => {
+        holder.options = args.options;
+        return asyncYield([makeSuccessResult('ok')]);
+      }) as any);
+      return holder;
+    };
+
+    // Unset → the SDK option is omitted entirely (the old `?? 1000`
+    // fallback is gone — unlimited means no cap is armed).
+    const unset = capture();
+    await new ClaudeCodeWorker({ type: 'claude-code', description: 'x' }, tempDir, tempDir, unset.ctx, skills).run(makeTask(), {});
+    expect(unset.options?.maxTurns).toBeUndefined();
+
+    // Valid positive integer → passed through as-is.
+    const valid = capture();
+    await new ClaudeCodeWorker({ type: 'claude-code', description: 'x', maxTurns: 5 }, tempDir, tempDir, valid.ctx, skills).run(makeTask(), {});
+    expect(valid.options?.maxTurns).toBe(5);
+
+    // Invalid (0) → unlimited (option omitted) with exactly one warn.
+    const invalid = capture();
+    await new ClaudeCodeWorker({ type: 'claude-code', description: 'x', maxTurns: 0 }, tempDir, tempDir, invalid.ctx, skills).run(makeTask(), {});
+    expect(invalid.options?.maxTurns).toBeUndefined();
+    expect(vi.mocked(invalid.ctx.logger.warn)).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(invalid.ctx.logger.warn).mock.calls[0][1])).toContain('Invalid maxTurns');
+  });
+
   // --- tool call / result recording into the worker conversation ---
 
   describe('tool call and result recording', () => {

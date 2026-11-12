@@ -47,6 +47,15 @@ describe('validateConfig: contextWindowTokens', () => {
   });
 });
 
+describe('validateConfig: workerRunTimeoutMs (deprecated, #76 withdrawn)', () => {
+  it('ignores a config that still carries the removed key — no validation error', () => {
+    // v0.9.7 removed worker run wall-time limits: the key is silently
+    // ignored (loadConfig warns once), never a validation failure.
+    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 3_600_000 } as WayangConfig)).toBeNull();
+    expect(validateConfig({ ...makeConfig(), workerRunTimeoutMs: 0 } as WayangConfig)).toBeNull();
+  });
+});
+
 /** Same minimal valid config, plus a deliberately loosely-typed permission section. */
 function makeConfigWithPermission(permission: unknown): WayangConfig {
   return { ...makeConfig(), permission: permission as WayangConfig['permission'] };
@@ -67,6 +76,8 @@ describe('validateConfig: permission', () => {
           // Deprecated alias of sensitiveDirs — still accepted and validated.
           deniedDirs: ['/data/secrets'],
           sensitiveMode: 'deny',
+          // Workspace-boundary extension (issue #77) — same shape rule.
+          extraWorkspaceRoots: ['/codev'],
         }),
       ),
     ).toBeNull();
@@ -78,12 +89,13 @@ describe('validateConfig: permission', () => {
     ['autoAllowRoots', 42],
     ['sensitiveDirs', { path: '/data/keys' }],
     ['deniedDirs', { path: '/data/secrets' }],
+    ['extraWorkspaceRoots', '/codev'],
   ])('rejects %s when it is not an array', (key, value) => {
     const err = validateConfig(makeConfigWithPermission({ [key]: value }));
     expect(err).toContain(`permission.${key} must be an array of strings`);
   });
 
-  it.each(['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs'])('rejects %s containing a non-string', (key) => {
+  it.each(['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs', 'extraWorkspaceRoots'])('rejects %s containing a non-string', (key) => {
     const err = validateConfig(makeConfigWithPermission({ [key]: ['/data/shared', 7] }));
     expect(err).toContain(`permission.${key} must be an array of strings`);
     expect(err).toContain('7');
@@ -307,17 +319,26 @@ describe('validateConfig: workers section (05 §5)', () => {
 });
 
 describe('collectWorkerWarnings (05 §4: inert fields warn, never fail)', () => {
-  it('warns about maxTurns and cliPath on *-acp rows', () => {
+  it('warns about cliPath on *-acp rows; maxTurns is NOT a config-time warning (v0.9.7: ACP debug-logs it at run site)', () => {
     const warnings = collectWorkerWarnings(
       makeConfigWithWorkers({
         codebuddy: { type: 'codebuddy', description: 'x', maxTurns: 100, cliPath: '/bin/codebuddy' },
         opencode: { type: 'opencode', description: 'x', maxTurns: 50 },
       }) as WayangConfig,
     );
-    expect(warnings).toHaveLength(3);
-    expect(warnings[0]).toContain('workers.codebuddy.maxTurns has no effect');
-    expect(warnings[1]).toContain('workers.codebuddy.cliPath has no effect');
-    expect(warnings[2]).toContain('workers.opencode.maxTurns has no effect');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('workers.codebuddy.cliPath has no effect');
+    expect(warnings.join(' ')).not.toContain('maxTurns');
+  });
+
+  it('keeps ACP rows carrying maxTurns valid (configured key never errors)', () => {
+    expect(
+      validateConfig(
+        makeConfigWithWorkers({
+          codebuddy: { type: 'codebuddy', description: 'x', maxTurns: 100 },
+        }),
+      ),
+    ).toBeNull();
   });
 
   it('is silent for claude-code rows and configs without workers', () => {

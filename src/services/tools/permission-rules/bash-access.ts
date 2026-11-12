@@ -1,7 +1,7 @@
 // The bash gate proper: candidate sweep + destructive tier + `-c` / substitution recursion.
 
 import { classifyRedirections, tokenizeShellLite } from '@/services/tools/shell-lexer';
-import { decidePath, narrowHomeRead, toToolDecision } from './access-verdict';
+import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { evaluateCapabilityGate, redirectWriteScopeAsk } from './bash-capability';
 import { segmentAccess, unanalyzedInnerCommand, unverifiedReadOnlyCommand } from './bash-classification';
 import { isDangerousCommandLine } from './bash-head';
@@ -47,12 +47,12 @@ function fallbackSensitiveHit(
  * silent run), and under `sensitiveMode: 'deny'` one denied candidate refuses
  * it. A candidate carries the access its OWN segment justifies: `write` for a
  * write verb / redirection segment, `read` when the segment's head command is on
- * `READ_ONLY_COMMANDS`, `unknown` for everything the gate has not been taught
+ * the command table's `read` capability, `unknown` for everything the gate has not been taught
  * (the strict mode: "inside home" alone never justifies a write either).
  *
  * The read classification does NOT widen what runs silently: the policy still
  * judges each path, and a policy allow that rests solely on "reads inside home"
- * is narrowed to an approval here (see `narrowHomeRead`) — the same narrowing
+ * arrives as the policy's `read-within-home` ask (`allowReadWithinHome: false`) — the same narrowing
  * `evaluateFileAccess` applies to file tools. Only the DIRECTION changes, from
  * `unknown` (which could not even reach that rule) to a named `read`.
  *
@@ -63,10 +63,12 @@ function fallbackSensitiveHit(
  * redirection into a real file, a command the lexer cannot parse) → the
  * read-only-unverified escalation (a table command that failed its deferred
  * condition) → the `cd` slice's verdict for a chain that lands somewhere it may
- * not go (see `applyCdChain`) → the #51 fail-closed tier for shapes carrying an
- * unanalyzed inner command (see `unanalyzedInnerCommand` /
- * `unanalyzedScriptFile`) → remaining `ask` candidates (a sensitive ask first,
- * then the ordinary ones) → allow.
+ * not go (see `applyCdChain`, its `askPaths` dropped when segments follow the
+ * asking `cd`) → the #51 fail-closed tier for a shape that runs an unanalyzed
+ * inner command (see `unanalyzedInnerCommand` / `unanalyzedScriptFile`) →
+ * remaining `ask` candidates (a sensitive ask first, then the ordinary ones) →
+ * the capability gate (unknown verbs, exec / network / dynamic constructs) →
+ * allow.
  * A hard refusal therefore outranks the destructive-command heuristic, and a
  * sensitive `ask` carries its hit into the approval request.
  *
@@ -164,7 +166,10 @@ export function evaluateBashCommand(
   for (const candidate of candidates) {
     const verdict = decidePath(scope, candidate.path, candidate.access);
     if (verdict.decision === 'deny') return toToolDecision(verdict, candidate.access);
-    const narrowed = narrowHomeRead(verdict, candidate);
+    // A home read arrives as the policy's `read-within-home` ask already
+    // (`allowReadWithinHome: false` on decidePath), so the map below needs no
+    // post-hoc narrowing — an ask is kept as the ask it is, an allow as is.
+    const narrowed = withAskPaths(toToolDecision(verdict, candidate.access));
     if (narrowed.decision === 'ask') {
       const ask: ToolAccessDecision = {
         ...narrowed,
@@ -300,28 +305,38 @@ export function evaluateBashCommand(
     };
   }
 
+  // #51 layer 1 — a shape that runs an inner command this gate never analyzes
+  // (xargs, find -exec / -execdir / -ok, eval, a `cd` shape, a script file, a
+  // compound keyword). Computed here because BOTH returns below need it.
+  const innerShape = unanalyzedInnerCommand(segments) ?? unanalyzedScriptFile(segments);
+
   // The `cd` slice's own verdict, after every path- and command-level tier
   // above: the chain reached a directory that is sensitive, readable-but-not-
   // silent, or outside the scope, so the whole line asks with a reason naming
   // the cd target and the path it resolves to. It outranks the #51 fallback on
   // purpose — the shape IS a `cd <dir> && …` chain, and "outside the allowed
-  // scope" is the actionable answer, not "this runs an inner command".
-  if (cdAsk) return cdAsk;
+  // scope" is the actionable answer, not "this runs an inner command". But the
+  // slice judged only the TARGET, never the commands after it, so when
+  // segments follow the asking `cd` the ask drops its `askPaths`: the
+  // approval memory (issue #46) must not reuse an old read grant to run the
+  // unjudged rest of the line.
+  if (cdAsk) {
+    if (innerShape === undefined) return cdAsk;
+    const cdAskWithoutPaths = { ...cdAsk };
+    delete cdAskWithoutPaths.askPaths;
+    return cdAskWithoutPaths;
+  }
 
-  // #51 fail-closed fallback: shapes that carry an inner command this gate
-  // never analyzes (xargs, find -exec / -execdir / -ok, eval, cd && ..., a
-  // script file, a compound shell keyword). Their outer word yields no path
-  // candidate, so they used to fall through to `allow (no-path)` even though
-  // an unjudged command runs inside. No parser or recursion is added — the
-  // shape alone escalates, and the reason names it. The tiers above keep their
-  // priority (a sensitive hit still names its entry, a real path still asks,
-  // read-only-unverified keeps its own reason); only what would otherwise be
-  // an allow becomes an ask, with no `askPaths` (not a one-path decision).
-  const innerShape = unanalyzedInnerCommand(segments) ?? unanalyzedScriptFile(segments);
+  // The layer-1 ask itself. It outranks the remaining path-candidate asks: a
+  // 0.9.7 regression let `firstAsk` return first carrying `askPaths`, so ONE
+  // pre-granted read of the outer command's path silently covered the
+  // unanalyzed inner command (`find <dir> | xargs rm -f` ran without asking).
+  // The ask carries no `askPaths` — it is about the command, not one path, so
+  // the approval memory can never cover it with an old grant.
   if (innerShape !== undefined) {
     return {
       decision: 'ask',
-      matchedRule: 'dynamic-shell',
+      matchedRule: 'unknown-capability',
       reason: `${innerShape} runs an inner command this gate does not analyze — controller approval is required (fail-closed, issue #51)`,
       access: lineAccess,
     };
@@ -333,7 +348,8 @@ export function evaluateBashCommand(
   // allow" fallback is gone: a line runs silently only when every segment sits
   // in a capability table AND its targets stay in scope (reads inside the
   // allowed directories, writes inside the workspace). Exec / network /
-  // dynamic constructs and unknown verbs ask, naming the capability class.
+  // dynamic constructs and unknown verbs ask, naming the capability class (the
+  // unanalyzed-inner-command shapes were checked above).
   const capabilityAsk = evaluateCapabilityGate(scope, segments, cdChain.cwd ?? scope.workspace);
   if (capabilityAsk) return { ...capabilityAsk, access: lineAccess };
 

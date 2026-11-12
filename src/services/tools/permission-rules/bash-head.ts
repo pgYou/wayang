@@ -1,11 +1,11 @@
 // The command POSITION of a shell segment: wrapper prefixes and assignments skipped, plus the destructive-command tier.
 
 import { CMDSUBST_PLACEHOLDER, type ShellSegment } from '@/services/tools/shell-lexer';
+import { isDangerousCommand, isWrapperCommand } from './command-tables';
 
 /**
- * Command words that always require controller approval, whatever their
- * targets are: the destructive-command tier.
- *
+ * Command words that always require controller approval, whatever their targets
+ * are — the `danger` mark in the command table (see `command-tables.ts`).
  * Membership is judged on the command position `headCommand` computes — NOT on
  * a line-start regex. The two used to disagree: the regex only matched a verb
  * at the start of the line or right after `|` / `;` / `&&`, while the path
@@ -18,21 +18,15 @@ import { CMDSUBST_PLACEHOLDER, type ShellSegment } from '@/services/tools/shell-
  * `rm` / `dd` / `kill` carry an arity or flag condition (see `isDangerousHead`),
  * the rest are dangerous as soon as they are the command word.
  */
-const DANGEROUS_HEAD_COMMANDS: ReadonlySet<string> = new Set([
-  'sudo', 'chmod', 'chown', 'mkfs', 'shutdown', 'reboot',
-]);
 
 /**
- * Commands that only launch another command. The real command sits behind them,
- * so a segment's head word is the first word that is not a leading variable
- * assignment and not one of these prefixes (`sudo cat x`, `env FOO=1 cat x`,
- * `nohup time cat x`). Skipping them is what lets `sudo cat ~/notes.md` be
- * judged as the read it is — the destructive-command tier still asks for the
- * `sudo` itself.
+ * Commands that only launch another command — the `wrapper` mark in the
+ * command table. The real command sits behind them, so a segment's head word
+ * is the first word that is not a leading variable assignment and not one of
+ * these prefixes (`sudo cat x`, `env FOO=1 cat x`, `nohup time cat x`).
+ * Skipping them is what lets `sudo cat ~/notes.md` be judged as the read it
+ * is — the destructive-command tier still asks for the `sudo` itself.
  */
-const WRAPPER_COMMANDS: ReadonlySet<string> = new Set([
-  'sudo', 'env', 'nohup', 'time', 'nice', 'ionice', 'command', 'exec', 'builtin',
-]);
 
 /** Options of the wrappers above that consume the NEXT word as their value. */
 const WRAPPER_OPTIONS_WITH_VALUE: ReadonlyMap<string, readonly string[]> = new Map([
@@ -77,7 +71,7 @@ function headIndex(words: readonly string[]): number {
       i += 1;
       continue;
     }
-    if (!WRAPPER_COMMANDS.has(words[i])) break;
+    if (!isWrapperCommand(words[i])) break;
     const next = words[i + 1];
     if (next === '-v' || next === '-V') break; // `command -v x`: the wrapper is the query
     const withValue = WRAPPER_OPTIONS_WITH_VALUE.get(words[i]) ?? [];
@@ -119,7 +113,7 @@ export function headCommand(segment: ShellSegment): { command: string; words: st
  * from its own arguments — the same shape the old line-start regex matched.
  */
 function isDangerousHead(command: string, words: readonly string[]): boolean {
-  if (DANGEROUS_HEAD_COMMANDS.has(command) || command.startsWith('mkfs.')) return true;
+  if (isDangerousCommand(command) || command.startsWith('mkfs.')) return true;
   if (command === 'rm' || command === 'dd') return words.length > 1;
   if (command === 'kill') return words.includes('-9');
   return false;
@@ -140,7 +134,7 @@ function isDangerousSegment(segment: ShellSegment): boolean {
   const index = headIndex(words);
   const head = words[index];
   if (head === undefined || head === CMDSUBST_PLACEHOLDER) {
-    return words.some((word) => DANGEROUS_HEAD_COMMANDS.has(word) || word.startsWith('mkfs.'));
+    return words.some((word) => isDangerousCommand(word) || word.startsWith('mkfs.'));
   }
   if (words.slice(0, index).includes('sudo')) return true;
   return isDangerousHead(head, words.slice(index));

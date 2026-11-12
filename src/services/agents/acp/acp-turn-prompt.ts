@@ -52,7 +52,7 @@ export function makeInjectedEntry(text: string, kind: 'acp-denial-notice' | 'con
 }
 
 /** Reasons decideNextAction attributes to the CATEGORY itself (the rest are guard limits). */
-const CATEGORY_REASONS = new Set(['Aborted', 'request timed out', 'denied by user', 'agent ended the turn unexpectedly']);
+const CATEGORY_REASONS = new Set(['Aborted', 'request timed out', 'agent ended the turn unexpectedly']);
 
 /** Terminal WorkerResult. Guard-limit terminations carry their specific reason. */
 export function makeTerminalResult(

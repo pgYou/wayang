@@ -1,15 +1,17 @@
 import type { Logger } from '@/infra/logger';
-import type { SettledOutcome } from '@/infra/blocking-requests';
 import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { ApprovalMemoryMode } from '@/types/config';
 import type { SignalTurnLineage } from '@/types/index';
-import { generateId } from '@/utils/id';
 import {
-  approvalKey,
-  sharedApprovalMemory,
-  type ApprovalMemory,
-} from '@/services/permission/approval-memory';
+  DEFAULT_PERMISSION_TIMEOUT_MS,
+  PermissionTransport,
+  denialSourceOf,
+  permissionRefusalText,
+  reusableGrantKeys,
+  type PermissionResolutionStatus,
+} from '@/services/permission/permission-transport';
+import { sharedApprovalMemory, type ApprovalMemory } from '@/services/permission/approval-memory';
 import {
   auditAccessFor,
   operationForTool,
@@ -104,94 +106,12 @@ export interface PermissionMiddlewareDeps {
 }
 
 /**
- * Shape the reuse rule reads. Both `PermissionVerdict` (puppet middleware) and
- * `ToolAccessDecision` (the shared policy claude-code uses) satisfy it, so one
- * exported function can serve both gates instead of drifting into two copies
- * of the rule (issue #58).
+ * The grants a verdict may reuse, the five-state vocabulary, the deny texts
+ * and the permission wait bound live in the shared transport module
+ * (permission-transport.ts, issues #46/#58/#69) — the same spine serves the
+ * ACP bridge and the Claude Code gate, so no per-gate copy of any of them
+ * exists anywhere.
  */
-export type GrantReuseVerdict = Pick<
-  PermissionVerdict,
-  'decision' | 'access' | 'sensitive' | 'askPaths'
->;
-
-/**
- * The grants a verdict may reuse, or `[]` when this call must ask again.
- *
- * The rule is the whole contract of the feature (issue #46):
- *   - only `ask` reaches here (`allow` already ran, `deny` never runs);
- *   - only READ — a write approval is never carried to a later write;
- *   - never a sensitive hit — `~/.ssh` is asked about every single time, even
- *     under the default `sensitiveMode: 'ask'` where the hit IS approvable;
- *   - and the call must name at least one concrete path, so escalations that
- *     are not about a single path (`dangerous-bash`, `dynamic-shell`,
- *     `home-other-user`) can never be covered by an old grant.
- */
-export function reusableGrantKeys(verdict: GrantReuseVerdict): string[] {
-  if (verdict.decision !== 'ask') return [];
-  if (verdict.access !== 'read') return [];
-  if (verdict.sensitive === true) return [];
-  const paths = verdict.askPaths ?? [];
-  if (paths.length === 0) return [];
-  const keys: string[] = [];
-  for (const path of paths) {
-    const key = approvalKey('read', path);
-    if (!keys.includes(key)) keys.push(key);
-  }
-  return keys;
-}
-
-interface PendingPermission {
-  resolve: (approved: boolean, reason?: string) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-/**
- * Outcome of routing a respond_permission call to a permission request
- * (issue #69). Every value is a definite terminal answer for the controller:
- *
- * - 'resolved' — THIS call settled a pending request; the worker proceeds
- *   with the answer.
- * - 'already-resolved' — the request was answered earlier; the duplicate
- *   response was ignored and the worker already continued with the first
- *   answer.
- * - 'expired' — the request timed out; the worker already received a
- *   timeout error and moved on. No response is needed.
- * - 'worker-closed' — the request was settled by worker abort/shutdown; the
- *   worker's wait was released with a cancellation. No response is needed.
- * - 'not-found' — no live request ever knew this id (stale id from an old
- *   turn or a finished worker). Retrying cannot help.
- *
- * In every non-'resolved' case the worker-side wait has already been
- * released (or never existed) — a controller can never leave a worker
- * hanging by sending one of these.
- */
-export type PermissionResolutionStatus =
-  | 'resolved'
-  | 'already-resolved'
-  | 'expired'
-  | 'worker-closed'
-  | 'not-found';
-
-/**
- * Map a BlockingRequestMap settle outcome onto the permission status
- * vocabulary, so the third-party permission handlers (ClaudeCodeWorker, ACP
- * workers) report the same distinguishable semantics as the puppet
- * middleware.
- */
-export function permissionStatusFromOutcome(
-  outcome: SettledOutcome | undefined,
-): PermissionResolutionStatus {
-  switch (outcome) {
-    case 'responded':
-      return 'already-resolved';
-    case 'timed-out':
-      return 'expired';
-    case 'cleaned':
-      return 'worker-closed';
-    default:
-      return 'not-found';
-  }
-}
 
 export interface PermissionMiddlewareResult {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors wrapWithPermissionMiddleware's tools param (heterogeneous tool set)
@@ -204,23 +124,17 @@ export interface PermissionMiddlewareResult {
   cleanup: () => void;
 }
 
-const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
-
 export function wrapWithPermissionMiddleware(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous tool set (zod-inferred per tool); see common.ts relaxation boundary
   tools: Record<string, any>,
   config: PermissionMiddlewareConfig,
   deps: PermissionMiddlewareDeps,
 ): PermissionMiddlewareResult {
-  const pending = new Map<string, PendingPermission>();
-  /**
-   * Requests this instance already settled, and how (issue #69). Lets a late
-   * or duplicate respond_permission return a distinguishable terminal status
-   * ('already-resolved' / 'expired' / 'worker-closed') instead of a bare
-   * not-found the controller cannot act on.
-   */
-  const settled = new Map<string, 'responded' | 'timeout' | 'aborted'>();
-  const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // The transport owns the pending registry, the timeout settle and the #69
+  // status bookkeeping (see permission-transport.ts) — the same spine the ACP
+  // bridge and the Claude Code gate wait on, instead of a per-gate Map.
+  const transport = new PermissionTransport();
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
   const gatedSet = new Set(config.gatedTools);
   const memoryEnabled = (deps.approvalMemory ?? DEFAULT_APPROVAL_MEMORY) === 'task';
   const grants = deps.grants ?? sharedApprovalMemory;
@@ -309,15 +223,12 @@ export function wrapWithPermissionMiddleware(
           return originalExecute(args, options);
         }
 
-        // A duplicate id would orphan the first waiter: pending.set would
-        // silently drop its resolver, so only its own timeout timer could
-        // ever release it — the "not found, worker stuck" shape of issue
-        // #69. Ids are self-generated here, so a collision is retried with
-        // a fresh id instead of throwing (BlockingRequestMap treats the
-        // same situation as a programming error because ITS ids are
-        // caller-supplied).
-        let requestId = generateId('perm');
-        while (pending.has(requestId)) requestId = generateId('perm');
+        // A duplicate id would orphan the first waiter: the pending entry it
+        // overwrote would lose its resolver, so only its own timeout timer
+        // could ever release it — the "not found, worker stuck" shape of
+        // issue #69. The transport's id generator retries a collision with a
+        // fresh id instead (see `PermissionTransport.newRequestId`).
+        const requestId = transport.newRequestId();
         const operation = verdict.operation ?? operationForTool(toolName);
         const baseDescription = config.describeCall(toolName, args, verdict);
         // Surface a non-obvious escalation reason (command substitution,
@@ -361,30 +272,7 @@ export function wrapWithPermissionMiddleware(
           ...(deps.turnLineage ?? {}),
         });
 
-        interface PermissionResult {
-          approved: boolean;
-          reason?: string;
-        }
-
-        const result = await new Promise<PermissionResult>((resolve) => {
-          const timer = setTimeout(() => {
-            pending.delete(requestId);
-            settled.set(requestId, 'timeout');
-            resolve({ approved: false, reason: 'timeout' });
-          }, timeoutMs);
-
-          pending.set(requestId, {
-            // NOTE: this callback is shared by every settle path (respond,
-            // timeout, cleanup) — it must NOT record an outcome; each path
-            // labels itself on the settled map.
-            resolve: (ok: boolean, reason?: string) => {
-              clearTimeout(timer);
-              pending.delete(requestId);
-              resolve({ approved: ok, reason });
-            },
-            timer,
-          });
-        });
+        const result = await transport.wait(requestId, timeoutMs);
 
         // Audit BEFORE executing: the record must exist even if the tool then
         // crashes, and a denied call must leave the same trail as an approved
@@ -401,14 +289,7 @@ export function wrapWithPermissionMiddleware(
           taskId: deps.taskId,
           workerId: deps.workerId,
           toolName,
-          ...(!result.approved && {
-            source:
-              result.reason === 'timeout'
-                ? ('timeout' as const)
-                : result.reason === 'Worker aborted'
-                  ? ('aborted' as const)
-                  : ('controller' as const),
-          }),
+          ...(!result.approved && { source: denialSourceOf(result) }),
         });
 
         // An approval of a READ that is not sensitive opens one grant per
@@ -423,13 +304,7 @@ export function wrapWithPermissionMiddleware(
         }
 
         if (!result.approved) {
-          if (result.reason === 'timeout') {
-            return `[ERROR] Permission request timed out for ${toolName}`;
-          }
-          if (result.reason === 'Worker aborted') {
-            return `[ERROR] Permission request cancelled: worker shutting down`;
-          }
-          return `[ERROR] Permission denied for ${toolName}: ${result.reason ?? 'operation not approved by controller'}`;
+          return permissionRefusalText(toolName, result);
         }
 
         return originalExecute(args, options);
@@ -439,33 +314,12 @@ export function wrapWithPermissionMiddleware(
 
   return {
     wrappedTools,
-    resolvePermission(
-      requestId: string,
-      approved: boolean,
-      reason?: string,
-    ): PermissionResolutionStatus {
-      const entry = pending.get(requestId);
-      if (entry) {
-        settled.set(requestId, 'responded');
-        entry.resolve(approved, reason);
-        return 'resolved';
-      }
-      // The request existed HERE and already settled — name the terminal
-      // state it reached so the controller gets a definite answer (issue
-      // #69) instead of an ambiguous "not found".
-      const outcome = settled.get(requestId);
-      if (outcome === 'responded') return 'already-resolved';
-      if (outcome === 'timeout') return 'expired';
-      if (outcome === 'aborted') return 'worker-closed';
-      return 'not-found';
-    },
-    cleanup(): void {
-      for (const [id, entry] of pending) {
-        clearTimeout(entry.timer);
-        settled.set(id, 'aborted');
-        entry.resolve(false, 'Worker aborted');
-        pending.delete(id);
-      }
+    // Settle + #69 status in one call — the transport reports 'resolved' or the
+    // terminal state an earlier settle left ('already-resolved' / 'expired' /
+    // 'worker-closed'), and answers 'not-found' for an id this gate never knew.
+    resolvePermission: (requestId, approved, reason) => transport.resolve(requestId, approved, reason),
+    cleanup: (): void => {
+      transport.cleanup();
     },
   };
 }

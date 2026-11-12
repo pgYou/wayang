@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.7 (2026-11-10)
+
+### 修复
+
+- add_task 的 workspace 参数补边界校验（#77）：realpath 归一后必须在 home 内、命中敏感路径拒绝、软链按真实路径判定、先校验后 mkdir；新增 permission.extraWorkspaceRoots 显式放行并在会话日志审计
+- controller 拒绝权限后 ACP worker 不再终止：拒绝以系统提示重投给 agent，仅重投预算耗尽或真取消时终止；agent 正常 end_turn 不再被 denial 覆盖，被拒后的合规收尾不再被判失败（判据：本轮为重投回合且本回合有 trim 后 ≥8 字符的有效正文且非外部取消，三条件同时满足才把残留的 cancelled 判为 completed；重投证据与正文长度按回合隔离，不沿用 run 级累计）
+- 修复（安全）：bash 能力判定含未分析内层命令时不再携带 askPaths，避免审批记忆静默复用导致内层危险命令被执行（回归用例：src/services/tools/permission-rules/__tests__/permission-askpaths-reuse.test.ts）
+
+### 变更
+
+- 移除 worker 运行时长限制：删除墙钟判定、RunWallWatchdog、硬编码的 12 轮上限；交互类超时（审批、inquiry、LLM idle、握手）保留
+- maxTurns 语义统一：未配置或非法值即不限制（非法值打一条 warn），合法正整数生效；puppet 改为读配置，claude-code 共用同一解析；ACP 不消费该配置
+- puppet 步数耗尽不再报 completed，改为失败并注明 Reached step limit
+- worker 提示词补收尾契约：完成必须调 done 附结论摘要（改了什么、验证结果、遗留），无法完成必须调 fail 附原因与已完成部分；最终答复且本轮无工具调用时先自检该调哪个，禁止只输出文本静默结束、禁止用 done 掩盖未完成，长任务按可验收步骤 update_progress，减少 puppet 无结论收尾
+- 上下文压缩触发阈值从 90% 调整为 60%：上下文用到 60% 即压缩，更早释放上下文
+
+### 重构
+
+- 权限层收敛：八张命令表合并为 command-tables 单一来源；三套传输层（middleware / ACP bridge / claude-code）统一到 PermissionTransport；home 读收窄改为校验入参；复用 isPathWithin；内层命令 fail-closed 并入 unknown 能力
+
 ## v0.9.6 (2026-11-10)
 
 ### 修复

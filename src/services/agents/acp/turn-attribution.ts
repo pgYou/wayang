@@ -10,31 +10,78 @@ export interface TurnDenial {
 }
 export type TurnEndCategory = 'our_cancel' | 'our_timeout' | 'denied_by_policy' | 'denied_by_timeout' | 'denied_by_user' | 'agent_ended_unexpectedly' | 'completed';
 export interface TurnGuardState {
-  turnSeq: number; denialReissues: number; perKey: Map<string, number>;
-  consecutiveDenialTurns: number; runStartedAt: number;
+  denialReissues: number; perKey: Map<string, number>;
+  consecutiveDenialTurns: number;
   lastProgressSig: string; stagnantTurns: number;
 }
 export const TURN_LIMITS = {
-  MAX_TURNS: 12, MAX_DENIAL_REISSUES: 3, MAX_PER_KEY: 1,
-  MAX_CONSECUTIVE_DENIAL_TURNS: 2, MAX_RUN_WALL_MS: 1_800_000, MAX_STAGNANT_TURNS: 2,
+  MAX_DENIAL_REISSUES: 3, MAX_PER_KEY: 1,
+  MAX_CONSECUTIVE_DENIAL_TURNS: 2, MAX_STAGNANT_TURNS: 2,
 } as const;
 
-export interface ClassifyTurnEndInput { stopReason: string; cancelFact: CancelFact; denials: TurnDenial[]; hasQueuedMessages: boolean }
+export interface ClassifyTurnEndInput {
+  stopReason: string; cancelFact: CancelFact; denials: TurnDenial[]; hasQueuedMessages: boolean;
+  /**
+   * Consecutive denial reissues that led into THIS turn's prompt (per-turn:
+   * zeroed on every non-reissue turn switch). Deliberately NOT the run-total
+   * budget in TurnGuardState.denialReissues — that counter is sticky and
+   * would let a much later cancelled turn ride on an old reissue.
+   */
+  turnDenialReissues?: number;
+  /**
+   * Trimmed length of THIS turn's assistant text (leading/trailing
+   * whitespace excluded). §9.1 effective-body evidence: a residue-completed
+   * turn must carry a real final answer, not a lone punctuation mark or
+   * acknowledgment token.
+   */
+  turnTextTrimmedChars?: number;
+}
 const SOURCE_PRIORITY: readonly DenialSource[] = ['policy', 'timeout', 'controller'];
 const CATEGORY_BY_SOURCE: Record<DenialSource, TurnEndCategory> = {
   policy: 'denied_by_policy', timeout: 'denied_by_timeout', controller: 'denied_by_user',
 };
 
-/** Cancel facts win over denials; denials win over stopReason. */
+/**
+ * §9.1 residue rule: a turn whose stopReason is 'cancelled' counts as
+ * completed only when ALL three hold —
+ * 1. this turn is a denial-reissue round (per-turn reissue count > 0);
+ * 2. this turn carries an effective body: trimmed text of at least
+ *    MIN_RESIDUE_TURN_TEXT_CHARS chars (a lone mark or acknowledgment token
+ *    is intermediate chatter, not a final answer);
+ * 3. no external cancel/abort interrupted the turn (cancelFact wins above).
+ */
+export const MIN_RESIDUE_TURN_TEXT_CHARS = 8;
+
+/** Cancel facts win over everything; a normal end_turn beats denials (the agent
+ * saw the refusal and chose to wrap up — that is a completed turn); denials
+ * beat other stop reasons; a cancelled stopReason in a denial-reissue round
+ * with this-turn effective text is a completed turn (04-permissions §9.1:
+ * the agent's 'cancelled' is a denial residue, not a cancellation). */
 export function classifyTurnEnd(input: ClassifyTurnEndInput): TurnEndCategory {
   const { stopReason, cancelFact, denials } = input;
   if (cancelFact === 'abort') return 'our_cancel';
   if (cancelFact === 'prompt-timeout') return 'our_timeout';
+  if (stopReason === 'end_turn') return 'completed';
   if (denials.length > 0) {
     const present = new Set(denials.map((d) => d.source));
     return CATEGORY_BY_SOURCE[SOURCE_PRIORITY.find((s) => present.has(s)) ?? 'controller'];
   }
-  return stopReason === 'end_turn' ? 'completed' : 'agent_ended_unexpectedly';
+  // Denial residue (04-permissions §9.1): after a permission was refused in an
+  // earlier turn (a reissue round followed), the agent may comply with the
+  // notice, deliver its final text, and STILL end with stopReason 'cancelled'
+  // — the stopReason echoes the refused tool call and cannot self-certify a
+  // cancellation. Per-turn reissue evidence plus this turn's effective text
+  // outrank it. External cancels never reach here (cancelFact won above); a
+  // non-reissue turn or a turn without an effective body still ends
+  // unexpectedly.
+  if (
+    stopReason === 'cancelled' &&
+    (input.turnDenialReissues ?? 0) > 0 &&
+    (input.turnTextTrimmedChars ?? 0) >= MIN_RESIDUE_TURN_TEXT_CHARS
+  ) {
+    return 'completed';
+  }
+  return 'agent_ended_unexpectedly';
 }
 function normalizeForKey(value: string): string { return value.toLowerCase().replace(/\s+/g, ' ').trim(); }
 /** Stable budget identity: lower case, whitespace collapsed, source|tool|target. */
@@ -122,13 +169,11 @@ export function buildDenialNotice(denials: TurnDenial[], locale: string = 'zh'):
   return notice.length <= NOTICE_MAX_CHARS ? notice : notice.slice(0, NOTICE_MAX_CHARS);
 }
 
-export function resetTurnGuard(now: number): TurnGuardState {
+export function resetTurnGuard(): TurnGuardState {
   return {
-    turnSeq: 0,
     denialReissues: 0,
     perKey: new Map<string, number>(),
     consecutiveDenialTurns: 0,
-    runStartedAt: now,
     lastProgressSig: '',
     stagnantTurns: 0,
   };
@@ -138,14 +183,13 @@ export interface AdvanceGuardInput {
   category: TurnEndCategory;
   denials: TurnDenial[];
   progressSig: string;
-  now: number;
 }
 
 /** Fold one finished turn into a fresh guard state. denialReissues is owned by the caller. */
 export function advanceGuard(guard: TurnGuardState, input: AdvanceGuardInput): TurnGuardState {
   const { category, denials, progressSig } = input;
   const perKey = new Map(guard.perKey);
-  if (category === 'denied_by_policy' || category === 'denied_by_timeout') {
+  if (category.startsWith('denied_by_')) {
     for (const d of denials) {
       const key = denialKey(d);
       perKey.set(key, (perKey.get(key) ?? 0) + 1);
@@ -156,7 +200,6 @@ export function advanceGuard(guard: TurnGuardState, input: AdvanceGuardInput): T
 
   return {
     ...guard,
-    turnSeq: guard.turnSeq + 1,
     perKey,
     consecutiveDenialTurns: category.startsWith('denied_by_')
       ? guard.consecutiveDenialTurns + 1
@@ -172,22 +215,16 @@ export interface TurnNextAction {
 }
 
 /**
- * Decide what to do after a turn ended. `now` is injectable so callers/tests can
- * keep wall-clock checks deterministic; the default is Date.now() as specified.
+ * Decide what to do after a turn ended. No wall-clock or turn-count ceiling
+ * applies (v0.9.7 removed run-duration limits): the guard only carries the
+ * denial budgets and the no-progress detector.
  */
 export function decideNextAction(
   guard: TurnGuardState,
   category: TurnEndCategory,
   hasQueuedMessages: boolean,
   denials: TurnDenial[] = [],
-  now: number = Date.now(),
 ): TurnNextAction {
-  if (guard.turnSeq >= TURN_LIMITS.MAX_TURNS) {
-    return { action: 'terminate', reason: `turn limit reached (${TURN_LIMITS.MAX_TURNS})` };
-  }
-  if (now - guard.runStartedAt > TURN_LIMITS.MAX_RUN_WALL_MS) {
-    return { action: 'terminate', reason: 'run wall time exceeded' };
-  }
   if (guard.stagnantTurns >= TURN_LIMITS.MAX_STAGNANT_TURNS) {
     return {
       action: 'terminate',
@@ -196,9 +233,12 @@ export function decideNextAction(
   }
   if (category === 'our_cancel') return { action: 'terminate', reason: 'Aborted' };
   if (category === 'our_timeout') return { action: 'terminate', reason: 'request timed out' };
-  if (category === 'denied_by_user') return { action: 'terminate', reason: 'denied by user' };
 
-  if (category === 'denied_by_policy' || category === 'denied_by_timeout') {
+  if (category === 'denied_by_policy' || category === 'denied_by_timeout' || category === 'denied_by_user') {
+    // Every denial source shares the reissue machinery: the refusal goes back
+    // to the agent as an injectable SYSTEM NOTICE and the agent decides
+    // whether to try a different approach or end. Only an exhausted reissue
+    // budget (or a real cancel/timeout above) terminates.
     // Protocol-level denials (permissionMode 'agent') carry injectable=false:
     // there is nothing to put in a follow-up notice. Even though the category
     // is still denied_by_policy, a turn whose denials are ALL non-injectable
@@ -221,7 +261,8 @@ export function decideNextAction(
         reason: `consecutive denial turns reached (${TURN_LIMITS.MAX_CONSECUTIVE_DENIAL_TURNS})`,
       };
     }
-    const source: DenialSource = category === 'denied_by_policy' ? 'policy' : 'timeout';
+    const source: DenialSource =
+      category === 'denied_by_policy' ? 'policy' : category === 'denied_by_timeout' ? 'timeout' : 'controller';
     for (const d of denials.filter((item) => item.source === source)) {
       for (const key of [d.key, denialKey(d)]) {
         if ((guard.perKey.get(key) ?? 0) >= TURN_LIMITS.MAX_PER_KEY) {

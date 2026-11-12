@@ -1,7 +1,7 @@
 // sed script analysis: is a `sed` invocation provably read-only?
 
 /**
- * sed is on `READ_ONLY_COMMANDS` only when its SCRIPT cannot execute a shell
+ * sed is a table read only when its SCRIPT cannot execute a shell
  * command or write a file. Those abilities are one letter long and live inside
  * the script STRING, where a token-level sweep cannot see them:
  *
@@ -268,7 +268,7 @@ export function isReadOnlySedScript(script: string): boolean {
  *
  * `-f` is rejected outright: the script lives in a file, so it cannot be
  * checked here. `-i` (optionally with a glued suffix) is a write form handled by
- * `BASH_FLAGGED_WRITE_VERBS`, and takes no separate value.
+ * the table's `writeFlags`, and takes no separate value.
  */
 function consumeSedShortOptions(
   word: string,

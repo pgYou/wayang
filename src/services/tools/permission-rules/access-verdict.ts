@@ -1,4 +1,4 @@
-// Bridge between the tool-specific gates and the shared access policy (decidePath + verdict mapping + home-read narrowing).
+// Bridge between the tool-specific gates and the shared access policy (decidePath + verdict mapping).
 
 import {
   decideAccess,
@@ -6,10 +6,18 @@ import {
   type DecideAccessResult,
 } from '@/infra/permission/policy';
 import { mergeSensitiveDirs, resolveSensitiveMode } from '@/infra/permission/permission-config';
-import type { BashCandidate } from './bash-paths';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
-/** Run one path past the shared policy with this run's boundary as context. */
+/**
+ * Run one path past the shared policy with this run's boundary as context.
+ *
+ * `allowReadWithinHome: false` — a worker's silence-worthy scope is its
+ * workspace, its task allowedDirs and the explicitly configured roots, NOT
+ * the whole home the policy itself grants reads over (that is the
+ * controller's own read scope). A home read therefore reaches the caller as
+ * the policy's `read-within-home` ASK directly, never as an allow that a
+ * caller would have to downgrade after the fact.
+ */
 export function decidePath(
   scope: WorkerAccessScope,
   path: string,
@@ -30,6 +38,7 @@ export function decidePath(
     // the directories it declares.
     extraSensitiveDirs: mergeSensitiveDirs(permission),
     sensitiveMode: resolveSensitiveMode(permission),
+    allowReadWithinHome: false,
   });
 }
 
@@ -64,30 +73,4 @@ export function toToolDecision(verdict: DecideAccessResult, access: AccessMode):
 export function withAskPaths(decision: ToolAccessDecision): ToolAccessDecision {
   if (decision.decision !== 'ask' || decision.resolvedPath === undefined) return decision;
   return { ...decision, askPaths: [decision.resolvedPath] };
-}
-
-/**
- * Narrow the policy's "reads inside home" allow for a BASH candidate.
- * The policy lets a read happen anywhere under home (the controller's own read
- * scope, rule 6), but a WORKER's silence-worthy scope is its workspace, its task
- * allowedDirs and the explicitly configured roots. A bash candidate that the
- * classification now names a `read` gets exactly the same treatment a file tool
- * gets: the allow is turned back into an approval. Classifying a command as a
- * read therefore changes only the DIRECTION reported (audit trail, approval
- * request) — never the set of paths a worker may open without asking.
- *
- * The test is the policy's `withinReadScope` flag, not the `matchedRule` string,
- * so renaming the rule cannot widen access.
- */
-export function narrowHomeRead(verdict: DecideAccessResult, candidate: BashCandidate): ToolAccessDecision {
-  if (verdict.decision === 'allow' && verdict.withinReadScope) {
-    return {
-      decision: 'ask',
-      matchedRule: 'read-within-home',
-      resolvedPath: verdict.resolvedPath,
-      access: candidate.access,
-      ...(verdict.resolvedPath !== undefined && { askPaths: [verdict.resolvedPath] }),
-    };
-  }
-  return withAskPaths(toToolDecision(verdict, candidate.access));
 }

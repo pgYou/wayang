@@ -65,6 +65,7 @@ wayang 启动时按下面的顺序找配置：
 - `provider`（必填，字符串）：worker 默认使用的 provider 名，必须存在于 `providers`。
 - `maxConcurrency`（必填，数字）：最多同时运行几个 worker。建议 1–10 之间；wayang 不校验这个值，请自己填 ≥1 的整数。
 - `toolChoice`（可选，`'auto' | 'required' | 'none'`，默认 `'auto'`）：worker 调用工具的模式。部分模型服务（DeepSeek/GLM）会拒绝 `required`；仅当端点支持时用 `required` 强制每步都调用工具以保证收尾。
+- `maxTurns`（可选，正整数，默认不限）：puppet worker 的 LLM 步数上限。未配置即不限制；非法值（非正整数、超过 1000000）视为不限并 warn 一次。达到上限仍未调用 done/fail 时按失败收尾。仅对 puppet 生效——claude-code 用 `workers.<id>.maxTurns`，ACP 类型不消费该键。
 
 `providers.<name>` 子字段：
 
@@ -72,7 +73,7 @@ wayang 启动时按下面的顺序找配置：
 - `apiKey`（必填，字符串）：可留空，留空时由环境变量 `WAYANG_LLM_API_KEY` 补齐。
 - `modelName`（必填，字符串）：模型名。
 - `temperature`、`maxOutputTokens`（可选，数字）：目前仅记录，不影响运行。
-- `contextWindowTokens`（可选，正整数，默认 256000）：模型上下文窗口大小（输入侧预算）。controller 在用到 90% 时会自动压缩对话；小窗口模型请显式设置（如 128000），否则请求会在压缩前被 provider 拒绝。
+- `contextWindowTokens`（可选，正整数，默认 256000）：模型上下文窗口大小（输入侧预算）。controller 在用到 60% 时会自动压缩对话；小窗口模型请显式设置（如 128000），否则请求会在压缩前被 provider 拒绝。
 
 `permission` 子字段（全部可选，相对路径以你的 home 目录解析）：
 
@@ -82,8 +83,19 @@ wayang 启动时按下面的顺序找配置：
 - `deniedDirs: string[]`：已废弃的旧写法，仍会被读取并与 `sensitiveDirs` 合并，启动时会提示一次。
 - `sensitiveMode`：`'ask'`（默认，命中即请求 controller 审批）或 `'deny'`（直接拒绝，从不询问）。
 - `approvalMemory`：`'task'`（默认，同一任务内已批准的读路径不再重复询问）或 `'off'`。
+- `extraWorkspaceRoots: string[]`：add_task 声明的工作区（`workspace` 参数）允许落在 home 之外的根目录，默认空（仅 home 内）。给仓库统一放在 home 之外的部署用（如 `/codev`）。生效时启动会提示一次，且每次经由它放行的工作区都会写入会话审计日志（`audit: "workspace"`）；敏感目录列表仍优先生效。
+
+`workspace` 与 `allowedDirs` 的校验差异（两者都只收 home 内路径，`extraWorkspaceRoots` 是共同的例外出口）：
+
+- `workspace` 是任务的执行根：归一化（含软链解析）后必须位于 home 内或某个 `extraWorkspaceRoots` 根下，且不得命中敏感目录列表；不在范围内时直接拒绝创建任务，也不会创建目录。任务工作区内的读写按"工作区内"放行。
+- `allowedDirs` 是任务工作区之外的补充授权：逐条校验（home 内、不碰敏感列表），一条非法即整单拒绝；授予的目录享受与工作区同级的放行，但敏感目录列表同样优先。
+- 需要让任务访问工作区以外的目录，用 `allowedDirs`，不要试图把工作区指到别处。
 
 `logging` 子字段：`maxFileSizeBytes`（默认 10485760）、`maxFiles`（默认 3），均为正整数。
+
+### 运行时长限制已移除
+
+v0.9.7 移除了 worker 单次运行的 wall time 上限（原 #76 能力撤回）：全局配置 `workerRunTimeoutMs` 与 `add_task` 的 `runTimeoutMs` 均已废弃，不再有任何基于运行时长的终止。旧配置仍带入这两个键时不会报错——加载时提示一次弃用告警后忽略，可以安全地从配置里删掉。
 
 ### workers.<id> 字段
 
@@ -94,7 +106,7 @@ wayang 启动时按下面的顺序找配置：
 | `enable` | 布尔值 | 否 | `true` | 是否启用这个 worker |
 | `emoji` | 字符串 | 否 | 按类型 | 界面显示图标；缺省为 🤖（claude-code）/ 🧩（acp）/ 🐧（codebuddy）/ 🦉（opencode） |
 | `capabilities` | 字符串数组 | 否 | — | 能力标签，供 controller 路由任务时参考 |
-| `maxTurns` | 数字 | 否 | — | 单个任务的最大轮数；只对 claude-code 有意义，写在其他类型上无效（会提示一次 no effect） |
+| `maxTurns` | 数字 | 否 | — | 单个任务的最大轮数；只对 claude-code 有意义（未配置即不限制），写在 ACP 类型上不生效（仅在 worker 运行时打一条 debug 日志） |
 | `cliPath` | 字符串 | 否 | 自动探测 | Claude Code CLI 可执行文件路径，仅 claude-code 使用 |
 | `permissionMode` | `'client' \| 'agent'` | 否 | `'client'` | `client`：权限请求经 wayang 审批；`agent`：worker 自己管权限，漏过来的请求会被取消并记录，绝不静默放行 |
 
@@ -198,6 +210,7 @@ wayang 启动时按下面的顺序找配置：
 - 定并发数：`worker.maxConcurrency` 是全局上限——最多同时跑几个 worker，与 worker 个数无关。受机器与 provider 限流约束，建议从 3 起，看到限流报错再调。
 - 给 worker 加能力：把标签写进 `capabilities`（如 `"test"`、`"docs"`），并在 `description` 里说清楚，controller 按这些信息决定把任务分给谁。
 - 限制可见目录：用 `permission.allowedDirs`（始终允许）与 `permission.sensitiveDirs`（命中需审批）。敏感目录列表优先级高于一切 allow 规则，只能选"问"或"拒"（`sensitiveMode`）。
+- 让 add_task 的工作区落在 home 外：`permission.extraWorkspaceRoots` 列出根目录（如 `/codev`），声明的 `workspace` 指向其内路径才放行；默认一律拒绝并提示改用 `allowedDirs`。
 - controller 与 worker 用不同模型：定义两个 provider，分别绑定 `controller.provider` 与 `worker.provider`：
 
 ```json

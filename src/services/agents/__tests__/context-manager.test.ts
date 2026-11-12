@@ -505,9 +505,19 @@ describe('ContextManager', () => {
       const conversation = [makeUser('u1', 'small message')];
       const cm = new ContextManager(createMockState(conversation), 'STATIC PROMPT', 42_000);
 
-      expect(cm.isFull()).toBe(false); // estimate-only, well under 90% of 42k
+      expect(cm.isFull()).toBe(false); // estimate-only, well under 60% of 42k
 
-      cm.reportRealUsage(50_000); // real prompt size > 0.9 * 42_000
+      cm.reportRealUsage(50_000); // real prompt size > 0.6 * 42_000
+      expect(cm.isFull()).toBe(true);
+    });
+
+    it('triggers at 60% of the window and stays below 59%', () => {
+      const cm = new ContextManager(createMockState([makeUser('u1', 'small')]), 'STATIC PROMPT', 100_000);
+
+      cm.reportRealUsage(59_000); // 59% — under the line
+      expect(cm.isFull()).toBe(false);
+
+      cm.reportRealUsage(60_001); // just past 60% — the threshold is strict `>`
       expect(cm.isFull()).toBe(true);
     });
 
