@@ -10,6 +10,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 
@@ -56,20 +58,18 @@ function serveRpc(child: FakeChild): void {
 
 // --- Setup ---
 
-const FAKE_ENTRY = '/fake/wayang/dist/cli.js';
-let originalArgv1: string;
+// connect.ts resolves the server host next to its own file; from this test
+// file that is <src>/client/server-entry.js (same computation, one level up).
+const EXPECTED_ENTRY = join(dirname(fileURLToPath(import.meta.url)), '..', 'server-entry.js');
 let child: FakeChild;
 
 beforeEach(() => {
   vi.mocked(spawn).mockReset();
   child = makeFakeChild();
   vi.mocked(spawn).mockReturnValue(child as never);
-  originalArgv1 = process.argv[1];
-  process.argv[1] = FAKE_ENTRY;
 });
 
 afterEach(() => {
-  process.argv[1] = originalArgv1;
   vi.mocked(spawn).mockRestore();
 });
 
@@ -99,7 +99,7 @@ describe('connectRemoteServer — spawn contract', () => {
     const [execPath, args] = vi.mocked(spawn).mock.calls[0];
     expect(execPath).toBe(process.execPath);
     expect(args).toEqual([
-      FAKE_ENTRY,
+      EXPECTED_ENTRY,
       'server',
       '--config', '/fake/config.json',
       // Regression guard: the root is passed verbatim; the server joins

@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { PassThrough } from 'node:stream';
-import { RemoteSupervisor } from '@/client/remote-supervisor';
+import { RemoteSupervisor } from '../remote-supervisor';
 import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
 import { RpcServer } from '@wayang-ai/protocol/rpc/rpc-server';
 import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';

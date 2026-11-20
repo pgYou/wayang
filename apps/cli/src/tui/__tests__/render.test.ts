@@ -18,7 +18,7 @@ import { render } from 'ink';
 import type { ReactElement } from 'react';
 import { renderInkUI } from '@/tui/render';
 import { App } from '@/tui/app';
-import type { RemoteSupervisor } from '@/client/remote-supervisor';
+import type { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
 
 const supervisor = { ctx: { workspaceDir: '/tmp/wayang-test' } } as unknown as RemoteSupervisor;
 

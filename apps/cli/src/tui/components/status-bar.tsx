@@ -3,7 +3,7 @@ import { Box, Text, useStdout } from 'ink';
 import type { TaskDetail, ActiveWorkerInfo, ContextUsage } from '@wayang-ai/protocol';
 import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 import { useWayangState } from '@/tui/hooks/use-wayang-state';
-import { CONTEXT_USAGE_STATE_PATH } from '@/client/remote-supervisor';
+import { CONTEXT_USAGE_STATE_PATH } from '@wayang-ai/core/client/remote-supervisor';
 import { theme } from '@/tui/theme';
 import { formatTokenCount } from '@/tui/utils/format-tokens';
 import { fitWithSuffix, sliceToWidth, stringWidth, truncateToWidth } from '@/tui/utils/text-width';
