@@ -1,0 +1,26 @@
+{
+  "name": "@wayang/core",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Wayang core — services, infrastructure and the server",
+  "type": "module",
+  "dependencies": {
+    "@wayang/protocol": "1.0.0-alpha.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./src/index.ts"
+    },
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit && eslint src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "types": "./dist/index.d.ts"
+}
