@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 import type { ResolvedModel } from '@/services/config/model-resolution';
 import type { Logger } from '@/infra/logger';
 import type { SystemContext } from '@/infra/system-context';

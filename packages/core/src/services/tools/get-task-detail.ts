@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import type { TaskDetail } from '@wayang/protocol';
-import type { ConversationEntry } from '@wayang/protocol/types/conversation';
+import type { TaskDetail } from '@wayang-ai/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import { defineTool, safeExecute } from './common';
 import {
   MAX_TRANSCRIPT_RESULT_CHARS,

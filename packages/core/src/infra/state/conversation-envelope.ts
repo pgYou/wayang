@@ -9,8 +9,8 @@
  * defined here and nowhere else.
  */
 
-import type { ConversationEntry } from '@wayang/protocol';
-import { isCompactMarker } from '@wayang/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol';
+import { isCompactMarker } from '@wayang-ai/protocol';
 
 /** Envelope schema version stamped on new writes. */
 export const ENVELOPE_VERSION = 1;

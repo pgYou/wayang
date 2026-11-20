@@ -13,8 +13,8 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   // Workspace packages ship as TypeScript sources; bundle them instead of
-  // leaving an @wayang/* import that only Node's type stripping could follow.
-  noExternal: [/^@wayang\//],
+  // leaving an @wayang-ai/* import that only Node's type stripping could follow.
+  noExternal: [/^@wayang-ai\//],
   // Same external set the pre-split build had (tsup externalises the
   // package.json dependencies; with the deps hoisted at the workspace root
   // they are listed explicitly here).

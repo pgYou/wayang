@@ -5,8 +5,8 @@
 import { query, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage, SdkMcpToolDefinition, Options } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { TaskDetail, WorkerResult } from '@wayang/protocol';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import type { TaskDetail, WorkerResult } from '@wayang-ai/protocol';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 import { applyTurnEnvelope } from '../utils/entry-envelope';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
@@ -55,7 +55,7 @@ export class ClaudeWorkerRun extends ClaudeWorkerStream {
       // Delivery of the task prompt completes at write time.
       endedAt: promptTs,
       message: { role: 'user', content: task.description },
-    } as import('@wayang/protocol/types/conversation').ConversationEntry, turnEnv));
+    } as import('@wayang-ai/protocol/types/conversation').ConversationEntry, turnEnv));
 
     try {
       // Permission mode: 'default' when canUseTool is wired (below) so tool
@@ -201,7 +201,7 @@ export class ClaudeWorkerRun extends ClaudeWorkerStream {
       content: this._terminalResult.summary ?? this._terminalResult.error ?? '',
       startedAt: resultTs,
       endedAt: resultTs,
-    } as import('@wayang/protocol/types/conversation').ConversationEntry, turnEnv));
+    } as import('@wayang-ai/protocol/types/conversation').ConversationEntry, turnEnv));
 
     // Run over. Past this point the worker is idle (a multi-stage worker
     // accepts messages again — they fold into the next stage's prompt) or
@@ -344,6 +344,6 @@ export class ClaudeWorkerRun extends ClaudeWorkerStream {
       content: `ask_controller: ${question}\ncontroller: ${answer}`,
       startedAt: ts,
       endedAt: ts,
-    } as import('@wayang/protocol/types/conversation').ConversationEntry, this._currentTurnEnv ?? undefined));
+    } as import('@wayang-ai/protocol/types/conversation').ConversationEntry, this._currentTurnEnv ?? undefined));
   }
 }

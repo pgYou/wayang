@@ -6,7 +6,7 @@ import type {
   MatchedRule,
   SensitiveMatchSource,
 } from '@/infra/permission/policy';
-import type { PermissionConfig } from '@wayang/protocol/types/config';
+import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
 
 /**
  * Matched rules beyond the policy's own set: the destructive-command tier and

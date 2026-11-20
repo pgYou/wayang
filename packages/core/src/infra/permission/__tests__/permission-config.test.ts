@@ -15,8 +15,8 @@ import {
   resolveSensitiveMode,
   warnDeprecatedPermissionKeys,
 } from '@/infra/permission/permission-config';
-import { validateConfig } from '@wayang/protocol/types/config';
-import type { WayangConfig } from '@wayang/protocol/types/config';
+import { validateConfig } from '@wayang-ai/protocol/types/config';
+import type { WayangConfig } from '@wayang-ai/protocol/types/config';
 
 beforeEach(() => {
   resetDeprecatedPermissionKeysWarning();

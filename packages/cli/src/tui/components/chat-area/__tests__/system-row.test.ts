@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isCompactSystemItem } from '@/tui/components/chat-area/system-row';
-import { ESystemSubtype } from '@wayang/protocol/types/conversation';
+import { ESystemSubtype } from '@wayang-ai/protocol/types/conversation';
 
 /**
  * SystemRow's compact rendering is driven by this predicate. A system entry

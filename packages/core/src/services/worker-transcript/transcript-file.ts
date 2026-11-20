@@ -2,7 +2,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ConversationEntry } from '@wayang/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
 import { workerDir } from '@/services/agents/worker-state';
 

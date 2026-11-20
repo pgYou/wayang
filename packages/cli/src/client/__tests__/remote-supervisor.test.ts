@@ -8,11 +8,11 @@
 import { describe, it, expect } from 'vitest';
 import { PassThrough } from 'node:stream';
 import { RemoteSupervisor } from '@/client/remote-supervisor';
-import { RpcClient, RemoteStateStore } from '@wayang/protocol/rpc/rpc-client';
-import { RpcServer } from '@wayang/protocol/rpc/rpc-server';
-import { createStreamTransport } from '@wayang/protocol/rpc/transport';
-import { METHOD } from '@wayang/protocol/rpc/protocol';
-import type { ContextUsage } from '@wayang/protocol';
+import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
+import { RpcServer } from '@wayang-ai/protocol/rpc/rpc-server';
+import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
+import { METHOD } from '@wayang-ai/protocol/rpc/protocol';
+import type { ContextUsage } from '@wayang-ai/protocol';
 
 const USAGE: ContextUsage = {
   usedTokens: 1234,

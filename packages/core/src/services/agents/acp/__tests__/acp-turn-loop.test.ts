@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { TaskDetail, WorkerConfig } from '@wayang/protocol';
+import type { TaskDetail, WorkerConfig } from '@wayang-ai/protocol';
 import type { WorkerAccessScope } from '@/services/tools/permission-rules';
 import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx } from '@/__tests__/helpers';

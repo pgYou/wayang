@@ -10,7 +10,7 @@ import {
 } from '@/tui/components/status-bar';
 import { theme } from '@/tui/theme';
 import { stringWidth } from '@/tui/utils/text-width';
-import type { ActiveWorkerInfo, ContextUsage, TaskDetail } from '@wayang/protocol';
+import type { ActiveWorkerInfo, ContextUsage, TaskDetail } from '@wayang-ai/protocol';
 
 const makeUsage = (usedTokens: number, contextWindowTokens = 100_000): ContextUsage => ({
   usedTokens,

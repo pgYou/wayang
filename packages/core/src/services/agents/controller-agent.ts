@@ -10,12 +10,12 @@ import { applyTurnEnvelope, type TurnEnvelope } from './utils/entry-envelope';
 import { ToolCallRecorder } from './utils/tool-call-recorder';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { TaskDetail, WayangConfig } from '@wayang/protocol';
+import type { TaskDetail, WayangConfig } from '@wayang-ai/protocol';
 import type { ResolvedModel } from '@/services/config/model-resolution';
-import type { ConversationEntry, ConversationIndex, TurnView } from '@wayang/protocol/types/conversation';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import type { ConversationEntry, ConversationIndex, TurnView } from '@wayang-ai/protocol/types/conversation';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 import type { StateEvent } from '@/infra/state/base-state';
-import type { Subscribable } from '@wayang/protocol/types/subscribable';
+import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 
 import { loadControllerRules } from './prompts/index';
 import { createControllerTools } from '@/services/tools/index';

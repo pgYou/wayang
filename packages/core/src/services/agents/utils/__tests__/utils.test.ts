@@ -3,7 +3,7 @@ import type { ModelMessage } from 'ai';
 import { conversationToSdkMessages, ensureUserTurn, COMPACTION_CONTINUATION } from '@/services/agents/utils/conversation-to-sdk-messages';
 import { buildAssistantEntry } from '@/services/agents/utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
-import { EEntryType, ESignalSubtype } from '@wayang/protocol';
+import { EEntryType, ESignalSubtype } from '@wayang-ai/protocol';
 
 // --- generateId ---
 

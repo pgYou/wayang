@@ -1,7 +1,7 @@
 /**
  * ACP shapes that the protocol layer itself references.
  *
- * These live here (not in @wayang/core) because `@wayang/protocol`'s config
+ * These live here (not in @wayang-ai/core) because `@wayang-ai/protocol`'s config
  * types (`AcpProtocolConfig`) are built on top of them and the protocol layer
  * never imports core. The core ACP modules re-export them so their own import
  * sites stay unchanged.

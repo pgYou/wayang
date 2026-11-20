@@ -45,7 +45,7 @@ import { TaskExecuteEngine } from '@/services/task-execute-engine';
 import { SignalQueue } from '@/services/signal/signal-queue';
 import { createMockCtx, makeTask } from '@/__tests__/helpers';
 import { SkillRegistry } from '@/services/skills/registry';
-import type { ControllerSignal } from '@wayang/protocol';
+import type { ControllerSignal } from '@wayang-ai/protocol';
 
 // --- Setup ---
 

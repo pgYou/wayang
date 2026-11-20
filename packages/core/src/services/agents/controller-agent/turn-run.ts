@@ -8,9 +8,9 @@ import { buildAssistantEntry } from '../utils/build-assistant-entry';
 import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from '../utils/entry-envelope';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ControllerSignal } from '@wayang/protocol';
-import type { ConversationEntry } from '@wayang/protocol/types/conversation';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import type { ControllerSignal } from '@wayang-ai/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 import { signalToEntry } from '../utils/signal-to-entry';
 import { ensureUserTurn } from '../utils/conversation-to-sdk-messages';
 

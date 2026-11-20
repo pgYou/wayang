@@ -9,7 +9,7 @@
  * Built from the full item list (read + unread). Derived view data only —
  * never persisted.
  */
-import type { PermissionRequestMeta, WorkerInquiryMeta } from '@wayang/protocol/types/conversation';
+import type { PermissionRequestMeta, WorkerInquiryMeta } from '@wayang-ai/protocol/types/conversation';
 import type { DisplayItem } from '@/tui/types/display-item';
 import { EMPTY_WORKSPACE_CONTEXT, type WorkspaceDisplayContext } from '@/tui/utils/workspace-display';
 

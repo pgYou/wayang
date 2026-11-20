@@ -2,7 +2,7 @@
 // spawn / idle reuse, and the done/fail resolution handlers. Extends
 // WorkerWiringEngine.
 
-import type { TaskDetail, WorkerResult } from '@wayang/protocol';
+import type { TaskDetail, WorkerResult } from '@wayang-ai/protocol';
 import type { IWorkerInstance } from '@/services/agents/worker-instance';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';

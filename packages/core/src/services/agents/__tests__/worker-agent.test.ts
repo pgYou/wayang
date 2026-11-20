@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import { SkillRegistry } from '@/services/skills/registry';
 import { mockModel, createMockCtx } from '@/__tests__/helpers';
-import { EEntryType } from '@wayang/protocol';
+import { EEntryType } from '@wayang-ai/protocol';
 import type { ModelMessage } from 'ai';
 
 // Empty registry shared across tests — workers need it for prompt building.

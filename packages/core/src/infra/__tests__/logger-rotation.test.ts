@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RotatingFileSink } from '@/infra/rotating-file-sink';
 import { createFileLogger } from '@/infra/logger';
-import type { WayangConfig } from '@wayang/protocol';
+import type { WayangConfig } from '@wayang-ai/protocol';
 import { SystemContext } from '@/infra/system-context';
 import { ControllerAgentState } from '@/services/agents/controller-state';
 

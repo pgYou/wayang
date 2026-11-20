@@ -21,8 +21,8 @@
  * `read_worker_conversation`, `get_worker_status`) needs no provider fork.
  */
 
-import type { AssistantEntry, ConversationEntry, ToolCallRecord, ToolResultRecord } from '@wayang/protocol';
-import { EEntryType } from '@wayang/protocol';
+import type { AssistantEntry, ConversationEntry, ToolCallRecord, ToolResultRecord } from '@wayang-ai/protocol';
+import { EEntryType } from '@wayang-ai/protocol';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 

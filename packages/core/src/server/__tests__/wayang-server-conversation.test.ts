@@ -37,12 +37,12 @@ vi.mock('@/services/supervisor', () => ({
 }));
 
 import { runWayangServer } from '../wayang-server';
-import { RpcClient } from '@wayang/protocol/rpc/rpc-client';
-import { createStreamTransport } from '@wayang/protocol/rpc/transport';
-import { METHOD } from '@wayang/protocol/rpc/protocol';
+import { RpcClient } from '@wayang-ai/protocol/rpc/rpc-client';
+import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
+import { METHOD } from '@wayang-ai/protocol/rpc/protocol';
 import { buildConversationIndex } from '@/services/conversation/conversation-index';
-import type { AssistantEntry, ConversationEntry, SignalEntry, UserEntry } from '@wayang/protocol/types/conversation';
-import { EEntryType, ESignalSubtype } from '@wayang/protocol/types/conversation';
+import type { AssistantEntry, ConversationEntry, SignalEntry, UserEntry } from '@wayang-ai/protocol/types/conversation';
+import { EEntryType, ESignalSubtype } from '@wayang-ai/protocol/types/conversation';
 
 // --- Fixtures: a two-turn controller conversation ---
 

@@ -8,11 +8,11 @@ import { ToolCallRecorder, recordToolCalls } from '@/services/agents/utils/tool-
 import { controllerMessageContent, createInboxInjection } from '@/services/agents/utils/inbox-injection';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { WorkerResult, TaskDetail, ToolChoice, WorkerLiveStatus, ContextUsage, ContextLastUsage } from '@wayang/protocol';
+import type { WorkerResult, TaskDetail, ToolChoice, WorkerLiveStatus, ContextUsage, ContextLastUsage } from '@wayang-ai/protocol';
 import type { ResolvedModel } from '@/services/config/model-resolution';
 import type { IWorkerInstance } from '@/services/agents/worker-instance';
-import type { ConversationEntry } from '@wayang/protocol/types/conversation';
-import { EEntryType } from '@wayang/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
+import { EEntryType } from '@wayang-ai/protocol';
 import type { Logger } from '@/infra/logger';
 import type { StateEvent } from '@/infra/state/base-state';
 import type { ModelMessage, PrepareStepFunction, ToolSet } from 'ai';

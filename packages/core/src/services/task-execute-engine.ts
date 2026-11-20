@@ -19,7 +19,7 @@
  * worker-dispatch); this file is the stable import surface and the public
  * class name.
  */
-import type { Subscribable } from '@wayang/protocol/types/subscribable';
+import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 import { WorkerDispatchEngine } from './task-execute-engine/worker-dispatch';
 
 export type {

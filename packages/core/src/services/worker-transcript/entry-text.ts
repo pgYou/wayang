@@ -1,6 +1,6 @@
 // Entry text extraction: flattening an entry's payload, tool calls and results.
 
-import type { ConversationEntry } from '@wayang/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol';
 import { toolOutputText } from '@/services/agents/utils/estimate-tokens';
 
 function blockText(block: unknown): string {

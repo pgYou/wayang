@@ -16,7 +16,7 @@
  * shared `clampToolOutput` (issue #53) is the outer fallback bound.
  */
 
-import type { ToolCallRecord, ToolResultRecord } from '@wayang/protocol';
+import type { ToolCallRecord, ToolResultRecord } from '@wayang-ai/protocol';
 import { toolPayloadText } from './estimate-tokens';
 import { clampToolOutput } from './tool-output-clamp';
 

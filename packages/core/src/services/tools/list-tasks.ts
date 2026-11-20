@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 import { clampToolOutput, resolveToolOutputMaxChars } from '@/services/agents/utils/tool-output-clamp';
 import { defineTool, safeExecute } from './common';
 

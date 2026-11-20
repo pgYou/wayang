@@ -12,7 +12,7 @@
  * itself cannot overflow the model window: caps per field shrink first, and
  * only if that is not enough are the oldest entries dropped (with a note).
  */
-import { ESignalSubtype, ESystemSubtype } from '@wayang/protocol';
+import { ESignalSubtype, ESystemSubtype } from '@wayang-ai/protocol';
 
 /** Per-field character caps for one formatting pass. */
 export interface SummaryCaps {

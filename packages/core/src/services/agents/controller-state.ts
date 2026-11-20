@@ -1,6 +1,6 @@
 import { join } from 'node:path';
-import type { ConversationEntry, ConversationIndex, InquireQuestion, SystemEntry, TurnView } from '@wayang/protocol';
-import { isCompactMarker } from '@wayang/protocol';
+import type { ConversationEntry, ConversationIndex, InquireQuestion, SystemEntry, TurnView } from '@wayang-ai/protocol';
+import { isCompactMarker } from '@wayang-ai/protocol';
 import type { Logger } from '@/infra/logger';
 import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { estimateTokens, estimateConversationTokens } from '@/services/agents/utils/estimate-tokens';
-import { EEntryType } from '@wayang/protocol/types/conversation';
+import { EEntryType } from '@wayang-ai/protocol/types/conversation';
 
 describe('estimateTokens', () => {
   it('should return 0 for empty string', () => {

@@ -6,7 +6,7 @@ import { BaseWayangState } from '@/infra/state/base-state';
 import type { PersistMapping } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
-import type { StateEvent } from '@wayang/protocol';
+import type { StateEvent } from '@wayang-ai/protocol';
 
 // Minimal concrete subclass for testing
 class TestState extends BaseWayangState {

@@ -20,10 +20,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createStreamTransport } from '@wayang/protocol/rpc/transport';
-import { RpcClient } from '@wayang/protocol/rpc/rpc-client';
-import { METHOD, NOTIFY } from '@wayang/protocol/rpc/protocol';
-import type { TransportErrorEvent } from '@wayang/protocol/rpc/transport';
+import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
+import { RpcClient } from '@wayang-ai/protocol/rpc/rpc-client';
+import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
+import type { TransportErrorEvent } from '@wayang-ai/protocol/rpc/transport';
 import { startFakeProvider, isControllerRequest, type FakeProvider } from '@/__tests__/fake-openai-provider';
 
 const CLI_PATH = join(process.cwd(), 'packages', 'cli', 'dist', 'cli.js');

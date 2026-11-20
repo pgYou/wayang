@@ -24,7 +24,7 @@ import { SkillRegistry } from '@/services/skills/registry';
 import { CodebuddyAcpWorker } from '@/services/agents/acp/codebuddy-acp-worker';
 import { OpenCodeAcpWorker } from '@/services/agents/acp/opencode-acp-worker';
 import { GenericAcpWorker } from '@/services/agents/acp/generic-acp-worker';
-import type { WorkerConfig, WayangConfig } from '@wayang/protocol/types/config';
+import type { WorkerConfig, WayangConfig } from '@wayang-ai/protocol/types/config';
 
 let tempDir: string;
 

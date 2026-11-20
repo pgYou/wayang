@@ -9,8 +9,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import prompts from 'prompts';
-import type { WayangConfig, WorkerConfig } from '@wayang/protocol';
-import { validateConfig, collectWorkerWarnings, collectProviderWarnings, normalizeWorkerTypes } from '@wayang/protocol';
+import type { WayangConfig, WorkerConfig } from '@wayang-ai/protocol';
+import { validateConfig, collectWorkerWarnings, collectProviderWarnings, normalizeWorkerTypes } from '@wayang-ai/protocol';
 import { warnDeprecatedPermissionKeys } from '@/infra/permission/permission-config';
 
 /** Fill missing apiKeys from environment variables. */

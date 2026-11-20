@@ -7,8 +7,8 @@ import type {
   ConversationEntry,
   TaskDetail,
   WorkerLiveStatus,
-} from '@wayang/protocol';
-import type { Subscribable } from '@wayang/protocol/types/subscribable';
+} from '@wayang-ai/protocol';
+import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 import { summarizeTranscript } from '@/services/worker-transcript';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import type { PermissionResolutionStatus } from '@/services/permission/permission-transport';

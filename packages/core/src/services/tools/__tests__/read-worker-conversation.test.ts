@@ -4,7 +4,7 @@ import {
   readWorkerTranscriptWindow,
   workerTranscriptPath,
 } from '@/services/worker-transcript';
-import type { ActiveWorkerInfo, TaskDetail } from '@wayang/protocol';
+import type { ActiveWorkerInfo, TaskDetail } from '@wayang-ai/protocol';
 import { makeTask } from '@/__tests__/helpers';
 import {
   createTranscriptFixture,

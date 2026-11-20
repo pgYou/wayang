@@ -1,8 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
-import type { TaskDetail } from '@wayang/protocol';
-import type { PermissionConfig } from '@wayang/protocol/types/config';
+import type { TaskDetail } from '@wayang-ai/protocol';
+import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
 import type { Logger } from '@/infra/logger';
 import { normalizeWorkspacePath, resolveWorkspaceRef } from '@/infra/workspace-registry';
 import { defaultSensitivePaths, isDenied, isPathWithin, normalizePath } from '@/infra/permission/policy';

@@ -12,13 +12,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ControllerSignal } from '@wayang/protocol';
+import type { ControllerSignal } from '@wayang-ai/protocol';
 import { ControllerAgent } from '@/services/agents/controller-agent';
 import { ControllerAgentState } from '@/services/agents/controller-state';
 import { SkillRegistry } from '@/services/skills/registry';
 import { SystemContext } from '@/infra/system-context';
 import { mockModel } from '@/__tests__/helpers';
-import type { WayangConfig } from '@wayang/protocol';
+import type { WayangConfig } from '@wayang-ai/protocol';
 
 // Mock model-factory / streamText to avoid real LLM calls.
 vi.mock('../model-factory.js', () => ({

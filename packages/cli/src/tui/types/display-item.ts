@@ -1,7 +1,7 @@
-import type { ConversationEntry, PermissionRequestMeta, WorkerInquiryMeta } from '@wayang/protocol/types/conversation';
-import type { ControllerSignal, PermissionRequestSignalPayload, WorkerInquirySignalPayload } from '@wayang/protocol/types/signal';
-import { getSignalField } from '@wayang/protocol/types/signal';
-import { EEntryType, ESignalSubtype } from '@wayang/protocol/types/conversation';
+import type { ConversationEntry, PermissionRequestMeta, WorkerInquiryMeta } from '@wayang-ai/protocol/types/conversation';
+import type { ControllerSignal, PermissionRequestSignalPayload, WorkerInquirySignalPayload } from '@wayang-ai/protocol/types/signal';
+import { getSignalField } from '@wayang-ai/protocol/types/signal';
+import { EEntryType, ESignalSubtype } from '@wayang-ai/protocol/types/conversation';
 
 /** A section within an assistant step. */
 export interface DisplaySection {

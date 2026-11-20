@@ -5,7 +5,7 @@
  * decomposes work into tasks, dispatches to Workers, and reports results.
  */
 
-import type { WorkerConfig } from '@wayang/protocol/types/config';
+import type { WorkerConfig } from '@wayang-ai/protocol/types/config';
 import { PUPPET_DEFAULTS } from '../worker-defaults';
 import { assemble, buildEnvironment, buildSkillCatalog, section } from './prompt-utils';
 import { SystemContext } from '@/infra/system-context';

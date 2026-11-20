@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import type { DisplayItem } from '@/tui/types/display-item';
 import { theme } from '@/tui/theme';
-import { ESystemSubtype } from '@wayang/protocol/types/conversation';
+import { ESystemSubtype } from '@wayang-ai/protocol/types/conversation';
 
 /**
  * Structural discrimination for compaction markers: a system entry is only a

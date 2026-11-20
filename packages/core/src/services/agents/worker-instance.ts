@@ -1,7 +1,7 @@
 // --- Worker instance ---
 
-import type { Subscribable } from '@wayang/protocol/types/subscribable';
-import type { WorkerLiveStatus, WorkerResult } from '@wayang/protocol/types/worker';
+import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
+import type { WorkerLiveStatus, WorkerResult } from '@wayang-ai/protocol/types/worker';
 
 /** Unified interface for all worker types (puppet, third-party). */
 export interface IWorkerInstance extends Subscribable {
@@ -20,7 +20,7 @@ export interface IWorkerInstance extends Subscribable {
   readonly workspaceDir: string;
   /** Execute the task. Returns the final result. */
   run(
-    task: import('@wayang/protocol/types/task').TaskDetail & { workerId: string },
+    task: import('@wayang-ai/protocol/types/task').TaskDetail & { workerId: string },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- public interface param: heterogeneous zod-inferred tool set (see src/services/tools/common.ts relaxation boundary)
     tools: Record<string, any>,
     onProgress?: (msg: string) => void,
@@ -28,7 +28,7 @@ export interface IWorkerInstance extends Subscribable {
   /** Abort the current execution. */
   abort(): void;
   /** Get conversation entries for controller tool or audit. */
-  getConversation(): import('@wayang/protocol/types/conversation').ConversationEntry[];
+  getConversation(): import('@wayang-ai/protocol/types/conversation').ConversationEntry[];
   /** Get state for UI rendering. @deprecated Will be removed after TUI subscription refactor. */
   getState(): import('@/infra/state/base-state').BaseWayangState | null;
   /**

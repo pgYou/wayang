@@ -4,11 +4,11 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createStreamTransport } from '@wayang/protocol/rpc/transport';
-import { RpcClient, RemoteStateStore } from '@wayang/protocol/rpc/rpc-client';
-import { METHOD, NOTIFY } from '@wayang/protocol/rpc/protocol';
+import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
+import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
+import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
 import { RemoteSupervisor } from './remote-supervisor';
-import type { WorkspaceRef } from '@wayang/core/infra/workspace-registry';
+import type { WorkspaceRef } from '@wayang-ai/core/infra/workspace-registry';
 
 export interface ConnectOptions {
   configPath: string;

@@ -10,7 +10,7 @@ import {
 } from 'ai';
 import { createModel } from './model-factory';
 import type { ResolvedModel } from '@/services/config/model-resolution';
-import type { ToolChoice } from '@wayang/protocol';
+import type { ToolChoice } from '@wayang-ai/protocol';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 

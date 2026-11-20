@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { entryToDisplayItem, signalToDisplayItem } from '@/tui/types/display-item';
-import { EEntryType, ESignalSubtype, ESystemSubtype } from '@wayang/protocol/types/conversation';
-import type { UserEntry, AssistantEntry, SignalEntry, SystemEntry } from '@wayang/protocol/types/conversation';
-import type { ControllerSignal } from '@wayang/protocol/types/signal';
+import { EEntryType, ESignalSubtype, ESystemSubtype } from '@wayang-ai/protocol/types/conversation';
+import type { UserEntry, AssistantEntry, SignalEntry, SystemEntry } from '@wayang-ai/protocol/types/conversation';
+import type { ControllerSignal } from '@wayang-ai/protocol/types/signal';
 
 // --- entryToDisplayItem ---
 

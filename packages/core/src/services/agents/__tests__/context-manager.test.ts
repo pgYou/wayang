@@ -6,7 +6,7 @@ import {
   retainedMaxTokens,
   COMPACT_MARKER_TEXT,
 } from '@/services/agents/context-manager';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 import { estimateTokens, estimateEntryTokens, extractContentText } from '@/services/agents/utils/estimate-tokens';
 
 /** Minimal state stub — ContextManager only needs get/append. */

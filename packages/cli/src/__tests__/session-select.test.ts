@@ -23,7 +23,7 @@ import {
   isWorkspaceMismatch,
   selectSessionInteractive,
 } from '@/session-select';
-import type { SessionMeta } from '@wayang/core/infra/session-helpers';
+import type { SessionMeta } from '@wayang-ai/core/infra/session-helpers';
 
 const NOW = 1_780_000_000_000;
 

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
-import type { WorkerConfig, TaskDetail, PermissionConfig } from '@wayang/protocol';
+import type { WorkerConfig, TaskDetail, PermissionConfig } from '@wayang-ai/protocol';
 import { SkillRegistry } from '@/services/skills/registry';
 import { SignalQueue } from '@/services/signal/signal-queue';
 import { createMockCtx } from '@/__tests__/helpers';

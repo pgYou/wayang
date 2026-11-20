@@ -3,9 +3,9 @@
  * Package boundary guard for the monorepo layout (feat/100).
  *
  * Three rules, all checked mechanically against the source tree:
- *   1. @wayang/protocol must not import @wayang/core, @wayang/cli or @wayang/app.
- *   2. @wayang/core must not import @wayang/cli or @wayang/app.
- *   3. Cross-package references must go through the `@wayang/*` package name.
+ *   1. @wayang-ai/protocol must not import @wayang-ai/core, @wayang-ai/cli or @wayang-ai/app.
+ *   2. @wayang-ai/core must not import @wayang-ai/cli or @wayang-ai/app.
+ *   3. Cross-package references must go through the `@wayang-ai/*` package name.
  *      An `@/...` specifier is package-local: it has to resolve to a file inside
  *      the importing package's own `src/`. Anything else is a cross-package read
  *      written with the local alias, which silently depends on the tsconfig
@@ -29,7 +29,7 @@ const OWNED = {
   cli: ['tui', 'client', 'cli', 'cli-args', 'bootstrap', 'session-select', '__tests__'],
 };
 
-/** Allowed `@wayang/*` edges. Anything not listed is a violation. */
+/** Allowed `@wayang-ai/*` edges. Anything not listed is a violation. */
 const ALLOWED_EDGES = {
   protocol: [],
   core: ['protocol'],
@@ -89,8 +89,8 @@ for (const pkg of PACKAGES) {
     while ((match = SPECIFIER.exec(source))) {
       const specifier = match[2];
 
-      if (specifier.startsWith('@wayang/')) {
-        const target = specifier.slice('@wayang/'.length).split('/')[0];
+      if (specifier.startsWith('@wayang-ai/')) {
+        const target = specifier.slice('@wayang-ai/'.length).split('/')[0];
         if (target !== pkg && !ALLOWED_EDGES[pkg].includes(target)) {
           report(pkg, file, specifier, `forbidden edge ${pkg} -> ${target}`);
         }
@@ -105,7 +105,7 @@ for (const pkg of PACKAGES) {
         const rest = specifier.slice(2);
         const top = rest.split('/')[0];
         if (!OWNED[pkg].includes(top) || !resolvesInside(pkg, rest)) {
-          report(pkg, file, specifier, 'cross-package reference must use @wayang/*');
+          report(pkg, file, specifier, 'cross-package reference must use @wayang-ai/*');
         }
         continue;
       }
@@ -127,7 +127,7 @@ for (const pkg of PACKAGES) {
 }
 
 if (violations.length === 0) {
-  console.log('boundaries: ok (protocol <- core <- cli; cross-package imports use @wayang/*)');
+  console.log('boundaries: ok (protocol <- core <- cli; cross-package imports use @wayang-ai/*)');
   process.exit(0);
 }
 

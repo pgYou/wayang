@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getWorkerStatusTool } from '@/services/tools/get-worker-status';
 import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
 import { readWorkerConversationTool } from '@/services/tools/read-worker-conversation';
-import type { ActiveWorkerInfo, TaskDetail, WorkerLiveStatus } from '@wayang/protocol';
-import type { ConversationEntry } from '@wayang/protocol/types/conversation';
+import type { ActiveWorkerInfo, TaskDetail, WorkerLiveStatus } from '@wayang-ai/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import { makeTask } from '@/__tests__/helpers';
 import {
   createTranscriptFixture,

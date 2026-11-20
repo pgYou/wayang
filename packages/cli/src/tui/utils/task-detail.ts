@@ -17,9 +17,9 @@
  * changes.
  */
 
-import type { TaskDetail } from '@wayang/protocol';
-import { getWorkerMeta } from '@wayang/core/services/agents/worker-defaults';
-import { formatDuration } from '@wayang/core/services/worker-transcript';
+import type { TaskDetail } from '@wayang-ai/protocol';
+import { getWorkerMeta } from '@wayang-ai/core/services/agents/worker-defaults';
+import { formatDuration } from '@wayang-ai/core/services/worker-transcript';
 import { charWidth, collapseWhitespace, shortId, stringWidth } from '@/tui/utils/text-width';
 import { resolveWorkspaceSlug } from '@/tui/utils/workspace-display';
 

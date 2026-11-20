@@ -2,7 +2,7 @@
 // tool calls through the shared access policy, emits permission_request
 // signals and audits. Extends ClaudeWorkerBase.
 
-import type { PermissionRequestSignalPayload } from '@wayang/protocol';
+import type { PermissionRequestSignalPayload } from '@wayang-ai/protocol';
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import {
   auditAccessFor,

@@ -6,7 +6,7 @@
  * subscribers.
  */
 
-import type { TaskDetail, ControllerSignal } from '@wayang/protocol';
+import type { TaskDetail, ControllerSignal } from '@wayang-ai/protocol';
 
 // ---------------------------------------------------------------------------
 // Hook declarations

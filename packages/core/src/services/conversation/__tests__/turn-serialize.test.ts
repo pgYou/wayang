@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { serializeTurnView, summarizeTurn } from '@/services/conversation/turn-serialize';
-import type { TurnToolCallView, TurnUsage, TurnView } from '@wayang/protocol/types/conversation';
-import type { AssistantEntry, SignalEntry, UserEntry } from '@wayang/protocol/types/conversation';
-import { EEntryType, ESignalSubtype } from '@wayang/protocol/types/conversation';
+import type { TurnToolCallView, TurnUsage, TurnView } from '@wayang-ai/protocol/types/conversation';
+import type { AssistantEntry, SignalEntry, UserEntry } from '@wayang-ai/protocol/types/conversation';
+import { EEntryType, ESignalSubtype } from '@wayang-ai/protocol/types/conversation';
 
 const ts = '2026-01-01T00:00:00.000Z';
 

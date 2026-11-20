@@ -6,7 +6,7 @@ import {
   formatWorkerRow,
 } from '@/tui/utils/worker-list';
 import { stringWidth } from '@/tui/utils/text-width';
-import type { ActiveWorkerInfo } from '@wayang/protocol';
+import type { ActiveWorkerInfo } from '@wayang-ai/protocol';
 
 const makeWorker = (overrides: Partial<ActiveWorkerInfo> = {}): ActiveWorkerInfo => ({
   workerId: 'w-1731000001-ab12',

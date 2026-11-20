@@ -15,7 +15,7 @@
 import type { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { ControllerAgent } from '@/services/agents/controller-agent';
-import type { ActiveWorkerInfo } from '@wayang/protocol';
+import type { ActiveWorkerInfo } from '@wayang-ai/protocol';
 import { formatLlmError } from '@/utils/llm-error';
 
 // ---------------------------------------------------------------------------

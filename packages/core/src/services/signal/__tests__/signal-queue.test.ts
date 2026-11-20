@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { createMockCtx } from '@/__tests__/helpers';
 import { SignalState } from '@/services/signal/signal-state';
 import { SignalQueue } from '@/services/signal/signal-queue';
-import type { ControllerSignal, InputSignalPayload, ProgressSignalPayload } from '@wayang/protocol';
+import type { ControllerSignal, InputSignalPayload, ProgressSignalPayload } from '@wayang-ai/protocol';
 import type { SystemContext } from '@/infra/system-context';
 
 describe('SignalQueue', () => {

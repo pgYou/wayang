@@ -5,7 +5,7 @@
  * not present in the config file. This module provides canonical values.
  */
 
-import type { WorkerConfig, WorkerType } from '@wayang/protocol/types/config';
+import type { WorkerConfig, WorkerType } from '@wayang-ai/protocol/types/config';
 
 /** Built-in puppet worker metadata. */
 export const PUPPET_DEFAULTS = {

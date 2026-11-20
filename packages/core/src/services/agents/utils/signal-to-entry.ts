@@ -22,9 +22,9 @@ import type {
   WorkerInquirySignalPayload,
   InquiryTimeoutSignalPayload,
   MessageUndeliveredSignalPayload,
-} from '@wayang/protocol';
-import type { ConversationEntry, SignalEntry } from '@wayang/protocol/types/conversation';
-import { EEntryType, ESignalSubtype } from '@wayang/protocol';
+} from '@wayang-ai/protocol';
+import type { ConversationEntry, SignalEntry } from '@wayang-ai/protocol/types/conversation';
+import { EEntryType, ESignalSubtype } from '@wayang-ai/protocol';
 
 // ---------------------------------------------------------------------------
 // Signal → ConversationEntry converters

@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { buildControllerSystemPrompt } from '@/services/agents/prompts/controller-prompt';
 import { createMockCtx } from '@/__tests__/helpers';
 import { SkillRegistry } from '@/services/skills/registry';
-import type { WayangConfig, WorkerConfig } from '@wayang/protocol/types/config';
+import type { WayangConfig, WorkerConfig } from '@wayang-ai/protocol/types/config';
 
 const skills = new SkillRegistry([]);
 

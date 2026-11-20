@@ -13,13 +13,13 @@
  * never branches on a provider name.
  */
 
-import type { WorkerResult } from '@wayang/protocol';
-import type { TaskDetail } from '@wayang/protocol/types/task';
-import type { WorkerConfig, ApprovalMemoryMode } from '@wayang/protocol/types/config';
-import type { WorkerLiveStatus } from '@wayang/protocol/types/worker';
+import type { WorkerResult } from '@wayang-ai/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol/types/task';
+import type { WorkerConfig, ApprovalMemoryMode } from '@wayang-ai/protocol/types/config';
+import type { WorkerLiveStatus } from '@wayang-ai/protocol/types/worker';
 import type { Logger } from '@/infra/logger';
 import type { StateEvent } from '@/infra/state/base-state';
-import type { ConversationEntry, SignalTurnLineage } from '@wayang/protocol';
+import type { ConversationEntry, SignalTurnLineage } from '@wayang-ai/protocol';
 import { accessSync, constants } from 'node:fs';
 import { join } from 'node:path';
 import { WorkerState } from '../worker-state';

@@ -23,8 +23,8 @@
 import type { AcpPermissionOption, AcpPermissionOutcome, AcpPermissionRequest } from '@/services/acp/types';
 import { selectAllowOption, selectRejectOption } from '@/services/acp/client';
 import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { SignalTurnLineage, PermissionRequestSignalPayload } from '@wayang/protocol';
-import type { ApprovalMemoryMode } from '@wayang/protocol/types/config';
+import type { SignalTurnLineage, PermissionRequestSignalPayload } from '@wayang-ai/protocol';
+import type { ApprovalMemoryMode } from '@wayang-ai/protocol/types/config';
 import type { Logger } from '@/infra/logger';
 import {
   DEFAULT_PERMISSION_TIMEOUT_MS,

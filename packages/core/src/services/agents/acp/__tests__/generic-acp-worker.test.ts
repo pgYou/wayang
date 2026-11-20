@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { WorkerConfig } from '@wayang/protocol';
+import type { WorkerConfig } from '@wayang-ai/protocol';
 import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx } from '@/__tests__/helpers';
 import { GenericAcpWorker } from '@/services/agents/acp/generic-acp-worker';

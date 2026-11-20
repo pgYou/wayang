@@ -1,5 +1,5 @@
 {
-  "name": "@wayang/cli",
+  "name": "@wayang-ai/cli",
   "version": "1.0.0-alpha.0",
   "description": "Wayang CLI — the terminal UI and the `wayang` entry point",
   "type": "module",
@@ -13,8 +13,8 @@
     "!dist/**/*.map"
   ],
   "dependencies": {
-    "@wayang/core": "1.0.0-alpha.0",
-    "@wayang/protocol": "1.0.0-alpha.0"
+    "@wayang-ai/core": "1.0.0-alpha.0",
+    "@wayang-ai/protocol": "1.0.0-alpha.0"
   },
   "exports": {
     ".": "./src/cli.ts",

@@ -55,7 +55,7 @@ import { TaskExecuteEngine } from '@/services/task-execute-engine';
 import { SignalQueue } from '@/services/signal/signal-queue';
 import { createMockCtx, makeTask } from '@/__tests__/helpers';
 import type { SignalQueue as SignalQueueType } from '@/services/signal/signal-queue';
-import type { WayangConfig } from '@wayang/protocol';
+import type { WayangConfig } from '@wayang-ai/protocol';
 import { SkillRegistry } from '@/services/skills/registry';
 
 // --- Middleware-level harness ---

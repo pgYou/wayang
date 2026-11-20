@@ -6,7 +6,7 @@ import { createMockCtx } from '@/__tests__/helpers';
 import { ControllerAgentState } from '@/services/agents/controller-state';
 import { ContextManager } from '@/services/agents/context-manager';
 import type { SystemContext } from '@/infra/system-context';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 
 // --- JSONL fixtures ---
 

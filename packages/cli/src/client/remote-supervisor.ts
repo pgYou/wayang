@@ -7,10 +7,10 @@
  * that with `?? fallback` defaults).
  */
 
-import { RemoteSubscribable, type RpcClient, type RemoteStateStore } from '@wayang/protocol/rpc/rpc-client';
-import { METHOD } from '@wayang/protocol/rpc/protocol';
-import type { ActiveWorkerInfo, ContextUsage, NewSignalInput, TaskDetail } from '@wayang/protocol';
-import type { WorkspaceRef } from '@wayang/core/infra/workspace-registry';
+import { RemoteSubscribable, type RpcClient, type RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
+import { METHOD } from '@wayang-ai/protocol/rpc/protocol';
+import type { ActiveWorkerInfo, ContextUsage, NewSignalInput, TaskDetail } from '@wayang-ai/protocol';
+import type { WorkspaceRef } from '@wayang-ai/core/infra/workspace-registry';
 
 /**
  * State path of the controller's context usage snapshot. Single shared literal

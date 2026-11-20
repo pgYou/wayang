@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { createLogger } from '@/infra/logger';
 import { WorkerState } from '@/services/agents/worker-state';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 
 // --- JSONL fixtures ---
 

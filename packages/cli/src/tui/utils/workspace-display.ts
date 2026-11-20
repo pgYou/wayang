@@ -15,7 +15,7 @@
  * must render nothing for it (never the string "undefined").
  */
 
-import { normalizeWorkspacePath, workspaceSlugFromPath } from '@wayang/core/infra/workspace-registry';
+import { normalizeWorkspacePath, workspaceSlugFromPath } from '@wayang-ai/core/infra/workspace-registry';
 import { stringWidth, truncateMiddleToWidth } from '@/tui/utils/text-width';
 
 /** Minimal workspace shape — a subset of `WorkspaceRef` / `TaskDetail.workspace`. */

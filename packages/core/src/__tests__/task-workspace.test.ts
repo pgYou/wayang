@@ -11,7 +11,7 @@ import * as path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import { createMockCtx, makeTask } from '@/__tests__/helpers';
-import type { TaskDetail } from '@wayang/protocol/types/task';
+import type { TaskDetail } from '@wayang-ai/protocol/types/task';
 
 let sessionDir: string;
 

@@ -10,7 +10,7 @@ import { readSessionUnfinishedTasks } from '@/infra/session-helpers';
 import { SessionLock } from '@/infra/session-lock';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ConversationIndex, TurnView, WayangConfig } from '@wayang/protocol';
+import type { ConversationIndex, TurnView, WayangConfig } from '@wayang-ai/protocol';
 
 /** Parameters for Supervisor initialization. */
 export interface SupervisorOptions {
