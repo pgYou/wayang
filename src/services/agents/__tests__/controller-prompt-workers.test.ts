@@ -2,7 +2,9 @@
  * C2 prompt tests — the "Available workers" section for `*-acp` rows
  * (05 §7): the capability tags stay, an `[acp:<provider>]` tag plus the
  * external-agent semantics hint is appended, and rows that are not in the
- * config never appear.
+ * config never appear. The hints must describe the REAL tool surface (#84):
+ * ACP = update_progress + ask_controller (no done/fail), claude-code =
+ * ask_controller only.
  */
 import { describe, it, expect } from 'vitest';
 import { buildControllerSystemPrompt } from '@/services/agents/prompts/controller-prompt';
@@ -28,9 +30,14 @@ describe('buildControllerSystemPrompt: worker list for *-acp rows (05 §7)', () 
 
     expect(prompt).toContain('`codebuddy` — Tencent CodeBuddy Code agent [code, refactor, shell] [acp:codebuddy]');
     expect(prompt).toContain('`opencode` — OpenCode (native ACP, experimental) [acp:opencode]');
-    // The semantics hint rides along on the same line (05 §7).
-    expect(prompt).toContain('external ACP agent: no update_progress/done tools');
+    // The semantics hint rides along on the same line (05 §7) and names the
+    // injected tools as they really are (#84).
+    expect(prompt).toContain('external ACP agent: its injected tools are update_progress + ask_controller only');
+    expect(prompt).toContain('no done/fail tool');
+    expect(prompt).toContain('expresses completion by ending its turn and its last message is the result');
     expect(prompt).toContain('chat_worker messages are delivered at its next turn boundary');
+    // The old, wrong claim is gone.
+    expect(prompt).not.toContain('no update_progress/done tools');
   });
 
   it('lists no ACP tag when no ACP worker is configured', () => {
@@ -41,6 +48,10 @@ describe('buildControllerSystemPrompt: worker list for *-acp rows (05 §7)', () 
     expect(prompt).toContain('`claude-code` — Coding assistant [code]');
     expect(prompt).not.toContain('[acp:');
     expect(prompt).not.toContain('external ACP agent');
+    // #84: the claude-code row describes its real surface — ask_controller
+    // only, no update_progress and no done/fail, progress from its own replies.
+    expect(prompt).toContain('third-party Claude Code agent: its only injected tool is ask_controller');
+    expect(prompt).toContain('no update_progress and no done/fail');
   });
 
   it('with no workers section at all, only puppet is listed', () => {
@@ -57,7 +68,7 @@ describe('buildControllerSystemPrompt: worker list for *-acp rows (05 §7)', () 
     });
 
     expect(prompt).toContain('`mycli` — Any ACP-speaking CLI [acp:my-cli]');
-    expect(prompt).toContain('external ACP agent: no update_progress/done tools');
+    expect(prompt).toContain('external ACP agent: its injected tools are update_progress + ask_controller only');
   });
 
   it('falls back to the plain [acp:acp] tag when the generic row has no command', () => {
