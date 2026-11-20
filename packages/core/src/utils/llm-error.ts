@@ -1,4 +1,4 @@
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../infra/logger';
 
 /**
  * Extract a concise, human-readable error message from Vercel AI SDK errors.

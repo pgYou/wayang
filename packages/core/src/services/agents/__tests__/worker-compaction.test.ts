@@ -10,8 +10,8 @@ import type { ModelMessage } from 'ai';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx, mockModel } from '@/__tests__/helpers';
-import { EEntryType, ESystemSubtype } from '@/types/index';
-import type { SystemEntry } from '@/types/conversation';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
+import type { SystemEntry } from '@wayang-ai/protocol/types/conversation';
 
 const skills = new SkillRegistry([]);
 

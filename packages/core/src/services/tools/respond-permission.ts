@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
-import type { PermissionResolutionStatus } from '@/services/permission/permission-transport';
+import type { PermissionResolutionStatus } from '../permission/permission-transport';
 
 export interface RespondPermissionToolDeps {
   respondPermission: (

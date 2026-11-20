@@ -5,7 +5,7 @@ import type {
   AccessMode,
   MatchedRule,
   SensitiveMatchSource,
-} from '@/infra/permission/policy';
+} from '../../../infra/permission/policy';
 import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
 
 /**

@@ -20,29 +20,29 @@
  *     "no answer yet" is never an allow.
  */
 
-import type { AcpPermissionOption, AcpPermissionOutcome, AcpPermissionRequest } from '@/services/acp/types';
-import { selectAllowOption, selectRejectOption } from '@/services/acp/client';
-import type { SignalQueue } from '@/services/signal/signal-queue';
+import type { AcpPermissionOption, AcpPermissionOutcome, AcpPermissionRequest } from '../../acp/types';
+import { selectAllowOption, selectRejectOption } from '../../acp/client';
+import type { SignalQueue } from '../../signal/signal-queue';
 import type { SignalTurnLineage, PermissionRequestSignalPayload } from '@wayang-ai/protocol';
 import type { ApprovalMemoryMode } from '@wayang-ai/protocol/types/config';
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../../infra/logger';
 import {
   DEFAULT_PERMISSION_TIMEOUT_MS,
   PermissionTransport,
   denialSourceOf,
   reusableGrantKeys,
   type PermissionAnswer,
-} from '@/services/permission/permission-transport';
-import type { ApprovalMemory } from '@/services/permission/approval-memory';
+} from '../../permission/permission-transport';
+import type { ApprovalMemory } from '../../permission/approval-memory';
 import {
   auditAccessFor,
   operationForTool,
   recordPermissionAudit,
   verdictDetailSuffix,
   type PermissionOperation,
-} from '@/services/permission/permission-audit';
-import { decideToolAccess, type WorkerAccessScope } from '@/services/tools/permission-rules';
-import { generateId } from '@/utils/id';
+} from '../../permission/permission-audit';
+import { decideToolAccess, type WorkerAccessScope } from '../../tools/permission-rules';
+import { generateId } from '../../../utils/id';
 import type { AcpToolAccumulator, AcpToolSnapshot } from './event-mapper';
 import { MCP_SERVER_NAME, type McpToolName } from './mcp-schemas';
 

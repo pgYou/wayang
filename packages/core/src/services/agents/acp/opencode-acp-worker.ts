@@ -30,8 +30,8 @@
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AcpLaunchConfig } from '@/services/acp/config';
-import { AcpError } from '@/services/acp/errors';
+import type { AcpLaunchConfig } from '../../acp/config';
+import { AcpError } from '../../acp/errors';
 import { authAttributingReadiness, type AcpReadiness, type AcpReadyContext, type AcpStopPolicy, type AcpWorkerEnvView } from './base-acp-worker';
 import { AcpWorkerRun } from './acp-worker-run';
 import { workerDir } from '../worker-state';

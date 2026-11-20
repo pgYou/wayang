@@ -1,8 +1,8 @@
 import type { WayangConfig } from '@wayang-ai/protocol';
 import type { Logger } from './logger';
 import { createFileLogger, type FileLogger } from './logger';
-import { LifecycleHooks } from '@/services/lifecycle-hooks';
-import { resolveModelRef, type EnvModelFallback, type ResolvedModel } from '@/services/config/model-resolution';
+import { LifecycleHooks } from '../services/lifecycle-hooks';
+import { resolveModelRef, type EnvModelFallback, type ResolvedModel } from '../services/config/model-resolution';
 
 export class SystemContext {
   readonly sessionId: string;

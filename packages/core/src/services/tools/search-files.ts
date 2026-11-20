@@ -1,7 +1,7 @@
 import fg from 'fast-glob';
 import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
-import { decideAccess, normalizePath } from '@/infra/permission/policy';
+import { decideAccess, normalizePath } from '../../infra/permission/policy';
 import { expandHome } from './permission-rules';
 
 export function searchFilesTool(deps: { cwd?: string; userHome?: string }) {

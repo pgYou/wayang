@@ -5,7 +5,7 @@
  * since third-party SDKs typically don't expose a separate system prompt field.
  */
 
-import type { SkillRegistry } from '@/services/skills/registry';
+import type { SkillRegistry } from '../../skills/registry';
 import { buildSkillCatalog } from './prompt-utils';
 import { WORK_DISCIPLINE_RULES } from './work-discipline';
 

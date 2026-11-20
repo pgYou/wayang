@@ -1,4 +1,4 @@
-import type { ModelConfig, ModelRef, ProviderConfig, WayangConfig } from '@/types/config';
+import type { ModelConfig, ModelRef, ProviderConfig, WayangConfig } from '@wayang-ai/protocol/types/config';
 
 /**
  * Where a resolved model came from (issue #88):

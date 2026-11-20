@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildOnboardConfig, loadConfig } from '@/onboard';
-import { validateConfig, collectProviderWarnings } from '@/types/index';
+import { validateConfig, collectProviderWarnings } from '@wayang-ai/protocol';
 
 describe('onboard config generation (issue #88)', () => {
   afterEach(() => {

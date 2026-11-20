@@ -1,10 +1,10 @@
 import { join } from 'node:path';
 import type { TaskDetail } from '@wayang-ai/protocol';
-import type { WorkspaceRef } from '@/infra/workspace-registry';
-import type { Logger } from '@/infra/logger';
-import { BaseWayangState } from '@/infra/state/base-state';
-import { JSONFileHelper } from '@/infra/state/persistence/json-file';
-import type { SystemContext } from '@/infra/system-context';
+import type { WorkspaceRef } from '../../infra/workspace-registry';
+import type { Logger } from '../../infra/logger';
+import { BaseWayangState } from '../../infra/state/base-state';
+import { JSONFileHelper } from '../../infra/state/persistence/json-file';
+import type { SystemContext } from '../../infra/system-context';
 
 interface TaskPoolData {
   tasks: {

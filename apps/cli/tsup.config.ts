@@ -1,20 +1,18 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  // Both entries stay flat in dist/: the CLI launches dist/mcp-bridge-entry.js
-  // as the ACP agent's stdio MCP server. The bridge lives in @wayang-ai/core and
-  // is bundled here so the CLI ships a single dist/ directory.
+  // App artifact: bundles the workspace libraries' dist into the final CLI
+  // deliverable. The MCP bridge is NOT an entry here — core builds it as its
+  // own process artifact and the build script copies it into dist/ (§ docs/
+  // develop/v1.0-monorepo-design.md).
   entry: {
     cli: 'src/cli.ts',
-    'mcp-bridge-entry': '../core/src/services/agents/acp/mcp-bridge-entry.ts',
   },
   format: ['esm'],
   target: 'node20',
   splitting: false,
   sourcemap: true,
   clean: true,
-  // Workspace packages ship as TypeScript sources; bundle them instead of
-  // leaving an @wayang-ai/* import that only Node's type stripping could follow.
   noExternal: [/^@wayang-ai\//],
   banner: { js: '#!/usr/bin/env node' },
   // Same external set the pre-split build had (tsup externalises the

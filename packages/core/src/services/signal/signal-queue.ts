@@ -1,9 +1,9 @@
 import type { ControllerSignal, NewSignalInput, SignalStatus, SignalSource, SignalType } from '@wayang-ai/protocol';
-import type { Logger } from '@/infra/logger';
-import { SignalState, DEFAULT_SIGNAL_WINDOW_SIZE } from '@/services/signal/signal-state';
-import type { SystemContext } from '@/infra/system-context';
+import type { Logger } from '../../infra/logger';
+import { SignalState, DEFAULT_SIGNAL_WINDOW_SIZE } from './signal-state';
+import type { SystemContext } from '../../infra/system-context';
 import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
-import type { StateEvent } from '@/infra/state/base-state';
+import type { StateEvent } from '../../infra/state/base-state';
 
 /** Query filter for signals */
 export interface SignalQueryFilter {

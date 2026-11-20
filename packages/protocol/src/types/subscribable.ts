@@ -1,4 +1,4 @@
-import type { StateEvent } from '@/types/state';
+import type { StateEvent } from './state';
 
 /**
  * Public subscription interface exposed by domain objects.

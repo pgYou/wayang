@@ -3,16 +3,16 @@
 // WorkerWiringEngine.
 
 import type { TaskDetail, WorkerResult } from '@wayang-ai/protocol';
-import type { IWorkerInstance } from '@/services/agents/worker-instance';
-import { WorkerAgent } from '@/services/agents/worker-agent';
-import { ClaudeCodeWorker } from '@/services/agents/claude-code-worker';
-import { CodebuddyAcpWorker } from '@/services/agents/acp/codebuddy-acp-worker';
-import { OpenCodeAcpWorker } from '@/services/agents/acp/opencode-acp-worker';
-import { GenericAcpWorker } from '@/services/agents/acp/generic-acp-worker';
-import { getWorkerMeta } from '@/services/agents/worker-defaults';
-import { formatLlmError } from '@/utils/llm-error';
-import { generateId } from '@/utils/id';
-import { resolveModelRef, type ResolvedModel } from '@/services/config/model-resolution';
+import type { IWorkerInstance } from '../agents/worker-instance';
+import { WorkerAgent } from '../agents/worker-agent';
+import { ClaudeCodeWorker } from '../agents/claude-code-worker';
+import { CodebuddyAcpWorker } from '../agents/acp/codebuddy-acp-worker';
+import { OpenCodeAcpWorker } from '../agents/acp/opencode-acp-worker';
+import { GenericAcpWorker } from '../agents/acp/generic-acp-worker';
+import { getWorkerMeta } from '../agents/worker-defaults';
+import { formatLlmError } from '../../utils/llm-error';
+import { generateId } from '../../utils/id';
+import { resolveModelRef, type ResolvedModel } from '../config/model-resolution';
 import { WorkerWiringEngine } from './worker-wiring';
 import { PUPPET_WORKER_TYPE } from './engine-base';
 

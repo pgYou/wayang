@@ -28,7 +28,7 @@ import {
   type ShellSubstitution,
   type ShellToken,
   type ShellWord,
-} from '@/services/tools/shell-lexer';
+} from '../shell-lexer';
 import { evaluateBashCommand } from './bash-access';
 import { headCommand, headOfWords, isDestructiveTierHead } from './bash-head';
 import { commandEntry } from './command-tables';

@@ -6,8 +6,8 @@
 import { ControllerAgentBase } from './agent-base';
 import { buildAssistantEntry } from '../utils/build-assistant-entry';
 import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from '../utils/entry-envelope';
-import { generateId } from '@/utils/id';
-import { nowISO } from '@/utils/time';
+import { generateId } from '../../../utils/id';
+import { nowISO } from '../../../utils/time';
 import type { ControllerSignal } from '@wayang-ai/protocol';
 import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';

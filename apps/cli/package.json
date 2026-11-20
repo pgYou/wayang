@@ -9,12 +9,8 @@
     "@wayang-ai/core": "1.0.0-alpha.0",
     "@wayang-ai/protocol": "1.0.0-alpha.0"
   },
-  "exports": {
-    ".": "./src/cli.ts",
-    "./*": "./src/*.ts"
-  },
   "scripts": {
-    "build": "tsup && tsc -p tsconfig.build.json",
+    "build": "tsup && cp ../../packages/core/dist/mcp-bridge-entry.js dist/",
     "dev:watch": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit && eslint src/",

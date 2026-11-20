@@ -7,8 +7,8 @@ import { EEntryType } from '@wayang-ai/protocol';
 import type { AssistantEntry, ConversationEntry, ToolCallRecord } from '@wayang-ai/protocol/types/conversation';
 import { toolUseBlockToRecord, toolResultBlockToRecord, type SdkToolUseBlock, type SdkToolResultBlock } from '../utils/claude-tool-records';
 import { applyTurnEnvelope } from '../utils/entry-envelope';
-import { generateId } from '@/utils/id';
-import { nowISO } from '@/utils/time';
+import { generateId } from '../../../utils/id';
+import { nowISO } from '../../../utils/time';
 import { ClaudeWorkerPermissionGate } from './worker-permission';
 
 export class ClaudeWorkerStream extends ClaudeWorkerPermissionGate {

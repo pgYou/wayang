@@ -1,22 +1,22 @@
 // TaskEngineBase: the shared fields, constructor and state subscriptions of
 // TaskExecuteEngine. All layers of the engine extend this base.
 
-import type { SystemContext } from '@/infra/system-context';
-import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { Logger } from '@/infra/logger';
+import type { SystemContext } from '../../infra/system-context';
+import type { SignalQueue } from '../signal/signal-queue';
+import type { Logger } from '../../infra/logger';
 import type { ActiveWorkerInfo, WorkerConfig } from '@wayang-ai/protocol';
-import type { ResolvedModel } from '@/services/config/model-resolution';
-import type { IWorkerInstance } from '@/services/agents/worker-instance';
-import { TaskPoolState } from '@/services/task/task-pool-state';
-import { BaseWayangState } from '@/infra/state/base-state';
+import type { ResolvedModel } from '../config/model-resolution';
+import type { IWorkerInstance } from '../agents/worker-instance';
+import { TaskPoolState } from '../task/task-pool-state';
+import { BaseWayangState } from '../../infra/state/base-state';
 import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
-import type { StateEvent } from '@/infra/state/base-state';
-import type { SkillRegistry } from '@/services/skills/registry';
+import type { StateEvent } from '../../infra/state/base-state';
+import type { SkillRegistry } from '../skills/registry';
 import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
-import type { WorkspaceRef } from '@/infra/workspace-registry';
-import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
-import { ApprovalMemory } from '@/services/permission/approval-memory';
-import { BlockingRequestMap } from '@/infra/blocking-requests';
+import type { WorkspaceRef } from '../../infra/workspace-registry';
+import type { PermissionMiddlewareResult } from '../tools/permission-middleware';
+import { ApprovalMemory } from '../permission/approval-memory';
+import { BlockingRequestMap } from '../../infra/blocking-requests';
 import type { TaskExecuteEngineOptions, WorkerInquiryResolution } from './types';
 import { homedir } from 'node:os';
 

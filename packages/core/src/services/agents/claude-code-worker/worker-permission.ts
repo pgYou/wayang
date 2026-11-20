@@ -10,16 +10,16 @@ import {
   recordPermissionAudit,
   verdictDetailSuffix,
   type PermissionOperation,
-} from '@/services/permission/permission-audit';
-import { decideToolAccess, type ToolAccessDecision, type WorkerAccessScope } from '@/services/tools/permission-rules';
+} from '../../permission/permission-audit';
+import { decideToolAccess, type ToolAccessDecision, type WorkerAccessScope } from '../../tools/permission-rules';
 import {
   DEFAULT_PERMISSION_TIMEOUT_MS,
   PERMISSION_ABORT_REASON,
   PERMISSION_TIMEOUT_REASON,
   reusableGrantKeys,
   type PermissionAnswer,
-} from '@/services/permission/permission-transport';
-import { generateId } from '@/utils/id';
+} from '../../permission/permission-transport';
+import { generateId } from '../../../utils/id';
 import { homedir } from 'node:os';
 import { ClaudeWorkerBase } from './worker-base';
 

@@ -20,7 +20,7 @@
  * forms were observed). Everything else is the generic skeleton.
  */
 
-import type { AcpLaunchConfig } from '@/services/acp/config';
+import type { AcpLaunchConfig } from '../../acp/config';
 import { authAttributingReadiness, findExecutableOnPath, type AcpReadiness, type AcpReadyContext, type AcpStopPolicy, type AcpWorkerEnvView } from './base-acp-worker';
 import { AcpWorkerRun } from './acp-worker-run';
 

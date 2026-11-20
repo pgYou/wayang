@@ -7,19 +7,19 @@ import { BaseAgent } from '../base-agent';
 import { ContextManager } from '../context-manager';
 import type { ControllerAgentState } from '../controller-state';
 import type { ToolSet } from 'ai';
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../../infra/logger';
 import type { ContextUsage, ContextLastUsage } from '@wayang-ai/protocol';
 import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 import { buildLlmCallStartPayload, debugLoggingEnabled } from '../utils/llm-call-logging';
 import { recordToolCalls, ToolCallRecorder } from '../utils/tool-call-recorder';
-import type { ResolvedModel } from '@/services/config/model-resolution';
+import type { ResolvedModel } from '../../config/model-resolution';
 import { compactContext, truncateHistoryHalf, MAX_COMPACTIONS_PER_RUN } from '../context/compaction';
 
 import { buildControllerSystemPrompt } from '../prompts/index';
-import { wayangDirForSessionDir } from '@/infra/session-helpers';
-import { resolveWorkspaceRef } from '@/infra/workspace-registry';
-import { SystemContext } from '@/infra/system-context';
+import { wayangDirForSessionDir } from '../../../infra/session-helpers';
+import { resolveWorkspaceRef } from '../../../infra/workspace-registry';
+import { SystemContext } from '../../../infra/system-context';
 
 export class ControllerAgentBase extends BaseAgent {
   protected readonly state: ControllerAgentState;
@@ -66,7 +66,7 @@ export class ControllerAgentBase extends BaseAgent {
     state: ControllerAgentState,
     model: ResolvedModel,
     tools: ToolSet,
-    skills: import('@/services/skills/registry').SkillRegistry,
+    skills: import('../../skills/registry').SkillRegistry,
     recorder: ToolCallRecorder = new ToolCallRecorder(),
     /**
      * Startup rules section (home + cwd AGENTS.md), already rendered by

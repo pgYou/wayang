@@ -1,7 +1,7 @@
 // Top-level tool dispatch: routes a gated call to the bash or file gate, attaches the denial message.
 
 import { resolve } from 'node:path';
-import type { AccessMode } from '@/infra/permission/policy';
+import type { AccessMode } from '../../../infra/permission/policy';
 import { evaluateBashAccess } from './bash-access';
 import { decidePath, toToolDecision } from './access-verdict';
 import { evaluateFileAccess, FILE_TOOL_NAMES } from './file-access';

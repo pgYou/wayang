@@ -8,7 +8,7 @@ import {
   formatLastActivity,
   isValidWorkerId,
   summarizeTranscript,
-} from '@/services/worker-transcript';
+} from '../worker-transcript';
 
 /**
  * Status of one worker as the controller sees it.

@@ -5,8 +5,8 @@
  * uses tools (bash, file I/O) to accomplish it, and reports done/fail.
  */
 
-import { SystemContext } from '@/infra/system-context';
-import type { SkillRegistry } from '@/services/skills/registry';
+import { SystemContext } from '../../../infra/system-context';
+import type { SkillRegistry } from '../../skills/registry';
 import { assemble, buildEnvironment, buildSkillCatalog, section } from './prompt-utils';
 import { buildProjectRulesSection, findProjectRules } from './project-rules';
 import { WORK_DISCIPLINE_SECTION } from './work-discipline';

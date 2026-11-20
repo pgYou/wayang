@@ -30,7 +30,7 @@ export interface IWorkerInstance extends Subscribable {
   /** Get conversation entries for controller tool or audit. */
   getConversation(): import('@wayang-ai/protocol/types/conversation').ConversationEntry[];
   /** Get state for UI rendering. @deprecated Will be removed after TUI subscription refactor. */
-  getState(): import('@/infra/state/base-state').BaseWayangState | null;
+  getState(): import('../../infra/state/base-state').BaseWayangState | null;
   /**
    * Accept a message from the controller during execution. Implementation varies by worker type.
    * Returns false when the worker can no longer receive messages (e.g. a

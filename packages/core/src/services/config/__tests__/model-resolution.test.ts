@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { WayangConfig } from '@/types/config';
-import { collectProviderWarnings } from '@/types/config';
+import type { WayangConfig } from '@wayang-ai/protocol/types/config';
+import { collectProviderWarnings } from '@wayang-ai/protocol/types/config';
 import { resolveModelRef, ConfigError } from '@/services/config/model-resolution';
 
 /** Pre-#88 config: providers carry the model, controller/worker point at them. */

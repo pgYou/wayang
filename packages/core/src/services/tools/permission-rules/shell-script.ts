@@ -1,6 +1,6 @@
 // Shell `-c` script gate: scripts judged recursively by the same rules as the line itself.
 
-import { CMDSUBST_PLACEHOLDER, tokenizeShellLite, type ShellSegment } from '@/services/tools/shell-lexer';
+import { CMDSUBST_PLACEHOLDER, tokenizeShellLite, type ShellSegment } from '../shell-lexer';
 import { evaluateBashCommand } from './bash-access';
 import { headCommand } from './bash-head';
 import { MAX_CMDSUBST_DEPTH } from './substitutions';

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConfig, collectProviderWarnings, type WayangConfig } from '@/types/config';
+import { validateConfig, collectProviderWarnings, type WayangConfig } from '@wayang-ai/protocol/types/config';
 
 /** New-style config (#88): models + model refs, no provider.modelName. */
 function newConfig(overrides: Partial<WayangConfig> = {}): WayangConfig {

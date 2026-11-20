@@ -3,25 +3,25 @@
 // WorkerTrackingEngine.
 
 import type { TaskDetail } from '@wayang-ai/protocol';
-import type { IWorkerInstance } from '@/services/agents/worker-instance';
+import type { IWorkerInstance } from '../agents/worker-instance';
 import type { SignalTurnLineage } from '@wayang-ai/protocol';
 import type { ApprovalMemoryMode } from '@wayang-ai/protocol/types/config';
-import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
-import type { ApprovalMemory } from '@/services/permission/approval-memory';
-import { getWorkerMeta } from '@/services/agents/worker-defaults';
-import { createWorkerTools } from '@/services/tools/index';
-import { askControllerTool } from '@/services/tools/ask-controller';
-import { wrapWithPermissionMiddleware } from '@/services/tools/permission-middleware';
+import type { SignalQueue } from '../signal/signal-queue';
+import type { PermissionMiddlewareResult } from '../tools/permission-middleware';
+import type { ApprovalMemory } from '../permission/approval-memory';
+import { getWorkerMeta } from '../agents/worker-defaults';
+import { createWorkerTools } from '../tools/index';
+import { askControllerTool } from '../tools/ask-controller';
+import { wrapWithPermissionMiddleware } from '../tools/permission-middleware';
 import {
   FILE_TOOL_NAMES,
   decideToolAccess,
   expandHome,
   type WorkerAccessScope,
-} from '@/services/tools/permission-rules';
-import { resolveApprovalMemory } from '@/infra/permission/permission-config';
-import { BlockingRequestMap } from '@/infra/blocking-requests';
-import { generateId } from '@/utils/id';
+} from '../tools/permission-rules';
+import { resolveApprovalMemory } from '../../infra/permission/permission-config';
+import { BlockingRequestMap } from '../../infra/blocking-requests';
+import { generateId } from '../../utils/id';
 import { resolve } from 'node:path';
 import { WorkerTrackingEngine } from './worker-tracking';
 import { PUPPET_WORKER_TYPE } from './engine-base';

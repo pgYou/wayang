@@ -11,10 +11,10 @@
  *   path) or `normalizeError`.
  */
 
-import type { AcpClient } from '@/services/acp/client';
-import type { AcpTransport } from '@/services/acp/transport';
-import type { AcpHandshake, AcpMcpServer } from '@/services/acp/types';
-import { AcpError } from '@/services/acp/errors';
+import type { AcpClient } from '../../acp/client';
+import type { AcpTransport } from '../../acp/transport';
+import type { AcpHandshake, AcpMcpServer } from '../../acp/types';
+import { AcpError } from '../../acp/errors';
 import type { AcpReadiness, AcpReadyContext } from './base-acp-worker';
 
 export interface AcpSessionOpenDeps {

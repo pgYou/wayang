@@ -1,6 +1,6 @@
-import type { Logger } from '@/infra/logger';
-import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
-import type { SignalQueue } from '@/services/signal/signal-queue';
+import type { Logger } from '../../infra/logger';
+import { DEFAULT_APPROVAL_MEMORY } from '../../infra/permission/permission-config';
+import type { SignalQueue } from '../signal/signal-queue';
 import type { ApprovalMemoryMode } from '@wayang-ai/protocol/types/config';
 import type { SignalTurnLineage } from '@wayang-ai/protocol';
 import {
@@ -10,14 +10,14 @@ import {
   permissionRefusalText,
   reusableGrantKeys,
   type PermissionResolutionStatus,
-} from '@/services/permission/permission-transport';
-import { sharedApprovalMemory, type ApprovalMemory } from '@/services/permission/approval-memory';
+} from '../permission/permission-transport';
+import { sharedApprovalMemory, type ApprovalMemory } from '../permission/approval-memory';
 import {
   auditAccessFor,
   operationForTool,
   recordPermissionAudit,
   verdictDetailSuffix,
-} from '@/services/permission/permission-audit';
+} from '../permission/permission-audit';
 
 /** What a gated tool call needs before it may run. */
 export interface PermissionVerdict {

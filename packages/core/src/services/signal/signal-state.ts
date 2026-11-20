@@ -23,12 +23,12 @@
 
 import { join } from 'node:path';
 import type { ControllerSignal, SignalStatus } from '@wayang-ai/protocol';
-import type { Logger } from '@/infra/logger';
-import { BaseWayangState } from '@/infra/state/base-state';
-import { JSONFileHelper } from '@/infra/state/persistence/json-file';
-import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
-import type { IPersistenceHelper, PersistContext } from '@/infra/state/persistence/types';
-import type { SystemContext } from '@/infra/system-context';
+import type { Logger } from '../../infra/logger';
+import { BaseWayangState } from '../../infra/state/base-state';
+import { JSONFileHelper } from '../../infra/state/persistence/json-file';
+import { JSONLFileHelper } from '../../infra/state/persistence/jsonl-file';
+import type { IPersistenceHelper, PersistContext } from '../../infra/state/persistence/types';
+import type { SystemContext } from '../../infra/system-context';
 
 /** Default number of processed (read/discarded) signals kept in the hot window. */
 export const DEFAULT_SIGNAL_WINDOW_SIZE = 2_000;

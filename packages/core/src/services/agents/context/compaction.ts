@@ -7,9 +7,9 @@
 // state, the context manager, the model and a logger.
 
 import { generateText, type LanguageModel } from 'ai';
-import type { Logger } from '@/infra/logger';
-import type { BaseWayangState } from '@/infra/state/base-state';
-import type { ConversationEntry } from '@/types/conversation';
+import type { Logger } from '../../../infra/logger';
+import type { BaseWayangState } from '../../../infra/state/base-state';
+import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import { COMPACT_MAX_RETRIES, type ContextManager } from '../context-manager';
 import { buildSummaryInput } from '../utils/summarizer-input';
 import { SUMMARIZER_SYSTEM_PROMPT, buildSummarizerPrompt } from '../prompts/index';

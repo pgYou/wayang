@@ -12,11 +12,11 @@
  *   • `signal:enqueued` → reset countdown (real event arrived)
  */
 
-import type { SystemContext } from '@/infra/system-context';
-import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { ControllerAgent } from '@/services/agents/controller-agent';
+import type { SystemContext } from '../infra/system-context';
+import type { SignalQueue } from './signal/signal-queue';
+import type { ControllerAgent } from './agents/controller-agent';
 import type { ActiveWorkerInfo } from '@wayang-ai/protocol';
-import { formatLlmError } from '@/utils/llm-error';
+import { formatLlmError } from '../utils/llm-error';
 
 // ---------------------------------------------------------------------------
 // Types

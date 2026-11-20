@@ -12,9 +12,9 @@
  */
 
 import type { ToolRecordStatus } from '@wayang-ai/protocol';
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../../infra/logger';
 import type { Tool } from 'ai';
-import { nowISO } from '@/utils/time';
+import { nowISO } from '../../../utils/time';
 
 /** Live record of one tool execution. */
 export interface RecordedToolCall {

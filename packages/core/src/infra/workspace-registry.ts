@@ -38,7 +38,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { atomicWriteFileSync } from '@/infra/state/persistence/atomic-write';
+import { atomicWriteFileSync } from './state/persistence/atomic-write';
 
 /** One workspace identity as persisted in `workspaces.json`. */
 export interface WorkspaceEntry {

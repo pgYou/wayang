@@ -25,8 +25,8 @@
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
-import { decideAccess } from '@/infra/permission/policy';
-import { mergeSensitiveDirs, resolveSensitiveMode } from '@/infra/permission/permission-config';
+import { decideAccess } from '../../infra/permission/policy';
+import { mergeSensitiveDirs, resolveSensitiveMode } from '../../infra/permission/permission-config';
 
 /** Candidate file names, in priority order — AGENTS.md wins over CLAUDE.md. */
 const RULE_FILE_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const;

@@ -4,8 +4,8 @@ import {
   decideAccess,
   type AccessMode,
   type DecideAccessResult,
-} from '@/infra/permission/policy';
-import { mergeSensitiveDirs, resolveSensitiveMode } from '@/infra/permission/permission-config';
+} from '../../../infra/permission/policy';
+import { mergeSensitiveDirs, resolveSensitiveMode } from '../../../infra/permission/permission-config';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
 /**

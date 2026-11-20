@@ -19,25 +19,25 @@
  */
 
 import type { TaskDetail, WorkerResult } from '@wayang-ai/protocol';
-import type { IWorkerInstance } from '@/services/agents/worker-instance';
+import type { IWorkerInstance } from '../worker-instance';
 import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 import { homedir } from 'node:os';
-import { generateId } from '@/utils/id';
-import { nowISO } from '@/utils/time';
+import { generateId } from '../../../utils/id';
+import { nowISO } from '../../../utils/time';
 import { buildThirdPartyPrompt } from '../prompts/index';
 import { applyTurnEnvelope } from '../utils/entry-envelope';
-import { AcpClient, buildAcpCapabilities } from '@/services/acp/client';
-import { StdioAcpTransport, type AcpTransport } from '@/services/acp/transport';
-import { AcpError, acpUserMessage } from '@/services/acp/errors';
-import { AUTH_STDERR_PATTERN } from '@/services/acp/codec';
-import { resolveAcpTimeouts, type AcpLaunchConfig } from '@/services/acp/config';
-import type { AcpSessionUpdate, AcpTurnResult } from '@/services/acp/types';
-import { recordPermissionAudit } from '@/services/permission/permission-audit';
-import type { SignalQueue } from '@/services/signal/signal-queue';
+import { AcpClient, buildAcpCapabilities } from '../../acp/client';
+import { StdioAcpTransport, type AcpTransport } from '../../acp/transport';
+import { AcpError, acpUserMessage } from '../../acp/errors';
+import { AUTH_STDERR_PATTERN } from '../../acp/codec';
+import { resolveAcpTimeouts, type AcpLaunchConfig } from '../../acp/config';
+import type { AcpSessionUpdate, AcpTurnResult } from '../../acp/types';
+import { recordPermissionAudit } from '../../permission/permission-audit';
+import type { SignalQueue } from '../../signal/signal-queue';
 import { BaseAcpWorker, findExecutableOnPath, type AcpPermissionContext, type AcpWorkerEnvView } from './base-acp-worker';
 import { createAcpToolAccumulator, mapSessionUpdate, snapshotToToolCallRecord, type AcpMappedEvent } from './event-mapper';
-import { DEFAULT_PERMISSION_TIMEOUT_MS } from '@/services/permission/permission-transport';
+import { DEFAULT_PERMISSION_TIMEOUT_MS } from '../../permission/permission-transport';
 import { advanceGuard, classifyTurnEnd, decideNextAction, resetTurnGuard, type CancelFact } from './turn-attribution';
 import { buildReissuePrompt, finalizeTurnVerdict, joinControllerMessages, makeInjectedEntry, makeTerminalResult } from './acp-turn-prompt';
 import { startStdioMcpTransport, type StartMcpTransportOptions, type McpTransport } from './mcp-transport';
@@ -46,7 +46,7 @@ import type { ProgressPosition } from './mcp-progress-fallback';
 import { AcpProgress } from './acp-progress';
 import { AcpMcpHost } from './acp-mcp-host';
 import { openAcpSession } from './acp-session-open';
-import pkg from '@/../package.json';
+import pkg from '../../../../package.json';
 
 export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInstance {
   /** Per-turn work counters feeding the guard's progressSig (#56). */

@@ -17,7 +17,7 @@
  * (worker-base -> worker-permission -> worker-stream -> worker-run); this
  * file is the stable import surface and the public class name.
  */
-import type { IWorkerInstance } from '@/services/agents/worker-instance';
+import type { IWorkerInstance } from './worker-instance';
 import { ClaudeWorkerRun } from './claude-code-worker/worker-run';
 
 export class ClaudeCodeWorker extends ClaudeWorkerRun implements IWorkerInstance {}

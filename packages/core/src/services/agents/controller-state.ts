@@ -1,15 +1,15 @@
 import { join } from 'node:path';
 import type { ConversationEntry, ConversationIndex, InquireQuestion, SystemEntry, TurnView } from '@wayang-ai/protocol';
 import { isCompactMarker } from '@wayang-ai/protocol';
-import type { Logger } from '@/infra/logger';
-import { BaseWayangState } from '@/infra/state/base-state';
-import { JSONFileHelper } from '@/infra/state/persistence/json-file';
-import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
-import { ConversationIndexBuilder } from '@/services/conversation/conversation-index';
+import type { Logger } from '../../infra/logger';
+import { BaseWayangState } from '../../infra/state/base-state';
+import { JSONFileHelper } from '../../infra/state/persistence/json-file';
+import { JSONLFileHelper } from '../../infra/state/persistence/jsonl-file';
+import { ConversationIndexBuilder } from '../conversation/conversation-index';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS, recentTokenBudget } from './context-manager';
 import type { TurnEnvelope } from './utils/entry-envelope';
 import { estimateEntryTokens } from './utils/estimate-tokens';
-import type { SystemContext } from '@/infra/system-context';
+import type { SystemContext } from '../../infra/system-context';
 
 
 interface ControllerRuntimeState {

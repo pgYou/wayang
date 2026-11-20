@@ -33,7 +33,7 @@
  * approved it, a timestamp. Never file content, never tool output.
  */
 
-import { generateId } from '@/utils/id';
+import { generateId } from '../../utils/id';
 
 /**
  * Directions a grant can cover. Deliberately a one-member union: writes are
