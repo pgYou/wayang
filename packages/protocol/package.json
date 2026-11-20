@@ -1,5 +1,5 @@
 {
-  "name": "@wayang/protocol",
+  "name": "@wayang-ai/protocol",
   "version": "1.0.0-alpha.0",
   "private": true,
   "description": "Wayang protocol layer — shared types and RPC framing",

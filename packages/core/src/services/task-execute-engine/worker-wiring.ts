@@ -2,10 +2,10 @@
 // ask_controller inquiry channel onto one worker run. Extends
 // WorkerTrackingEngine.
 
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 import type { IWorkerInstance } from '@/services/agents/worker-instance';
-import type { SignalTurnLineage } from '@wayang/protocol';
-import type { ApprovalMemoryMode } from '@wayang/protocol/types/config';
+import type { SignalTurnLineage } from '@wayang-ai/protocol';
+import type { ApprovalMemoryMode } from '@wayang-ai/protocol/types/config';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import type { ApprovalMemory } from '@/services/permission/approval-memory';

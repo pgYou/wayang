@@ -7,7 +7,7 @@
  * serializable (no Map, no class instances).
  */
 
-import type { TurnUsage, TurnView } from '@wayang/protocol/types/conversation';
+import type { TurnUsage, TurnView } from '@wayang-ai/protocol/types/conversation';
 
 /** Default truncation limit for step / user / signal text. */
 export const DEFAULT_TURN_TEXT_LIMIT = 2000;

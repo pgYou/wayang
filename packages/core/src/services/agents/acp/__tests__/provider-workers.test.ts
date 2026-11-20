@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { TaskDetail, WorkerConfig } from '@wayang/protocol';
+import type { TaskDetail, WorkerConfig } from '@wayang-ai/protocol';
 import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx, makeTask } from '@/__tests__/helpers';
 import { workerDir } from '@/services/agents/worker-state';

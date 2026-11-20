@@ -1,8 +1,8 @@
 import type { Logger } from '@/infra/logger';
 import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
 import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { ApprovalMemoryMode } from '@wayang/protocol/types/config';
-import type { SignalTurnLineage } from '@wayang/protocol';
+import type { ApprovalMemoryMode } from '@wayang-ai/protocol/types/config';
+import type { SignalTurnLineage } from '@wayang-ai/protocol';
 import {
   DEFAULT_PERMISSION_TIMEOUT_MS,
   PermissionTransport,

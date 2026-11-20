@@ -22,7 +22,7 @@
  */
 
 import { join } from 'node:path';
-import type { ControllerSignal, SignalStatus } from '@wayang/protocol';
+import type { ControllerSignal, SignalStatus } from '@wayang-ai/protocol';
 import type { Logger } from '@/infra/logger';
 import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';

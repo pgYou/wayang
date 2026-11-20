@@ -17,8 +17,8 @@
  * Pure formatting only — reads fields the snapshot already carries.
  */
 
-import type { ActiveWorkerInfo } from '@wayang/protocol';
-import { formatDuration } from '@wayang/core/services/worker-transcript';
+import type { ActiveWorkerInfo } from '@wayang-ai/protocol';
+import { formatDuration } from '@wayang-ai/core/services/worker-transcript';
 import { collapseWhitespace, shortId, stringWidth, truncateToWidth } from '@/tui/utils/text-width';
 
 /** Max display columns for the task-title fragment on a row. */

@@ -7,7 +7,7 @@ import {
   INQUIRE_OTHER_OPTION,
   isOtherChoice,
   type InquireQuestion,
-} from '@wayang/protocol';
+} from '@wayang-ai/protocol';
 
 interface InquiryPromptProps {
   inquiry: InquireQuestion;

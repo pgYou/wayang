@@ -3,8 +3,8 @@
 // Extends ClaudeWorkerPermissionGate.
 
 import type { SDKMessage, SDKResultSuccess, SDKResultError, SDKAssistantMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { EEntryType } from '@wayang/protocol';
-import type { AssistantEntry, ConversationEntry, ToolCallRecord } from '@wayang/protocol/types/conversation';
+import { EEntryType } from '@wayang-ai/protocol';
+import type { AssistantEntry, ConversationEntry, ToolCallRecord } from '@wayang-ai/protocol/types/conversation';
 import { toolUseBlockToRecord, toolResultBlockToRecord, type SdkToolUseBlock, type SdkToolResultBlock } from '../utils/claude-tool-records';
 import { applyTurnEnvelope } from '../utils/entry-envelope';
 import { generateId } from '@/utils/id';

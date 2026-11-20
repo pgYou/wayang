@@ -42,9 +42,9 @@
 import * as path from 'node:path';
 import { parseCliArgs, resolveWayangRoot } from './cli-args';
 import { bootstrap } from './bootstrap';
-import { normalizeWorkspacePath } from '@wayang/core/infra/workspace-registry';
-import { SessionLockedError, formatSessionLockHint } from '@wayang/core/infra/session-lock';
-import { serverMain } from '@wayang/core/server/main';
+import { normalizeWorkspacePath } from '@wayang-ai/core/infra/workspace-registry';
+import { SessionLockedError, formatSessionLockHint } from '@wayang-ai/core/infra/session-lock';
+import { serverMain } from '@wayang-ai/core/server/main';
 
 const result = parseCliArgs(process.argv.slice(2));
 

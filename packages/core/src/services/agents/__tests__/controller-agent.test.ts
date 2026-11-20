@@ -1,8 +1,8 @@
-import { EEntryType } from '@wayang/protocol';
+import { EEntryType } from '@wayang-ai/protocol';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ControllerAgentState } from '@/services/agents/controller-state';
-import type { ControllerSignal } from '@wayang/protocol';
+import type { ControllerSignal } from '@wayang-ai/protocol';
 import { SkillRegistry } from '@/services/skills/registry';
 import { ToolCallRecorder } from '../utils/tool-call-recorder';
 import { ConversationIndexBuilder } from '@/services/conversation/conversation-index';

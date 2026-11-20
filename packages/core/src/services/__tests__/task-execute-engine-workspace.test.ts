@@ -80,7 +80,7 @@ import { TaskExecuteEngine } from '@/services/task-execute-engine';
 import { SignalQueue } from '@/services/signal/signal-queue';
 import { createMockCtx, makeTask } from '@/__tests__/helpers';
 import { SkillRegistry } from '@/services/skills/registry';
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 
 let sessionDir: string;
 let processWs: string;

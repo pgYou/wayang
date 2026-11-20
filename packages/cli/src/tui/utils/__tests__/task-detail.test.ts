@@ -6,7 +6,7 @@ import {
   wrapToWidth,
 } from '@/tui/utils/task-detail';
 import { stringWidth } from '@/tui/utils/text-width';
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 
 const makeTask = (overrides: Partial<TaskDetail> = {}): TaskDetail => ({
   id: 'task-1731000001-abcd',

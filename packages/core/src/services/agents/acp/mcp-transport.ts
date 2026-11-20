@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Logger } from '@/infra/logger';
 import type { AcpMcpServer } from '@/services/acp/types';
-import { LineCodec } from '@wayang/protocol/rpc/transport';
+import { LineCodec } from '@wayang-ai/protocol/rpc/transport';
 import { MCP_SERVER_NAME } from './mcp-schemas';
 import type { McpToolInvoker } from './mcp-tools';
 import {

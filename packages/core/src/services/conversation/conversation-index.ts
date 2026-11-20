@@ -31,8 +31,8 @@ import type {
   TurnUsage,
   TurnView,
   UserEntry,
-} from '@wayang/protocol/types/conversation';
-import { EEntryType, ESignalSubtype, ESystemSubtype, isCompactMarker } from '@wayang/protocol/types/conversation';
+} from '@wayang-ai/protocol/types/conversation';
+import { EEntryType, ESignalSubtype, ESystemSubtype, isCompactMarker } from '@wayang-ai/protocol/types/conversation';
 
 /** Internal mutable state tracked per turn. */
 interface TurnAccum {

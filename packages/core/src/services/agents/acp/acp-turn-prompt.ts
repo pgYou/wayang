@@ -3,9 +3,9 @@
  * Pure helpers kept out of acp-worker-run.ts so that file stays under 500 lines.
  */
 
-import type { WorkerResult } from '@wayang/protocol';
-import type { ConversationEntry } from '@wayang/protocol/types/conversation';
-import { EEntryType } from '@wayang/protocol';
+import type { WorkerResult } from '@wayang-ai/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
+import { EEntryType } from '@wayang-ai/protocol';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import {

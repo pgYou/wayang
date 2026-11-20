@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { InquireQuestion } from '@wayang/protocol';
+import type { InquireQuestion } from '@wayang-ai/protocol';
 import { defineTool, safeExecute } from './common';
 
 export function inquireTool(deps: { inquire: (q: InquireQuestion) => Promise<string> }) {

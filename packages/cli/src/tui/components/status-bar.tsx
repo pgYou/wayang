@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Box, Text, useStdout } from 'ink';
-import type { TaskDetail, ActiveWorkerInfo, ContextUsage } from '@wayang/protocol';
-import type { Subscribable } from '@wayang/protocol/types/subscribable';
+import type { TaskDetail, ActiveWorkerInfo, ContextUsage } from '@wayang-ai/protocol';
+import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 import { useWayangState } from '@/tui/hooks/use-wayang-state';
 import { CONTEXT_USAGE_STATE_PATH } from '@/client/remote-supervisor';
 import { theme } from '@/tui/theme';

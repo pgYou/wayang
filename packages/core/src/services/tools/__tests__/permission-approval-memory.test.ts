@@ -27,7 +27,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Logger } from '@/infra/logger';
 import type { SignalQueue } from '@/services/signal/signal-queue';
-import type { ApprovalMemoryMode, PermissionConfig } from '@wayang/protocol/types/config';
+import type { ApprovalMemoryMode, PermissionConfig } from '@wayang-ai/protocol/types/config';
 import { createMockLogger } from '@/__tests__/helpers';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
 import {

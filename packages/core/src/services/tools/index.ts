@@ -1,6 +1,6 @@
-import type { TaskDetail, ControllerSignal, InquireQuestion, ActiveWorkerInfo, WorkerLiveStatus } from '@wayang/protocol';
-import type { PermissionConfig } from '@wayang/protocol/types/config';
-import type { ConversationEntry } from '@wayang/protocol/types/conversation';
+import type { TaskDetail, ControllerSignal, InquireQuestion, ActiveWorkerInfo, WorkerLiveStatus } from '@wayang-ai/protocol';
+import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
+import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import type { Logger } from '@/infra/logger';
 import { addTaskTool } from './add-task';
 import { listTasksTool } from './list-tasks';

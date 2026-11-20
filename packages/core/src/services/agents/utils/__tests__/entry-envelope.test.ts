@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { applyTurnEnvelope, syncStepTimestamps } from '@/services/agents/utils/entry-envelope';
-import type { AssistantEntry, UserEntry } from '@wayang/protocol';
-import { EEntryType } from '@wayang/protocol';
+import type { AssistantEntry, UserEntry } from '@wayang-ai/protocol';
+import { EEntryType } from '@wayang-ai/protocol';
 
 const makeUser = (uuid: string): UserEntry => ({
   type: EEntryType.User,

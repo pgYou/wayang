@@ -1,7 +1,7 @@
 import type { ModelMessage } from 'ai';
-import type { ConversationEntry, AssistantEntry } from '@wayang/protocol';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
-import type { SignalEntry } from '@wayang/protocol';
+import type { ConversationEntry, AssistantEntry } from '@wayang-ai/protocol';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
+import type { SignalEntry } from '@wayang-ai/protocol';
 
 /**
  * Replay text for `interrupted` system markers: the next turn must know the

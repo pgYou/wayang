@@ -23,7 +23,7 @@
  * rule, so the mode only chooses between an approval and a refusal.
  */
 
-import type { ApprovalMemoryMode, PermissionConfig } from '@wayang/protocol/types/config';
+import type { ApprovalMemoryMode, PermissionConfig } from '@wayang-ai/protocol/types/config';
 import type { SensitiveMode } from './policy';
 
 /** Default `permission.sensitiveMode`: sensitive reads request approval. */

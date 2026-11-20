@@ -12,8 +12,8 @@
  *    envelope timestamps.
  */
 
-import type { AssistantEntry, ConversationEntry, EntryActor } from '@wayang/protocol';
-import { EEntryType } from '@wayang/protocol';
+import type { AssistantEntry, ConversationEntry, EntryActor } from '@wayang-ai/protocol';
+import { EEntryType } from '@wayang-ai/protocol';
 
 /** Turn lineage applied to every entry produced within one agent activation. */
 export interface TurnEnvelope {

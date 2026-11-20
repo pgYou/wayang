@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { Supervisor } from '@/services/supervisor';
 import { normalizeWorkspacePath, workspaceSlugFromPath } from '@/infra/workspace-registry';
 import { SessionLockedError } from '@/infra/session-lock';
-import type { TaskDetail } from '@wayang/protocol';
-import type { WayangConfig } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
+import type { WayangConfig } from '@wayang-ai/protocol';
 
 // --- Helpers ---
 

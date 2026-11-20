@@ -1,7 +1,7 @@
 // Windowed (tail) transcript read: bounded byte windows from the end of the file.
 
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
-import type { ConversationEntry } from '@wayang/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol';
 import { isValidWorkerId, workerTranscriptPath } from './transcript-file';
 
 /** Hard cap on bytes a transcript read may pull from the tail of the file (2 MB). */

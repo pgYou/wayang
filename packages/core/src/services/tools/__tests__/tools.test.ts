@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { TaskDetail, ControllerSignal } from '@wayang/protocol';
+import type { TaskDetail, ControllerSignal } from '@wayang-ai/protocol';
 import { addTaskTool } from '@/services/tools/add-task';
 import { listTasksTool } from '@/services/tools/list-tasks';
 import { cancelTaskTool } from '@/services/tools/cancel-task';

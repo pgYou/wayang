@@ -1,6 +1,6 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
-import type { ProviderConfig } from '@wayang/protocol';
+import type { ProviderConfig } from '@wayang-ai/protocol';
 
 /**
  * Create a language model using the OpenAI-compatible chat completions endpoint.

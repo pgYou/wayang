@@ -58,8 +58,8 @@ import { SignalQueue } from '@/services/signal/signal-queue';
 import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx, makeTask } from '@/__tests__/helpers';
 import type { SystemContext } from '@/infra/system-context';
-import type { PermissionConfig } from '@wayang/protocol/types/config';
-import type { WayangConfig } from '@wayang/protocol';
+import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
+import type { WayangConfig } from '@wayang-ai/protocol';
 
 /** Stand-in user home; `<home>/ws` is the task workspace. */
 let home: string;

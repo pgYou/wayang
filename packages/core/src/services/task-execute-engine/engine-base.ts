@@ -4,14 +4,14 @@
 import type { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { Logger } from '@/infra/logger';
-import type { ActiveWorkerInfo, ProviderConfig, WorkerConfig } from '@wayang/protocol';
+import type { ActiveWorkerInfo, ProviderConfig, WorkerConfig } from '@wayang-ai/protocol';
 import type { IWorkerInstance } from '@/services/agents/worker-instance';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import { BaseWayangState } from '@/infra/state/base-state';
-import type { Subscribable } from '@wayang/protocol/types/subscribable';
+import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 import type { StateEvent } from '@/infra/state/base-state';
 import type { SkillRegistry } from '@/services/skills/registry';
-import type { PermissionConfig } from '@wayang/protocol/types/config';
+import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import { ApprovalMemory } from '@/services/permission/approval-memory';

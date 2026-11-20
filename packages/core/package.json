@@ -1,11 +1,11 @@
 {
-  "name": "@wayang/core",
+  "name": "@wayang-ai/core",
   "version": "1.0.0-alpha.0",
   "private": true,
   "description": "Wayang core — services, infrastructure and the server",
   "type": "module",
   "dependencies": {
-    "@wayang/protocol": "1.0.0-alpha.0"
+    "@wayang-ai/protocol": "1.0.0-alpha.0"
   },
   "exports": {
     ".": {

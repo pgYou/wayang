@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ControllerSignal } from '@wayang/protocol';
+import type { ControllerSignal } from '@wayang-ai/protocol';
 import { defineTool, safeExecute } from './common';
 
 export interface QuerySignalsDeps {

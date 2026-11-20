@@ -6,10 +6,10 @@
  */
 
 import prompts from 'prompts';
-import { listSessions, getSession, sessionDisplayTitle } from '@wayang/core/infra/session-helpers';
-import type { SessionMeta } from '@wayang/core/infra/session-helpers';
-import { sessionWorkspacePaths } from '@wayang/core/infra/session-index';
-import { normalizeWorkspacePath, workspaceSlugFromPath } from '@wayang/core/infra/workspace-registry';
+import { listSessions, getSession, sessionDisplayTitle } from '@wayang-ai/core/infra/session-helpers';
+import type { SessionMeta } from '@wayang-ai/core/infra/session-helpers';
+import { sessionWorkspacePaths } from '@wayang-ai/core/infra/session-index';
+import { normalizeWorkspacePath, workspaceSlugFromPath } from '@wayang-ai/core/infra/workspace-registry';
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;

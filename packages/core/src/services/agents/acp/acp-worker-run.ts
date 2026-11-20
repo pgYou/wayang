@@ -18,10 +18,10 @@
  * client.close('cancel') rides the transport's SIGTERM→SIGKILL ladder.
  */
 
-import type { TaskDetail, WorkerResult } from '@wayang/protocol';
+import type { TaskDetail, WorkerResult } from '@wayang-ai/protocol';
 import type { IWorkerInstance } from '@/services/agents/worker-instance';
-import type { ConversationEntry } from '@wayang/protocol/types/conversation';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 import { homedir } from 'node:os';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';

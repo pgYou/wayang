@@ -1,6 +1,6 @@
 // Types exported from the task-execute-engine module (stable import surface).
 
-import type { PermissionConfig } from '@wayang/protocol/types/config';
+import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 
 /** Construction options for TaskExecuteEngine. */

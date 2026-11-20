@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { runWayangServer } from '../wayang-server';
-import { RpcClient } from '@wayang/protocol/rpc/rpc-client';
-import { createStreamTransport } from '@wayang/protocol/rpc/transport';
-import { METHOD, NOTIFY } from '@wayang/protocol/rpc/protocol';
+import { RpcClient } from '@wayang-ai/protocol/rpc/rpc-client';
+import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
+import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
 import { startFakeProvider, isControllerRequest, type FakeProvider } from '@/__tests__/fake-openai-provider';
 
 /**

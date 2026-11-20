@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink';
 import type { DisplayItem } from '@/tui/types/display-item';
-import { ESignalSubtype } from '@wayang/protocol/types/conversation';
+import { ESignalSubtype } from '@wayang-ai/protocol/types/conversation';
 import { theme } from '@/tui/theme';
 import { summarizePermissionRequest } from '@/tui/utils/permission-summary';
 import { formatWorkerTag } from '@/tui/utils/chat-lookups';

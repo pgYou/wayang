@@ -19,7 +19,7 @@
  */
 
 import type { AcpContentBlock, AcpSessionUpdate, AcpToolCall, AcpToolCallContent, AcpToolCallUpdate, AcpToolKind, AcpToolStatus } from '@/services/acp/types';
-import type { ToolCallRecord, ToolResultRecord } from '@wayang/protocol';
+import type { ToolCallRecord, ToolResultRecord } from '@wayang-ai/protocol';
 import { nowISO } from '@/utils/time';
 import { toolPayloadText } from '../utils/estimate-tokens';
 import {

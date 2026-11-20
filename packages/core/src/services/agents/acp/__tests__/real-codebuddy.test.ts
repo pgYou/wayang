@@ -26,7 +26,7 @@ import { describe, it, expect, afterEach, onTestFinished } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { WorkerResult } from '@wayang/protocol/types/worker';
+import type { WorkerResult } from '@wayang-ai/protocol/types/worker';
 import {
   WireTappingCodebuddyWorker,
   RecordingSignalQueue,

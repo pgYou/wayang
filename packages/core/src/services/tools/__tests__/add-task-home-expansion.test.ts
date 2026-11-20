@@ -11,7 +11,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 import { addTaskTool } from '@/services/tools/add-task';
 import { normalizeWorkspacePath } from '@/infra/workspace-registry';
 

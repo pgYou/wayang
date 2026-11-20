@@ -1,6 +1,6 @@
 import { get, set, cloneDeep } from 'lodash-es';
-import type { StateEvent } from '@wayang/protocol';
-import type { ConversationEntry } from '@wayang/protocol';
+import type { StateEvent } from '@wayang-ai/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol';
 import type { IPersistenceHelper, PersistOp } from './persistence/types';
 import { applyAppendEnvelope } from './conversation-envelope';
 

@@ -1,5 +1,5 @@
 {
-  "name": "@wayang/app",
+  "name": "@wayang-ai/app",
   "version": "1.0.0-alpha.0",
   "private": true,
   "description": "Wayang desktop shell — Electron packaging lands in M3",

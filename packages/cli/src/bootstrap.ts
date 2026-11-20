@@ -10,13 +10,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { connectRemoteServer } from './client/connect';
 import type { ConnectOptions, RemoteConnection } from './client/connect';
-import { getSession, getLatestSessionForWorkspace } from '@wayang/core/infra/session-helpers';
-import { normalizeWorkspacePath, resolveWorkspaceRef } from '@wayang/core/infra/workspace-registry';
-import type { WorkspaceRef } from '@wayang/core/infra/workspace-registry';
-import { SESSION_LOCKED_MARKER } from '@wayang/core/infra/session-lock';
-import { SessionManager } from '@wayang/core/services/session/session-manager';
+import { getSession, getLatestSessionForWorkspace } from '@wayang-ai/core/infra/session-helpers';
+import { normalizeWorkspacePath, resolveWorkspaceRef } from '@wayang-ai/core/infra/workspace-registry';
+import type { WorkspaceRef } from '@wayang-ai/core/infra/workspace-registry';
+import { SESSION_LOCKED_MARKER } from '@wayang-ai/core/infra/session-lock';
+import { SessionManager } from '@wayang-ai/core/services/session/session-manager';
 import { renderInkUI } from './tui/render';
-import { loadConfig } from '@wayang/core/onboard';
+import { loadConfig } from '@wayang-ai/core/onboard';
 import { selectSessionInteractive } from './session-select';
 
 // --- Types ---

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BaseAgent } from '@/services/agents/base-agent';
-import type { ProviderConfig } from '@wayang/protocol';
+import type { ProviderConfig } from '@wayang-ai/protocol';
 import { mockProvider } from '@/__tests__/helpers';
 
 // Mock streamText and model-factory

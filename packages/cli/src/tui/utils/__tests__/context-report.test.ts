@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { formatContextReport, formatTokenCount, formatFullTokens, CONTEXT_REPORT_MAX_WIDTH } from '@/tui/utils/context-report';
-import type { ContextUsage } from '@wayang/protocol';
+import type { ContextUsage } from '@wayang-ai/protocol';
 
 /** Display width: CJK / full-width code points take two columns. */
 function charWidth(cp: number): number {

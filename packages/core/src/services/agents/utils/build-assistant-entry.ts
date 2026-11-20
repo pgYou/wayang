@@ -1,6 +1,6 @@
 import type { OnStepFinishEvent } from 'ai';
-import type { AssistantEntry, ToolCallRecord, ToolResultRecord } from '@wayang/protocol';
-import { EEntryType } from '@wayang/protocol';
+import type { AssistantEntry, ToolCallRecord, ToolResultRecord } from '@wayang-ai/protocol';
+import { EEntryType } from '@wayang-ai/protocol';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import type { RecordedToolCall } from './tool-call-recorder';

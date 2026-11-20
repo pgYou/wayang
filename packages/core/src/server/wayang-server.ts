@@ -9,12 +9,12 @@
 import { loadConfig } from '@/onboard';
 import { Supervisor } from '@/services/supervisor';
 import { getSession } from '@/infra/session-helpers';
-import { RpcServer } from '@wayang/protocol/rpc/rpc-server';
-import { createStreamTransport } from '@wayang/protocol/rpc/transport';
-import { METHOD, NOTIFY, RpcError, RPC_ERROR, type RpcTarget } from '@wayang/protocol/rpc/protocol';
+import { RpcServer } from '@wayang-ai/protocol/rpc/rpc-server';
+import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
+import { METHOD, NOTIFY, RpcError, RPC_ERROR, type RpcTarget } from '@wayang-ai/protocol/rpc/protocol';
 import { serializeTurnView, summarizeTurn, DEFAULT_TURN_TEXT_LIMIT } from '@/services/conversation/turn-serialize';
-import type { Subscribable } from '@wayang/protocol/types/subscribable';
-import type { TaskDetail } from '@wayang/protocol';
+import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
+import type { TaskDetail } from '@wayang-ai/protocol';
 
 export interface WayangServerOptions {
   configPath: string;

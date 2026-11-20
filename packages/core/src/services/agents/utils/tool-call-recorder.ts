@@ -11,7 +11,7 @@
  * previous run to keep the map bounded.
  */
 
-import type { ToolRecordStatus } from '@wayang/protocol';
+import type { ToolRecordStatus } from '@wayang-ai/protocol';
 import type { Logger } from '@/infra/logger';
 import type { Tool } from 'ai';
 import { nowISO } from '@/utils/time';

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useMemoizedFn } from './use-memoized-fn';
-import type { Subscribable } from '@wayang/protocol/types/subscribable';
+import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 
 /**
  * Subscribe to state changes on a Subscribable source.

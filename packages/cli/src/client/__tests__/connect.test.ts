@@ -15,7 +15,7 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 
 import { spawn } from 'node:child_process';
 import { connectRemoteServer } from '@/client/connect';
-import { METHOD, NOTIFY } from '@wayang/protocol/rpc/protocol';
+import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
 
 // --- Fake child process ---
 

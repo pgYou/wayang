@@ -3,8 +3,8 @@ import {
   summarizePermissionRequest,
   summarizePermissionResolution,
 } from '@/tui/utils/permission-summary';
-import type { PermissionRequestMeta } from '@wayang/protocol/types/conversation';
-import type { ToolCallRecord } from '@wayang/protocol/types/conversation';
+import type { PermissionRequestMeta } from '@wayang-ai/protocol/types/conversation';
+import type { ToolCallRecord } from '@wayang-ai/protocol/types/conversation';
 
 /** Independent display-width check (CJK/fullwidth = 2 columns). */
 function width(s: string): number {

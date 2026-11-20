@@ -1,6 +1,6 @@
 // Formatting: rendering entries under a character budget, with explicit truncation meta.
 
-import type { ConversationEntry } from '@wayang/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol';
 import { entryLabel, entryText, entryToolCalls, entryToolResults } from './entry-text';
 import type { TranscriptWindow } from './pagination';
 

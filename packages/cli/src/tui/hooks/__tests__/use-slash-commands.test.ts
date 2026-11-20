@@ -5,7 +5,7 @@ import { SLASH_COMMANDS, useSlashCommands } from '@/tui/hooks/use-slash-commands
 import type { SlashCommandContext, SlashCommandResult } from '@/tui/hooks/use-slash-commands';
 import { renderShortcutList } from '@/tui/utils/shortcut-catalog';
 import { stringWidth } from '@/tui/utils/text-width';
-import type { TaskDetail, ActiveWorkerInfo } from '@wayang/protocol';
+import type { TaskDetail, ActiveWorkerInfo } from '@wayang-ai/protocol';
 import type { RemoteSupervisor } from '@/client/remote-supervisor';
 
 describe('SLASH_COMMANDS', () => {

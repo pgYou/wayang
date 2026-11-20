@@ -1,11 +1,11 @@
 // ClaudeWorkerBase: the ClaudeCodeWorker fields (original declaration order),
 // constructor, turn-envelope builder and base state / messaging surface.
 
-import type { WorkerConfig, WorkerResult, TaskDetail } from '@wayang/protocol';
-import type { WorkerLiveStatus } from '@wayang/protocol/types/worker';
+import type { WorkerConfig, WorkerResult, TaskDetail } from '@wayang-ai/protocol';
+import type { WorkerLiveStatus } from '@wayang-ai/protocol/types/worker';
 import type { Logger } from '@/infra/logger';
 import type { StateEvent } from '@/infra/state/base-state';
-import type { AssistantEntry } from '@wayang/protocol/types/conversation';
+import type { AssistantEntry } from '@wayang-ai/protocol/types/conversation';
 import { WorkerState } from '../worker-state';
 import { type TurnEnvelope } from '../utils/entry-envelope';
 import { generateId } from '@/utils/id';
@@ -21,10 +21,10 @@ import {
 import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
 import type { WorkerAccessScope } from '@/services/tools/permission-rules';
 import type { ApprovalMemory } from '@/services/permission/approval-memory';
-import type { ApprovalMemoryMode } from '@wayang/protocol/types/config';
+import type { ApprovalMemoryMode } from '@wayang-ai/protocol/types/config';
 import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
 import type { SkillRegistry } from '@/services/skills/registry';
-import type { SignalTurnLineage } from '@wayang/protocol';
+import type { SignalTurnLineage } from '@wayang-ai/protocol';
 
 export class ClaudeWorkerBase {
   readonly id: string;
@@ -234,8 +234,8 @@ export class ClaudeWorkerBase {
   }
 
   /** Get conversation entries. */
-  getConversation(): import('@wayang/protocol/types/conversation').ConversationEntry[] {
-    return this.state.get<import('@wayang/protocol/types/conversation').ConversationEntry[]>('conversation') ?? [];
+  getConversation(): import('@wayang-ai/protocol/types/conversation').ConversationEntry[] {
+    return this.state.get<import('@wayang-ai/protocol/types/conversation').ConversationEntry[]>('conversation') ?? [];
   }
 
   // --- Subscribable ---

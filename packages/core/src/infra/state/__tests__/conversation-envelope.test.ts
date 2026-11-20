@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { applyAppendEnvelope, ENVELOPE_VERSION } from '@/infra/state/conversation-envelope';
-import type { ConversationEntry, SystemEntry, UserEntry } from '@wayang/protocol';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import type { ConversationEntry, SystemEntry, UserEntry } from '@wayang-ai/protocol';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 
 const makeUser = (uuid: string): UserEntry => ({
   type: EEntryType.User,

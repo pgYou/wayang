@@ -13,9 +13,9 @@
  * ignoring happens in the worker's event mapper.
  */
 
-// AcpAuthMethod / AcpCapabilities are referenced by `@wayang/protocol`'s config
+// AcpAuthMethod / AcpCapabilities are referenced by `@wayang-ai/protocol`'s config
 // types, so they are defined there and re-exported here for core importers.
-import type { AcpAuthMethod, AcpCapabilities } from '@wayang/protocol/types/acp';
+import type { AcpAuthMethod, AcpCapabilities } from '@wayang-ai/protocol/types/acp';
 export type { AcpAuthMethod, AcpCapabilities };
 
 export type AcpContentBlock =

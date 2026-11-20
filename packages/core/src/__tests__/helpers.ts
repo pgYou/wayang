@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import type { ProviderConfig, TaskDetail } from '@wayang/protocol';
+import type { ProviderConfig, TaskDetail } from '@wayang-ai/protocol';
 import type { Logger } from '@/infra/logger';
 import type { SystemContext } from '@/infra/system-context';
 import { LifecycleHooks } from '@/services/lifecycle-hooks';

@@ -1,7 +1,7 @@
 // Activity inference: what a transcript says the worker is (or was) doing.
 
-import type { ConversationEntry } from '@wayang/protocol';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 import { entryToolCalls } from './entry-text';
 
 export interface WorkerTranscriptSummary {

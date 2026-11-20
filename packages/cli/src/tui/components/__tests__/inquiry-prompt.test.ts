@@ -10,7 +10,7 @@ import {
   isCustomAnswer,
   isOtherChoice,
   type InquireQuestion,
-} from '@wayang/protocol';
+} from '@wayang-ai/protocol';
 
 // --- pure select-choice helpers ---
 

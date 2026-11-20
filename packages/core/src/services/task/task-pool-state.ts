@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import type { Logger } from '@/infra/logger';
 import { BaseWayangState } from '@/infra/state/base-state';

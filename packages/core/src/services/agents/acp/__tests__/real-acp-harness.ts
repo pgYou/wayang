@@ -13,7 +13,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { TaskDetail, WorkerConfig } from '@wayang/protocol';
+import type { TaskDetail, WorkerConfig } from '@wayang-ai/protocol';
 import type { PermissionResolutionStatus } from '@/services/permission/permission-transport';
 import { SkillRegistry } from '@/services/skills/registry';
 import { createMockCtx } from '@/__tests__/helpers';

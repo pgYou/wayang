@@ -1,8 +1,8 @@
 import type { BaseWayangState } from '@/infra/state/base-state';
 import { conversationToSdkMessages } from './utils/conversation-to-sdk-messages';
 import { estimateTokens, estimateConversationTokens, extractContentText } from './utils/estimate-tokens';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
-import type { ContextBreakdown, ConversationEntry } from '@wayang/protocol';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
+import type { ContextBreakdown, ConversationEntry } from '@wayang-ai/protocol';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 

@@ -26,9 +26,9 @@
  * Pure formatting only — no RPC shape changes, no task data mutation.
  */
 
-import type { TaskDetail } from '@wayang/protocol';
-import { getWorkerMeta } from '@wayang/core/services/agents/worker-defaults';
-import { formatDuration } from '@wayang/core/services/worker-transcript';
+import type { TaskDetail } from '@wayang-ai/protocol';
+import { getWorkerMeta } from '@wayang-ai/core/services/agents/worker-defaults';
+import { formatDuration } from '@wayang-ai/core/services/worker-transcript';
 import { collapseWhitespace, shortId, stringWidth, truncateToWidth } from '@/tui/utils/text-width';
 import { formatTaskWorkspaceMark } from '@/tui/utils/workspace-display';
 

@@ -6,10 +6,10 @@
  * `process.env` and provider defaults is the worker layer's job).
  */
 
-import type { AcpTimeouts } from '@wayang/protocol/types/acp';
+import type { AcpTimeouts } from '@wayang-ai/protocol/types/acp';
 import { AcpError } from './errors';
 
-// The timeout matrix is referenced by `@wayang/protocol`'s config types, so it
+// The timeout matrix is referenced by `@wayang-ai/protocol`'s config types, so it
 // is defined there and re-exported here for core importers.
 export type { AcpTimeouts };
 

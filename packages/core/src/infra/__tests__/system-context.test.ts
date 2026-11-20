@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { WayangConfig } from '@wayang/protocol';
+import type { WayangConfig } from '@wayang-ai/protocol';
 
 // Mock logger to avoid real filesystem writes
 vi.mock('../logger.js', () => {

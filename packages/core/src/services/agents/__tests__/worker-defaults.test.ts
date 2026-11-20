@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PUPPET_DEFAULTS, getWorkerMeta } from '@/services/agents/worker-defaults';
-import type { WorkerConfig } from '@wayang/protocol/types/config';
+import type { WorkerConfig } from '@wayang-ai/protocol/types/config';
 
 describe('PUPPET_DEFAULTS', () => {
   it('should have required fields', () => {

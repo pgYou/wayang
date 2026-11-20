@@ -2,7 +2,7 @@ import { defineConfig } from 'tsup';
 
 export default defineConfig({
   // Both entries stay flat in dist/: the CLI launches dist/mcp-bridge-entry.js
-  // as the ACP agent's stdio MCP server. The bridge lives in @wayang/core and
+  // as the ACP agent's stdio MCP server. The bridge lives in @wayang-ai/core and
   // is bundled here so the CLI ships a single dist/ directory.
   entry: {
     cli: 'src/cli.ts',
@@ -14,8 +14,8 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   // Workspace packages ship as TypeScript sources; bundle them instead of
-  // leaving an @wayang/* import that only Node's type stripping could follow.
-  noExternal: [/^@wayang\//],
+  // leaving an @wayang-ai/* import that only Node's type stripping could follow.
+  noExternal: [/^@wayang-ai\//],
   banner: { js: '#!/usr/bin/env node' },
   // Same external set the pre-split build had (tsup externalises the
   // package.json dependencies; with the deps hoisted at the workspace root

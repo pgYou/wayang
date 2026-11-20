@@ -9,7 +9,7 @@ import type {
   TaskDetail,
   TaskQueuedSignalPayload,
   WorkerStartedSignalPayload,
-} from '@wayang/protocol';
+} from '@wayang-ai/protocol';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { TaskEngineBase, PUPPET_WORKER_TYPE } from './engine-base';

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
-import type { ConversationEntry } from '@wayang/protocol';
-import { isCompactMarker } from '@wayang/protocol';
+import type { ConversationEntry } from '@wayang-ai/protocol';
+import { isCompactMarker } from '@wayang-ai/protocol';
 import type { Logger } from '@/infra/logger';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 import { BaseWayangState } from '@/infra/state/base-state';

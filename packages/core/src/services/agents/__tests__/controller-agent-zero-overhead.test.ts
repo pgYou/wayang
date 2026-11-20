@@ -5,7 +5,7 @@
  * the overhead the fix removes. Proven by spying on the payload builder.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ControllerSignal } from '@wayang/protocol';
+import type { ControllerSignal } from '@wayang-ai/protocol';
 import { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ControllerAgentState } from '@/services/agents/controller-state';
 import { SkillRegistry } from '@/services/skills/registry';

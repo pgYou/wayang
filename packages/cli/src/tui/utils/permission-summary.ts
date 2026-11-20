@@ -12,7 +12,7 @@
  * rows can style each part separately; `label` remains as a plain-text
  * fallback of the whole line.
  */
-import type { PermissionRequestMeta, ToolCallRecord } from '@wayang/protocol/types/conversation';
+import type { PermissionRequestMeta, ToolCallRecord } from '@wayang-ai/protocol/types/conversation';
 import {
   collapseWhitespace,
   fitWithSuffix,

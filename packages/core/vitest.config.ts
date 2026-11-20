@@ -6,7 +6,7 @@ const protocolSrc = path.resolve(__dirname, '../protocol/src');
 export default defineConfig({
   resolve: {
     alias: [
-      // `@/*` is package-local; reads that belong to @wayang/protocol land on
+      // `@/*` is package-local; reads that belong to @wayang-ai/protocol land on
       // the owning package (mirrors the tsconfig `paths` fallback).
       { find: /^@\/(types|rpc)\//, replacement: `${protocolSrc}/$1/` },
       { find: '@', replacement: path.resolve(__dirname, 'src') },

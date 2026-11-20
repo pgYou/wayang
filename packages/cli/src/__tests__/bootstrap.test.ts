@@ -21,7 +21,7 @@ vi.mock('@/session-select');
 import { bootstrap } from '@/bootstrap';
 import { connectRemoteServer } from '@/client/connect';
 import { selectSessionInteractive } from '@/session-select';
-import type { SessionMeta } from '@wayang/core/infra/session-helpers';
+import type { SessionMeta } from '@wayang-ai/core/infra/session-helpers';
 
 // --- Helpers ---
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 import { defineTool, safeExecute } from './common';
 
 export interface UpdateTaskDeps {

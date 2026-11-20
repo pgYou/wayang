@@ -24,7 +24,7 @@
 
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { PermissionConfig } from '@wayang/protocol/types/config';
+import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
 import { decideAccess } from '@/infra/permission/policy';
 import { mergeSensitiveDirs, resolveSensitiveMode } from '@/infra/permission/permission-config';
 

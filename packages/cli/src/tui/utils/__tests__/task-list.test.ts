@@ -11,7 +11,7 @@ import {
   truncateForList,
 } from '@/tui/utils/task-list';
 import { stringWidth } from '@/tui/utils/text-width';
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 
 const makeTask = (overrides: Partial<TaskDetail> = {}): TaskDetail => ({
   id: 't-1',

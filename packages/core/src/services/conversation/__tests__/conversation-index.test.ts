@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ConversationIndexBuilder, buildConversationIndex } from '@/services/conversation/conversation-index';
-import type { AssistantEntry, ConversationEntry, SignalEntry, SystemEntry, UserEntry } from '@wayang/protocol/types/conversation';
-import { EEntryType, ESignalSubtype, ESystemSubtype } from '@wayang/protocol/types/conversation';
+import type { AssistantEntry, ConversationEntry, SignalEntry, SystemEntry, UserEntry } from '@wayang-ai/protocol/types/conversation';
+import { EEntryType, ESignalSubtype, ESystemSubtype } from '@wayang-ai/protocol/types/conversation';
 
 // --- Fixtures ---
 

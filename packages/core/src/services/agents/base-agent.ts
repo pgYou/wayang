@@ -9,7 +9,7 @@ import {
   type PrepareStepFunction,
 } from 'ai';
 import { createModel } from './model-factory';
-import type { ProviderConfig, ToolChoice } from '@wayang/protocol';
+import type { ProviderConfig, ToolChoice } from '@wayang-ai/protocol';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 

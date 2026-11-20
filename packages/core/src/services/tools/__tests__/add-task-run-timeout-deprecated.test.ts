@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { TaskDetail } from '@wayang/protocol';
+import type { TaskDetail } from '@wayang-ai/protocol';
 import { addTaskTool } from '@/services/tools/add-task';
 import { createMockLogger } from '@/__tests__/helpers';
 

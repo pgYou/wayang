@@ -7,7 +7,7 @@
  * usage of the last step plus a per-group token estimate of the prompt.
  */
 
-import type { ContextUsage } from '@wayang/protocol';
+import type { ContextUsage } from '@wayang-ai/protocol';
 import { formatTokenCount } from './format-tokens';
 import { truncateToWidth } from './text-width';
 

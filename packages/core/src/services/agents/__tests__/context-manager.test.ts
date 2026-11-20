@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ContextManager, RECENT_TOKEN_BUDGET } from '@/services/agents/context-manager';
-import { EEntryType, ESystemSubtype } from '@wayang/protocol';
+import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
 import { estimateTokens, extractContentText } from '@/services/agents/utils/estimate-tokens';
 
 /** Minimal state stub — ContextManager only needs get/append. */
