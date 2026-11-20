@@ -1,0 +1,21 @@
+{
+  "name": "@wayang/protocol",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Wayang protocol layer — shared types and RPC framing",
+  "type": "module",
+  "exports": {
+    ".": "./src/types/index.ts",
+    "./types": "./src/types/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit && eslint src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "types": "./dist/types/index.d.ts"
+}
