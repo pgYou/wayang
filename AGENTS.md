@@ -73,12 +73,12 @@ tag 必须在 main 分支且已 pull 到最新后创建，不要在 release 分�
 ## Commands
 
 ```bash
-npm run build          # tsup → dist/cli.js (ESM, node20, single entry)
-npm run dev            # Type-check + build + run with local env/config
-npm run dev:watch      # tsup --watch (no run)
-npm test               # vitest run
+npm run build          # turbo：按依赖拓扑构建（packages 库产物 → apps/cli 交付物）
+npm run cli            # 运行已构建的 CLI（本地 .env.local + config.local.json）
+npm run cli:watch      # turbo watch：观察源码变化并拓扑重建 cli 依赖闭包（不运行）
+npm test               # turbo run test（各包 vitest，前置库构建）
 npm run test:watch     # vitest (watch mode)
-npm run lint           # tsc --noEmit && eslint src/
+npm run lint           # check:boundaries + turbo lint + eslint e2e/
 ```
 
 Run a single test file: `npx vitest run src/path/to/file.test.ts`
