@@ -1,0 +1,146 @@
+/**
+ * connectRemoteServer — spawn the headless `wayang server` child process
+ * and attach an RPC client to its stdio.
+ */
+
+import { spawn, type ChildProcess } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
+import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
+import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
+import { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
+import type { WorkspaceRef } from '@wayang-ai/core/infra/workspace-registry';
+
+export interface ConnectOptions {
+  configPath: string;
+  /** Root dir for the `--wayang-root` flag (the server joins `.wayang` itself). */
+  wayangRootDir: string;
+  workspaceDir: string;
+  /**
+   * Workspace identities the session has touched, resolved by the caller
+   * (bootstrap) before connecting. Display-only: the server owns execution.
+   */
+  workspaces?: ReadonlyArray<WorkspaceRef>;
+  session: 'new' | { resume: string };
+  injectPreviousTasks?: boolean;
+  logLevel?: string;
+  readyTimeoutMs?: number;
+}
+
+export interface RemoteConnection {
+  remote: RemoteSupervisor;
+  /** Graceful stop: shutdown RPC → wait exit → force-kill fallback. */
+  stop: () => Promise<void>;
+}
+
+const DEFAULT_READY_TIMEOUT_MS = 30_000;
+const SHUTDOWN_GRACE_MS = 5_000;
+
+export async function connectRemoteServer(options: ConnectOptions): Promise<RemoteConnection> {
+  // Spawn the slim server host that ships next to this bundle. Resolved from
+  // the running file (not process.argv) so the path holds regardless of how
+  // the bundle was launched.
+  const entry = join(dirname(fileURLToPath(import.meta.url)), 'server-entry.js');
+
+  const sessionArg = options.session === 'new' ? 'new' : `resume:${options.session.resume}`;
+  const args = [
+    entry,
+    'server',
+    '--config', options.configPath,
+    '--wayang-root', options.wayangRootDir,
+    '--workspace-dir', options.workspaceDir,
+    '--session', sessionArg,
+  ];
+  if (options.injectPreviousTasks) args.push('--inject-previous-tasks');
+  if (options.logLevel) args.push('--log-level', options.logLevel);
+
+  const child = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  let stderrTail = '';
+  child.stderr?.setEncoding('utf-8');
+  child.stderr?.on('data', (chunk: string) => {
+    stderrTail = (stderrTail + chunk).slice(-4000);
+  });
+
+  const exited = new Promise<number | null>((resolve) => {
+    child.on('exit', (code) => resolve(code));
+  });
+
+  const transport = createStreamTransport(child.stdout!, child.stdin!);
+  const rpc = new RpcClient(transport);
+
+  await waitForReady(child, rpc, exited, () => stderrTail, options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS);
+
+  const store = new RemoteStateStore(rpc);
+  let stopping = false;
+
+  const stop = async (): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    try {
+      await Promise.race([
+        rpc.request(METHOD.SHUTDOWN),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('shutdown timeout')), SHUTDOWN_GRACE_MS)),
+      ]);
+    } catch {
+      // fall through to exit wait / kill
+    }
+    const exitOrKill = Promise.race([
+      exited,
+      new Promise<number | null>((resolve) => {
+        setTimeout(() => {
+          child.kill('SIGKILL');
+          resolve(null);
+        }, SHUTDOWN_GRACE_MS);
+      }),
+    ]);
+    await exitOrKill;
+    rpc.close();
+  };
+
+  // Unexpected server death mid-session: surface and exit — the TUI cannot
+  // recover from a lost logic process in 0.5.
+  void exited.then((code) => {
+    if (!stopping) {
+      console.error(`Wayang server exited unexpectedly (code ${code}).\n${stderrTail}`);
+      process.exit(1);
+    }
+  });
+
+  const remote = new RemoteSupervisor(rpc, store, options.workspaceDir, { stop }, options.workspaces);
+  return { remote, stop };
+}
+
+function waitForReady(
+  child: ChildProcess,
+  rpc: RpcClient,
+  exited: Promise<number | null>,
+  getStderrTail: () => string,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      offReady();
+      if (err) reject(err);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(new Error(`Wayang server did not become ready within ${timeoutMs}ms.\n${getStderrTail()}`));
+    }, timeoutMs);
+    const offReady = rpc.on(NOTIFY.READY, () => finish());
+    void exited.then((code) => {
+      // Defer one tick: a real child can emit 'exit' before its final stderr
+      // chunks flush, and without that grace the error would omit the
+      // server's actual fatal message.
+      setImmediate(() => {
+        finish(new Error(`Wayang server exited before becoming ready (code ${code}).\n${getStderrTail()}`));
+      });
+    });
+  });
+}

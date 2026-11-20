@@ -4,6 +4,10 @@
   "description": "Multi-agent orchestration platform",
   "type": "module",
   "license": "MIT",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "author": "pgYou",
   "repository": {
     "type": "git",
@@ -23,25 +27,26 @@
     "claude"
   ],
   "bin": {
-    "wayang": "dist/cli.js",
-    "waya": "dist/cli.js"
+    "wayang": "apps/cli/dist/cli.js",
+    "waya": "apps/cli/dist/cli.js"
   },
   "files": [
-    "dist",
-    "!dist/**/*.map"
+    "apps/cli/dist",
+    "!apps/cli/dist/**/*.map"
   ],
   "scripts": {
-    "build": "tsup",
-    "dev:watch": "tsup --watch",
-    "dev": "tsc --noEmit && tsup && node --env-file=.env.local dist/cli.js --wayang-root . -w . -c ./config.local.json --verbose",
-    "start": "node dist/cli.js",
+    "build": "turbo run build",
+    "cli": "npm run build && node --env-file=.env.local apps/cli/dist/cli.js --wayang-root . -w . -c ./config.local.json --verbose",
     "prepublishOnly": "npm run build",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "test:e2e": "tsup && vitest run --config e2e.config.ts",
-    "lint": "tsc --noEmit && eslint src/ e2e/"
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:watch": "turbo run test:watch",
+    "test:coverage": "turbo run test:coverage",
+    "test:e2e": "npm run build && vitest run --config e2e.config.ts",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "lint": "npm run check:boundaries && turbo run lint && eslint e2e/"
   },
+  "packageManager": "npm@10.8.2",
   "engines": {
     "node": ">=20"
   },
@@ -69,6 +74,7 @@
     "eslint": "^9.0.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "tsup": "^8.5.1",
+    "turbo": "^2.11.13",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.58.0",
     "vitest": "^4.1.2"

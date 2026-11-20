@@ -1,0 +1,7 @@
+{
+  "name": "@wayang-ai/desktop",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Wayang desktop — Electron shell (UtilityProcess host, lands in M3)",
+  "type": "module"
+}

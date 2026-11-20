@@ -1,0 +1,20 @@
+{
+  "name": "@wayang-ai/cli",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Wayang CLI — the terminal UI and the `wayang` entry point；发布物由仓库根的 wayang-ai 承载（bin 指向本包 dist）",
+  "type": "module",
+  "license": "MIT",
+  "devDependencies": {
+    "@wayang-ai/core": "1.0.0-alpha.0",
+    "@wayang-ai/protocol": "1.0.0-alpha.0"
+  },
+  "scripts": {
+    "build": "tsup && cp ../../packages/core/dist/mcp-bridge-entry.js dist/",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit && eslint src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  }
+}

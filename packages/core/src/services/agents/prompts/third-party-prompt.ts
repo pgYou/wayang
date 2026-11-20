@@ -1,0 +1,39 @@
+/**
+ * System prompt for third-party agent workers (e.g. Claude Code).
+ *
+ * Prepended to the task description via the SDK prompt parameter,
+ * since third-party SDKs typically don't expose a separate system prompt field.
+ */
+
+import type { SkillRegistry } from '../../skills/registry';
+import { buildSkillCatalog } from './prompt-utils';
+import { WORK_DISCIPLINE_RULES } from './work-discipline';
+
+const RULES = [
+  '<Rules>',
+  'Output plain text only. No Markdown formatting.',
+  'Report meaningful progress as you work (entering a new phase, completing a sub-step, recovering from an error). When an update_progress tool is available it is the primary channel — call it with a concise message; plain assistant text is only a degraded fallback.',
+  'If no update_progress is reported for 2 minutes, the system reports your latest complete reply automatically (capped at 20000 characters), so keep reporting progress yourself to stay in control of what the controller sees.',
+  'Your LAST message before the turn ends MUST be the deliverable final summary (what you changed / the verification result / what is left over) — that message IS the result the system captures, there is no second channel. You have no done/fail tool: ending the turn is how you express completion, and a turn that ends without this summary is recorded as a failure.',
+  'Match the language of the task description.',
+  'Keep scratch files and intermediate artifacts in `.agents/tmp/` inside the task workspace — never `/tmp`, the home directory, or the repository root.',
+  ...WORK_DISCIPLINE_RULES,
+  '</Rules>',
+].join('\n');
+
+/**
+ * Build a prefix to prepend to the task prompt for third-party workers.
+ *
+ * Third-party workers have no access to Wayang's `use_skill` tool, so when
+ * skills exist the catalog includes each skill's directory — the worker is
+ * expected to read `<dir>/SKILL.md` with its own file tools to load one.
+ * Returns the instruction block followed by a separator, ready to concatenate
+ * with the task description.
+ */
+export function buildThirdPartyPrompt(skills: SkillRegistry): string {
+  const catalog = buildSkillCatalog(skills, true);
+  const skillsNote = catalog
+    ? `${catalog}\n\nYou do NOT have a use_skill tool. To use a skill, read its \`SKILL.md\` (at the directory shown above) with your own file-reading tools.`
+    : '';
+  return [RULES, skillsNote, '---'].filter(Boolean).join('\n\n') + '\n\n';
+}
