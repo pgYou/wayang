@@ -8,4 +8,5 @@ dist/
 .claude/analysis/
 .agents/
 .agent
+.zcode
 .xac
