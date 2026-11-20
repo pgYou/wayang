@@ -1,7 +1,7 @@
 import React from 'react';
 import { render } from 'ink';
 import { App } from './app';
-import type { RemoteSupervisor } from '@/client/remote-supervisor';
+import type { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
 import { writeWelcome } from './welcome';
 
 

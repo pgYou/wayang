@@ -4,7 +4,7 @@ import { Box, Text, useApp, useInput } from 'ink';
 import { SupervisorProvider, useSupervisor } from './providers/supervisor-provider';
 import { ControllerPage } from './pages/controller-page';
 
-export function App({ supervisor }: { supervisor: import('@/client/remote-supervisor').RemoteSupervisor }) {
+export function App({ supervisor }: { supervisor: import('@wayang-ai/core/client/remote-supervisor').RemoteSupervisor }) {
   return (
     <SupervisorProvider supervisor={supervisor}>
       <AppContent />

@@ -1,5 +1,5 @@
 import { useMemoizedFn } from './use-memoized-fn';
-import type { RemoteSupervisor } from '@/client/remote-supervisor';
+import type { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
 import type { TaskDetail } from '@wayang-ai/protocol';
 import { formatContextReport } from '@/tui/utils/context-report';
 import { renderShortcutList } from '@/tui/utils/shortcut-catalog';

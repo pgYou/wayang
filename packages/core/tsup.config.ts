@@ -1,9 +1,17 @@
 import fg from 'fast-glob';
 import { defineConfig } from 'tsup';
 
-const libEntries = fg.sync(['src/**/*.ts', '!src/**/__tests__/**', '!src/**/*.test.ts'], {
-  cwd: __dirname,
-});
+const libEntries = fg.sync(
+  [
+    'src/**/*.ts',
+    '!src/**/__tests__/**',
+    '!src/**/*.test.ts',
+    // The bridge is a process artifact, not a library module — it is built by
+    // the dedicated bundle config below.
+    '!src/services/agents/acp/mcp-bridge-entry.ts',
+  ],
+  { cwd: __dirname },
+);
 
 const thirdPartyExternals = [
   'ai',

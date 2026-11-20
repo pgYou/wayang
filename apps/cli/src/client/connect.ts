@@ -4,10 +4,12 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
 import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
 import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
-import { RemoteSupervisor } from './remote-supervisor';
+import { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
 import type { WorkspaceRef } from '@wayang-ai/core/infra/workspace-registry';
 
 export interface ConnectOptions {
@@ -36,8 +38,10 @@ const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const SHUTDOWN_GRACE_MS = 5_000;
 
 export async function connectRemoteServer(options: ConnectOptions): Promise<RemoteConnection> {
-  const entry = process.argv[1];
-  if (!entry) throw new Error('Cannot determine CLI entry path for server spawn');
+  // Spawn the slim server host that ships next to this bundle. Resolved from
+  // the running file (not process.argv) so the path holds regardless of how
+  // the bundle was launched.
+  const entry = join(dirname(fileURLToPath(import.meta.url)), 'server-entry.js');
 
   const sessionArg = options.session === 'new' ? 'new' : `resume:${options.session.resume}`;
   const args = [

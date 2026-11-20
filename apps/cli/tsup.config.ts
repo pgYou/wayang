@@ -7,6 +7,7 @@ export default defineConfig({
   // develop/v1.0-monorepo-design.md).
   entry: {
     cli: 'src/cli.ts',
+    'server-entry': 'src/server-entry.ts',
   },
   format: ['esm'],
   target: 'node20',

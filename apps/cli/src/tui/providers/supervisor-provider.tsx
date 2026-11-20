@@ -1,5 +1,5 @@
 import React, { createContext, useContext } from 'react';
-import type { RemoteSupervisor } from '@/client/remote-supervisor';
+import type { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
 
 const SupervisorContext = createContext<RemoteSupervisor | null>(null);
 

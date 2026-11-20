@@ -6,7 +6,7 @@ import type { SlashCommandContext, SlashCommandResult } from '@/tui/hooks/use-sl
 import { renderShortcutList } from '@/tui/utils/shortcut-catalog';
 import { stringWidth } from '@/tui/utils/text-width';
 import type { TaskDetail, ActiveWorkerInfo } from '@wayang-ai/protocol';
-import type { RemoteSupervisor } from '@/client/remote-supervisor';
+import type { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
 
 describe('SLASH_COMMANDS', () => {
   it('should register the /context command', () => {

@@ -9,7 +9,7 @@ vi.mock('@/tui/pages/controller-page', () => ({
 }));
 
 import { App } from '@/tui/app';
-import type { RemoteSupervisor } from '@/client/remote-supervisor';
+import type { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
 
 /** Ctrl+C as terminals send it (the raw control code Ink parses). */
 const CTRL_C = '\x03';
