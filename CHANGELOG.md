@@ -2,20 +2,22 @@
 
 ## v1.0.0 (规划中，未发布)
 
-> 本段为实施前的版本规划草稿；发布前按实际交付校准，不保留与实施不符的规划文字。
+> 架构定案见 docs/develop/v1.0-monorepo-design.md；「100」为 1.0.0 版本简称，非 issue 引用。
 
-### 规划
+### 已交付（feat/100-monorepo）
 
-- monorepo 拆包（分支 feat/100-monorepo，「100」为 1.0.0 版本简称，非 issue 引用）：src/ 拆为四个子包 —— @wayang-ai/protocol（共享类型与 RPC framing）、@wayang-ai/core（services / infra / server）、@wayang-ai/cli（TUI 与 wayang 入口）、@wayang-ai/app（桌面端壳，Electron 打包后续落地）；包内 @/ 别名与跨包导入重写、新增 check:boundaries 边界检查、per-package tsup / vitest / tsconfig。已完成：拆包骨架与文件搬移、导入重写、构建与测试验证、子包前缀统一为 @wayang-ai/*。
-- 发布策略（已定）：对外发布物保持单一包 wayang-ai，root 为发布单元（bin wayang / waya 不变，files 指向 packages/cli/dist）；@wayang-ai/* 子包一律 private、不发布，构建时 bundle 进 CLI 产物。待办：root package.json 去 private 并补 bin / files；cli 子包的 @wayang-ai/core、@wayang-ai/protocol 依赖挪 devDependencies；release workflow 对 prerelease 版本自动加 --tag alpha（防 prerelease 顶掉 latest）。
-- 桌面端（1.0 主目标）：@wayang-ai/app 桌面壳复用 core / cli 能力，安装包分发（不走 npm）。
-- 发布节奏：先发 v1.0.0-alpha.0（alpha tag）验证新发布链路，1.0.0 正式版发布后 latest 从 0.9.8 平滑接续。
+- monorepo 拆包：apps/{cli,desktop} 与 packages/{core,protocol} 双层目录；子包前缀统一 @wayang-ai/*；check:boundaries 边界检查覆盖依赖方向与跨包 import 规范
+- 库产物模型：core/protocol 各编译恰好一次（tsup preserveModules + splitting），exports 指 dist + d.ts 转正为公开接口；包内 @/ 别名全部改写为相对导入（保证 d.ts 可移植）；apps 作为构建边缘内联消费库产物，npm 发布物仍为单一自包含 bundle
+- 发布链路收敛：对外唯一发布物 wayang-ai（root 发布单元，bin wayang / waya 不变）；tarball 含三个入口 —— cli.js（TUI）、server-entry.js（瘦 server 宿主）、mcp-bridge-entry.js（MCP 桥）；release workflow 对 prerelease 版本自动按首段打 dist-tag（alpha/rc），不顶掉 latest
+- 构建编排：turborepo（build / lint / test 管道，^build 拓扑与缓存）；tsconfig.base.json 语义项单点定义
+- 客户端 SDK 下沉：RemoteSupervisor 迁入 core/client，cli 与未来 desktop 共用
+- server 宿主拆分：TUI 进程 spawn 瘦 server-entry.js（server 进程不再携带 ink/react）；MCP bridge 归 core 双入口构建，app 构建脚本机械复制、缺失即构建失败
+- macOS 本地存在 1 个既有环境性测试失败（permission-askpaths-reuse，BSD find 差异，main 上同样失败，ubuntu CI 通过），与拆包无关
 
-### 里程碑
+### 待办
 
-- 拆包收敛：feat/100-monorepo 门槛全绿后合入 release/1.0.0
-- 发布链路落地：manifest / workflow 修复完成，v1.0.0-alpha.0 发布验证通过
-- 桌面端：Electron 壳与安装包分发
+- 桌面端（M3）：@wayang-ai/desktop Electron 壳 —— UtilityProcess 宿主、protocol 的 MessagePort transport、GUI PATH 修复、崩溃 resume；electron-builder 安装包分发（不走 npm）
+- v1.0.0-alpha.0 发布验证：合入 release 后走 tag 流程实测新发布链路，1.0.0 正式版后 latest 从 0.9.8 平滑接续
 ## v0.9.9 (2026-11-24)
 
 ### 修复
