@@ -74,7 +74,7 @@ tag 必须在 main 分支且已 pull 到最新后创建，不要在 release 分�
 
 ```bash
 npm run build          # turbo：按依赖拓扑构建（packages 库产物 → apps/cli 交付物）
-npm run cli            # 运行已构建的 CLI（本地 .env.local + config.local.json）
+npm run cli            # 构建（turbo 增量）+ 运行 CLI（本地 .env.local + config.local.json）
 npm run cli:watch      # turbo watch：观察源码变化并拓扑重建 cli 依赖闭包（不运行）
 npm test               # turbo run test（各包 vitest，前置库构建）
 npm run test:watch     # vitest (watch mode)
