@@ -3,8 +3,8 @@
  * Package boundary guard for the monorepo layout (feat/100).
  *
  * Three rules, all checked mechanically against the source tree:
- *   1. @wayang-ai/protocol must not import @wayang-ai/core, @wayang-ai/cli or @wayang-ai/app.
- *   2. @wayang-ai/core must not import @wayang-ai/cli or @wayang-ai/app.
+ *   1. @wayang-ai/protocol must not import @wayang-ai/core, @wayang-ai/cli or @wayang-ai/desktop.
+ *   2. @wayang-ai/core must not import @wayang-ai/cli or @wayang-ai/desktop.
  *   3. Cross-package references must go through the `@wayang-ai/*` package name.
  *      An `@/...` specifier is package-local: it has to resolve to a file inside
  *      the importing package's own `src/`. Anything else is a cross-package read
@@ -20,13 +20,21 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const PACKAGES = ['protocol', 'core', 'cli'];
+
+/** name -> workspace group: libraries live in packages/, apps in apps/. */
+const PACKAGES = [
+  { name: 'protocol', group: 'packages' },
+  { name: 'core', group: 'packages' },
+  { name: 'cli', group: 'apps' },
+  { name: 'desktop', group: 'apps' },
+];
 
 /** Namespaces each package may reference through its own `@/` alias. */
 const OWNED = {
   protocol: ['types', 'rpc'],
-  core: ['services', 'infra', 'server', 'utils', 'onboard', '__tests__'],
-  cli: ['tui', 'client', 'cli', 'cli-args', 'bootstrap', 'session-select', '__tests__'],
+  core: ['services', 'infra', 'server', 'utils', 'onboard', '__tests__', 'client'],
+  cli: ['tui', 'client', 'cli', 'cli-args', 'bootstrap', 'session-select', '__tests__', 'server-entry'],
+  desktop: [],
 };
 
 /** Allowed `@wayang-ai/*` edges. Anything not listed is a violation. */
@@ -34,6 +42,7 @@ const ALLOWED_EDGES = {
   protocol: [],
   core: ['protocol'],
   cli: ['protocol', 'core'],
+  desktop: ['protocol', 'core'],
 };
 
 const SOURCE_FILE = /\.(ts|tsx)$/;
@@ -65,7 +74,7 @@ function isFile(path) {
 
 /** Resolve `@/rest` inside a package the way tsc/esbuild do, without fallbacks. */
 function resolvesInside(pkg, rest) {
-  const base = join(ROOT, 'packages', pkg, 'src', rest);
+  const base = join(ROOT, pkg.group, pkg.name, 'src', rest);
   const candidates = [
     base,
     `${base}.ts`,
@@ -78,11 +87,11 @@ function resolvesInside(pkg, rest) {
 
 const violations = [];
 const report = (pkg, file, specifier, rule) => {
-  violations.push({ pkg, file: relative(ROOT, file), specifier, rule });
+  violations.push({ pkg: pkg.name, file: relative(ROOT, file), specifier, rule });
 };
 
 for (const pkg of PACKAGES) {
-  for (const file of walk(join(ROOT, 'packages', pkg, 'src'))) {
+  for (const file of walk(join(ROOT, pkg.group, pkg.name, 'src'))) {
     const source = readFileSync(file, 'utf8');
     SPECIFIER.lastIndex = 0;
     let match;
@@ -91,8 +100,8 @@ for (const pkg of PACKAGES) {
 
       if (specifier.startsWith('@wayang-ai/')) {
         const target = specifier.slice('@wayang-ai/'.length).split('/')[0];
-        if (target !== pkg && !ALLOWED_EDGES[pkg].includes(target)) {
-          report(pkg, file, specifier, `forbidden edge ${pkg} -> ${target}`);
+        if (target !== pkg.name && !ALLOWED_EDGES[pkg.name].includes(target)) {
+          report(pkg, file, specifier, `forbidden edge ${pkg.name} -> ${target}`);
         }
         continue;
       }
@@ -104,7 +113,7 @@ for (const pkg of PACKAGES) {
       if (specifier.startsWith('@/')) {
         const rest = specifier.slice(2);
         const top = rest.split('/')[0];
-        if (!OWNED[pkg].includes(top) || !resolvesInside(pkg, rest)) {
+        if (!OWNED[pkg.name].includes(top) || !resolvesInside(pkg, rest)) {
           report(pkg, file, specifier, 'cross-package reference must use @wayang-ai/*');
         }
         continue;
@@ -112,7 +121,7 @@ for (const pkg of PACKAGES) {
 
       if (specifier.startsWith('.')) {
         const target = resolve(dirname(file), specifier);
-        const pkgRoot = join(ROOT, 'packages', pkg);
+        const pkgRoot = join(ROOT, pkg.group, pkg.name);
         if (!target.startsWith(pkgRoot + sep)) {
           report(pkg, file, specifier, 'relative import escapes the package root');
           continue;
@@ -127,7 +136,7 @@ for (const pkg of PACKAGES) {
 }
 
 if (violations.length === 0) {
-  console.log('boundaries: ok (protocol <- core <- cli; cross-package imports use @wayang-ai/*)');
+  console.log('boundaries: ok (packages: protocol <- core; apps: cli, desktop; cross-package imports use @wayang-ai/*)');
   process.exit(0);
 }
 
