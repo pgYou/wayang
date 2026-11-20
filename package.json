@@ -36,7 +36,7 @@
   ],
   "scripts": {
     "build": "turbo run build",
-    "cli": "node --env-file=.env.local apps/cli/dist/cli.js --wayang-root . -w . -c ./config.local.json --verbose",
+    "cli": "npm run build && node --env-file=.env.local apps/cli/dist/cli.js --wayang-root . -w . -c ./config.local.json --verbose",
     "cli:watch": "turbo watch build --filter=@wayang-ai/cli...",
     "prepublishOnly": "npm run build",
     "typecheck": "turbo run typecheck",
