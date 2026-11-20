@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.0.0 (规划中，未发布)
+
+> 本段为实施前的版本规划草稿；发布前按实际交付校准，不保留与实施不符的规划文字。
+
+### 规划
+
+- monorepo 拆包（分支 feat/100-monorepo，issue 待补建）：src/ 拆为四个子包 —— @wayang-ai/protocol（共享类型与 RPC framing）、@wayang-ai/core（services / infra / server）、@wayang-ai/cli（TUI 与 wayang 入口）、@wayang-ai/app（桌面端壳，Electron 打包后续落地）；包内 @/ 别名与跨包导入重写、新增 check:boundaries 边界检查、per-package tsup / vitest / tsconfig。已完成：拆包骨架与文件搬移、导入重写、构建与测试验证。
+- 发布策略（已定）：对外发布物保持单一包 wayang-ai，root 为发布单元（bin wayang / waya 不变，files 指向 packages/cli/dist）；@wayang-ai/* 子包一律 private、不发布，构建时 bundle 进 CLI 产物。待办：root package.json 去 private 并补 bin / files；cli 子包的 @wayang-ai/core、@wayang-ai/protocol 依赖挪 devDependencies；release workflow 对 prerelease 版本自动加 --tag alpha（防 prerelease 顶掉 latest）。
+- 桌面端（1.0 主目标）：@wayang-ai/app 桌面壳复用 core / cli 能力，安装包分发（不走 npm）。
+- 发布节奏：先发 v1.0.0-alpha.0（alpha tag）验证新发布链路，1.0.0 正式版发布后 latest 从 0.9.8 平滑接续。
+
+### 里程碑
+
+- 拆包收敛：feat/100-monorepo 门槛全绿后合入 release/1.0.0
+- 发布链路落地：manifest / workflow 修复完成，v1.0.0-alpha.0 发布验证通过
+- 桌面端：Electron 壳与安装包分发
+
 ## v0.9.8 (2026-11-20)
 
 ### 修复
