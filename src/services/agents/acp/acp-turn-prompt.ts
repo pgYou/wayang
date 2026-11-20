@@ -9,7 +9,7 @@ import { EEntryType } from '@/types/index';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 import {
-  buildDenialNotice, turnEndErrorText,
+  buildDenialNotice, NO_FINAL_SUMMARY_ERROR, turnEndErrorText,
   type TurnDenial, type TurnEndCategory, type TurnNextAction,
 } from './turn-attribution';
 
@@ -54,7 +54,10 @@ export function makeInjectedEntry(text: string, kind: 'acp-denial-notice' | 'con
 /** Reasons decideNextAction attributes to the CATEGORY itself (the rest are guard limits). */
 const CATEGORY_REASONS = new Set(['Aborted', 'request timed out', 'agent ended the turn unexpectedly']);
 
-/** Terminal WorkerResult. Guard-limit terminations carry their specific reason. */
+/** Terminal WorkerResult. Guard-limit terminations carry their specific reason.
+ * A completed turn must carry a non-empty summary — the summary is the only
+ * result channel — otherwise it is reported as a failed "no final summary"
+ * turn instead of "completed" with an empty title (#83). */
 export function makeTerminalResult(
   category: TurnEndCategory,
   verdictReason: string | undefined,
@@ -63,8 +66,13 @@ export function makeTerminalResult(
   stopReason: string,
 ): WorkerResult {
   const guardReason = verdictReason !== undefined && !CATEGORY_REASONS.has(verdictReason) ? verdictReason : undefined;
-  if (category === 'completed' && guardReason === undefined) return { status: 'completed', summary };
-  const base = turnEndErrorText(category, denials, { stopReason });
+  const summaryMissing = summary.trim() === '';
+  if (category === 'completed' && guardReason === undefined && !summaryMissing) {
+    return { status: 'completed', summary };
+  }
+  const base = category === 'completed' && summaryMissing
+    ? NO_FINAL_SUMMARY_ERROR
+    : turnEndErrorText(category, denials, { stopReason });
   const error = guardReason !== undefined
     ? (base ? `${base} — ${guardReason}` : guardReason)
     : (base || 'ACP worker ended the turn unexpectedly');

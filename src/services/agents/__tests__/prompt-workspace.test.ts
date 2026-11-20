@@ -160,3 +160,19 @@ describe('third-party prompt — scratch file convention', () => {
     expect(rules).toContain('never `/tmp`');
   });
 });
+
+describe('third-party prompt — closing contract (#83)', () => {
+  it('requires a deliverable final summary instead of forbidding one', () => {
+    const prompt = buildThirdPartyPrompt(new SkillRegistry([]));
+    const rules = prompt.slice(prompt.indexOf('<Rules>'), prompt.indexOf('</Rules>'));
+
+    // The old rule was the contradiction: the system captures exactly that
+    // last message, so the prompt must not tell the agent to skip it.
+    expect(rules).not.toContain('Do NOT output a final summary');
+    expect(rules).not.toContain('the system already captures the result separately');
+    // The replacement names the contract and the missing done/fail tool.
+    expect(rules).toContain('Your LAST message before the turn ends MUST be the deliverable final summary');
+    expect(rules).toContain('that message IS the result the system captures');
+    expect(rules).toContain('You have no done/fail tool: ending the turn is how you express completion');
+  });
+});

@@ -196,6 +196,12 @@ function sendUpdate(worker: TestAcpWorker, update: Record<string, unknown>): voi
   worker.transport.agentMessage({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's-1', update } });
 }
 
+/** Agent text chunk — the turn's deliverable body (#83): an end_turn without
+ * one is no longer a completion. */
+function sendText(worker: TestAcpWorker, text: string, messageId?: string): void {
+  sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, ...(messageId ? { messageId } : {}) });
+}
+
 function sendPermissionRequest(worker: TestAcpWorker, id: number, toolCall: Record<string, unknown>, options: unknown[]): void {
   worker.transport.agentMessage({
     jsonrpc: '2.0',
@@ -354,6 +360,8 @@ describe('BaseAcpWorker: end-to-end turn (frozen §8 case 1 shape)', () => {
     const runPromise = worker.run(TASK, {});
     await openFakeSession(worker);
     await worker.transport.waitForClientOutput(3);
+    // #83: a completion round carries its deliverable final summary.
+    sendText(worker, '探针任务完成，结论：probe-ok', 'm-maxturns');
     await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
     const result = await runPromise;
     // The run ends by the agent's own end_turn — a configured maxTurns never
@@ -577,6 +585,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     const idx = await nthPromptIndex(worker.transport, 1);
     const text = (worker.transport.clientMessages[idx] as any).params.prompt[0].text as string;
     expect(text).toContain('[SYSTEM NOTICE]');
+    sendText(worker, '已按拒绝原因改用只读方案，结论：probe-ok', 'm-controller-final');
     await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
     const result = await runPromise;
     expect(result.status).toBe('completed');
@@ -641,6 +650,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     const idx = await nthPromptIndex(worker.transport, 1);
     const text = (worker.transport.clientMessages[idx] as any).params.prompt[0].text as string;
     expect(text).toContain('[SYSTEM NOTICE]');
+    sendText(worker, '已按策略改为合规操作，结论：probe-ok', 'm-policy-final');
     await respondToPrompt(worker.transport, 1, { stopReason:'end_turn' });
     const result = await runPromise;
     expect(result.status).toBe('completed');
@@ -675,6 +685,7 @@ describe('BaseAcpWorker: permission denial semantics (#25)', () => {
     const idx = await nthPromptIndex(worker.transport, 1);
     const text = (worker.transport.clientMessages[idx] as any).params.prompt[0].text as string;
     expect(text).toContain('[SYSTEM NOTICE]');
+    sendText(worker, '审批超时已记录，改用非敏感方式，结论：probe-ok', 'm-timeout-final');
     await respondToPrompt(worker.transport, 1, { stopReason:'end_turn' });
     const result = await runPromise;
     expect(result.status).toBe('completed');
@@ -727,12 +738,15 @@ describe('BaseAcpWorker: messaging and live status', () => {
     expect(worker.pendingMessages()).toEqual(['status?']);
 
     // Turn 1 ends with a queued message → a second turn starts for it.
+    // #83: each round carries its own deliverable body.
+    sendText(worker, '正在处理，稍后补充状态', 'm-msg-1');
     await respondToPrompt(worker.transport, 0, { stopReason:'end_turn' });
     const secondPromptIdx = await nthPromptIndex(worker.transport, 1);
     const secondPrompt = worker.transport.clientMessages[secondPromptIdx] as { params: { prompt: unknown[] } };
     expect(secondPrompt.params.prompt).toEqual([{ type: 'text', text: '[Controller message] status?' }]);
 
     // Turn 2 ends with nothing queued → the run completes and closes input.
+    sendText(worker, '状态查询完成，结论：probe-ok', 'm-msg-2');
     await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
     const result = await runPromise;
     expect(result.status).toBe('completed');

@@ -6,13 +6,14 @@ import {
   decideNextAction,
   denialKey,
   MIN_RESIDUE_TURN_TEXT_CHARS,
+  NO_FINAL_SUMMARY_ERROR,
   resetTurnGuard,
   sanitizeForPrompt,
   sanitizeTarget,
   turnEndErrorText,
   TURN_LIMITS,
 } from '@/services/agents/acp/turn-attribution';
-import { finalizeTurnVerdict } from '@/services/agents/acp/acp-turn-prompt';
+import { finalizeTurnVerdict, makeTerminalResult } from '@/services/agents/acp/acp-turn-prompt';
 import type {
   TurnDenial,
   TurnGuardState,
@@ -74,8 +75,31 @@ describe('classifyTurnEnd', () => {
     expect(classify({ denials: [denial({ source: 'controller' })] })).toBe('denied_by_user');
   });
 
-  it('stopReason end_turn with no denials → completed', () => {
-    expect(classify({ stopReason: 'end_turn', hasQueuedMessages: true })).toBe('completed');
+  // #83: end_turn now shares the effective-body bar with the residue rule —
+  // the turn's last text is the ONLY result source, so an end without it would
+  // be "completed" with an empty summary.
+  it('stopReason end_turn with a deliverable body → completed', () => {
+    expect(
+      classify({ stopReason: 'end_turn', hasQueuedMessages: true, turnTextTrimmedChars: 20 }),
+    ).toBe('completed');
+  });
+
+  it('end_turn without a final summary (empty or under the minimum) → agent_ended_unexpectedly', () => {
+    expect(classify({ stopReason: 'end_turn' })).toBe('agent_ended_unexpectedly');
+    expect(classify({ stopReason: 'end_turn', turnTextTrimmedChars: 0 })).toBe('agent_ended_unexpectedly');
+    expect(
+      classify({ stopReason: 'end_turn', turnTextTrimmedChars: MIN_RESIDUE_TURN_TEXT_CHARS - 1 }),
+    ).toBe('agent_ended_unexpectedly');
+    expect(
+      classify({ stopReason: 'end_turn', turnTextTrimmedChars: MIN_RESIDUE_TURN_TEXT_CHARS }),
+    ).toBe('completed');
+  });
+
+  it('a summary-less end_turn gets its own failure wording, not the stopReason template', () => {
+    const category = classify({ stopReason: 'end_turn' });
+    expect(category).toBe('agent_ended_unexpectedly');
+    expect(turnEndErrorText(category, [], { stopReason: 'end_turn' })).toBe(NO_FINAL_SUMMARY_ERROR);
+    expect(turnEndErrorText(category, [], { stopReason: 'end_turn' })).not.toContain('stopReason=');
   });
 
   it('cancelled with no cancel fact and no denials → agent_ended_unexpectedly', () => {
@@ -94,12 +118,12 @@ describe('classifyTurnEnd', () => {
     ).toBe('our_timeout');
   });
 
-  it('a normal end_turn beats denials (the agent saw the refusal and wrapped up)', () => {
+  it('a normal end_turn with a body beats denials (the agent saw the refusal and wrapped up)', () => {
     expect(
-      classify({ stopReason: 'end_turn', denials: [denial({ source: 'timeout' })] }),
+      classify({ stopReason: 'end_turn', denials: [denial({ source: 'timeout' })], turnTextTrimmedChars: 20 }),
     ).toBe('completed');
     expect(
-      classify({ stopReason: 'end_turn', denials: [denial({ source: 'controller' })] }),
+      classify({ stopReason: 'end_turn', denials: [denial({ source: 'controller' })], turnTextTrimmedChars: 20 }),
     ).toBe('completed');
   });
 
@@ -462,6 +486,10 @@ describe('turnEndErrorText', () => {
     expect(
       turnEndErrorText('agent_ended_unexpectedly', [], { stopReason: 'cancelled' }),
     ).toBe('ACP worker ended the turn unexpectedly (stopReason=cancelled)');
+    // #83: a summary-less end_turn is distinguishable from every stopReason case.
+    expect(
+      turnEndErrorText('agent_ended_unexpectedly', [], { stopReason: 'end_turn' }),
+    ).toBe('ACP worker ended the turn without a final summary');
     expect(turnEndErrorText('completed', [])).toBe('');
   });
 
@@ -482,6 +510,29 @@ describe('turnEndErrorText', () => {
     expect(error).not.toBe(notice);
     expect(error).not.toContain('[SYSTEM NOTICE]');
     expect(notice).not.toContain(error);
+  });
+});
+
+describe('makeTerminalResult (#83: a completion must carry a summary)', () => {
+  it('completed with a non-empty summary → completed, summary verbatim', () => {
+    expect(makeTerminalResult('completed', 'agent ended the turn unexpectedly', [], '改了什么：判定收紧；验证：vitest 全绿', 'end_turn'))
+      .toEqual({ status: 'completed', summary: '改了什么：判定收紧；验证：vitest 全绿' });
+  });
+
+  it('completed with an empty/whitespace summary → failed with the dedicated wording', () => {
+    expect(makeTerminalResult('completed', undefined, [], '', 'end_turn')).toEqual({
+      status: 'failed', error: NO_FINAL_SUMMARY_ERROR,
+    });
+    expect(makeTerminalResult('completed', 'agent ended the turn unexpectedly', [], '   \n ', 'end_turn')).toEqual({
+      status: 'failed', error: NO_FINAL_SUMMARY_ERROR,
+    });
+  });
+
+  it('agent_ended_unexpectedly from end_turn → failed with the no-summary wording', () => {
+    expect(makeTerminalResult('agent_ended_unexpectedly', 'agent ended the turn unexpectedly', [], '', 'end_turn'))
+      .toEqual({ status: 'failed', error: NO_FINAL_SUMMARY_ERROR });
+    expect(makeTerminalResult('agent_ended_unexpectedly', undefined, [], '', 'cancelled'))
+      .toEqual({ status: 'failed', error: 'ACP worker ended the turn unexpectedly (stopReason=cancelled)' });
   });
 });
 

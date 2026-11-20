@@ -42,26 +42,46 @@ const CATEGORY_BY_SOURCE: Record<DenialSource, TurnEndCategory> = {
 };
 
 /**
- * §9.1 residue rule: a turn whose stopReason is 'cancelled' counts as
- * completed only when ALL three hold —
- * 1. this turn is a denial-reissue round (per-turn reissue count > 0);
- * 2. this turn carries an effective body: trimmed text of at least
- *    MIN_RESIDUE_TURN_TEXT_CHARS chars (a lone mark or acknowledgment token
- *    is intermediate chatter, not a final answer);
- * 3. no external cancel/abort interrupted the turn (cancelFact wins above).
+ * §9.1 effective-body threshold, applied to both completion paths: a turn
+ * carries a deliverable final answer only with trimmed text of at least this
+ * many chars (a lone mark or acknowledgment token is intermediate chatter,
+ * not a final answer).
+ *
+ * - residue rule (stopReason 'cancelled'): completed only when
+ *   1. this turn is a denial-reissue round (per-turn reissue count > 0);
+ *   2. this turn carries an effective body (see above);
+ *   3. no external cancel/abort interrupted the turn (cancelFact wins above).
+ * - normal end_turn: completed only with an effective body too — the last turn
+ *   text is the ONLY result source (acp-worker-run's lastText()), so an
+ *   end_turn without a summary would otherwise be "completed with an empty
+ *   summary" (#83).
  */
 export const MIN_RESIDUE_TURN_TEXT_CHARS = 8;
 
+/** Distinguishable failure text: the agent ended its turn but delivered no
+ * final summary — the one case the controller/client must tell apart from a
+ * genuine completion (#83). */
+export const NO_FINAL_SUMMARY_ERROR = 'ACP worker ended the turn without a final summary';
+
 /** Cancel facts win over everything; a normal end_turn beats denials (the agent
- * saw the refusal and chose to wrap up — that is a completed turn); denials
- * beat other stop reasons; a cancelled stopReason in a denial-reissue round
- * with this-turn effective text is a completed turn (04-permissions §9.1:
- * the agent's 'cancelled' is a denial residue, not a cancellation). */
+ * saw the refusal and chose to wrap up — that is a completed turn, provided it
+ * delivered a body — see MIN_RESIDUE_TURN_TEXT_CHARS); denials beat other stop
+ * reasons; a cancelled stopReason in a denial-reissue round with this-turn
+ * effective text is a completed turn (04-permissions §9.1: the agent's
+ * 'cancelled' is a denial residue, not a cancellation). */
 export function classifyTurnEnd(input: ClassifyTurnEndInput): TurnEndCategory {
   const { stopReason, cancelFact, denials } = input;
   if (cancelFact === 'abort') return 'our_cancel';
   if (cancelFact === 'prompt-timeout') return 'our_timeout';
-  if (stopReason === 'end_turn') return 'completed';
+  // #83: end_turn is a completion only when this turn carries the final
+  // summary — the same effective-body bar the residue rule uses. Without it
+  // the terminal result would be "completed" with an empty summary, which the
+  // client cannot tell apart from a real delivery.
+  if (stopReason === 'end_turn') {
+    return (input.turnTextTrimmedChars ?? 0) >= MIN_RESIDUE_TURN_TEXT_CHARS
+      ? 'completed'
+      : 'agent_ended_unexpectedly';
+  }
   if (denials.length > 0) {
     const present = new Set(denials.map((d) => d.source));
     return CATEGORY_BY_SOURCE[SOURCE_PRIORITY.find((s) => present.has(s)) ?? 'controller'];
@@ -316,7 +336,11 @@ export function turnEndErrorText(
     case 'our_timeout':
       return 'ACP worker request timed out';
     case 'agent_ended_unexpectedly':
-      return `ACP worker ended the turn unexpectedly (stopReason=${options.stopReason ?? 'unknown'})`;
+      // #83: an end_turn that carried no deliverable body has its own wording
+      // so completion-without-summary stays countable in the failure stats.
+      return options.stopReason === 'end_turn'
+        ? NO_FINAL_SUMMARY_ERROR
+        : `ACP worker ended the turn unexpectedly (stopReason=${options.stopReason ?? 'unknown'})`;
     case 'completed':
       return '';
     default:
