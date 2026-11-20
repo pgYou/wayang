@@ -10,7 +10,7 @@
  * - a positive integer within the bound → the value itself.
  */
 
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../infra/logger';
 
 /**
  * Safe upper bound for a configured cap. A value beyond it is treated as a

@@ -18,9 +18,9 @@
  *   (resend or terminal update) or the turn ends (flushUnsettled).
  */
 
-import type { AcpContentBlock, AcpSessionUpdate, AcpToolCall, AcpToolCallContent, AcpToolCallUpdate, AcpToolKind, AcpToolStatus } from '@/services/acp/types';
+import type { AcpContentBlock, AcpSessionUpdate, AcpToolCall, AcpToolCallContent, AcpToolCallUpdate, AcpToolKind, AcpToolStatus } from '../../acp/types';
 import type { ToolCallRecord, ToolResultRecord } from '@wayang-ai/protocol';
-import { nowISO } from '@/utils/time';
+import { nowISO } from '../../../utils/time';
 import { toolPayloadText } from '../utils/estimate-tokens';
 import {
   CLAUDE_TOOL_ARGS_STORE_CHARS,

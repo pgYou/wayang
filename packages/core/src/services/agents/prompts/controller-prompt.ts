@@ -8,9 +8,9 @@
 import type { WorkerConfig } from '@wayang-ai/protocol/types/config';
 import { PUPPET_DEFAULTS } from '../worker-defaults';
 import { assemble, buildEnvironment, buildSkillCatalog, section } from './prompt-utils';
-import { SystemContext } from '@/infra/system-context';
-import { resolveGeneralWorkspace } from '@/infra/general-workspace';
-import type { SkillRegistry } from '@/services/skills/registry';
+import { SystemContext } from '../../../infra/system-context';
+import { resolveGeneralWorkspace } from '../../../infra/general-workspace';
+import type { SkillRegistry } from '../../skills/registry';
 
 // ---------------------------------------------------------------------------
 // Static sections (cacheable, never change between calls)

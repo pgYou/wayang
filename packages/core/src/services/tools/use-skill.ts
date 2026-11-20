@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
-import type { SkillRegistry } from '@/services/skills/registry';
-import type { SkillContent } from '@/services/skills/types';
+import type { SkillRegistry } from '../skills/registry';
+import type { SkillContent } from '../skills/types';
 
 /**
  * Format a loaded skill into a single text payload for the LLM.

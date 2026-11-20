@@ -7,7 +7,7 @@ import { BaseAgent } from '../base-agent';
 import { ContextManager, COMPACT_MAX_RETRIES } from '../context-manager';
 import type { ControllerAgentState } from '../controller-state';
 import type { ToolSet } from 'ai';
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../../infra/logger';
 import type { ProviderConfig, ContextUsage, ContextLastUsage } from '@wayang-ai/protocol';
 import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
@@ -21,9 +21,9 @@ import {
   buildSummarizerPrompt,
   buildControllerSystemPrompt,
 } from '../prompts/index';
-import { wayangDirForSessionDir } from '@/infra/session-helpers';
-import { resolveWorkspaceRef } from '@/infra/workspace-registry';
-import { SystemContext } from '@/infra/system-context';
+import { wayangDirForSessionDir } from '../../../infra/session-helpers';
+import { resolveWorkspaceRef } from '../../../infra/workspace-registry';
+import { SystemContext } from '../../../infra/system-context';
 
 /**
  * Share of the context window (in characters) the summarizer input may use —
@@ -68,7 +68,7 @@ export class ControllerAgentBase extends BaseAgent {
     state: ControllerAgentState,
     provider: ProviderConfig,
     tools: ToolSet,
-    skills: import('@/services/skills/registry').SkillRegistry,
+    skills: import('../../skills/registry').SkillRegistry,
     recorder: ToolCallRecorder = new ToolCallRecorder(),
     /**
      * Startup rules section (home + cwd AGENTS.md), already rendered by

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
-import type { WorkerMessageDelivery } from '@/services/task-execute-engine';
+import type { WorkerMessageDelivery } from '../task-execute-engine';
 
 export interface ChatWorkerToolDeps {
   sendMessageToWorker: (workerId: string, message: string) => WorkerMessageDelivery;

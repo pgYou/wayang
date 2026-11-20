@@ -1,6 +1,6 @@
 // The bash gate proper: candidate sweep + destructive tier + `-c` / substitution recursion.
 
-import { classifyRedirections, tokenizeShellLite } from '@/services/tools/shell-lexer';
+import { classifyRedirections, tokenizeShellLite } from '../shell-lexer';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { evaluateCapabilityGate, redirectWriteScopeAsk } from './bash-capability';
 import { segmentAccess, unanalyzedInnerCommand, unverifiedReadOnlyCommand } from './bash-classification';

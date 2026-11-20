@@ -1,27 +1,27 @@
 import { BaseAgent } from './base-agent';
 import { ContextManager } from './context-manager';
-import { WorkerState, type InboxMessage } from '@/services/agents/worker-state';
-import { buildAssistantEntry } from '@/services/agents/utils/build-assistant-entry';
-import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from '@/services/agents/utils/entry-envelope';
-import { ToolCallRecorder, recordToolCalls } from '@/services/agents/utils/tool-call-recorder';
-import { controllerMessageContent, createInboxInjection } from '@/services/agents/utils/inbox-injection';
-import { generateId } from '@/utils/id';
-import { nowISO } from '@/utils/time';
+import { WorkerState, type InboxMessage } from './worker-state';
+import { buildAssistantEntry } from './utils/build-assistant-entry';
+import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from './utils/entry-envelope';
+import { ToolCallRecorder, recordToolCalls } from './utils/tool-call-recorder';
+import { controllerMessageContent, createInboxInjection } from './utils/inbox-injection';
+import { generateId } from '../../utils/id';
+import { nowISO } from '../../utils/time';
 import type { WorkerResult, TaskDetail, ProviderConfig, ToolChoice, WorkerLiveStatus } from '@wayang-ai/protocol';
-import type { IWorkerInstance } from '@/services/agents/worker-instance';
+import type { IWorkerInstance } from './worker-instance';
 import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import { EEntryType } from '@wayang-ai/protocol';
-import type { Logger } from '@/infra/logger';
-import type { StateEvent } from '@/infra/state/base-state';
+import type { Logger } from '../../infra/logger';
+import type { StateEvent } from '../../infra/state/base-state';
 import { resolveMaxTurns } from './max-turns';
-import { checkControllerMessagesTool } from '@/services/tools/check-messages';
+import { checkControllerMessagesTool } from '../tools/check-messages';
 
 import { buildWorkerSystemPrompt } from './prompts/index';
-import { SystemContext } from '@/infra/system-context';
-import type { SkillRegistry } from '@/services/skills/registry';
-import { wayangDirForSessionDir } from '@/infra/session-helpers';
-import { resolveWorkspaceRef } from '@/infra/workspace-registry';
-import type { WorkspaceRef } from '@/infra/workspace-registry';
+import { SystemContext } from '../../infra/system-context';
+import type { SkillRegistry } from '../skills/registry';
+import { wayangDirForSessionDir } from '../../infra/session-helpers';
+import { resolveWorkspaceRef } from '../../infra/workspace-registry';
+import type { WorkspaceRef } from '../../infra/workspace-registry';
 
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly state: WorkerState;

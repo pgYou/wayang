@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { TaskDetail } from '@wayang-ai/protocol';
-import { clampToolOutput, resolveToolOutputMaxChars } from '@/services/agents/utils/tool-output-clamp';
+import { clampToolOutput, resolveToolOutputMaxChars } from '../agents/utils/tool-output-clamp';
 import { defineTool, safeExecute } from './common';
 
 export function listTasksTool(deps: { listTasks: (status?: TaskDetail['status']) => TaskDetail[] }) {

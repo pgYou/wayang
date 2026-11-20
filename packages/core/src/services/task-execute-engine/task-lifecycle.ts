@@ -10,8 +10,8 @@ import type {
   TaskQueuedSignalPayload,
   WorkerStartedSignalPayload,
 } from '@wayang-ai/protocol';
-import type { WorkspaceRef } from '@/infra/workspace-registry';
-import { getWorkerMeta } from '@/services/agents/worker-defaults';
+import type { WorkspaceRef } from '../../infra/workspace-registry';
+import { getWorkerMeta } from '../agents/worker-defaults';
 import { TaskEngineBase, PUPPET_WORKER_TYPE } from './engine-base';
 
 export abstract class TaskLifecycleEngine extends TaskEngineBase {

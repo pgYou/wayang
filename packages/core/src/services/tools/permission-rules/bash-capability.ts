@@ -6,12 +6,12 @@
 // verbs in a bare segment.
 
 import { resolve as resolvePath } from 'node:path';
-import { isPathWithin } from '@/infra/permission/policy';
+import { isPathWithin } from '../../../infra/permission/policy';
 import {
   CMDSUBST_PLACEHOLDER,
   isDiscardRedirectTarget,
   type ShellSegment,
-} from '@/services/tools/shell-lexer';
+} from '../shell-lexer';
 import { commandEntry, isInertCommand } from './command-tables';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead } from './bash-classification';

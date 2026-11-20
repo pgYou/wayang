@@ -1,7 +1,7 @@
 import type { TaskDetail, ControllerSignal, InquireQuestion, ActiveWorkerInfo, WorkerLiveStatus } from '@wayang-ai/protocol';
 import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
 import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../infra/logger';
 import { addTaskTool } from './add-task';
 import { listTasksTool } from './list-tasks';
 import { cancelTaskTool } from './cancel-task';
@@ -27,9 +27,9 @@ import { updateProgressTool } from './update-progress';
 import { chatWorkerTool } from './chat-worker';
 import { respondPermissionTool } from './respond-permission';
 import { respondInquiryTool } from './respond-inquiry';
-import type { PermissionResolutionStatus } from '@/services/permission/permission-transport';
+import type { PermissionResolutionStatus } from '../permission/permission-transport';
 import { useSkillTool } from './use-skill';
-import type { SkillRegistry } from '@/services/skills/registry';
+import type { SkillRegistry } from '../skills/registry';
 
 export interface ControllerToolDeps {
   /**
@@ -90,7 +90,7 @@ export interface ControllerToolDeps {
   /** The worker instance's own id (on-disk transcript dir name), while tracked. */
   getWorkerTranscriptId?: (workerId: string) => string | undefined;
   /** Windowed (tail-bounded) read of an on-disk transcript. */
-  readTranscriptWindow?: (workerId: string, opts: import('@/services/worker-transcript').TranscriptReadOptions) => import('@/services/worker-transcript').WorkerTranscriptWindow | null;
+  readTranscriptWindow?: (workerId: string, opts: import('../worker-transcript').TranscriptReadOptions) => import('../worker-transcript').WorkerTranscriptWindow | null;
   /** Session directory holding `workers/<workerId>/conversation.jsonl`. */
   sessionDir: string;
   /** Currently tracked workers (for status listings / loud not-found messages). */
@@ -104,7 +104,7 @@ export interface ControllerToolDeps {
   /** Ask the user a structured question and wait for the answer. */
   inquire: (question: InquireQuestion) => Promise<string>;
   /** Send a message to a running worker's inbox. */
-  sendMessageToWorker: (workerId: string, message: string) => import('@/services/task-execute-engine').WorkerMessageDelivery;
+  sendMessageToWorker: (workerId: string, message: string) => import('../task-execute-engine').WorkerMessageDelivery;
   /** Respond to a worker's permission request. Every status is terminal (issue #69). */
   resolvePermission: (requestId: string, approved: boolean, reason?: string) => PermissionResolutionStatus;
   /** Answer a worker's pending ask_controller question. */

@@ -6,13 +6,13 @@
  * client; the server receives decisions as options.
  */
 
-import { loadConfig } from '@/onboard';
-import { Supervisor } from '@/services/supervisor';
-import { getSession } from '@/infra/session-helpers';
+import { loadConfig } from '../onboard';
+import { Supervisor } from '../services/supervisor';
+import { getSession } from '../infra/session-helpers';
 import { RpcServer } from '@wayang-ai/protocol/rpc/rpc-server';
 import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
 import { METHOD, NOTIFY, RpcError, RPC_ERROR, type RpcTarget } from '@wayang-ai/protocol/rpc/protocol';
-import { serializeTurnView, summarizeTurn, DEFAULT_TURN_TEXT_LIMIT } from '@/services/conversation/turn-serialize';
+import { serializeTurnView, summarizeTurn, DEFAULT_TURN_TEXT_LIMIT } from '../services/conversation/turn-serialize';
 import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 import type { TaskDetail } from '@wayang-ai/protocol';
 

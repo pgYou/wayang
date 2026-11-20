@@ -5,8 +5,8 @@
  * non-empty sections with double newlines and trims trailing whitespace.
  */
 
-import { SystemContext } from '@/infra/system-context';
-import type { SkillRegistry } from '@/services/skills/registry';
+import { SystemContext } from '../../../infra/system-context';
+import type { SkillRegistry } from '../../skills/registry';
 import os from 'node:os';
 
 /** Join non-empty sections into a single prompt string. */

@@ -1,7 +1,7 @@
 // The `cd` slice of a command line: a local cwd cursor walked over leading literal `cd` segments.
 
-import { normalizePath } from '@/infra/permission/policy';
-import { CMDSUBST_PLACEHOLDER, type ShellSegment } from '@/services/tools/shell-lexer';
+import { normalizePath } from '../../../infra/permission/policy';
+import { CMDSUBST_PLACEHOLDER, type ShellSegment } from '../shell-lexer';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { expandHome } from './home-expansion';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';

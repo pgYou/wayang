@@ -12,8 +12,8 @@
 
 import type { RpcTransport, TransportErrorEvent } from './transport';
 import { isRpcResponse, METHOD, NOTIFY, type RpcMessage, type RpcNotification } from './protocol';
-import type { Subscribable } from '@/types/subscribable';
-import type { StateEvent } from '@/types/state';
+import type { Subscribable } from '../types/subscribable';
+import type { StateEvent } from '../types/state';
 
 export interface RpcClientOptions {
   /** Invoked when the underlying channel fails or the peer goes away. */

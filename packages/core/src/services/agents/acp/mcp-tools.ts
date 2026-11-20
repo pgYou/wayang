@@ -9,7 +9,7 @@
  * registry in mcp-schemas.ts and the fallback timer stay untouched.
  */
 
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../../infra/logger';
 import {
   MAX_CONTEXT_CHARS,
   MAX_QUESTION_CHARS,

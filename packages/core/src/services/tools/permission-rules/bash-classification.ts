@@ -1,7 +1,7 @@
 // Segment classification: does one shell segment READ, WRITE, or neither?
 
-import type { AccessMode } from '@/infra/permission/policy';
-import { isDiscardRedirectTarget, type ShellSegment } from '@/services/tools/shell-lexer';
+import type { AccessMode } from '../../../infra/permission/policy';
+import { isDiscardRedirectTarget, type ShellSegment } from '../shell-lexer';
 import {
   GIT_READ_SUBCOMMANDS,
   isReadCommand,

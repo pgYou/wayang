@@ -7,11 +7,11 @@
  */
 
 import * as path from 'node:path';
-import { formatTimestamp } from '@/utils/id';
-import { sessionDisplayTitle, wayangDirForSessionDir } from '@/infra/session-helpers';
-import type { SessionMeta } from '@/infra/session-helpers';
-import { normalizeWorkspacePath, resolveWorkspaceRef } from '@/infra/workspace-registry';
-import type { WorkspaceRef } from '@/infra/workspace-registry';
+import { formatTimestamp } from '../../utils/id';
+import { sessionDisplayTitle, wayangDirForSessionDir } from '../../infra/session-helpers';
+import type { SessionMeta } from '../../infra/session-helpers';
+import { normalizeWorkspacePath, resolveWorkspaceRef } from '../../infra/workspace-registry';
+import type { WorkspaceRef } from '../../infra/workspace-registry';
 import { SessionState } from './session-state';
 
 export class SessionManager {

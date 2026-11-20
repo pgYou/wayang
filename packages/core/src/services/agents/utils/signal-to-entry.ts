@@ -5,7 +5,7 @@
  * lineage (rootTurnId / causationId / actor) onto each entry.
  */
 
-import { generateId } from '@/utils/id';
+import { generateId } from '../../../utils/id';
 import type {
   ControllerSignal,
   InputSignalPayload,

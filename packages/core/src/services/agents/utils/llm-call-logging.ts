@@ -13,7 +13,7 @@
 
 import type { ModelMessage } from 'ai';
 import { homedir } from 'node:os';
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../../infra/logger';
 import { estimateConversationTokens } from './estimate-tokens';
 
 /** Env switch (WAYANG_LOG_PROMPTS=1|true) that re-enables the full prompt dump. */

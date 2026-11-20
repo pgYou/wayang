@@ -3,10 +3,10 @@
  */
 
 import { join } from 'node:path';
-import type { SessionMeta } from '@/infra/session-helpers';
-import type { WorkspaceRef } from '@/infra/workspace-registry';
-import { BaseWayangState } from '@/infra/state/base-state';
-import { JSONFileHelper } from '@/infra/state/persistence/json-file';
+import type { SessionMeta } from '../../infra/session-helpers';
+import type { WorkspaceRef } from '../../infra/workspace-registry';
+import { BaseWayangState } from '../../infra/state/base-state';
+import { JSONFileHelper } from '../../infra/state/persistence/json-file';
 
 export class SessionState extends BaseWayangState {
   private jsonFile: JSONFileHelper;

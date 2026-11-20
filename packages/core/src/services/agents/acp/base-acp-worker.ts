@@ -17,32 +17,32 @@ import type { WorkerResult } from '@wayang-ai/protocol';
 import type { TaskDetail } from '@wayang-ai/protocol/types/task';
 import type { WorkerConfig, ApprovalMemoryMode } from '@wayang-ai/protocol/types/config';
 import type { WorkerLiveStatus } from '@wayang-ai/protocol/types/worker';
-import type { Logger } from '@/infra/logger';
-import type { StateEvent } from '@/infra/state/base-state';
+import type { Logger } from '../../../infra/logger';
+import type { StateEvent } from '../../../infra/state/base-state';
 import type { ConversationEntry, SignalTurnLineage } from '@wayang-ai/protocol';
 import { accessSync, constants } from 'node:fs';
 import { join } from 'node:path';
 import { WorkerState } from '../worker-state';
 import { type TurnEnvelope, applyTurnEnvelope } from '../utils/entry-envelope';
-import { generateId } from '@/utils/id';
-import { SystemContext } from '@/infra/system-context';
-import { wayangDirForSessionDir } from '@/infra/session-helpers';
-import { resolveWorkspaceRef } from '@/infra/workspace-registry';
-import type { WorkspaceRef } from '@/infra/workspace-registry';
-import type { SignalQueue } from '@/services/signal/signal-queue';
+import { generateId } from '../../../utils/id';
+import { SystemContext } from '../../../infra/system-context';
+import { wayangDirForSessionDir } from '../../../infra/session-helpers';
+import { resolveWorkspaceRef } from '../../../infra/workspace-registry';
+import type { WorkspaceRef } from '../../../infra/workspace-registry';
+import type { SignalQueue } from '../../signal/signal-queue';
 import {
   PermissionTransport,
   type PermissionResolutionStatus,
-} from '@/services/permission/permission-transport';
-import type { PermissionMiddlewareResult } from '@/services/tools/permission-middleware';
-import type { WorkerAccessScope } from '@/services/tools/permission-rules';
-import { ApprovalMemory } from '@/services/permission/approval-memory';
-import type { SkillRegistry } from '@/services/skills/registry';
-import { AcpError, acpUserMessage } from '@/services/acp/errors';
-import { AUTH_STDERR_PATTERN } from '@/services/acp/codec';
-import { type AcpTimeouts, type AcpLaunchConfig } from '@/services/acp/config';
-import type { AcpCapabilities, AcpHandshake, AcpPermissionOutcome, AcpPermissionRequest } from '@/services/acp/types';
-import { buildAcpCapabilities } from '@/services/acp/client';
+} from '../../permission/permission-transport';
+import type { PermissionMiddlewareResult } from '../../tools/permission-middleware';
+import type { WorkerAccessScope } from '../../tools/permission-rules';
+import { ApprovalMemory } from '../../permission/approval-memory';
+import type { SkillRegistry } from '../../skills/registry';
+import { AcpError, acpUserMessage } from '../../acp/errors';
+import { AUTH_STDERR_PATTERN } from '../../acp/codec';
+import { type AcpTimeouts, type AcpLaunchConfig } from '../../acp/config';
+import type { AcpCapabilities, AcpHandshake, AcpPermissionOutcome, AcpPermissionRequest } from '../../acp/types';
+import { buildAcpCapabilities } from '../../acp/client';
 import { createAcpToolAccumulator, type AcpToolAccumulator } from './event-mapper';
 import { createAcpPermissionBridge, type AcpDenialInfo } from './permission-bridge';
 import { AcpTurnWriter } from './acp-turn-writer';
@@ -237,7 +237,7 @@ export abstract class BaseAcpWorker {
   protected _accumulator: AcpToolAccumulator = createAcpToolAccumulator();
   protected readonly _turnWriter: AcpTurnWriter;
   /** The run's client (spawned in run(), closed in its finally). */
-  protected _client: import('@/services/acp/client').AcpClient | null = null;
+  protected _client: import('../../acp/client').AcpClient | null = null;
   protected _sessionId: string | null = null;
   /** Set the moment a cancel goes out — gates late updates (frozen §6.4). */
   protected _cancelledAt: number | null = null;

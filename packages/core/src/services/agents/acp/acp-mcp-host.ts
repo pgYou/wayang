@@ -16,12 +16,12 @@
  * live in mcp-tools.ts, not here.
  */
 
-import type { Logger } from '@/infra/logger';
-import type { AcpMcpServer } from '@/services/acp/types';
-import { AcpError } from '@/services/acp/errors';
+import type { Logger } from '../../../infra/logger';
+import type { AcpMcpServer } from '../../acp/types';
+import { AcpError } from '../../acp/errors';
 import { MCP_HANDSHAKE_TIMEOUT_MS, type McpTransport, type StartMcpTransportOptions } from './mcp-transport';
 import { createWayangMcpToolInvoker } from './mcp-tools';
-import pkg from '@/../package.json';
+import pkg from '../../../../package.json';
 
 export interface AcpMcpHostDeps {
   workerId: string;

@@ -14,7 +14,7 @@ import { readFileSync, readdirSync, statSync, type Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../infra/logger';
 import type { SkillContent, SkillDescriptor } from './types';
 
 const SKILL_FILE = 'SKILL.md';

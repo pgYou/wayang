@@ -1,6 +1,6 @@
 // --- Config ---
 
-import type { AcpTimeouts, AcpCapabilities } from '@/types/acp';
+import type { AcpTimeouts, AcpCapabilities } from './acp';
 
 /**
  * LLM tool-choice mode passed through to the provider (OpenAI `tool_choice`).

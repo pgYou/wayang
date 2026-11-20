@@ -28,7 +28,7 @@
  * business output).
  */
 
-import type { Logger } from '@/infra/logger';
+import type { Logger } from '../../infra/logger';
 
 /**
  * The tool CATEGORY the call belongs to (`bash` runs commands, file tools read

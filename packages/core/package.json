@@ -10,9 +10,12 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "default": "./src/index.ts"
+      "default": "./dist/index.js"
     },
-    "./*": "./src/*.ts"
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
   },
   "scripts": {
     "build": "tsup && tsc -p tsconfig.build.json",

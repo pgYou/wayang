@@ -1,7 +1,7 @@
 import type { WayangConfig } from '@wayang-ai/protocol';
 import type { Logger } from './logger';
 import { createFileLogger, type FileLogger } from './logger';
-import { LifecycleHooks } from '@/services/lifecycle-hooks';
+import { LifecycleHooks } from '../services/lifecycle-hooks';
 
 export class SystemContext {
   readonly sessionId: string;

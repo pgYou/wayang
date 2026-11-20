@@ -1,6 +1,6 @@
 // Command-substitution gate: `$(…)` interiors are judged by the same rules the top level uses.
 
-import { tokenizeShellLite, type ShellSegment, type ShellSubstitution } from '@/services/tools/shell-lexer';
+import { tokenizeShellLite, type ShellSegment, type ShellSubstitution } from '../shell-lexer';
 import { evaluateBashCommand } from './bash-access';
 import { headCommand } from './bash-head';
 import { isReadOnlySegment, isWriteSegment } from './bash-classification';

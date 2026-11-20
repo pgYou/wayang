@@ -9,12 +9,12 @@ import type {
   WorkerLiveStatus,
 } from '@wayang-ai/protocol';
 import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
-import { summarizeTranscript } from '@/services/worker-transcript';
-import { WorkerAgent } from '@/services/agents/worker-agent';
-import type { PermissionResolutionStatus } from '@/services/permission/permission-transport';
-import { generateId } from '@/utils/id';
+import { summarizeTranscript } from '../worker-transcript';
+import { WorkerAgent } from '../agents/worker-agent';
+import type { PermissionResolutionStatus } from '../permission/permission-transport';
+import { generateId } from '../../utils/id';
 import type { WorkerMessageDelivery } from './types';
-import { normalizeWorkspacePath } from '@/infra/workspace-registry';
+import { normalizeWorkspacePath } from '../../infra/workspace-registry';
 import { TaskLifecycleEngine } from './task-lifecycle';
 
 export abstract class WorkerTrackingEngine extends TaskLifecycleEngine {

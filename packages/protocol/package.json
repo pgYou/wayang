@@ -5,9 +5,18 @@
   "description": "Wayang protocol layer — shared types and RPC framing",
   "type": "module",
   "exports": {
-    ".": "./src/types/index.ts",
-    "./types": "./src/types/index.ts",
-    "./*": "./src/*.ts"
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/types/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/types/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
   },
   "scripts": {
     "build": "tsup && tsc -p tsconfig.build.json",

@@ -23,8 +23,8 @@
 
 import type { AssistantEntry, ConversationEntry, ToolCallRecord, ToolResultRecord } from '@wayang-ai/protocol';
 import { EEntryType } from '@wayang-ai/protocol';
-import { generateId } from '@/utils/id';
-import { nowISO } from '@/utils/time';
+import { generateId } from '../../../utils/id';
+import { nowISO } from '../../../utils/time';
 
 /** Buffered assistant step whose tool results may still be in flight. */
 interface PendingToolStep {

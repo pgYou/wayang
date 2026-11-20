@@ -6,8 +6,8 @@
 import type { WorkerResult } from '@wayang-ai/protocol';
 import type { ConversationEntry } from '@wayang-ai/protocol/types/conversation';
 import { EEntryType } from '@wayang-ai/protocol';
-import { generateId } from '@/utils/id';
-import { nowISO } from '@/utils/time';
+import { generateId } from '../../../utils/id';
+import { nowISO } from '../../../utils/time';
 import {
   buildDenialNotice, NO_FINAL_SUMMARY_ERROR, turnEndErrorText,
   type TurnDenial, type TurnEndCategory, type TurnNextAction,

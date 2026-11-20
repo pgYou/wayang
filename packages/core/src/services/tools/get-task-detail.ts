@@ -12,7 +12,7 @@ import {
   shrinkWindow,
   type TranscriptReadOptions,
   type WorkerTranscriptWindow,
-} from '@/services/worker-transcript';
+} from '../worker-transcript';
 
 /** Output chars reserved for headers, notices and the meta line. */
 const OUTPUT_OVERHEAD_CHARS = 1_500;

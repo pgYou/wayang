@@ -1,6 +1,6 @@
 // The command POSITION of a shell segment: wrapper prefixes and assignments skipped, plus the destructive-command tier.
 
-import { CMDSUBST_PLACEHOLDER, type ShellSegment } from '@/services/tools/shell-lexer';
+import { CMDSUBST_PLACEHOLDER, type ShellSegment } from '../shell-lexer';
 import { isDangerousCommand, isWrapperCommand } from './command-tables';
 
 /**

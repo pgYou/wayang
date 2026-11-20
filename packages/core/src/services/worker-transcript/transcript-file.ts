@@ -3,8 +3,8 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ConversationEntry } from '@wayang-ai/protocol';
-import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
-import { workerDir } from '@/services/agents/worker-state';
+import { JSONLFileHelper } from '../../infra/state/persistence/jsonl-file';
+import { workerDir } from '../agents/worker-state';
 
 /** File name of a worker's append-only conversation log (mirrors WorkerState). */
 export const WORKER_TRANSCRIPT_FILE = 'conversation.jsonl';

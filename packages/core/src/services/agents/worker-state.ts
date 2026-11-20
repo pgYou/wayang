@@ -1,11 +1,11 @@
 import { join } from 'node:path';
 import type { ConversationEntry } from '@wayang-ai/protocol';
 import { isCompactMarker } from '@wayang-ai/protocol';
-import type { Logger } from '@/infra/logger';
-import type { WorkspaceRef } from '@/infra/workspace-registry';
-import { BaseWayangState } from '@/infra/state/base-state';
-import { JSONFileHelper } from '@/infra/state/persistence/json-file';
-import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
+import type { Logger } from '../../infra/logger';
+import type { WorkspaceRef } from '../../infra/workspace-registry';
+import { BaseWayangState } from '../../infra/state/base-state';
+import { JSONFileHelper } from '../../infra/state/persistence/json-file';
+import { JSONLFileHelper } from '../../infra/state/persistence/jsonl-file';
 import { RECENT_TOKEN_BUDGET } from './context-manager';
 import { estimateEntryTokens } from './utils/estimate-tokens';
 

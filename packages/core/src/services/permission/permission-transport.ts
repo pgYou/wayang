@@ -21,8 +21,8 @@
  * five states below plus the canonical settle reasons.
  */
 
-import { BlockingRequestMap, type SettledOutcome } from '@/infra/blocking-requests';
-import { generateId } from '@/utils/id';
+import { BlockingRequestMap, type SettledOutcome } from '../../infra/blocking-requests';
+import { generateId } from '../../utils/id';
 import { approvalKey } from './approval-memory';
 
 /**

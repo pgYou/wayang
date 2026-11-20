@@ -1,6 +1,6 @@
 // File-tool access: which tools are gated, which only read, and the evaluateFileAccess decision.
 
-import type { AccessMode } from '@/infra/permission/policy';
+import type { AccessMode } from '../../../infra/permission/policy';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { expandHome } from './home-expansion';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';

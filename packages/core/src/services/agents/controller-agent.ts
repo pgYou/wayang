@@ -5,26 +5,26 @@
  * (agent-base -> turn-run); this file is the stable import surface, the
  * public class name, the `create()` factory and the session/inquiry/UI API.
  */
-import { ControllerAgentState } from '@/services/agents/controller-state';
+import { ControllerAgentState } from './controller-state';
 import { applyTurnEnvelope, type TurnEnvelope } from './utils/entry-envelope';
 import { ToolCallRecorder } from './utils/tool-call-recorder';
-import { generateId } from '@/utils/id';
-import { nowISO } from '@/utils/time';
+import { generateId } from '../../utils/id';
+import { nowISO } from '../../utils/time';
 import type { ProviderConfig, TaskDetail, WayangConfig } from '@wayang-ai/protocol';
 import type { ConversationEntry, ConversationIndex, TurnView } from '@wayang-ai/protocol/types/conversation';
 import { EEntryType, ESystemSubtype } from '@wayang-ai/protocol';
-import type { StateEvent } from '@/infra/state/base-state';
+import type { StateEvent } from '../../infra/state/base-state';
 import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 
 import { loadControllerRules } from './prompts/index';
-import { createControllerTools } from '@/services/tools/index';
-import { readWorkerTranscript, readWorkerTranscriptWindow } from '@/services/worker-transcript';
-import { wayangDirForSessionDir } from '@/infra/session-helpers';
-import { ensureGeneralWorkspace, resolveGeneralWorkspace } from '@/infra/general-workspace';
+import { createControllerTools } from '../tools/index';
+import { readWorkerTranscript, readWorkerTranscriptWindow } from '../worker-transcript';
+import { wayangDirForSessionDir } from '../../infra/session-helpers';
+import { ensureGeneralWorkspace, resolveGeneralWorkspace } from '../../infra/general-workspace';
 import { homedir } from 'node:os';
-import { SystemContext } from '@/infra/system-context';
-import type { TaskExecuteEngine } from '@/services/task-execute-engine';
-import type { SignalQueue } from '@/services/signal/signal-queue';
+import { SystemContext } from '../../infra/system-context';
+import type { TaskExecuteEngine } from '../task-execute-engine';
+import type { SignalQueue } from '../signal/signal-queue';
 import { ControllerTurnRun } from './controller-agent/turn-run';
 
 export class ControllerAgent extends ControllerTurnRun implements Subscribable {
@@ -39,7 +39,7 @@ export class ControllerAgent extends ControllerTurnRun implements Subscribable {
     config: WayangConfig;
     engine: TaskExecuteEngine;
     signalQueue: SignalQueue;
-    skills: import('@/services/skills/registry').SkillRegistry;
+    skills: import('../skills/registry').SkillRegistry;
   }): ControllerAgent {
     const { ctx, provider, engine, signalQueue, skills } = opts;
     const state = new ControllerAgentState(ctx);

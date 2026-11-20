@@ -1,7 +1,7 @@
 // Path candidate extraction from a lexed command line, plus the strictest-access reduction for whole-line reporting.
 
-import type { AccessMode } from '@/infra/permission/policy';
-import { CMDSUBST_PLACEHOLDER, isDiscardRedirectTarget, type ShellSegment } from '@/services/tools/shell-lexer';
+import type { AccessMode } from '../../../infra/permission/policy';
+import { CMDSUBST_PLACEHOLDER, isDiscardRedirectTarget, type ShellSegment } from '../shell-lexer';
 import { segmentAccess } from './bash-classification';
 
 /** A path candidate plus how the policy should judge it. */
