@@ -18,7 +18,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['src/**/*.tsx', 'src/**/*.jsx'],
+    files: ['packages/*/src/**/*.tsx', 'packages/*/src/**/*.jsx'],
     plugins: {
       'react-hooks': reactHooks,
     },
@@ -28,7 +28,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['src/**/*.test.ts'],
+    files: ['packages/*/src/**/*.test.ts'],
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
     },
@@ -40,7 +40,7 @@ export default tseslint.config(
     // anywhere under src/, and the e2e/ tree (harness + scenarios). No
     // implementation file under src/ matches these globs, so production code
     // keeps the full no-explicit-any / no-non-null-assertion checking.
-    files: ['src/**/__tests__/**/*.ts', 'src/**/*.test.ts', 'e2e/**/*.ts'],
+    files: ['packages/*/src/**/__tests__/**/*.ts', 'packages/*/src/**/*.test.ts', 'e2e/**/*.ts'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',
@@ -50,6 +50,6 @@ export default tseslint.config(
     // Hand-run fixture generator scripts. tsconfig has no allowJs, so the
     // project service cannot resolve them. Scoped to test fixtures only, so
     // any other .mjs under src/ still goes through lint.
-    ignores: ['dist/', 'node_modules/', '*.js', 'src/**/__tests__/fixtures/*.mjs'],
+    ignores: ['dist/', 'packages/*/dist/', 'node_modules/', '*.js', 'packages/*/src/**/__tests__/fixtures/*.mjs'],
   },
 );

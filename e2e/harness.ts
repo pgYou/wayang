@@ -21,7 +21,7 @@ import {
 import type { ControllerSignal, TaskDetail, ActiveWorkerInfo } from '@/types/index';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const CLI_ENTRY = join(ROOT, 'dist', 'cli.js');
+const CLI_ENTRY = join(ROOT, 'packages', 'cli', 'dist', 'cli.js');
 
 export interface E2EState {
   signals: ControllerSignal[];

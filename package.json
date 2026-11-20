@@ -1,9 +1,13 @@
 {
   "name": "wayang-ai",
-  "version": "0.9.8",
+  "version": "1.0.0-alpha.0",
+  "private": true,
   "description": "Multi-agent orchestration platform",
   "type": "module",
   "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
   "author": "pgYou",
   "repository": {
     "type": "git",
@@ -22,25 +26,19 @@
     "llm",
     "claude"
   ],
-  "bin": {
-    "wayang": "dist/cli.js",
-    "waya": "dist/cli.js"
-  },
-  "files": [
-    "dist",
-    "!dist/**/*.map"
-  ],
   "scripts": {
-    "build": "tsup",
-    "dev:watch": "tsup --watch",
-    "dev": "tsc --noEmit && tsup && node --env-file=.env.local dist/cli.js --wayang-root . -w . -c ./config.local.json --verbose",
-    "start": "node dist/cli.js",
+    "build": "npm run build --workspaces --if-present",
+    "dev:watch": "npm run dev:watch --workspaces --if-present",
+    "dev": "npm run build && node --env-file=.env.local packages/cli/dist/cli.js --wayang-root . -w . -c ./config.local.json --verbose",
+    "start": "node packages/cli/dist/cli.js",
     "prepublishOnly": "npm run build",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "test:e2e": "tsup && vitest run --config e2e.config.ts",
-    "lint": "tsc --noEmit && eslint src/ e2e/"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:watch": "npm run test:watch --workspaces --if-present",
+    "test:coverage": "npm run test:coverage --workspaces --if-present",
+    "test:e2e": "npm run build && vitest run --config e2e.config.ts",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "lint": "npm run check:boundaries && npm run lint --workspaces --if-present && eslint e2e/"
   },
   "engines": {
     "node": ">=20"

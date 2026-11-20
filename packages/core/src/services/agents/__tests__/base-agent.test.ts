@@ -1,0 +1,479 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { BaseAgent } from '@/services/agents/base-agent';
+import type { ProviderConfig } from '@wayang/protocol';
+import { mockProvider } from '@/__tests__/helpers';
+
+// Mock streamText and model-factory
+vi.mock('ai', () => {
+  class NoOutputGeneratedError extends Error {
+    constructor({ message = 'No output generated.', cause }: { message?: string; cause?: Error } = {}) {
+      super(message, { cause });
+      this.name = 'AI_NoOutputGeneratedError';
+    }
+    static isInstance(error: unknown): boolean {
+      return error instanceof NoOutputGeneratedError;
+    }
+  }
+  return {
+    streamText: vi.fn(),
+    stepCountIs: vi.fn((n: number) => n),
+    hasToolCall: vi.fn((name: string) => name),
+    NoOutputGeneratedError,
+  };
+});
+vi.mock('../model-factory.js', () => ({
+  createModel: () => ({}),
+}));
+
+import { streamText, NoOutputGeneratedError } from 'ai';
+import type { StepMeta, StreamLoopOptions } from '@/services/agents/base-agent';
+
+// Concrete subclass for testing
+class TestAgent extends BaseAgent {
+  readonly state: any;
+  constructor(provider: ProviderConfig, state?: any) {
+    super(provider);
+    this.state = state ?? { append: vi.fn(), get: vi.fn(() => []) };
+  }
+  /** Expose the protected streaming loop for direct testing. */
+  runLoop(opts: StreamLoopOptions) {
+    return this.streamLoop(opts);
+  }
+  /** Expose the protected reset for direct testing. */
+  reset() {
+    this.resetAbortController();
+  }
+}
+
+describe('BaseAgent', () => {
+  it('should generate unique id', () => {
+    const agent1 = new TestAgent(mockProvider);
+    const agent2 = new TestAgent(mockProvider);
+    expect(agent1.id).not.toBe(agent2.id);
+  });
+
+  it('should abort via abortController', () => {
+    const agent = new TestAgent(mockProvider);
+    agent.abort();
+    expect(agent.abortController.signal.aborted).toBe(true);
+  });
+
+  it('should clear aborted state on resetAbortController (controller per-run aborts)', () => {
+    const agent = new TestAgent(mockProvider);
+    agent.abort();
+    expect(agent.abortController.signal.aborted).toBe(true);
+    agent.reset();
+    expect(agent.abortController.signal.aborted).toBe(false);
+  });
+
+  it('should create model from provider', () => {
+    const agent = new TestAgent(mockProvider);
+    expect(agent).toBeDefined();
+  });
+});
+
+// --- streamLoop: per-step StepMeta timing (added with the timing work) ---
+
+/** A minimal stream result object satisfying streamLoop's awaits. */
+function fakeStream(text: string) {
+  return {
+    textStream: (async function* () { yield text; })(),
+    text: Promise.resolve(text),
+    reasoningText: Promise.resolve(''),
+    toolResults: Promise.resolve([]),
+    usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }),
+    finishReason: Promise.resolve('stop'),
+    steps: Promise.resolve([]),
+  };
+}
+
+describe('BaseAgent.streamLoop: per-step StepMeta timing', () => {
+  beforeEach(() => {
+    vi.mocked(streamText).mockReset();
+  });
+
+  it('hands onStep the first-chunk time for text steps and undefined for pure tool steps', async () => {
+    const metas: StepMeta[] = [];
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // Step 1: a text chunk arrives, then the step finishes.
+        yield 'hello';
+        opts.onStepFinish?.({ text: 'hello', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } });
+        // Step 2: pure tool step — no text chunk between the boundaries.
+        opts.onStepFinish?.({ text: '', toolCalls: [{ toolCallId: 'tc1', toolName: 'bash' }], toolResults: [], finishReason: 'tool-calls' });
+        yield 'end';
+      })();
+      return { ...fakeStream('hello end'), textStream };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    const gen = agent.runLoop({
+      system: 'sys',
+      messages: [],
+      tools: {},
+      onStep: (_event, meta) => { metas.push(meta); },
+    });
+    // Drain the generator to completion.
+    while (true) {
+      const { done } = await gen.next();
+      if (done) break;
+    }
+
+    expect(metas).toHaveLength(2);
+    // Step 1: stream start recorded, first token recorded.
+    expect(metas[0].startedAt).toEqual(expect.any(String));
+    expect(metas[0].firstTokenAt).toEqual(expect.any(String));
+    // Step 2 (pure tool step): step start recorded, but NO firstTokenAt —
+    // no text chunk arrived between the step boundaries.
+    expect(metas[1].startedAt).toEqual(expect.any(String));
+    expect(metas[1].firstTokenAt).toBeUndefined();
+    // Each step's start resets: step 2 starts no earlier than step 1's.
+    expect(new Date(metas[1].startedAt!).getTime())
+      .toBeGreaterThanOrEqual(new Date(metas[0].startedAt!).getTime());
+  });
+
+  it('leaves firstTokenAt undefined when the stream never yields text before the step', async () => {
+    const metas: StepMeta[] = [];
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // The (only) step finishes with a tool call and no preceding text chunk.
+        opts.onStepFinish?.({ text: '', toolCalls: [{ toolCallId: 'tc1', toolName: 'read_file' }], toolResults: [], finishReason: 'tool-calls' });
+        // A later chunk would belong to a hypothetical next step — irrelevant
+        // to the step that already finished.
+        yield 'late';
+      })();
+      return { ...fakeStream(''), textStream };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    const gen = agent.runLoop({
+      system: 'sys',
+      messages: [],
+      tools: {},
+      onStep: (_event, meta) => { metas.push(meta); },
+    });
+    while (true) {
+      const { done } = await gen.next();
+      if (done) break;
+    }
+
+    expect(metas).toHaveLength(1);
+    expect(metas[0].startedAt).toEqual(expect.any(String));
+    expect(metas[0].firstTokenAt).toBeUndefined();
+  });
+});
+
+// --- streamLoop: idle watchdog ---
+
+describe('BaseAgent.streamLoop: idle watchdog', () => {
+  beforeEach(() => {
+    vi.mocked(streamText).mockReset();
+  });
+
+  /** Drain a runLoop generator to completion, returning the final result. */
+  async function drain(gen: AsyncGenerator<string, any>) {
+    let result: any;
+    while (true) {
+      const { done, value } = await gen.next();
+      if (done) { result = value; break; }
+    }
+    return result;
+  }
+
+  it('throws a timeout error when the stream makes no progress', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // Hangs forever — until the abort signal fires (as the real SDK does).
+        await new Promise((_, reject) => {
+          opts.abortSignal?.addEventListener('abort', () => reject(new Error('AbortError')));
+        });
+        yield ''; // unreachable; satisfies require-yield
+      })();
+      return { ...fakeStream(''), textStream };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    await expect(
+      drain(agent.runLoop({ system: 'sys', messages: [], tools: {}, llmIdleTimeoutMs: 20 })),
+    ).rejects.toThrow(/idle timeout/);
+
+    // The watchdog aborts only THIS call — the agent's own controller stays
+    // intact so the (long-lived) agent remains reusable.
+    expect(agent.abortController.signal.aborted).toBe(false);
+  });
+
+  it('does not fire when progress keeps arriving within the window', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // Chunks arrive slowly but each within the watchdog window — the
+        // total stream time exceeds the window, progress must keep it alive.
+        for (let i = 0; i < 6; i++) {
+          await new Promise((r) => setTimeout(r, 30));
+          yield `chunk-${i}`;
+        }
+        opts.onStepFinish?.({ text: 'done', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } });
+      })();
+      return { ...fakeStream('all chunks'), textStream };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    const result = await drain(agent.runLoop({
+      system: 'sys',
+      messages: [],
+      tools: {},
+      llmIdleTimeoutMs: 100,
+    }));
+    expect(result.text).toBe('all chunks');
+  });
+
+  it('re-arms on step finishes too — a slow tool round-trip keeps the call alive', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // Step finish at ~80ms re-arms the watchdog (original window would
+        // expire at 100ms); the chunk at ~150ms only survives BECAUSE of the
+        // re-arm — without it this test times out.
+        await new Promise((r) => setTimeout(r, 80));
+        opts.onStepFinish?.({ text: '', toolCalls: [{ toolCallId: 'tc1', toolName: 'bash' }], toolResults: [], finishReason: 'tool-calls' });
+        await new Promise((r) => setTimeout(r, 70));
+        yield 'after tools';
+      })();
+      return { ...fakeStream('after tools'), textStream };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    const result = await drain(agent.runLoop({
+      system: 'sys',
+      messages: [],
+      tools: {},
+      llmIdleTimeoutMs: 100,
+    }));
+    expect(result.text).toBe('after tools');
+  });
+
+  it('pauses while a tool executes — a slow tool or approval wait is not idle', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // Tool runs 3x the watchdog window (e.g. waiting for approval).
+        await opts.tools.slow.execute({}, { toolCallId: 'tc1' });
+        yield 'after tool';
+      })();
+      return { ...fakeStream('after tool'), textStream };
+    }) as any);
+
+    const slow = { execute: () => new Promise((r) => setTimeout(() => r('ok'), 150)) };
+    const agent = new TestAgent(mockProvider);
+    const result = await drain(agent.runLoop({
+      system: 'sys', messages: [], tools: { slow } as any, llmIdleTimeoutMs: 50,
+    }));
+    expect(result.text).toBe('after tool');
+  });
+
+  it('re-arms once the last tool finishes — a hang after the tool still times out', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        await opts.tools.quick.execute({}, { toolCallId: 'tc1' });
+        // Provider hangs after the tool result — must time out.
+        await new Promise((_, reject) => {
+          opts.abortSignal?.addEventListener('abort', () => reject(new Error('AbortError')));
+        });
+        yield ''; // unreachable; satisfies require-yield
+      })();
+      return { ...fakeStream(''), textStream };
+    }) as any);
+
+    const quick = { execute: async () => 'ok' };
+    const agent = new TestAgent(mockProvider);
+    await expect(
+      drain(agent.runLoop({ system: 'sys', messages: [], tools: { quick } as any, llmIdleTimeoutMs: 30 })),
+    ).rejects.toThrow(/idle timeout/);
+  });
+
+  it('stays paused until all parallel tools finish', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // Short tool ends early; the long one keeps the watchdog paused.
+        await Promise.all([
+          opts.tools.short.execute({}, { toolCallId: 'a' }),
+          opts.tools.long.execute({}, { toolCallId: 'b' }),
+        ]);
+        yield 'both done';
+      })();
+      return { ...fakeStream('both done'), textStream };
+    }) as any);
+
+    const short = { execute: async () => 'a' };
+    const long = { execute: () => new Promise((r) => setTimeout(() => r('b'), 150)) };
+    const agent = new TestAgent(mockProvider);
+    const result = await drain(agent.runLoop({
+      system: 'sys', messages: [], tools: { short, long } as any, llmIdleTimeoutMs: 50,
+    }));
+    expect(result.text).toBe('both done');
+  });
+
+  it('passes tool results and errors through unchanged', async () => {
+    const seen: unknown[] = [];
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        seen.push(await opts.tools.echo.execute({ v: 1 }, { toolCallId: 'x' }));
+        await opts.tools.boom.execute({}, { toolCallId: 'y' }).catch((e: Error) => seen.push(e.message));
+        yield 'ok';
+      })();
+      return { ...fakeStream('ok'), textStream };
+    }) as any);
+
+    const echo = { execute: async (args: any) => args };
+    const boom = { execute: async () => { throw new Error('kaboom'); } };
+    const agent = new TestAgent(mockProvider);
+    await drain(agent.runLoop({ system: 'sys', messages: [], tools: { echo, boom } as any, llmIdleTimeoutMs: 100 }));
+    expect(seen).toEqual([{ v: 1 }, 'kaboom']);
+  });
+
+  it('is disabled when idleTimeoutMs is 0', async () => {
+    vi.mocked(streamText).mockImplementation(((_opts: any) => {
+      const textStream = (async function* () {
+        // A long silent stretch, then normal completion — with the watchdog
+        // disabled this must not throw.
+        await new Promise((r) => setTimeout(r, 80));
+        yield 'slow but fine';
+      })();
+      return { ...fakeStream('slow but fine'), textStream };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    const result = await drain(agent.runLoop({
+      system: 'sys',
+      messages: [],
+      tools: {},
+      llmIdleTimeoutMs: 0,
+    }));
+    expect(result.text).toBe('slow but fine');
+  });
+
+  it('still returns a clean result on external abort (regression)', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        await new Promise((_, reject) => {
+          opts.abortSignal?.addEventListener('abort', () => reject(new Error('AbortError')));
+        });
+        yield ''; // unreachable; satisfies require-yield
+      })();
+      return { ...fakeStream(''), textStream };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    const gen = agent.runLoop({ system: 'sys', messages: [], tools: {}, llmIdleTimeoutMs: 20_000 });
+    const pending = drain(gen);
+    agent.abort(); // external abort (done/fail tool or Ctrl+C)
+    const result = await pending;
+    expect(result).toEqual({ text: '', toolResults: [], usage: undefined });
+  });
+});
+
+// --- streamLoop: surfacing the provider error behind NoOutputGeneratedError ---
+
+describe('BaseAgent.streamLoop: provider-error surfacing', () => {
+  beforeEach(() => {
+    vi.mocked(streamText).mockReset();
+  });
+
+  /** Drain a runLoop generator to completion, returning the final result. */
+  async function drain(gen: AsyncGenerator<string, any>) {
+    let result: any;
+    while (true) {
+      const { done, value } = await gen.next();
+      if (done) { result = value; break; }
+    }
+    return result;
+  }
+
+  /**
+   * A rejected promise that will not surface as an unhandled rejection when
+   * the loop throws before awaiting the sibling fields.
+   */
+  function rejectAll<T>(err: unknown): Promise<T> {
+    const p = Promise.reject(err) as Promise<T>;
+    p.catch(() => {});
+    return p;
+  }
+
+  it('re-throws the recorded provider error when no output was generated', async () => {
+    const providerError = Object.assign(
+      new Error('当前应用组 5203, 模型 glm-5.3-flash 已下线，请切换模型使用'),
+      { name: 'AI_APICallError', statusCode: 403 },
+    );
+    const generic = new NoOutputGeneratedError({ message: 'No output generated. Check the stream for errors.' });
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        // The SDK delivers the provider failure ONLY via onError.
+        opts.onError?.({ error: providerError });
+        yield ''; // unreachable; satisfies require-yield
+      })();
+      return {
+        textStream,
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+        toolResults: Promise.resolve([]),
+        usage: rejectAll(generic),
+        finishReason: rejectAll(generic),
+        steps: rejectAll(generic),
+      };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    let caught: unknown;
+    try {
+      await drain(agent.runLoop({ system: 'sys', messages: [], tools: {} }));
+    } catch (err) {
+      caught = err;
+    }
+    // The real provider error surfaces, with the generic SDK error as cause.
+    expect(caught).toBe(providerError);
+    expect((caught as Error).cause).toBe(generic);
+  });
+
+  it('propagates the generic error unchanged when no provider error was recorded', async () => {
+    const generic = new NoOutputGeneratedError({ message: 'No output generated. Check the stream for errors.' });
+    vi.mocked(streamText).mockImplementation((() => {
+      const textStream = (async function* () {})();
+      return {
+        textStream,
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+        toolResults: Promise.resolve([]),
+        usage: rejectAll(generic),
+        finishReason: rejectAll(generic),
+        steps: rejectAll(generic),
+      };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    await expect(
+      drain(agent.runLoop({ system: 'sys', messages: [], tools: {} })),
+    ).rejects.toBe(generic);
+  });
+
+  it('keeps a non-generic final error as-is even when a provider error was recorded', async () => {
+    const providerError = new Error('recorded on the stream, but not the cause here');
+    const other = new Error('network reset');
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      const textStream = (async function* () {
+        opts.onError?.({ error: providerError });
+        yield ''; // unreachable; satisfies require-yield
+      })();
+      return {
+        textStream,
+        text: Promise.resolve(''),
+        reasoningText: Promise.resolve(''),
+        toolResults: Promise.resolve([]),
+        usage: rejectAll(other),
+        finishReason: Promise.resolve('stop'),
+        steps: Promise.resolve([]),
+      };
+    }) as any);
+
+    const agent = new TestAgent(mockProvider);
+    await expect(
+      drain(agent.runLoop({ system: 'sys', messages: [], tools: {} })),
+    ).rejects.toBe(other);
+  });
+});

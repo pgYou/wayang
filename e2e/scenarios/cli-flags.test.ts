@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const CLI_ENTRY = join(ROOT, 'dist', 'cli.js');
+const CLI_ENTRY = join(ROOT, 'packages', 'cli', 'dist', 'cli.js');
 
 interface CliRun {
   code: number | null;
