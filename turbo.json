@@ -21,9 +21,6 @@
     "test:coverage": {
       "dependsOn": ["^build"],
       "outputs": ["coverage/**"]
-    },
-    "dev:watch": {
-      "persistent": true
     }
   }
 }
