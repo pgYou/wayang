@@ -1,18 +1,11 @@
 {
   "name": "@wayang-ai/cli",
   "version": "1.0.0-alpha.0",
-  "description": "Wayang CLI — the terminal UI and the `wayang` entry point",
+  "private": true,
+  "description": "Wayang CLI — the terminal UI and the `wayang` entry point；发布物由仓库根的 wayang-ai 承载（bin 指向本包 dist）",
   "type": "module",
   "license": "MIT",
-  "bin": {
-    "wayang": "dist/cli.js",
-    "waya": "dist/cli.js"
-  },
-  "files": [
-    "dist",
-    "!dist/**/*.map"
-  ],
-  "dependencies": {
+  "devDependencies": {
     "@wayang-ai/core": "1.0.0-alpha.0",
     "@wayang-ai/protocol": "1.0.0-alpha.0"
   },

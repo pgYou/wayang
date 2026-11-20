@@ -1,7 +1,6 @@
 {
   "name": "wayang-ai",
   "version": "1.0.0-alpha.0",
-  "private": true,
   "description": "Multi-agent orchestration platform",
   "type": "module",
   "license": "MIT",
@@ -25,6 +24,14 @@
     "cli",
     "llm",
     "claude"
+  ],
+  "bin": {
+    "wayang": "packages/cli/dist/cli.js",
+    "waya": "packages/cli/dist/cli.js"
+  },
+  "files": [
+    "packages/cli/dist",
+    "!packages/cli/dist/**/*.map"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

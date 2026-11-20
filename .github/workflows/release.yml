@@ -66,14 +66,28 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve dist-tag from version
+        # prerelease 版本（如 1.0.0-alpha.0）默认也会打 latest tag，会把 latest 从 0.9.8 顶掉；
+        # 按 prerelease 首段取 tag（alpha / beta / rc），正式版仍走 latest。
+        id: disttag
+        run: |
+          PRE="$(node -p "require('./package.json').version.split('-')[1]?.split('.')[0] || ''")"
+          if [ -n "$PRE" ]; then
+            DIST_TAG="$PRE"
+          else
+            DIST_TAG="latest"
+          fi
+          echo "dist-tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version") → dist-tag $DIST_TAG"
+
       - name: Publish to npm (DRY RUN — no upload)
         # dry-run 仅用于 workflow_dispatch（inputs.dry_run 默认 true）；push tag 不走这条。
         if: steps.check.outputs.exists == 'false' && (github.event_name == 'workflow_dispatch' && inputs.dry_run)
-        run: npm publish --provenance --access public --dry-run
+        run: npm publish --provenance --access public --dry-run --tag "${{ steps.disttag.outputs.dist-tag }}"
 
       - name: Publish to npm (LIVE — uploads to registry)
         # push v* tag 走这里：直接正式发布到 npm，没有 dry-run 兜底。
         if: steps.check.outputs.exists == 'false' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run))
         run: |
-          echo "LIVE PUBLISH: event=${GITHUB_EVENT_NAME} version=$(node -p "require('./package.json').version")"
-          npm publish --provenance --access public
+          echo "LIVE PUBLISH: event=${GITHUB_EVENT_NAME} version=$(node -p "require('./package.json').version") dist-tag=${{ steps.disttag.outputs.dist-tag }}"
+          npm publish --provenance --access public --tag "${{ steps.disttag.outputs.dist-tag }}"
