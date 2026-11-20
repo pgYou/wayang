@@ -360,13 +360,23 @@ const HARD_CONSTRAINTS = section('Hard constraints',
 
 /**
  * Semantics hint appended to `*-acp` rows (05 §7) — the only place the
- * controller prompt learns what an external ACP agent is: no update_progress
- * / done tools (turns end by themselves), messages land at turn boundaries,
- * permissions still surface as requests. Unconfigured ACP types are simply
- * never listed (the loop walks the config only).
+ * controller prompt learns what an external ACP agent is: the injected MCP
+ * tool surface is update_progress + ask_controller (no done/fail — a turn
+ * ends by itself and its last message is the result, #84), messages land at
+ * turn boundaries, permissions still surface as requests. Unconfigured ACP
+ * types are simply never listed (the loop walks the config only).
  */
 const ACP_WORKER_HINT =
-  'external ACP agent: no update_progress/done tools (it ends each turn by itself); chat_worker messages are delivered at its next turn boundary; sensitive operations still surface as permission requests you must answer; it needs its CLI installed and logged in — a missing CLI fails the task fast with an install hint';
+  'external ACP agent: its injected tools are update_progress + ask_controller only — no done/fail tool, it expresses completion by ending its turn and its last message is the result; chat_worker messages are delivered at its next turn boundary; sensitive operations still surface as permission requests you must answer; it needs its CLI installed and logged in — a missing CLI fails the task fast with an install hint';
+
+/**
+ * Semantics hint for `claude-code` rows (#84): the injected MCP surface is
+ * ask_controller alone — no update_progress tool (its progress comes from its
+ * own reply stream) and no done/fail (the run ends when the CLI finishes).
+ */
+const CLAUDE_CODE_WORKER_HINT =
+  'third-party Claude Code agent: its only injected tool is ask_controller — no update_progress and no done/fail, progress is reported from its own replies and the run ends when the CLI finishes; chat_worker messages are delivered at its next turn boundary; sensitive operations surface as permission requests you must answer; it needs the CLI installed and logged in';
+
 
 /**
  * `[acp:<provider>]` tag of an ACP row (05 §7) — explicit mapping, the type
@@ -393,8 +403,9 @@ function buildWorkerList(workers?: Record<string, WorkerConfig>): string {
     for (const [id, config] of Object.entries(workers)) {
       const caps = config.capabilities?.length ? ` [${config.capabilities.join(', ')}]` : '';
       const acpTag = acpTagFor(config);
-      const acp = acpTag ? ` [${acpTag}] — ${ACP_WORKER_HINT}` : '';
-      lines.push(`- \`${id}\` — ${config.description}${caps}${acp}`);
+      const tag = acpTag ? ` [${acpTag}]` : '';
+      const hint = acpTag ? ACP_WORKER_HINT : config.type === 'claude-code' ? CLAUDE_CODE_WORKER_HINT : '';
+      lines.push(`- \`${id}\` — ${config.description}${caps}${tag}${hint ? ` — ${hint}` : ''}`);
     }
   }
   return section('Available workers', lines.join('\n'));

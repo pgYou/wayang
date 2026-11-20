@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9.8 (2026-11-20)
+
+### 修复
+
+- ACP worker 收尾契约自相矛盾（#83）：提示词不再禁止输出最终摘要，改为要求回合结束前最后一条消息即交付物（改了什么 / 验证结果 / 遗留），并写明该 worker 没有 done/fail、回合结束即表达完成；end_turn 分支与本回合 trim 后正文 ≥8 字符的有效正文要求对齐，正文不足时归入 agent_ended_unexpectedly 并给出可区分的错误文案「ACP worker ended the turn without a final summary」，不再出现「completed 但 summary 为空」；cancelled 残留规则（按回合隔离、≥8 字符、cancelFact 优先）保持不变。
+- controller 提示词对第三方 worker 工具面的描述与实际不符（#84）：ACP 一行改为按真实注入工具面描述（update_progress + ask_controller，无 done/fail，完成由回合结束表达）；claude-code 一行按实际补上「只有 ask_controller」的说明。
+
 ## v0.9.7 (2026-11-10)
 
 ### 修复

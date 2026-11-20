@@ -27,6 +27,7 @@ import type { AcpLaunchConfig } from '@/services/acp/config';
 import type { AcpTransport } from '@/services/acp/transport';
 import type { IWorkerInstance } from '@/types/worker';
 import { ApprovalMemory } from '@/services/permission/approval-memory';
+import { NO_FINAL_SUMMARY_ERROR } from '@/services/agents/acp/turn-attribution';
 import { FakeAgentTransport } from './fake-agent-transport';
 
 const skills = new SkillRegistry([]);
@@ -127,6 +128,12 @@ function sendUpdate(worker: TestAcpWorker, update: Record<string, unknown>): voi
   worker.transport.agentMessage({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's-1', update } });
 }
 
+/** Agent text chunk — the turn's deliverable body (an end_turn without one is
+ * no longer a completion, #83). */
+function sendText(worker: TestAcpWorker, text: string, messageId?: string): void {
+  sendUpdate(worker, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, ...(messageId ? { messageId } : {}) });
+}
+
 function sendPermissionRequest(worker: TestAcpWorker, id: number, toolCall: Record<string, unknown>, options: unknown[]): void {
   worker.transport.agentMessage({ jsonrpc: '2.0', id, method: 'session/request_permission', params: { sessionId: 's-1', toolCall, options } });
 }
@@ -172,6 +179,50 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     expect(result.error).not.toContain('Aborted');
   });
 
+  // 1a) #83: end_turn WITH a deliverable final summary → completed and the
+  // summary is that text, verbatim (lastText() is the only result source).
+  it('end_turn with a final summary → completed, summary equals the turn text', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    worker.setSignalContext(signalContext());
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+    const body = '改了什么：收紧 end_turn 判定；验证结果：vitest 全绿；遗留：无';
+    sendText(worker, body, 'm-final-summary');
+    await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
+    const result = await runPromise;
+    expect(result.status).toBe('completed');
+    expect(result.summary).toBe(body);
+    expect(result.error).toBeUndefined();
+  });
+
+  // 1b) #83: end_turn WITHOUT a body (empty / whitespace-only / under the
+  // minimum) → failed with the dedicated wording, never "completed + ''".
+  it('end_turn without a final summary → failed with the dedicated error', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    worker.setSignalContext(signalContext());
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+    sendText(worker, '   \n  ', 'm-empty-body');
+    await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe(NO_FINAL_SUMMARY_ERROR);
+    // Nothing is queued, so the loop terminates instead of reissuing a turn.
+    expect(worker.transport.clientMessages.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+  });
+
+  it('end_turn with a body under the minimum (2 chars) → failed with the dedicated error', async () => {
+    const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
+    worker.setSignalContext(signalContext());
+    const runPromise = worker.run(TASK, {});
+    await openFakeSession(worker);
+    sendText(worker, 'ok', 'm-too-short');
+    await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
+    const result = await runPromise;
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe(NO_FINAL_SUMMARY_ERROR);
+  });
+
   // 2) policy denial → one reissue with a sanitized notice → completed.
   it('policy denial → reissue (SYSTEM NOTICE, [redacted], no full command) → completed', async () => {
     const worker = new TestAcpWorker({}, {}, tempDir, tempDir);
@@ -190,6 +241,8 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     expect(text).not.toContain(command);
     expect(text).not.toContain('SECRETVALUE');
 
+    // #83: the completion round carries the deliverable final summary.
+    sendText(worker, '已改用合规命令，结论：probe-ok', 'm-policy-final');
     await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
     const result = await runPromise;
     expect(result.status).toBe('completed');
@@ -245,6 +298,7 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     // The reissue round: the agent picks a DIFFERENT (compliant) command and
     // finishes normally — no permission request, no new denial.
     sendUpdate(worker, { sessionUpdate: 'tool_call', toolCallId: 'tc-alt', title: 'Bash', kind: 'execute', status: 'completed', rawInput: { command: 'echo safe' } });
+    sendText(worker, '已改用 echo safe 完成，结论：probe-ok', 'm-switch-final');
     await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
     const result = await runPromise;
     expect(result.status).toBe('completed');
@@ -262,6 +316,8 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     const payload = queue.signals[0].payload;
     expect(worker.permissionHandler.resolvePermission(payload.requestId, false, 'nope')).toBe('resolved');
     await waitForPermissionAnswer(worker.transport, 704);
+    // #83: same-turn end needs a deliverable body to count as completed.
+    sendText(worker, '放弃该命令，改用只读方式检查', 'm-same-turn-final');
     await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
 
     const result = await runPromise;
@@ -549,11 +605,15 @@ describe('AcpWorkerRun: turn attribution and loop guard (#56)', () => {
     worker.acceptMessage('first');
     worker.acceptMessage('second');
     worker.acceptMessage('third');
+    // #83: each round needs its own deliverable body to keep counting as a
+    // completed turn (the FIRST round would otherwise terminate outright).
+    sendText(worker, '先记录当前进展', 'm-multi-1');
     await respondToPrompt(worker.transport, 0, { stopReason: 'end_turn' });
 
     const text = await promptTextAt(worker.transport, 1);
     expect(text).toBe('[Controller message] first\n---\n[Controller message] second\n---\n[Controller message] third');
     expect(text).not.toContain('[SYSTEM NOTICE]');
+    sendText(worker, '三条消息已读入，结论：probe-ok', 'm-multi-2');
     await respondToPrompt(worker.transport, 1, { stopReason: 'end_turn' });
     const result = await runPromise;
     expect(result.status).toBe('completed');

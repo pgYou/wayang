@@ -159,6 +159,8 @@ describe('AcpWorkerRun: MCP injection', () => {
 
     respondTo(worker.transport, 1, { sessionId: 's-1' });
     await worker.transport.waitForClientOutput(3);
+    // #83: a completion round carries its deliverable final summary.
+    sendText(worker, '注入完成，结论：descriptor ok');
     respondTo(worker.transport, 2, { stopReason: 'end_turn' });
     await expect(runPromise).resolves.toMatchObject({ status: 'completed' });
     expect(worker.transportOpts).not.toBeNull();
@@ -287,7 +289,7 @@ describe('AcpWorkerRun: degraded progress reports the turn text', () => {
 
     sendText(worker, '你');
     sendText(worker, '好');
-    sendText(worker, '。');
+    sendText(worker, '，报告见上。');
     await sleep(300);
     expect(onProgress).not.toHaveBeenCalled();
 
@@ -296,7 +298,7 @@ describe('AcpWorkerRun: degraded progress reports the turn text', () => {
     // Final turn: the complete reply is the result summary only — no progress duplicate.
     expect(onProgress).not.toHaveBeenCalled();
     expect(result.status).toBe('completed');
-    expect(result.summary).toBe('你好。');
+    expect(result.summary).toBe('你好，报告见上。');
   });
 
   it('knot shape: one reply as several messages — the result is the complete reply, not a fragment', async () => {
@@ -418,11 +420,11 @@ describe('AcpWorkerRun: degraded progress reports the turn text', () => {
     expect(onProgress).toHaveBeenCalledWith('第一回合回复');
 
     // Turn 2 is the final turn: its reply is the result summary only.
-    sendText(worker, '第二回合回复');
+    sendText(worker, '第二回合回复：结论见上');
     respondTo(worker.transport, 4, { stopReason: 'end_turn' });
     const result = await runPromise;
     expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(result.summary).toBe('第二回合回复');
+    expect(result.summary).toBe('第二回合回复：结论见上');
   });
 
   it('punctuation-only fragments (knot shape) are never progress', async () => {
