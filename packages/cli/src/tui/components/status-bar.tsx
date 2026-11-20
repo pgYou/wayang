@@ -1,0 +1,336 @@
+import React, { useMemo, useState, useEffect } from 'react';
+import { Box, Text, useStdout } from 'ink';
+import type { TaskDetail, ActiveWorkerInfo, ContextUsage } from '@wayang/protocol';
+import type { Subscribable } from '@wayang/protocol/types/subscribable';
+import { useWayangState } from '@/tui/hooks/use-wayang-state';
+import { CONTEXT_USAGE_STATE_PATH } from '@/client/remote-supervisor';
+import { theme } from '@/tui/theme';
+import { formatTokenCount } from '@/tui/utils/format-tokens';
+import { fitWithSuffix, sliceToWidth, stringWidth, truncateToWidth } from '@/tui/utils/text-width';
+import { formatWorkspaceSlug } from '@/tui/utils/workspace-display';
+
+/** Hard cap for the context segment — the rest of the line yields to it. */
+export const CONTEXT_SEGMENT_MAX_WIDTH = 22;
+
+/** Column cap for a worker row's label — measured in display columns, not code units. */
+const LABEL_MAX_WIDTH = 20;
+
+/** Separator between worker rows: ' · ' (3 columns). */
+const ROW_SEPARATOR = ' · ';
+
+/**
+ * Format the persistent context segment, e.g. "12.3k/100k (12%)" — the token
+ * counts and the percent, with no prefix label. Percent is rounded to integer
+ * and not clamped to 100. Output is capped at CONTEXT_SEGMENT_MAX_WIDTH.
+ */
+export function formatContextUsage(usedTokens: number, contextWindowTokens: number): string {
+  const percent = contextWindowTokens > 0 ? Math.round((usedTokens / contextWindowTokens) * 100) : 0;
+  const text = `${formatTokenCount(usedTokens)}/${formatTokenCount(contextWindowTokens)} (${percent}%)`;
+  return truncateToWidth(text, CONTEXT_SEGMENT_MAX_WIDTH);
+}
+
+/**
+ * Compact elapsed-time format for the status-bar worker rows:
+ * - under a minute: "42s"
+ * - a minute and up: "1m41s" (minutes + seconds, neither zero-padded)
+ * - an hour and up: "1h05m" (minutes zero-padded, seconds dropped)
+ */
+export function formatElapsedSeconds(totalSeconds: number): string {
+  const s = Math.max(0, Math.trunc(totalSeconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${String(m % 60).padStart(2, '0')}m`;
+}
+
+/**
+ * Color for the context segment: error near-full (>= 0.9), warning from 70%,
+ * default subtle color otherwise.
+ */
+export function contextUsageColor(ratio: number): string | undefined {
+  if (!Number.isFinite(ratio)) return undefined;
+  if (ratio >= 0.9) return theme.baseToken.color.error;
+  if (ratio >= 0.7) return theme.baseToken.color.warning;
+  return undefined;
+}
+
+/** Unique tail of a generated id: the random suffix after the last dash. */
+function idTail(id: string): string {
+  const parts = id.split('-');
+  return parts.length > 1 ? parts[parts.length - 1] : id;
+}
+
+/** One status-bar worker row, built by {@link buildWorkerRows}. */
+export interface WorkerRow {
+  workerId: string;
+  taskId: string;
+  label: string;
+  /**
+   * Elapsed seconds. While running: since the worker started. While idle:
+   * since it parked (idleSinceMs) — a parked multi-stage worker must not look
+   * like a task still burning time.
+   */
+  elapsed: number;
+  /** True for a parked multi-stage worker — rendered with an "idle" marker. */
+  idle: boolean;
+  /**
+   * The task's workspace slug, shown after the label. Absent when the task
+   * carries no workspace identity (legacy task, or the task already moved to
+   * history so it is not in runningTasks) — the row then shows nothing extra.
+   */
+  workspaceSlug?: string;
+}
+
+/**
+ * Two rows must never render the same label: a bare truncated task id is
+ * exactly what made finished workers indistinguishable (an 8-char "t-179367"
+ * prefix covers a ~2.8h window of task creation). Every row of a colliding
+ * group gets the task id's random tail appended; if that is still ambiguous
+ * (identical tails), the whole group escalates to full task ids (unique per
+ * task). Duplicate counts are taken BEFORE each mutation pass — mutating
+ * mid-pass would make the remaining rows of a group look already-unique.
+ */
+function disambiguateRowLabels(rows: WorkerRow[]): void {
+  const countLabels = (): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(row.label, (counts.get(row.label) ?? 0) + 1);
+    return counts;
+  };
+
+  const baseCounts = countLabels();
+  for (const row of rows) {
+    if ((baseCounts.get(row.label) ?? 0) < 2) continue;
+    const tail = idTail(row.taskId);
+    if (!row.label.includes(tail)) row.label = `${row.label} ${tail}`;
+  }
+
+  const finalCounts = countLabels();
+  for (const row of rows) {
+    if ((finalCounts.get(row.label) ?? 0) < 2) continue;
+    row.label = row.taskId;
+  }
+}
+
+/**
+ * Derive the status-bar rows from the engine's active workers.
+ *
+ * Label chain (never a bare truncated id):
+ *  1. the running task's title (or description);
+ *  2. the task title stamped on the worker entry at dispatch — this survives
+ *     the task's move to history, which is exactly when a parked multi-stage
+ *     worker's task is no longer in runningTasks;
+ *  3. "workerType idTail" as an explicit fallback.
+ *
+ * Elapsed: since start while running; since parking while idle.
+ */
+export function buildWorkerRows(
+  activeWorkers: ActiveWorkerInfo[],
+  runningTasks: TaskDetail[],
+  now: number,
+): WorkerRow[] {
+  const rows: WorkerRow[] = activeWorkers.map((w) => {
+    const task = runningTasks.find((t) => t.id === w.taskId);
+    const text = String(task?.title ?? '').trim()
+      || String(task?.description ?? '').trim()
+      || String(w.taskTitle ?? '').trim();
+    const idle = w.status === 'idle';
+    const elapsed = Math.max(0, Math.round((now - (idle ? (w.idleSinceMs ?? w.startedAt) : w.startedAt)) / 1000));
+    return {
+      workerId: w.workerId,
+      taskId: w.taskId,
+      // Cap by DISPLAY columns, not code units: a 20-code-unit Chinese title is
+      // 40 columns wide and would blow the row budget before fitting even runs.
+      label: text ? sliceToWidth(text, LABEL_MAX_WIDTH) : `${w.workerType || 'worker'} ${idTail(w.taskId)}`,
+      elapsed,
+      idle,
+      workspaceSlug: formatWorkspaceSlug(task?.workspace) ?? undefined,
+    };
+  });
+  disambiguateRowLabels(rows);
+  return rows;
+}
+
+export interface StatusSegmentsInput {
+  pendingCount: number;
+  activeCount: number;
+  workerRows: WorkerRow[];
+  contextUsage?: ContextUsage | null;
+  /** Terminal width in columns. */
+  terminalCols?: number;
+  /** True while the controller is compacting its context. */
+  compacting?: boolean;
+}
+
+export interface StatusSegments {
+  /** Task counters, or "idle" when nothing is queued or running. */
+  countsText: string;
+  /** Worker rows truncated to whatever width remains after counts + context. */
+  workerTexts: string[];
+  /** Context segment — always complete, capped at CONTEXT_SEGMENT_MAX_WIDTH. */
+  contextText: string;
+  /** Color for the context segment (undefined = default subtle). */
+  contextColor: string | undefined;
+}
+
+/** The trailing status/elapsed suffix of a worker row, e.g. " (idle 1m41s)". */
+function rowSuffix(row: WorkerRow): string {
+  return ` (${row.idle ? 'idle ' : ''}${formatElapsedSeconds(row.elapsed)})`;
+}
+
+/** Full row text. `withSlug` toggles the optional workspace segment. */
+function workerRowText(row: WorkerRow, withSlug: boolean): string {
+  const slug = withSlug && row.workspaceSlug ? ` [${row.workspaceSlug}]` : '';
+  return `${row.label}${slug}${rowSuffix(row)}`;
+}
+
+/**
+ * Fit worker rows into `budget` DISPLAY COLUMNS (not code units): keep whole
+ * rows while they fit, truncate only the row that overflows, drop the rest.
+ * Idle rows carry an "idle" marker so a parked multi-stage worker cannot be
+ * misread as a running task.
+ *
+ * Width is measured with `stringWidth` (CJK/emoji = 2 columns, combining = 0);
+ * using `.length` here undercounted double-width titles and let a 60-column
+ * line overflow, pushing the elapsed time onto a second terminal row.
+ *
+ * The workspace slug is the first thing to go under pressure: a row that does
+ * not fit in full is retried without it, so the task title and the worker
+ * status/elapsed survive at the expense of the workspace attribution. If even
+ * the compact row still overflows, its LABEL is truncated while the elapsed
+ * suffix is preserved.
+ */
+function fitWorkerRows(rows: WorkerRow[], budget: number): string[] {
+  if (budget <= 0) return [];
+  const fitted: string[] = [];
+  let used = 0;
+  for (const row of rows) {
+    const sep = fitted.length > 0 ? stringWidth(ROW_SEPARATOR) : 0;
+    const full = workerRowText(row, true);
+    const fullWidth = stringWidth(full);
+    if (used + sep + fullWidth <= budget) {
+      fitted.push(full);
+      used += sep + fullWidth;
+      continue;
+    }
+    const compact = workerRowText(row, false);
+    const compactWidth = stringWidth(compact);
+    if (used + sep + compactWidth <= budget) {
+      fitted.push(compact);
+      used += sep + compactWidth;
+      continue;
+    }
+    const remaining = budget - used - sep;
+    if (remaining > 0) {
+      // Truncate the LABEL, keeping the status/elapsed suffix (the compact row
+      // has no slug) so the elapsed time stays on this row instead of being
+      // squeezed off the end. Width-aware, unlike the old code-unit slice that
+      // miscounted double-width CJK and let the line overflow/wrap.
+      fitted.push(fitWithSuffix(row.label, rowSuffix(row), remaining));
+    }
+    break;
+  }
+  return fitted;
+}
+
+/**
+ * Lay out the status line. The context segment is laid out first and never
+ * truncated for workers — when the line is too long the worker rows absorb
+ * the overflow.
+ */
+export function buildStatusSegments(input: StatusSegmentsInput): StatusSegments {
+  const { pendingCount, activeCount, workerRows, contextUsage, terminalCols = 80, compacting = false } = input;
+
+  const parts: string[] = [];
+  // The compaction runs outside a turn, so it leads the line: it is the only
+  // sign that the controller is doing something while `busy` is false.
+  if (compacting) parts.push('compacting…');
+  if (pendingCount > 0) parts.push(`pending tasks:${pendingCount}`);
+  if (activeCount > 0) parts.push(`active workers:${activeCount}`);
+  // Always non-empty — the status bar never disappears when idle.
+  const countsText = parts.length > 0 ? parts.join(' │ ') : 'idle';
+
+  const contextText = contextUsage
+    ? formatContextUsage(contextUsage.usedTokens, contextUsage.contextWindowTokens)
+    : '';
+
+  // Width accounting: padding(2) + context segment with its ' … │'
+  // wrapper(3) + ' counts '(counts + 2). Whatever remains is the worker budget.
+  // Measured in DISPLAY COLUMNS (stringWidth), not code units.
+  const contextWidth = contextText ? stringWidth(contextText) + 3 : 0;
+  const workerBudget = Math.max(0, terminalCols - 4 - stringWidth(countsText) - contextWidth);
+
+  return {
+    countsText,
+    workerTexts: fitWorkerRows(workerRows, workerBudget),
+    contextText,
+    contextColor: contextUsage ? contextUsageColor(contextUsage.ratio) : undefined,
+  };
+}
+
+export function StatusBar({
+  activeWorkers,
+  pendingTasks,
+  runningTasks,
+  controllerAgent,
+}: {
+  activeWorkers: ActiveWorkerInfo[];
+  pendingTasks: TaskDetail[];
+  runningTasks: TaskDetail[];
+  /** State source for the controller's context usage snapshot. */
+  controllerAgent: Subscribable;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+
+  // Context usage written by ControllerAgent.updateContextUsage (not persisted).
+  // The path comes from the shared constant so the literal is not duplicated.
+  const contextUsage = useWayangState<ContextUsage | null>(
+    controllerAgent, CONTEXT_USAGE_STATE_PATH,
+  );
+
+  // Compaction state (not persisted) — the controller is busy without a turn.
+  const compacting = useWayangState<boolean>(
+    controllerAgent, 'dynamicState.compacting',
+  );
+
+  // Refresh every 5s to update elapsed time
+  useEffect(() => {
+    if (activeWorkers.length === 0) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [activeWorkers.length]);
+
+  const { stdout } = useStdout();
+
+  const workerRows = useMemo(
+    () => buildWorkerRows(activeWorkers, runningTasks, now),
+    [activeWorkers, runningTasks, now],
+  );
+
+  const segments = useMemo(() => buildStatusSegments({
+    pendingCount: pendingTasks.length,
+    activeCount: activeWorkers.length,
+    workerRows,
+    contextUsage,
+    terminalCols: stdout?.columns ?? 80,
+    compacting: compacting ?? false,
+  }), [pendingTasks.length, activeWorkers.length, workerRows, contextUsage, stdout?.columns, compacting]);
+
+  // The row is always rendered — even with no tasks it shows "idle" plus the
+  // persistent context segment, so the layout never collapses. The context
+  // segment leads the line: " 227.9k/1M (23%) │ counts  workers".
+  return (
+    <Box paddingX={1} marginTop={0}>
+      {segments.contextText ? (
+        <Text dimColor color={segments.contextColor}> {segments.contextText} │</Text>
+      ) : null}
+      <Text dimColor> {segments.countsText} </Text>
+      {segments.workerTexts.map((text, i) => (
+        <React.Fragment key={workerRows[i].workerId}>
+          {i > 0 && <Text dimColor> · </Text>}
+          <Text dimColor color="blue">{text}</Text>
+        </React.Fragment>
+      ))}
+    </Box>
+  );
+}

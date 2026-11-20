@@ -1,0 +1,185 @@
+import { useState, useMemo } from 'react';
+import { useMemoizedFn } from '@/tui/hooks/use-memoized-fn';
+import { Box, useStdout } from 'ink';
+import { ChatArea } from '@/tui/components/chat-area';
+import { InputArea } from '@/tui/components/input-area';
+import { InquiryPrompt } from '@/tui/components/inquiry-prompt';
+import { StatusBar } from '@/tui/components/status-bar';
+import { OverlayPanel } from '@/tui/components/overlay-panel';
+import { useSupervisor } from '@/tui/providers/supervisor-provider';
+import { useWayangState } from '@/tui/hooks/use-wayang-state';
+import { useSlashCommands } from '@/tui/hooks/use-slash-commands';
+import type { ConversationEntry } from '@wayang/protocol/types/conversation';
+import type { ControllerSignal, TaskDetail, InquireQuestion } from '@wayang/protocol';
+import type { ActiveWorkerInfo } from '@wayang/protocol';
+import type { DisplayItem } from '@/tui/types/display-item';
+import type { Overlay } from '@/tui/types/overlay';
+import { entryToDisplayItem, signalToDisplayItem } from '@/tui/types/display-item';
+import { resolveEscapeAction } from '@/tui/utils/escape-action';
+
+interface ControllerPageProps {
+  onExit: () => void;
+}
+
+export function ControllerPage({ onExit }: ControllerPageProps) {
+  const supervisor = useSupervisor();
+  const { stdout } = useStdout();
+  const terminalCols = stdout?.columns ?? 80;
+  const chatContentWidth = terminalCols - 4;
+
+  const conversation = useWayangState<ConversationEntry[]>(
+    supervisor.controllerAgent, 'conversation',
+  );
+
+  const streamingEntries = useWayangState<ConversationEntry[]>(
+    supervisor.controllerAgent, 'dynamicState.streamingEntries',
+  );
+
+  // Subscribe to signals so useMemo recomputes when signals change
+  const signals = useWayangState<ControllerSignal[]>(
+    supervisor.signalQueue, 'signals',
+  );
+
+  // Subscribe to active workers & tasks for status display
+  const activeWorkers = useWayangState<ActiveWorkerInfo[]>(
+    supervisor.engine, 'activeWorkers',
+  );
+  const pendingTasks = useWayangState<TaskDetail[]>(
+    supervisor.engine, 'tasks.pending',
+  );
+  const runningTasks = useWayangState<TaskDetail[]>(
+    supervisor.engine, 'tasks.running',
+  );
+
+  // Busy state from controller agent (dynamicState = not persisted)
+  const agentBusy = useWayangState<boolean>(
+    supervisor.controllerAgent, 'dynamicState.busy',
+  );
+
+  // Compaction runs outside a turn, so `busy` stays false while it lasts —
+  // subscribe separately for the "compacting…" status and the ESC no-op.
+  const compacting = useWayangState<boolean>(
+    supervisor.controllerAgent, 'dynamicState.compacting',
+  );
+
+  // Pending inquiry from controller
+  const pendingInquiry = useWayangState<InquireQuestion | null>(
+    supervisor.controllerAgent, 'runtimeState.pendingInquiry',
+  );
+
+  // Build DisplayItem[]: conversation entries (read) + unread signals
+  const displayItems = useMemo<DisplayItem[]>(() => {
+    const readItems = (conversation ?? []).map(entryToDisplayItem).filter((d): d is DisplayItem => d !== null);
+    const unreadSignals = (signals ?? []).filter(s => s.status === 'unread').map(signalToDisplayItem);
+    return [...readItems, ...unreadSignals];
+  }, [conversation, signals]);
+
+  // Build streaming display items from streamingEntries, deduplicated against conversation
+  const streamingItems = useMemo<DisplayItem[]>(() => {
+    const entries = streamingEntries ?? [];
+    if (entries.length === 0) return [];
+    const conversationIds = new Set((conversation ?? []).map(e => e.uuid));
+    return entries
+      .filter(e => !conversationIds.has(e.uuid))
+      .map(entryToDisplayItem)
+      .filter((d): d is DisplayItem => d !== null);
+  }, [streamingEntries, conversation]);
+
+  const [overlay, setOverlay] = useState<Overlay | null>(null);
+
+  const busy = agentBusy ?? false;
+
+  const dismissOverlay = useMemoizedFn(() => setOverlay(null));
+
+  // ESC: dismiss an open overlay first (its hint says "esc to dismiss");
+  // otherwise abort the controller's current thinking/streaming. Never
+  // touches worker tasks.
+  const handleEscape = useMemoizedFn(() => {
+    switch (resolveEscapeAction({ overlayOpen: overlay !== null, busy, compacting })) {
+      case 'dismiss-overlay':
+        dismissOverlay();
+        break;
+      case 'abort':
+        supervisor.controllerAgent.abort();
+        break;
+      case 'none':
+        break;
+    }
+  });
+
+  // Workspace context for the chat rows: the default workspace plus the
+  // session's identities, so an add_task row can resolve the same slug the
+  // /tasks list shows.
+  const workspaceContext = useMemo(
+    () => ({
+      defaultWorkspacePath: supervisor.ctx.workspaceDir,
+      workspaces: supervisor.ctx.workspaces,
+    }),
+    [supervisor],
+  );
+
+  const { handleCommand } = useSlashCommands(supervisor);
+
+  const handleSubmit = useMemoizedFn(async (input: string) => {
+    let cmdResult: Awaited<ReturnType<typeof handleCommand>>;
+    try {
+      // The overlay panel renders inside a bordered box (border + padding =
+      // 4 columns), so its inner width is what slash-command rows must fit.
+      cmdResult = await handleCommand(input, { width: chatContentWidth });
+    } catch (err) {
+      // RPC-backed commands (/context, /tasks, /cancel, …) reject when the
+      // server is gone; surface it instead of an unhandled rejection that
+      // would take the TUI process down.
+      const reason = err instanceof Error ? err.message : String(err);
+      setOverlay({ kind: 'text', content: `Command failed: ${reason}`, hint: '(esc to dismiss)' });
+      return;
+    }
+    if (cmdResult.handled) {
+      if (cmdResult.output === '__EXIT__') { onExit(); return; }
+      if (cmdResult.action === 'compact') {
+        setOverlay(cmdResult.output ? { kind: 'text', content: cmdResult.output } : null);
+        supervisor.controllerAgent.performCompaction()
+          .then(() => setOverlay(null))
+          .catch(() => setOverlay({ kind: 'text', content: 'Compaction failed', hint: '(esc to dismiss)' }));
+        return;
+      }
+      if (cmdResult.output) {
+        setOverlay({ kind: 'text', content: cmdResult.output, hint: '(esc to dismiss)' });
+      }
+      return;
+    }
+
+    setOverlay(null);
+    supervisor.signalQueue.enqueue({
+      source: 'user',
+      type: 'input',
+      payload: { text: input },
+    });
+  });
+
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="column" marginBottom={1}>
+        <ChatArea
+          items={displayItems}
+          busy={busy}
+          streamingItems={streamingItems}
+          contentWidth={chatContentWidth}
+          workspace={workspaceContext}
+        />
+      </Box>
+      {overlay && <OverlayPanel overlay={overlay} />}
+      {pendingInquiry ? (
+        <InquiryPrompt inquiry={pendingInquiry} onAnswer={(answer) => supervisor.resolveInquiry(answer)} />
+      ) : (
+        <InputArea onSubmit={handleSubmit} onExit={onExit} onEscape={handleEscape} busy={busy} width={terminalCols} />
+      )}
+      <StatusBar
+        activeWorkers={activeWorkers ?? []}
+        pendingTasks={pendingTasks ?? []}
+        runningTasks={runningTasks ?? []}
+        controllerAgent={supervisor.controllerAgent}
+      />
+    </Box>
+  );
+}

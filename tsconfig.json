@@ -4,7 +4,9 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/rpc/*": ["./packages/protocol/src/rpc/*"],
+      "@/types/*": ["./packages/protocol/src/types/*"],
+      "@/__tests__/*": ["./packages/core/src/__tests__/*"]
     },
     "strict": true,
     "esModuleInterop": true,
@@ -15,6 +17,6 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src/**/*", "e2e/**/*"],
+  "include": ["e2e/**/*"],
   "exclude": ["node_modules", "dist"]
 }
