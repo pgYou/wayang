@@ -1,4 +1,4 @@
-# @wayang-ai/app
+# @wayang-ai/desktop
 
 桌面端外壳（Electron）在 **M3** 落地。
 

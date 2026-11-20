@@ -5,6 +5,7 @@
   "type": "module",
   "license": "MIT",
   "workspaces": [
+    "apps/*",
     "packages/*"
   ],
   "author": "pgYou",
@@ -26,18 +27,18 @@
     "claude"
   ],
   "bin": {
-    "wayang": "packages/cli/dist/cli.js",
-    "waya": "packages/cli/dist/cli.js"
+    "wayang": "apps/cli/dist/cli.js",
+    "waya": "apps/cli/dist/cli.js"
   },
   "files": [
-    "packages/cli/dist",
-    "!packages/cli/dist/**/*.map"
+    "apps/cli/dist",
+    "!apps/cli/dist/**/*.map"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev:watch": "npm run dev:watch --workspaces --if-present",
-    "dev": "npm run build && node --env-file=.env.local packages/cli/dist/cli.js --wayang-root . -w . -c ./config.local.json --verbose",
-    "start": "node packages/cli/dist/cli.js",
+    "dev": "npm run build && node --env-file=.env.local apps/cli/dist/cli.js --wayang-root . -w . -c ./config.local.json --verbose",
+    "start": "node apps/cli/dist/cli.js",
     "prepublishOnly": "npm run build",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",

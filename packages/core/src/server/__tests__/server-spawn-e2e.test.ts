@@ -26,7 +26,7 @@ import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
 import type { TransportErrorEvent } from '@wayang-ai/protocol/rpc/transport';
 import { startFakeProvider, isControllerRequest, type FakeProvider } from '@/__tests__/fake-openai-provider';
 
-const CLI_PATH = join(process.cwd(), 'packages', 'cli', 'dist', 'cli.js');
+const CLI_PATH = join(process.cwd(), 'apps', 'cli', 'dist', 'cli.js');
 const HAS_BUILD = existsSync(CLI_PATH);
 
 let provider: FakeProvider;
