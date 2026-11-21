@@ -40,7 +40,7 @@ const OWNED = {
   protocol: ['types', 'rpc'],
   core: ['services', 'infra', 'server', 'utils', '__tests__', 'client'],
   cli: ['tui', 'client', 'cli', 'cli-args', 'bootstrap', 'config-loader', 'config-env', 'session-select', '__tests__', 'server-entry'],
-  desktop: [],
+  desktop: ['main', 'preload', 'renderer', 'utility', '__tests__'],
 };
 
 /** Allowed `@wayang-ai/*` edges. Anything not listed is a violation. */
@@ -115,6 +115,15 @@ for (const pkg of PACKAGES) {
         const target = specifier.slice('@wayang-ai/'.length).split('/')[0];
         if (target !== pkg.name && !ALLOWED_EDGES[pkg.name].includes(target)) {
           report(pkg, file, specifier, `forbidden edge ${pkg.name} -> ${target}`);
+        }
+        // Renderer/preload run in a browser context: core is full of Node
+        // builtins and would break there. They may only touch protocol.
+        const rel = relative(ROOT, file);
+        const rendererLike =
+          rel.startsWith(join('apps', 'desktop', 'src', 'renderer') + sep) ||
+          rel.startsWith(join('apps', 'desktop', 'src', 'preload') + sep);
+        if (rendererLike && target === 'core') {
+          report(pkg, file, specifier, 'renderer/preload must not import @wayang-ai/core (protocol only)');
         }
         continue;
       }

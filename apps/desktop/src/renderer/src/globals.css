@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+/*
+ * Wayang desktop theme — shadcn-style variables with a light-blue accent.
+ * The base stays calm (near-white, soft borders); blue is reserved for the
+ * user's presence: message bubbles, primary actions, focus rings, active
+ * states. Not a black/gray/white app.
+ */
+@theme {
+  --color-background: oklch(0.977 0.008 240);
+  --color-surface: oklch(1 0 0);
+  --color-foreground: oklch(0.25 0.022 250);
+  --color-muted-foreground: oklch(0.52 0.025 245);
+  --color-border: oklch(0.912 0.012 240);
+  --color-primary: oklch(0.62 0.135 243);
+  --color-primary-strong: oklch(0.52 0.145 243);
+  --color-primary-soft: oklch(0.935 0.045 240);
+  --color-primary-border: oklch(0.83 0.07 240);
+  --color-primary-foreground: oklch(0.99 0.005 240);
+  --color-danger: oklch(0.58 0.19 25);
+  --color-danger-soft: oklch(0.955 0.03 25);
+  --color-success: oklch(0.6 0.14 155);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin, quiet scrollbars that fit the blue-tinted theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-primary-border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-primary-border);
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
