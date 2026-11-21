@@ -2,6 +2,31 @@
   "name": "@wayang-ai/desktop",
   "version": "1.0.0-alpha.0",
   "private": true,
-  "description": "Wayang desktop — Electron shell (UtilityProcess host, lands in M3)",
-  "type": "module"
+  "description": "Wayang desktop — Electron shell; UtilityProcess hosts the wayang server, renderer is React + shadcn-style UI",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build && cp ../../packages/core/dist/mcp-bridge-entry.js out/main/",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit && eslint src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwind-merge": "^3.7.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "electron": "^41.7.1",
+    "electron-vite": "^6.0.0",
+    "tailwindcss": "^4.3.5"
+  }
 }
