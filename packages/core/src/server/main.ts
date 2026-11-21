@@ -5,6 +5,7 @@
  * passed as options; this process never prompts.
  */
 
+import type { Readable, Writable } from 'node:stream';
 import { runWayangServer } from './wayang-server';
 
 export interface ServerMainOptions {
@@ -18,7 +19,17 @@ export interface ServerMainOptions {
   logLevel?: string;
 }
 
-export async function serverMain(options: ServerMainOptions): Promise<void> {
+/**
+ * Optional io injection: hosts that are not a plain stdio process (Electron
+ * UtilityProcess over a message port) pass their own stream pair; the default
+ * (`process`) keeps the CLI behavior unchanged.
+ */
+export interface ServerIo {
+  stdin: Readable;
+  stdout: Writable;
+}
+
+export async function serverMain(options: ServerMainOptions, io?: ServerIo): Promise<void> {
   let session: { mode: 'new' } | { mode: 'resume'; sessionId: string };
   if (options.session === 'new') {
     session = { mode: 'new' };
@@ -37,7 +48,7 @@ export async function serverMain(options: ServerMainOptions): Promise<void> {
     session,
     injectPreviousTasks: options.injectPreviousTasks,
     logLevel: options.logLevel,
-  });
+  }, io);
 
   // The RPC transport, supervisor loop and logger keep the event loop alive.
 }
