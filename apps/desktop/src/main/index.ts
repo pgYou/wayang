@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { connectServer, type DesktopConnection } from './connection';
+import { initMainLogger, mainLogger, type MainLogger } from './logger';
 
 /** Prepend the paths a GUI-launched process misses (brew, local bin). */
 function fixGuiPath(): void {
@@ -86,16 +87,42 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   fixGuiPath();
+  const log = initMainLogger(process.env.WAYANG_DESKTOP_LOG_LEVEL ?? 'info');
+
+  // A GUI shell must not die silently: surface anything that escapes a
+  // handler into the log instead of an invisible default crash.
+  process.on('uncaughtException', (err) => log.error('uncaughtException', { error: err.stack ?? String(err) }));
+  process.on('unhandledRejection', (reason) => log.error('unhandledRejection', { error: String(reason) }));
+
+  const options = resolveSessionOptions();
+  log.info('app ready', {
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    node: process.versions.node,
+    platform: `${process.platform}/${process.arch}`,
+    ...options,
+    configFound: existsSync(options.configPath),
+  });
+
   createWindow();
   const sendStatus = (phase: string, detail?: string): void => {
+    if (phase === 'crashed') log.error('connection crashed', { detail: detail?.slice(0, 2000) });
+    else log.info(`connection ${phase}`);
     mainWindow?.webContents.send('wayang:status', { phase, detail });
   };
   connectServer({
     getWindow: () => mainWindow,
-    options: resolveSessionOptions(),
+    options,
     onStatus: sendStatus,
+    log,
   }).then((conn) => {
     connection = conn;
+  }).catch((err: unknown) => {
+    // waitForReady rejection (timeout / early exit): the renderer must leave
+    // the "connecting" state and the failure must outlive the process.
+    const message = err instanceof Error ? err.message : String(err);
+    log.error('connect failed', { error: message });
+    sendStatus('crashed', message);
   });
 });
 
@@ -107,8 +134,15 @@ app.on('before-quit', (event) => {
   if (stopping || !connection) return;
   stopping = true;
   event.preventDefault();
-  void connection.stop().finally(() => {
-    connection = null;
-    app.quit();
-  });
+  const log: MainLogger = mainLogger();
+  log.info('quitting: stopping server');
+  void connection.stop()
+    .then(() => log.info('server stopped'))
+    .catch((err: unknown) => log.error('server stop failed', { error: String(err) }))
+    .finally(() => {
+      connection = null;
+      // Sink appends are synchronous, but close() guarantees the file is
+      // quiescent before the process goes away.
+      void log.close().finally(() => app.quit());
+    });
 });

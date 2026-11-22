@@ -14,9 +14,36 @@ import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
 import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
 import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
 import { RemoteSupervisor, CONTEXT_USAGE_STATE_PATH } from '@wayang-ai/core/client/remote-supervisor';
+import type { MainLogger } from './logger';
+import { createLineSplitter } from './log-lines';
 
 const READY_TIMEOUT_MS = 30_000;
 const SHUTDOWN_GRACE_MS = 5_000;
+
+/**
+ * Electron's message direction is asymmetric: parent→child delivers
+ * MessageEvent-shaped events, but child→parent (UtilityProcess 'message')
+ * delivers the payload directly. The port adapter speaks the MessageEvent
+ * shape, so translate here — protocol stays shape-agnostic.
+ */
+function asMessagePort(child: UtilityProcess): MessagePortLike {
+  const shims = new Map<(event: { data: unknown }) => void, (message: unknown) => void>();
+  return {
+    postMessage: (data) => child.postMessage(data),
+    addListener: (event, listener) => {
+      const shim = (message: unknown): void => listener({ data: message });
+      shims.set(listener, shim);
+      child.addListener(event, shim);
+    },
+    removeListener: (event, listener) => {
+      const shim = shims.get(listener);
+      if (shim) {
+        child.removeListener(event, shim);
+        shims.delete(listener);
+      }
+    },
+  };
+}
 
 /** State slices forwarded to the renderer (mirrors the TUI's subscriptions). */
 const SUBSCRIBED_PATHS: ReadonlyArray<readonly [string, string]> = [
@@ -49,10 +76,14 @@ export interface ConnectDeps {
   getWindow: () => BrowserWindow | null;
   options: DesktopSessionOptions;
   onStatus: (phase: 'connecting' | 'ready' | 'crashed', detail?: string) => void;
+  log: MainLogger;
 }
 
 export async function connectServer(deps: ConnectDeps): Promise<DesktopConnection> {
-  const { options, onStatus } = deps;
+  const { options, onStatus, log } = deps;
+  const connLog = log.child('connection');
+  const serverLog = log.child('server');
+  connLog.info('connecting', { ...options });
   onStatus('connecting');
 
   const child = utilityProcess.fork(join(__dirname, 'utility-entry.js'), [
@@ -63,26 +94,39 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
     '--log-level', options.logLevel,
   ], { stdio: 'pipe', serviceName: 'wayang-server' });
 
-  // Server logs flow to the desktop app's console (dev tools / terminal).
-  child.stdout?.on('data', (chunk: Buffer) => process.stdout.write(`[server] ${chunk}`));
-  child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(`[server] ${chunk}`));
+  // The wayang server logs to <sessionDir>/wayang.log, so its stdio carries
+  // only fatal output — echo to the console and persist to main.log. The
+  // tail feeds crash/timeout diagnostics.
+  let stderrTail = '';
+  const stderrLines = createLineSplitter((line) => serverLog.error(line));
+  child.stderr?.setEncoding('utf-8');
+  child.stderr?.on('data', (chunk: string) => {
+    process.stderr.write(`[server] ${chunk}`);
+    stderrTail = (stderrTail + chunk).slice(-4000);
+    stderrLines(chunk);
+  });
+  const stdoutLines = createLineSplitter((line) => serverLog.debug(line));
+  child.stdout?.setEncoding('utf-8');
+  child.stdout?.on('data', (chunk: string) => {
+    process.stdout.write(`[server] ${chunk}`);
+    stdoutLines(chunk);
+  });
 
-  // The UtilityProcess object is structurally a message port for our framing.
-  const port = child as unknown as MessagePortLike;
-  const io = messagePortToStreams(port);
+  // The UtilityProcess object is structurally a message port for our framing,
+  // modulo Electron's event-shape asymmetry (see asMessagePort).
+  const io = messagePortToStreams(asMessagePort(child));
   const rpc = new RpcClient(createStreamTransport(io.stdin, io.stdout));
 
   const exited = new Promise<number | null>((resolve) => {
     child.once('exit', (code) => resolve(code));
   });
 
-  let stderrTail = '';
-  child.stderr?.setEncoding('utf-8');
-  child.stderr?.on('data', (chunk: string) => {
-    stderrTail = (stderrTail + chunk).slice(-4000);
+  const ready = await waitForReady(rpc, exited, stderrTail, child, options.dataDir);
+  connLog.info('server ready', {
+    sessionId: ready.sessionId,
+    sessionDir: ready.sessionDir,
+    serverLog: join(ready.sessionDir ?? '', 'wayang.log'),
   });
-
-  await waitForReady(rpc, exited, stderrTail, child);
   const store = new RemoteStateStore(rpc);
   const supervisor = new RemoteSupervisor(rpc, store, options.workspaceDir, {
     stop: () => gracefulStop(rpc, child, exited),
@@ -111,6 +155,7 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
     stop: async () => {
       stopping = true;
       removeIpcHandlers();
+      connLog.info('stopping server');
       await gracefulStop(rpc, child, exited);
     },
   };
@@ -142,21 +187,34 @@ function waitForReady(
   exited: Promise<number | null>,
   stderrTail: string,
   child: UtilityProcess,
-): Promise<void> {
+  dataDir: string,
+): Promise<{ sessionId?: string; sessionDir?: string }> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let readyInfo: { sessionId?: string; sessionDir?: string } = {};
     const finish = (err?: Error): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (err) reject(err);
-      else resolve();
+      else resolve(readyInfo);
     };
     const timer = setTimeout(() => {
       child.kill();
-      finish(new Error(`server did not become ready within ${READY_TIMEOUT_MS}ms.\n${stderrTail}`));
+      // The server logs to its session file, not stdio — point whoever reads
+      // this at both evidence sources (stderr tail + session log path).
+      finish(new Error(
+        `server did not become ready within ${READY_TIMEOUT_MS}ms.\n${stderrTail}` +
+        `\nServer-side logs (if it booted): ${join(dataDir, 'sessions', '<sessionId>', 'wayang.log')}`,
+      ));
     }, READY_TIMEOUT_MS);
-    rpc.on(NOTIFY.READY, () => finish());
+    rpc.on(NOTIFY.READY, (params) => {
+      readyInfo = {
+        sessionId: typeof params.sessionId === 'string' ? params.sessionId : undefined,
+        sessionDir: typeof params.sessionDir === 'string' ? params.sessionDir : undefined,
+      };
+      finish();
+    });
     void exited.then((code) => {
       setImmediate(() => finish(new Error(`server exited before becoming ready (code ${code}).\n${stderrTail}`)));
     });
