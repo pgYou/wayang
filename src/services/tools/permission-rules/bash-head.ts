@@ -116,6 +116,16 @@ export function headOfWords(words: readonly string[]): { command: string; words:
 }
 
 /**
+ * The wrapper-prefix run `headCommand` skips (sudo / env / nohup / time / …
+ * plus their option arguments) — the words BEFORE the command position. The
+ * background / detached tier reads it to see a `nohup` hidden behind other
+ * wrappers (`time nohup x`), which the command position alone cannot name.
+ */
+export function wrapperPrefixWords(words: readonly string[]): string[] {
+  return words.slice(0, headIndex(words));
+}
+
+/**
  * Is this command word destructive? `words` starts AT the command word, so the
  * arity / flag conditions (`rm` needs an operand, `kill` needs `-9`) are read
  * from its own arguments — the same shape the old line-start regex matched.

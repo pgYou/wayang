@@ -160,6 +160,72 @@ describe('0.9.9 review regression matrix', () => {
     });
   });
 
+  describe('P0-4 background / detached execution escapes the task lifecycle', () => {
+    // From `.agents/tmp/builtin-tools-gap-analysis.md` §四: `nohup node
+    // drive-server.mjs … &` ran twice (19:15:52 / 19:17:33) with no
+    // permission_request, while `timeout 60 node drive-server.mjs …` asked
+    // (seq 236). Root cause: the trailing `&` is only the lexer's segment
+    // terminator (no tier read it), `nohup` is a stripped wrapper, and the
+    // session's real command redirected stdout into the workspace, which
+    // classified the whole segment as an in-scope write before `node`'s exec
+    // class could fire. Now ANY background / detached shape asks.
+    it.each([
+      'nohup node drive-server.mjs &',
+      'node drive-server.mjs &',
+      'nohup node x.mjs',
+      'echo hi &',
+      'nohup git status &',
+      'nohup git status',
+      'setsid node x.mjs',
+      'node x.mjs & disown',
+      'disown node x.mjs',
+    ])('%s → ask (background-capability)', (command) => {
+      const result = verdict(command);
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRule).toBe('background-capability');
+      expect(result.reason).toContain('task lifecycle');
+    });
+
+    it('the gap-analysis shape — nohup + output redirect + `&` — asks, not the write classification', () => {
+      const result = verdict(
+        'nohup node .agents/tmp/drive-server.mjs dist/cli.js > .agents/tmp/drive.log 2>&1 &\necho started',
+      );
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRule).toBe('background-capability');
+    });
+
+    it('a judged `-c` script cannot launder the nohup prefix', () => {
+      const result = verdict('nohup bash -c "git status"');
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRule).toBe('background-capability');
+    });
+
+    it('timeout keeps its exec ask (both sides of the observed inconsistency now ask)', () => {
+      const result = verdict('timeout 60 node drive-server.mjs');
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRule).toBe('exec-capability');
+    });
+
+    it('a destructive nohup keeps the dangerous tier (priority unchanged)', () => {
+      const result = verdict('nohup rm -rf x');
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRule).toBe('dangerous-bash');
+    });
+
+    it('a detached read asks on the background rule — no reusable path grant, and the sensitive hit is carried (#42 shape)', () => {
+      const result = verdict('nohup cat ~/.ssh/id_rsa');
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRule).toBe('background-capability');
+      expect(result.matchedEntry).toBe('.ssh');
+      expect(result.sensitive).toBe(true);
+      expect(result.askPaths).toBeUndefined();
+    });
+
+    it.each(['git status', 'git status && echo hi'])('%s → allow (no backgrounding)', (command) => {
+      expect(verdict(command).decision).toBe('allow');
+    });
+  });
+
   describe('gate baseline from the review run', () => {
     it.each([
       ['sha256sum /etc/hostname', 'outside-all'],

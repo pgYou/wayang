@@ -761,7 +761,9 @@ describe('evaluateBashAccess', () => {
       ['sudo -u root cat ~/notes.md', 'dangerous-bash'],
       ['env FOO=1 cat ~/notes.md', 'read-within-home'],
       ['env -i FOO=bar cat ~/notes.md', 'read-within-home'],
-      ['nohup cat ~/notes.md', 'read-within-home'],
+      // `nohup` is no longer transparent: it detaches the process from the
+      // task lifecycle, so it asks on `background-capability` instead (see
+      // review-099-regressions).
       ['time cat ~/notes.md', 'read-within-home'],
       ['nice -n 5 cat ~/notes.md', 'read-within-home'],
       ['FOO=1 cat ~/notes.md', 'read-within-home'],

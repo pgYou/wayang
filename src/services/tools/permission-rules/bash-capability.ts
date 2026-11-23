@@ -15,7 +15,7 @@ import {
 import { commandEntry, isInertCommand } from './command-tables';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead } from './bash-classification';
-import { headCommand } from './bash-head';
+import { headCommand, wrapperPrefixWords } from './bash-head';
 import { SHELL_COMMANDS } from './shell-script';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
@@ -57,6 +57,14 @@ const LAUNCHER_COMMANDS: ReadonlySet<string> = new Set([
 
 /** `source` / `.` run a script inside the current shell — inherently dynamic. */
 const DYNAMIC_COMMANDS: ReadonlySet<string> = new Set(['source', '.']);
+
+/**
+ * Verbs that detach a process from the run that started it: `nohup` (SIGHUP
+ * immune), `setsid` (new session), `disown` (removed from the job table). With
+ * a trailing `&` these are THE backgrounding idioms; without it `nohup` /
+ * `setsid` still escape the task lifecycle. None of them is "read-only".
+ */
+const DETACHED_COMMANDS: ReadonlySet<string> = new Set(['nohup', 'setsid', 'disown']);
 
 /** A leading shell variable assignment (`FOO=1`), not a command word. */
 const ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -428,6 +436,47 @@ export function redirectWriteScopeAsk(
       return ask(
         'write-scope',
         `output redirection target "${target}" resolves outside the workspace (${abs}) — controller approval is required`,
+      );
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The background / detached tier (#86): a segment terminated by the background
+ * operator `&`, or carrying a detached-process verb (`nohup`, `setsid`,
+ * `disown`) in its wrapper prefix or command position, runs OUTSIDE the task
+ * lifecycle — the worker cannot observe the process's exit and abort /
+ * abortAll cannot clean it up. A read-only inner command does not change that:
+ * `nohup git status &` backgrounds a read, and `nohup bash -c '<judged read>'`
+ * detaches a script this gate already allowed. The caller therefore runs this
+ * tier BEFORE every tier that can allow the line, and the resulting ask
+ * carries no `askPaths` — an approval-memory grant for the inner command must
+ * never cover a detached run.
+ *
+ * Returns the ask REASON (the caller attaches the matched rule and any
+ * sensitive-hit fields), or `undefined` when no segment detaches.
+ */
+export function detachedExecutionAsk(segments: readonly ShellSegment[]): string | undefined {
+  for (const segment of segments) {
+    // The lexer records the terminating operator verbatim (`&&`, `||`, `|&`,
+    // `;;`, …); only a single `&` backgrounds the segment's command.
+    if (segment.operator === '&') {
+      return (
+        `\`${headWord(segment)} … &\` runs in the background, detached from the task lifecycle — ` +
+        'the worker cannot observe its exit and abort cannot clean it up — ' +
+        'controller approval is required (fail-closed)'
+      );
+    }
+    const head = headCommand(segment);
+    const detached =
+      wrapperPrefixWords(wordTexts(segment)).find((word) => DETACHED_COMMANDS.has(word)) ??
+      (head !== undefined && DETACHED_COMMANDS.has(head.command) ? head.command : undefined);
+    if (detached !== undefined) {
+      return (
+        `\`${detached}\` starts a process detached from the task lifecycle ` +
+        '(background / SIGHUP-immune: the worker cannot observe its exit, abort cannot clean it up) — ' +
+        'controller approval is required (fail-closed)'
       );
     }
   }

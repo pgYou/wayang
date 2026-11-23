@@ -23,7 +23,9 @@ export type WorkerMatchedRule =
   | 'unknown-capability'
   | 'exec-capability'
   | 'network-capability'
-  | 'write-scope';
+  | 'write-scope'
+  // Background / detached execution (`cmd &`, `nohup`, `setsid`, `disown`).
+  | 'background-capability';
 
 /** Everything the shared policy needs to know about ONE worker run's boundary. */
 export interface WorkerAccessScope {

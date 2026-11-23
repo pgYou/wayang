@@ -2,7 +2,7 @@
 
 import { classifyRedirections, tokenizeShellLite, unquotedHeredocOperator } from '@/services/tools/shell-lexer';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
-import { evaluateCapabilityGate, redirectWriteScopeAsk } from './bash-capability';
+import { evaluateCapabilityGate, redirectWriteScopeAsk, detachedExecutionAsk } from './bash-capability';
 import {
   applyAssignmentPrefix,
   evaluateForLoop,
@@ -64,8 +64,10 @@ function fallbackSensitiveHit(
  * `unknown` (which could not even reach that rule) to a named `read`.
  *
  * Ordering: a hard refusal (only reachable under `sensitiveMode: 'deny'`, from
- * the candidate sweep or the `cd` slice) → destructive-command tier → a shell
- * `-c` script judged by these same rules (see `evaluateShellScripts`) → dynamic
+ * the candidate sweep or the `cd` slice) → destructive-command tier → the
+ * background / detached tier (`cmd &`, `nohup`, `setsid`, `disown` — a process
+ * outside the task lifecycle, see `detachedExecutionAsk`) → a shell `-c`
+ * script judged by these same rules (see `evaluateShellScripts`) → dynamic
  * constructs (a command substitution that is not read-only, an output
  * redirection into a real file, a command the lexer cannot parse) → the
  * read-only-unverified escalation (a table command that failed its deferred
@@ -269,6 +271,32 @@ export function evaluateBashCommand(
       decision: 'ask',
       matchedRule: 'dangerous-bash',
       access: lineAccess,
+      ...(hit !== undefined && {
+        matchedEntry: hit.matchedEntry,
+        matchedSource: hit.matchedSource,
+        resolvedPath: hit.resolvedPath,
+        sensitive: true,
+      }),
+    };
+  }
+
+  // #86 — background / detached execution (`cmd &`, `nohup`, `setsid`,
+  // `disown`): the process escapes the task lifecycle (the worker cannot
+  // observe its exit, abort / abortAll cannot clean it up), so it may never
+  // ride a read-only or write-in-scope verdict — even an inner command this
+  // gate fully judged. Runs BEFORE the `-c` script tier, which would otherwise
+  // allow `nohup bash -c '<judged read>'` through the inner verdict, and
+  // carries the sensitive hit the candidate sweep found, exactly like the
+  // destructive tier (#42). The ask carries no `askPaths`: an approval-memory
+  // grant for the inner command must not cover a detached run.
+  const detachedReason = detachedExecutionAsk(segments);
+  if (detachedReason !== undefined) {
+    const hit = sensitiveAsk ?? (firstAsk?.matchedEntry !== undefined ? firstAsk : undefined);
+    return {
+      decision: 'ask',
+      matchedRule: 'background-capability',
+      access: lineAccess,
+      reason: detachedReason,
       ...(hit !== undefined && {
         matchedEntry: hit.matchedEntry,
         matchedSource: hit.matchedSource,
