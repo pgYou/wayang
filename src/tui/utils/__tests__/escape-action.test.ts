@@ -17,4 +17,16 @@ describe('resolveEscapeAction', () => {
   it('does nothing when idle and no overlay is open', () => {
     expect(resolveEscapeAction({ overlayOpen: false, busy: false })).toBe('none');
   });
+
+  it('does nothing while the controller is compacting — compaction is not cancellable', () => {
+    expect(resolveEscapeAction({ overlayOpen: false, busy: false, compacting: true })).toBe('none');
+  });
+
+  it('does not abort a busy controller while it is compacting either', () => {
+    expect(resolveEscapeAction({ overlayOpen: false, busy: true, compacting: true })).toBe('none');
+  });
+
+  it('still dismisses an overlay while compacting', () => {
+    expect(resolveEscapeAction({ overlayOpen: true, busy: true, compacting: true })).toBe('dismiss-overlay');
+  });
 });

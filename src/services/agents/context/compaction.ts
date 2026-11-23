@@ -62,6 +62,8 @@ export interface CompactionResult {
   summarizedEntries?: number;
   /** Entries kept in memory by the fallback truncation (truncated only). */
   kept?: number;
+  /** Entries kept verbatim alongside the summary (summarized only). */
+  retainedEntries?: number;
 }
 
 /**
@@ -82,7 +84,7 @@ export async function compactContext(deps: ContextCompactionDeps): Promise<Compa
     // summarizer folds it in so repeated compactions stay incremental.
     const previousSummary = contextManager.getCompactSummary();
 
-    await contextManager.compact(
+    const result = await contextManager.compact(
       async (entries) => {
         // Budget the summarizer input in characters against the model
         // window: CJK text runs close to one token per character, so a
@@ -130,11 +132,24 @@ export async function compactContext(deps: ContextCompactionDeps): Promise<Compa
       },
       { ...(deps.modelName !== undefined && { model: deps.modelName }) },
     );
+
+    if (result.skipped) {
+      logger.info(
+        { entryCount, keptEntries: result.keptEntries },
+        'Compaction skipped — the retained zone covers the whole conversation',
+      );
+      return { outcome: 'skipped' };
+    }
+
     logger.info(
-      { ...(deps.modelName !== undefined && { model: deps.modelName }), summarizedEntries: entryCount },
+      {
+        ...(deps.modelName !== undefined && { model: deps.modelName }),
+        summarizedEntries: entryCount,
+        retainedEntries: result.keptEntries,
+      },
       'Compaction done',
     );
-    return { outcome: 'summarized', summarizedEntries: entryCount };
+    return { outcome: 'summarized', summarizedEntries: entryCount, retainedEntries: result.keptEntries };
   } catch (err) {
     // All retries failed — fallback: truncate half of history in memory only.
     logger.warn({ error: String(err) }, 'Compaction failed, falling back to half-truncation');

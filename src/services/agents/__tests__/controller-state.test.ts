@@ -175,6 +175,32 @@ describe('ControllerAgentState', () => {
     expect(state2.get('compactSummary')).toBe('second summary');
   });
 
+  it('should not expose a system-prompt summary for a current-format marker', async () => {
+    // New format: the summary is a user entry right after the marker, so the
+    // marker carries a summaryEntryUuid instead of the summary text. Restore
+    // must leave compactSummary null (nothing to inject into the system
+    // prompt) and keep the summary entry inside the windowed conversation.
+    const marker = {
+      ...makeCompactMarker('m-new', '[Context compacted] ...'),
+      compactMeta: { summarizedTokenCount: 100, summaryEntryUuid: 'sum-1' },
+    };
+    writeConversationJsonl(tempDir, [
+      makeUser('u-1', 'old message'),
+      marker,
+      makeUser('sum-1', '[Conversation Summary]\neverything before the marker'),
+      makeUser('new-1', 'new message'),
+    ]);
+
+    const state2 = new ControllerAgentState(ctx);
+    await state2.restore();
+
+    expect(state2.get('compactSummary')).toBeNull();
+    const conversation = state2.get('conversation') as any[];
+    expect(conversation.map((e) => e.uuid)).toContain('sum-1');
+    expect(conversation.find((e) => e.uuid === 'sum-1').message.content)
+      .toBe('[Conversation Summary]\neverything before the marker');
+  });
+
   it('should count toolCalls/toolResults toward the budget so the window start moves forward', async () => {
     // Entry with huge tool output (> RECENT_TOKEN_BUDGET alone) followed by a
     // small entry, then the marker. The heavy entry must fall out of the window.
