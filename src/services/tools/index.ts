@@ -13,6 +13,7 @@ import { updateTaskTool } from './update-task';
 import { querySignalsTool } from './query-signals';
 import { skipReplyTool } from './skip-reply';
 import { bashTool } from './bash';
+import { runProcessTool } from './run-process';
 import { readFileTool } from './read-file';
 import { inspectJsonTool } from './inspect-json';
 import { writeFileTool } from './write-file';
@@ -223,6 +224,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
 export function createWorkerTools(deps: WorkerToolDeps) {
   return {
     bash: bashTool({ cwd: deps.cwd }),
+    run_process: runProcessTool({ cwd: deps.cwd }),
     read_file: readFileTool({ cwd: deps.cwd }),
     inspect_json: inspectJsonTool({ cwd: deps.cwd }),
     write_file: writeFileTool({ cwd: deps.cwd }),

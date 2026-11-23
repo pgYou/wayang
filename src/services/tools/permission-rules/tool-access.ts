@@ -40,6 +40,21 @@ export function denyMessage(
 }
 
 /**
+ * The argv a run_process call wants to spawn, verbatim — quoted as a JSON
+ * array so argument boundaries cannot be misread in the approval request.
+ */
+function runProcessArgv(args: Record<string, unknown>): string {
+  if (
+    Array.isArray(args.command) &&
+    args.command.length > 0 &&
+    args.command.every((part) => typeof part === 'string')
+  ) {
+    return JSON.stringify(args.command);
+  }
+  return '(missing or invalid command argv)';
+}
+
+/**
  * Decide any gated tool call. Unknown tool names are allowed: the middleware
  * only calls this for tools it gates, and a non-path tool has nothing to judge.
  */
@@ -51,6 +66,17 @@ export function decideToolAccess(
   let verdict: ToolAccessDecision;
   if (toolName === 'bash') {
     verdict = evaluateBashAccess(scope, typeof args.command === 'string' ? args.command : '');
+  } else if (toolName === 'run_process') {
+    // run_process executes arbitrary code, so it asks EVERY time — no cwd,
+    // argv or workspace location can make it silent. The reason carries the
+    // argv verbatim so the controller approves exactly what it read. There
+    // are no askPaths on purpose: an approval is a one-call decision, never
+    // a standing grant the task approval memory could reuse.
+    return {
+      decision: 'ask',
+      matchedRule: 'exec-capability',
+      reason: `run_process spawns a process directly (no shell) — controller approval is required: ${runProcessArgv(args)}`,
+    };
   } else if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
     verdict = evaluateFileAccess(scope, toolName, args);
   } else {

@@ -176,7 +176,9 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
     // Apply permission middleware for puppet workers
     if (workerType === PUPPET_WORKER_TYPE) {
       const middleware = wrapWithPermissionMiddleware(tools, {
-        gatedTools: ['bash', ...FILE_TOOL_NAMES],
+        // run_process sits next to bash: it spawns processes, so every call
+        // goes through the gate (its verdict is always `ask`).
+        gatedTools: ['bash', 'run_process', ...FILE_TOOL_NAMES],
         // Single decision source: the shared access policy (sensitive list →
         // config roots → task allowedDirs → task workspace → read-in-home →
         // ask). `deny` refuses here without ever emitting a permission_request;
@@ -184,6 +186,11 @@ export abstract class WorkerWiringEngine extends WorkerTrackingEngine {
         decide: (toolName, args) => decideToolAccess(accessScope, toolName, args),
         describeCall: (toolName, args, verdict) => {
           if (toolName === 'bash') return `Execute shell command: ${args.command}`;
+          if (toolName === 'run_process') {
+            const argv = Array.isArray(args.command) ? args.command.join(' ') : String(args.command);
+            const cwdNote = typeof args.cwd === 'string' ? ` (cwd: ${args.cwd})` : '';
+            return `Run process: ${argv}${cwdNote}`;
+          }
           if ((FILE_TOOL_NAMES as readonly string[]).includes(toolName)) {
             const rawPath = typeof args.path === 'string' ? args.path : '';
             if (!rawPath) return `${toolName}: (workspace root) (resolved: ${workspace})`;

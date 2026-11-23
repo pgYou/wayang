@@ -797,4 +797,80 @@ describe('wrapWithPermissionMiddleware', () => {
       expect(queue.enqueue).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * 0.9.9: run_process spawns arbitrary code, so `decideToolAccess` asks for
+   * EVERY call — no cwd, argv or workspace location can make it silent, and
+   * the verdict carries no askPaths, so an approval is never remembered as a
+   * standing grant.
+   */
+  describe('run_process always asks, even inside the workspace', () => {
+    let ws: string;
+    let home: string;
+
+    beforeEach(() => {
+      ws = mkdtempSync(join(tmpdir(), 'wayang-mw-rp-ws-'));
+      home = mkdtempSync(join(tmpdir(), 'wayang-mw-rp-home-'));
+    });
+
+    afterEach(() => {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    function gateRunProcess() {
+      const tools = mockTool('run_process', 'ran:run_process');
+      const scope: WorkerAccessScope = { userHome: home, workspace: ws };
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['bash', 'run_process'],
+        decide: (toolName, args) => decideToolAccess(scope, toolName, args),
+        describeCall: (name, args) =>
+          `Run process: ${Array.isArray(args.command) ? args.command.join(' ') : String(args.command)}`,
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+      });
+      return { result, execute: tools.run_process.execute };
+    }
+
+    it('asks with exec-capability, the argv verbatim in the reason, operation exec', async () => {
+      const { result } = gateRunProcess();
+      const argv = [process.execPath, '--version'];
+
+      const pending = result.wrappedTools.run_process.execute({ command: argv });
+      const signal = queue.enqueue.mock.calls[0][0];
+      const payload = signal.payload;
+      expect(signal.type).toBe('permission_request');
+      expect(payload.toolName).toBe('run_process');
+      expect(payload.matchedRule).toBe('exec-capability');
+      expect(payload.operation).toBe('exec');
+      // The argv rides in the reason, verbatim (JSON array: boundaries visible).
+      expect(payload.description).toContain('spawns a process directly');
+      expect(payload.description).toContain(JSON.stringify(argv));
+
+      result.resolvePermission(payload.requestId, true);
+      expect(await pending).toBe('ran:run_process');
+    });
+
+    it('a cwd INSIDE the workspace still asks; an approval is never remembered', async () => {
+      const { result, execute } = gateRunProcess();
+      const call = { command: ['node', 'dist/cli.js', '--help'], cwd: ws };
+
+      const first = result.wrappedTools.run_process.execute(call);
+      const firstPayload = queue.enqueue.mock.calls[0][0].payload;
+      result.resolvePermission(firstPayload.requestId, true);
+      await first;
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      // No askPaths → no grant → the identical second call asks again.
+      const second = result.wrappedTools.run_process.execute(call);
+      expect(queue.enqueue).toHaveBeenCalledTimes(2);
+      const secondPayload = queue.enqueue.mock.calls[1][0].payload;
+      result.resolvePermission(secondPayload.requestId, false, 'no');
+      await second;
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+  });
 });
