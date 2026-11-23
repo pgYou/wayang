@@ -221,15 +221,23 @@ export class ControllerAgentBase extends BaseAgent {
    * controller only supplies its state, context manager, model and logger.
    */
   async performCompaction(): Promise<void> {
-    await compactContext({
-      state: this.state,
-      contextManager: this.contextManager,
-      model: this.model,
-      modelName: this.resolvedModel.modelName,
-      logger: this.logger,
-    });
-    // Refresh the status bar / `/context` right away instead of waiting for
-    // the next LLM step to report usage.
-    this.updateContextUsage();
+    // Ephemeral UI state: the TUI shows "compacting…" and turns ESC into a
+    // no-op. Reset in finally so a summarizer failure cannot leave the flag
+    // stuck on after the truncation fallback returns.
+    this.state.set('dynamicState.compacting', true);
+    try {
+      await compactContext({
+        state: this.state,
+        contextManager: this.contextManager,
+        model: this.model,
+        modelName: this.resolvedModel.modelName,
+        logger: this.logger,
+      });
+      // Refresh the status bar / `/context` right away instead of waiting for
+      // the next LLM step to report usage.
+      this.updateContextUsage();
+    } finally {
+      this.state.set('dynamicState.compacting', false);
+    }
   }
 }

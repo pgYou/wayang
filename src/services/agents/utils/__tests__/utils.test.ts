@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { conversationToSdkMessages } from '@/services/agents/utils/conversation-to-sdk-messages';
+import type { ModelMessage } from 'ai';
+import { conversationToSdkMessages, ensureUserTurn, COMPACTION_CONTINUATION } from '@/services/agents/utils/conversation-to-sdk-messages';
 import { buildAssistantEntry } from '@/services/agents/utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
 import { EEntryType, ESignalSubtype } from '@/types/index';
@@ -434,6 +435,57 @@ describe('conversationToSdkMessages', () => {
 
     const msgs = conversationToSdkMessages(entries as any);
     expect(msgs[0]).toEqual({ role: 'assistant', content: 'Hi there' });
+  });
+});
+
+// --- ensureUserTurn ---
+
+describe('ensureUserTurn', () => {
+  it('prepends the seed when the message list is empty', () => {
+    const messages = ensureUserTurn([]);
+    expect(messages).toEqual([{ role: 'user', content: COMPACTION_CONTINUATION }]);
+  });
+
+  it('prepends the seed when only assistant and tool messages remain (issue #95)', () => {
+    const messages = ensureUserTurn([
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'tc1', toolName: 'skip_reply', input: {} }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'tc1', toolName: 'skip_reply', output: { type: 'text', value: '(skipped)' } }] },
+    ]);
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toEqual({ role: 'user', content: COMPACTION_CONTINUATION });
+  });
+
+  it('prepends the seed when only a system signal remains', () => {
+    const messages = ensureUserTurn([{ role: 'system', content: '[WORKER PROGRESS SIGNAL: PROGRESS] tick' }]);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ role: 'user' });
+  });
+
+  it('returns the same array untouched when a user message already leads the list', () => {
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi' },
+    ];
+    expect(ensureUserTurn(messages)).toBe(messages);
+  });
+
+  it('does not prepend when a user message exists behind a leading system marker', () => {
+    // The compacted flow is [retained history][compact marker system][summary
+    // user]: the list legitimately opens with a non-user entry while still
+    // carrying the user turn that keeps gateways happy. The seed must stay a
+    // no-op here — the normal path already has its user message.
+    const messages: ModelMessage[] = [
+      { role: 'system', content: '[Context compacted] ...' },
+      { role: 'user', content: '[Conversation Summary]\n...' },
+    ];
+    expect(ensureUserTurn(messages)).toBe(messages);
+  });
+
+  it('uses the supplied seed text and never mutates the input', () => {
+    const input: ModelMessage[] = [{ role: 'assistant', content: 'partial' }];
+    const messages = ensureUserTurn(input, 'custom seed');
+    expect(messages[0]).toEqual({ role: 'user', content: 'custom seed' });
+    expect(input).toHaveLength(1);
   });
 });
 

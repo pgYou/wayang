@@ -12,6 +12,7 @@ import type { ControllerSignal } from '@/types/index';
 import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType, ESystemSubtype } from '@/types/index';
 import { signalToEntry } from '../utils/signal-to-entry';
+import { ensureUserTurn } from '../utils/conversation-to-sdk-messages';
 
 export class ControllerTurnRun extends ControllerAgentBase {
   /** Run the controller agent — streams text chunks while updating streamingEntries in state. */
@@ -73,7 +74,10 @@ export class ControllerTurnRun extends ControllerAgentBase {
 
     const gen = this.streamLoop({
       system: this.contextManager.getSystemPrompt(),
-      messages: this.contextManager.getMessages(),
+      // A compacted verbatim zone can hold no user entry at all (the only one
+      // was summarized away) — gateways reject such requests (issue #95), so
+      // seed the request without touching the persisted conversation.
+      messages: ensureUserTurn(this.contextManager.getMessages()),
       tools: this.tools,
       maxSteps: 50,
       stopTools: ['skip_reply'],

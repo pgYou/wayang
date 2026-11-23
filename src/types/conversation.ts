@@ -321,6 +321,13 @@ export interface SystemEntry extends ConversationEntryEnvelope {
     model?: string;
     /** ISO timestamp of when the summary was created. */
     createdAt?: string;
+    /**
+     * Uuid of the summary entry appended right after this marker. Present only
+     * in the current format, where the summary is a `user` entry in the
+     * message flow. Absent on legacy markers, whose `content` field IS the
+     * summary and is replayed through the system prompt on restore.
+     */
+    summaryEntryUuid?: string;
   };
 }
 

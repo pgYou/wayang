@@ -32,9 +32,12 @@ import type { WorkspaceRef } from '@/infra/workspace-registry';
  * summary's location and tells the model to re-inspect state instead of
  * re-running finished work from memory — the verbatim zone may be empty, so
  * "don't repeat" alone would leave the model guessing what is already done.
+ *
+ * Kept identical to COMPACTION_CONTINUATION in conversation-to-sdk-messages.ts;
+ * change both together.
  */
 const COMPACTION_CONTINUATION =
-  '[Conversation compacted] The context has just been compacted: the summary of completed work is in the system prompt above. '
+  '[Conversation compacted] The context has just been compacted: the summary of completed work is the user message that begins with [Conversation Summary]. '
   + 'If that summary is not enough to continue safely, re-inspect the necessary state first — '
   + 'do not re-run an operation that already succeeded just because you do not remember its result.';
 

@@ -34,6 +34,9 @@ const WINDOW = 200_000;
 const BIG = { inputTokens: 150_000, outputTokens: 5 };
 const SMALL = { inputTokens: 1_000, outputTokens: 5 };
 
+/** ~5k estimated tokens per assistant step, so the 8k-16k retained-zone budget triggers. */
+const CHUNK = 'x'.repeat(20_000);
+
 const model = { ...mockModel, contextWindowTokens: WINDOW };
 
 interface StepSpec {
@@ -159,13 +162,13 @@ describe('WorkerAgent context compaction (issue #90)', () => {
     expect(usage.ratio).toBeCloseTo(SMALL.inputTokens / WINDOW, 10);
   });
 
-  it('b) compacts once past the threshold and keeps running to done with the summary in the system prompt', async () => {
+  it('b) compacts once past the threshold and keeps running to done with the summary in the message flow', async () => {
     const worker = newWorker();
     vi.mocked(generateText).mockResolvedValue({ text: 'SUMMARY: half of the task is done' } as any);
     const captured = mockStepLoop(worker, [
-      { text: 's0', usage: BIG },
-      { text: 's1', usage: BIG },
-      { text: 's2', usage: BIG },
+      { text: CHUNK, usage: BIG },
+      { text: CHUNK, usage: BIG },
+      { text: CHUNK, usage: BIG },
       { text: 'done', usage: SMALL, done: 'finished after compaction' },
     ]);
 
@@ -183,20 +186,22 @@ describe('WorkerAgent context compaction (issue #90)', () => {
     expect(jsonl).toContain('"subtype":"compact"');
     expect(jsonl).toContain('summarizedTokenCount');
 
-    // Step 3 runs on the compacted context: summary in the system prompt, old
-    // entries gone from the messages, seeded continuation turn only. The seed
-    // also carries the CURRENT task description — the verbatim zone is empty,
-    // so without it the model could not say what its task is.
-    expect(captured.systems[3]).toContain('[Conversation Summary]');
-    expect(captured.systems[3]).toContain('SUMMARY: half of the task is done');
-    expect(captured.requests[3]).toEqual([
-      { role: 'user', content: expect.stringContaining('[Conversation compacted]') },
-    ]);
-    expect((captured.requests[3]![0] as any).content).toContain('[Current task]');
-    expect((captured.requests[3]![0] as any).content).toContain('the task prompt');
-    // The seed says where the summary lives and warns against re-running.
-    expect((captured.requests[3]![0] as any).content).toContain('summary of completed work is in the system prompt');
-    expect((captured.requests[3]![0] as any).content).toContain('do not re-run an operation that already succeeded');
+    // Step 3 runs on the compacted context. The summary is a user entry in
+    // the message flow (never the system prompt), right after the retained
+    // history; the request still opens with the seeded continuation turn
+    // carrying the CURRENT task description.
+    expect(captured.systems[3]).not.toContain('[Conversation Summary]');
+    const request = captured.requests[3]!;
+    expect(request[0]).toMatchObject({ role: 'user' });
+    expect((request[0] as any).content).toContain('[Conversation compacted]');
+    expect((request[0] as any).content).toContain('[Current task]');
+    expect((request[0] as any).content).toContain('the task prompt');
+    expect((request[0] as any).content).toContain('summary of completed work is the user message that begins with [Conversation Summary]');
+    expect((request[0] as any).content).toContain('do not re-run an operation that already succeeded');
+    expect(request[request.length - 2]).toMatchObject({ role: 'system' });
+    expect((request[request.length - 2] as any).content).toContain('[Context compacted]');
+    expect(request[request.length - 1]).toMatchObject({ role: 'user' });
+    expect((request[request.length - 1] as any).content).toContain('SUMMARY: half of the task is done');
 
     // The summary was built from the pre-compaction conversation — minus the
     // current task description, which is re-injected verbatim instead.
@@ -208,9 +213,9 @@ describe('WorkerAgent context compaction (issue #90)', () => {
     const worker = newWorker();
     vi.mocked(generateText).mockResolvedValue({ text: 'SUMMARY' } as any);
     const captured = mockStepLoop(worker, [
-      { text: 's0', usage: BIG },
-      { text: 's1', usage: BIG },
-      { text: 's2', usage: BIG },
+      { text: CHUNK, usage: BIG },
+      { text: CHUNK, usage: BIG },
+      { text: CHUNK, usage: BIG },
       {
         text: '',
         usage: SMALL,
@@ -250,10 +255,10 @@ describe('WorkerAgent context compaction (issue #90)', () => {
     const worker = newWorker();
     vi.mocked(generateText).mockRejectedValue(new Error('provider down'));
     mockStepLoop(worker, [
-      { text: 's0', usage: BIG },
-      { text: 's1', usage: BIG },
-      { text: 's2', usage: BIG },
-      { text: 's3', usage: BIG },
+      { text: CHUNK, usage: BIG },
+      { text: CHUNK, usage: BIG },
+      { text: CHUNK, usage: BIG },
+      { text: CHUNK, usage: BIG },
       { text: 'done', usage: SMALL, done: 'finished after fallback' },
     ]);
 
@@ -272,7 +277,7 @@ describe('WorkerAgent context compaction (issue #90)', () => {
   it('e) caps compactions at 5 per run and degrades to truncation past the cap', async () => {
     const worker = newWorker();
     vi.mocked(generateText).mockResolvedValue({ text: 'SUMMARY' } as any);
-    const steps: StepSpec[] = Array.from({ length: 12 }, (_, i) => ({ text: `s${i}`, usage: BIG }));
+    const steps: StepSpec[] = Array.from({ length: 12 }, () => ({ text: CHUNK, usage: BIG }));
     steps.push({ text: 'done', usage: SMALL, done: 'finished at the cap' });
     mockStepLoop(worker, steps);
 
@@ -292,9 +297,9 @@ describe('WorkerAgent context compaction (issue #90)', () => {
     // Stage 1 fills the context and compacts; its last step reports BIG usage
     // so stage 2 is already full before its first request.
     mockStepLoop(worker, [
-      { text: 's0', usage: BIG },
-      { text: 's1', usage: BIG },
-      { text: 's2', usage: BIG },
+      { text: CHUNK, usage: BIG },
+      { text: CHUNK, usage: BIG },
+      { text: CHUNK, usage: BIG },
       { text: 'done stage 1', usage: BIG, done: 'stage 1 done' },
     ]);
     await worker.run(task('stage1', 'FIRST stage task'), {});
@@ -329,10 +334,10 @@ describe('WorkerAgent context compaction (issue #90)', () => {
           opts.abortSignal?.addEventListener('abort', () => reject(new Error('aborted')));
         })) as any);
       mockStepLoop(worker, [
-        { text: 's0', usage: BIG },
-        { text: 's1', usage: BIG },
-        { text: 's2', usage: BIG },
-        { text: 's3', usage: BIG },
+        { text: CHUNK, usage: BIG },
+        { text: CHUNK, usage: BIG },
+        { text: CHUNK, usage: BIG },
+        { text: CHUNK, usage: BIG },
         { text: 'done', usage: SMALL, done: 'finished after timeout' },
       ]);
 

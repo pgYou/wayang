@@ -2,6 +2,11 @@
 
 ## v0.9.9 (2026-11-23)
 
+### 修复
+
+- controller compact 后消息序列无 user 角色、MaaS 网关 400（#95）：compaction 改为「全量摘要 + 保留区」——summarizer 仍压缩全部条目，但摘要不再拼进 system prompt，而是以 user 条目（`[Conversation Summary]` 开头）追加在会话末尾；保留区按 token 预算回退（累计到 ≥8k，或再加一条会超 16k 时停，step/turn 边界优先于预算），近期消息在摘要与保留区各存一份原文；compact 标记以 System 条目（`compactMeta.summaryEntryUuid` 指向摘要条目）插在保留区与摘要之间，转换器只回放新格式标记，旧格式标记（`content` 即摘要）不重复进消息流；保留区覆盖全部条目时跳过本次 compaction；旧会话恢复仍走 system prompt 注入摘要（`compactSummary` 只服务 legacy 恢复），新 compaction 不再写该字段。summarizer 失败降级半截断等「无摘要」路径由 `ensureUserTurn` 兜底注入 user 种子。
+- compaction 期间 ESC 误判（#95）：`dynamicState.compacting` 在 `performCompaction` 期间置位（finally 复位），状态栏显示 `compacting…`；`resolveEscapeAction` 在 compacting 时返回 `none`（不触发 abort）——compaction 不可取消，避免「按了 ESC 但 compact 仍完成」的界面与实际状态不一致。
+
 ### 变更
 
 - 配置协议升级（#88）：provider 只保留连接信息（type / baseURL / apiKey），模型下沉为顶层 `models` 命名条目；controller / worker / workers.<id> 通过 `model` 引用。`SystemContext` 以 `ResolvedModel` 把解析后的模型传给各 agent 与请求参数：`temperature` / `maxOutputTokens` 仅在新写法（`models` 条目 / `provider/model` 组合串 / 内联对象）显式声明时随请求发送，claude-code worker 把模型名传给 SDK，ACP 行记录「配置的模型未使用」后忽略。旧的 provider.modelName / contextWindowTokens 标为废弃但保持向后兼容（作为该 provider 的默认模型；窗口预算仍生效），provider 上的 temperature / maxOutputTokens 继续仅记录、不进入请求——旧配置行为完全不变，只有显式使用新 models 写法时这两个参数才会生效。文档：configuration.md 新增「models 与 model 引用」章节与旧→新配置迁移表，README / zh-CN 示例迁移到 models + model 引用；另新增一套 parallel-stream W logo（SVG / PNG / banner / favicon）。
