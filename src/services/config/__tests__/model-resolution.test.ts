@@ -210,6 +210,41 @@ describe('resolveModelRef: env fallback', () => {
   });
 });
 
+describe('resolveModelRef: request parameters (#88 legacy vs new writings)', () => {
+  it('the legacy provider binding stays recorded-only while every new writing passes them through', () => {
+    const config = legacyConfig({
+      models: { 'gpt-4o': { provider: 'default', name: 'gpt-4o' } },
+      controller: { provider: 'default', model: 'gpt-4o' },
+    });
+
+    // Legacy: the deprecated request parameters are NOT sent.
+    const legacy = resolveModelRef(config, undefined, config.controller.provider);
+    expect(legacy.contextWindowTokens).toBe(128_000);
+    expect(legacy.temperature).toBeUndefined();
+    expect(legacy.maxOutputTokens).toBeUndefined();
+
+    // Named `models` entry: provider fields fill what the entry left undeclared.
+    const named = resolveModelRef(config, 'gpt-4o');
+    expect(named.temperature).toBe(0.2);
+    expect(named.maxOutputTokens).toBe(4096);
+
+    // Composite `"provider/model"`.
+    const composite = resolveModelRef(config, 'default/gpt-4o');
+    expect(composite.temperature).toBe(0.2);
+    expect(composite.maxOutputTokens).toBe(4096);
+
+    // Inline object: its own values win over the provider defaults.
+    const inline = resolveModelRef(config, {
+      provider: 'default',
+      name: 'gpt-4o',
+      temperature: 0.7,
+      maxOutputTokens: 99,
+    });
+    expect(inline.temperature).toBe(0.7);
+    expect(inline.maxOutputTokens).toBe(99);
+  });
+});
+
 describe('resolveModelRef: workers.<id>.model', () => {
   it('resolves the model of a third-party worker row (not consumed until step 2)', () => {
     const config: WayangConfig = {
