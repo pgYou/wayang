@@ -17,6 +17,12 @@ export interface ShellWord {
   text: string;
   /** Command substitutions inside this word, in source order. */
   substitutions: ShellSubstitution[];
+  /**
+   * Process substitutions (`<(cmd)` / `>(cmd)`) inside this word. Kept apart
+   * from `substitutions` so the command-substitution tier does not double-judge
+   * them; the bash gate judges them in `evaluateProcessSubstitutions`.
+   */
+  processSubstitutions?: ShellSubstitution[];
 }
 
 /** What a redirection does with its target. */

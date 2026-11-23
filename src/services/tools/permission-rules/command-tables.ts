@@ -47,6 +47,12 @@ export interface CommandTableEntry {
   readonly writeFlags?: readonly string[];
   /** The destructive tier asks for this verb whatever its targets are. */
   readonly danger?: boolean;
+  /**
+   * The verb is a pure version probe (`node --version`, `npm -v`): read — but
+   * ONLY when the whole segment is exactly the flag and nothing else. Any other
+   * argument keeps the verb's own capability (exec / unknown).
+   */
+  readonly versionOnly?: boolean;
   /** The wrapper tier strips this prefix to find the command position. */
   readonly wrapper?: boolean;
   /**
@@ -84,6 +90,11 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
   ['uniq', { capability: 'read' }],
   ['tr', { capability: 'read' }],
   ['diff', { capability: 'read' }],
+  // Checksum / digest probes: they only read the files they name.
+  ['sha256sum', { capability: 'read' }],
+  ['md5sum', { capability: 'read' }],
+  ['shasum', { capability: 'read' }],
+  ['cksum', { capability: 'read' }],
   // The read/inert duplicates resolved to the conservative `read` (see the
   // module doc): bare shapes still allow silently — their operands resolve
   // against the in-workspace cursor — but a relative operand now goes through
@@ -111,9 +122,15 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
     'git',
     {
       capability: 'read',
-      readFlags: ['status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'blame', 'grep', 'describe', 'shortlog'],
+      readFlags: [
+        'status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'blame', 'grep',
+        'describe', 'shortlog', 'ls-tree', 'merge-base', 'cherry', 'rev-list',
+      ],
     },
   ],
+  // `gh` is a conditional read like `git`: only its list/view/status subcommands
+  // read (`isReadOnlyGhCommand`); create/merge/close/edit/api stay unknown.
+  ['gh', { capability: 'read', readFlags: ['run', 'issue', 'pr', 'auth'] }],
 
   // --- inert: side-effect-free verbs in a bare segment ---
   ['sleep', { capability: 'inert' }],
@@ -157,9 +174,9 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
   ['zsh', { capability: 'exec' }],
   ['ksh', { capability: 'exec' }],
   ['busybox', { capability: 'exec' }],
-  ['python', { capability: 'exec' }],
-  ['python3', { capability: 'exec' }],
-  ['node', { capability: 'exec' }],
+  ['python', { capability: 'exec', versionOnly: true }],
+  ['python3', { capability: 'exec', versionOnly: true }],
+  ['node', { capability: 'exec', versionOnly: true }],
   // `perl` / `ruby` interpret a script (exec) but write with `-i`; the write
   // flag wins because the write-direction split runs first.
   ['perl', { capability: 'exec', writeFlags: ['-i'] }],
@@ -167,6 +184,9 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
   ['awk', { capability: 'exec' }],
   ['php', { capability: 'exec' }],
   ['lua', { capability: 'exec' }],
+  // `npm` itself is off the read table (its scripts run arbitrary code); only
+  // the bare `--version` / `-v` probe is a read (`versionOnly`).
+  ['npm', { capability: 'unknown', versionOnly: true }],
 
   // --- network: commands whose primary effect is reaching the network ---
   ['curl', { capability: 'network' }],
@@ -227,6 +247,11 @@ export function isDangerousCommand(verb: string): boolean {
 /** Is this verb a wrapper prefix the command-position search strips? */
 export function isWrapperCommand(verb: string): boolean {
   return COMMAND_TABLE.get(verb)?.wrapper === true;
+}
+
+/** Is this verb a pure version probe (`node --version`, `npm -v`)? */
+export function isVersionOnlyCommand(verb: string): boolean {
+  return COMMAND_TABLE.get(verb)?.versionOnly === true;
 }
 
 /**
