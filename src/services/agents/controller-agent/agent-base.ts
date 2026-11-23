@@ -15,6 +15,7 @@ import { generateText } from 'ai';
 import { buildSummaryInput } from '../utils/summarizer-input';
 import { buildLlmCallStartPayload, debugLoggingEnabled } from '../utils/llm-call-logging';
 import { recordToolCalls, ToolCallRecorder } from '../utils/tool-call-recorder';
+import { ConfigError } from '@/services/config/model-resolution';
 
 import {
   SUMMARIZER_SYSTEM_PROMPT,
@@ -104,8 +105,13 @@ export class ControllerAgentBase extends BaseAgent {
         // Default payload is metadata only (model / message count / token
         // estimate); WAYANG_LOG_PROMPTS=1 adds the full sanitized messages.
         if (!debugLoggingEnabled(this.logger)) return;
+        // #88 step2: replace with resolveModelRef
+        const modelName = this.provider.modelName;
+        if (!modelName) {
+          throw new ConfigError('provider modelName is required');
+        }
         this.logger.debug(
-          buildLlmCallStartPayload(messages, messageCount, this.provider.modelName),
+          buildLlmCallStartPayload(messages, messageCount, modelName),
           'LLM call start',
         );
       },

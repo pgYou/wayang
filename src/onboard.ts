@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import prompts from 'prompts';
 import type { WayangConfig, WorkerConfig } from './types/index';
-import { validateConfig, collectWorkerWarnings, normalizeWorkerTypes } from './types/index';
+import { validateConfig, collectWorkerWarnings, collectProviderWarnings, normalizeWorkerTypes } from './types/index';
 import { warnDeprecatedPermissionKeys } from './infra/permission/permission-config';
 
 /** Fill missing apiKeys from environment variables. */
@@ -238,6 +238,12 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
   // neither has any effect there (05 §4) — surface that once at load instead
   // of failing configs that used to work.
   for (const warning of collectWorkerWarnings(config)) {
+    console.warn(`Warning: ${warning}`);
+  }
+  // issue #88: deprecated provider model fields, and a provider `modelName`
+  // that lost to a `model` reference, are surfaced once at load. The
+  // validation layer only returns the strings — it never prints.
+  for (const warning of collectProviderWarnings(config)) {
     console.warn(`Warning: ${warning}`);
   }
 

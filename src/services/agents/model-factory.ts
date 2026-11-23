@@ -1,5 +1,6 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { ProviderConfig } from '@/types/index';
+import { ConfigError } from '@/services/config/model-resolution';
 
 /**
  * Create a language model using the OpenAI-compatible chat completions endpoint.
@@ -10,9 +11,17 @@ import type { ProviderConfig } from '@/types/index';
  * assistant tool-call messages lack `reasoning_content`.
  */
 export function createModel(provider: ProviderConfig) {
+  // #88 step2: replace with resolveModelRef
+  const baseURL = provider.baseURL ?? provider.endpoint;
+  if (!baseURL) {
+    throw new ConfigError('provider baseURL is required (set baseURL or the deprecated endpoint alias)');
+  }
+  if (!provider.modelName) {
+    throw new ConfigError('provider modelName is required');
+  }
   const compatible = createOpenAICompatible({
     name: 'wayang',
-    baseURL: provider.endpoint,
+    baseURL,
     apiKey: provider.apiKey,
   });
   return compatible.chatModel(provider.modelName);

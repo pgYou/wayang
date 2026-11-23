@@ -2,6 +2,7 @@ import type { WayangConfig } from '@/types/index';
 import type { Logger } from './logger';
 import { createFileLogger, type FileLogger } from './logger';
 import { LifecycleHooks } from '@/services/lifecycle-hooks';
+import { ConfigError } from '@/services/config/model-resolution';
 
 export class SystemContext {
   readonly sessionId: string;
@@ -53,11 +54,25 @@ export class SystemContext {
     return this.closeLoggerPromise;
   }
 
+  // #88 step2: replace with resolveModelRef
   get controllerProvider() {
-    return this.config.providers[this.config.controller.provider];
+    const key = this.config.controller.provider;
+    if (key === undefined) {
+      throw new ConfigError('controller.provider 未配置，且 controller.model 也未解析；见 #88 第二步');
+    }
+    const provider = this.config.providers[key];
+    if (!provider) throw new ConfigError(`controller.provider "${key}" not found`);
+    return provider;
   }
+  // #88 step2: replace with resolveModelRef
   get workerProvider() {
-    return this.config.providers[this.config.worker.provider];
+    const key = this.config.worker.provider;
+    if (key === undefined) {
+      throw new ConfigError('worker.provider 未配置，且 worker.model 也未解析；见 #88 第二步');
+    }
+    const provider = this.config.providers[key];
+    if (!provider) throw new ConfigError(`worker.provider "${key}" not found`);
+    return provider;
   }
   get maxConcurrency() {
     return this.config.worker.maxConcurrency;

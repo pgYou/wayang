@@ -15,22 +15,71 @@ import type { AcpCapabilities } from '@/services/acp/types';
  */
 export type ToolChoice = 'auto' | 'required' | 'none';
 
-export interface ProviderConfig {
-  endpoint: string;
-  apiKey: string;
-  modelName: string;
+/**
+ * One named model entry under top-level `models` (issue #88). A model is a
+ * provider key plus the model name sent to that provider; the optional fields
+ * are per-model overrides of the provider's deprecated defaults.
+ */
+export interface ModelConfig {
+  /** Key of `providers` this model runs on. */
+  provider: string;
+  /** Model name sent to the provider (the OpenAI `model` field). */
+  name: string;
   /**
-   * Sampling temperature for this provider. Optional — recorded on
-   * AssistantEntry.model when set. (Currently metadata-only: requests use
-   * the provider default unless the endpoint is configured server-side.)
+   * Context window budget (input side) for this model — NOT the OpenAI
+   * `max_tokens` (which caps output). Drives compaction, which triggers at 60%
+   * of this budget. Optional — defaults to 256k tokens when undeclared here
+   * and on the provider.
+   */
+  contextWindowTokens?: number;
+  /** Max output tokens for this model. Optional. */
+  maxOutputTokens?: number;
+  /** Sampling temperature for this model. Optional. */
+  temperature?: number;
+}
+
+/**
+ * A model reference used by `controller.model` / `worker.model` /
+ * `workers.<id>.model` (issue #88). A string is either a key of the top-level
+ * `models` map or a `"provider/name"` composite; an object is an inline
+ * (anonymous) model entry, equivalent to an unnamed `models` entry.
+ */
+export type ModelRef = string | ModelConfig;
+
+export interface ProviderConfig {
+  /**
+   * Provider implementation type. Only `'openai-compatible'` exists today;
+   * omitting it means the same thing.
+   */
+  type?: 'openai-compatible';
+  /** OpenAI-compatible base URL (e.g. `https://api.openai.com/v1`). */
+  baseURL?: string;
+  /**
+   * @deprecated Use `baseURL`. Kept as an alias so existing configs keep
+   * loading; `baseURL` wins when both are present.
+   */
+  endpoint?: string;
+  apiKey: string;
+  /**
+   * @deprecated Only the DEFAULT model of this provider. New configs should
+   * declare models under top-level `models` and reference them through
+   * `controller.model` / `worker.model` / `workers.<id>.model`.
+   */
+  modelName?: string;
+  /**
+   * @deprecated Use the model entry's `temperature` (or a top-level `models`
+   * entry). Kept as the provider's default model setting.
    */
   temperature?: number;
   /**
-   * Max output tokens for this provider. Optional — recorded on
-   * AssistantEntry.model when set. (Currently metadata-only.)
+   * @deprecated Use the model entry's `maxOutputTokens`. Kept as the
+   * provider's default model setting.
    */
   maxOutputTokens?: number;
   /**
+   * @deprecated Use the model entry's `contextWindowTokens`. Kept as the
+   * provider's default model setting.
+   *
    * Context window budget (input side) for this provider's model — NOT the
    * OpenAI-protocol `max_tokens` (which caps output). Drives controller
    * compaction, which triggers at 60% of this budget (workers do not compact
@@ -110,6 +159,12 @@ export interface WorkerConfig {
    * values are rejected at config load by `validateConfig`, not at dispatch.
    */
   type: WorkerType;
+  /**
+   * Model reference for LLM-backed workers (issue #88): a `models` key, a
+   * `"provider/name"` composite, or an inline model object. Optional —
+   * third-party workers ignore it.
+   */
+  model?: ModelRef;
   /** Whether this worker is enabled. Defaults to true. */
   enable?: boolean;
   /** Display emoji for quick visual identification. */
@@ -247,9 +302,28 @@ export interface LoggingConfig {
 
 export interface WayangConfig {
   providers: Record<string, ProviderConfig>;
-  controller: { provider: string };
+  /**
+   * Named model entries (issue #88). Keys are referenced by
+   * `controller.model` / `worker.model` / `workers.<id>.model`.
+   */
+  models?: Record<string, ModelConfig>;
+  controller: {
+    /**
+     * @deprecated Use `model`. Legacy provider key — still honoured when
+     * `model` is absent, so pre-#88 configs keep loading.
+     */
+    provider?: string;
+    /** Model reference (a `models` key, `"provider/name"`, or inline object). */
+    model?: ModelRef;
+  };
   worker: {
-    provider: string;
+    /**
+     * @deprecated Use `model`. Legacy provider key — still honoured when
+     * `model` is absent, so pre-#88 configs keep loading.
+     */
+    provider?: string;
+    /** Model reference (a `models` key, `"provider/name"`, or inline object). */
+    model?: ModelRef;
     maxConcurrency: number;
     /**
      * Tool-choice mode for puppet workers. Defaults to 'required' — the worker
@@ -423,26 +497,77 @@ function validateWorkerEntry(id: string, worker: WorkerConfig): string | null {
   return null;
 }
 
+/**
+ * Validate one `model` reference shape (issue #88). Strings are either a key
+ * of `models` or a `"provider/name"` composite — anything else is a config
+ * error listing the available model names. Inline objects are checked by the
+ * resolution layer (`resolveModelRef`), which throws `ConfigError` for a
+ * missing provider or an empty name.
+ */
+function validateModelRefValue(config: WayangConfig, at: string, ref: ModelRef | undefined): string | null {
+  if (ref === undefined) return null;
+  if (typeof ref !== 'string') return null;
+  if (config.models?.[ref]) return null;
+  if (ref.includes('/')) return null;
+  const available = Object.keys(config.models ?? {});
+  return `${at} "${ref}" is not a known model (available: ${available.length > 0 ? available.join(', ') : 'none'}; or use "provider/name")`;
+}
+
 /** Validate required fields, return error message or null */
 export function validateConfig(config: WayangConfig): string | null {
   for (const [name, provider] of Object.entries(config.providers)) {
-    if (!provider.endpoint) return `providers.${name}.endpoint is required`;
+    if (typeof provider !== 'object' || provider === null) return `providers.${name} must be an object`;
+    if (provider.type !== undefined && provider.type !== 'openai-compatible') {
+      return `providers.${name}.type must be 'openai-compatible' (got ${JSON.stringify(provider.type)})`;
+    }
+    // `baseURL` is the current key; `endpoint` is its deprecated alias.
+    if (!provider.baseURL && !provider.endpoint) {
+      return `providers.${name}.baseURL is required (set baseURL or the deprecated endpoint alias)`;
+    }
     if (!provider.apiKey) return `providers.${name}.apiKey is required (set WAYANG_LLM_API_KEY or configure in config file)`;
-    if (!provider.modelName) return `providers.${name}.modelName is required`;
     const window = provider.contextWindowTokens;
     if (window !== undefined && !(Number.isInteger(window) && window > 0)) {
       return `providers.${name}.contextWindowTokens must be a positive integer (got ${JSON.stringify(window)})`;
     }
   }
+  // Named model entries (issue #88): every entry must point at a declared
+  // provider, carry a non-empty name, and declare a sane context window.
+  for (const [key, model] of Object.entries(config.models ?? {})) {
+    if (typeof model !== 'object' || model === null || Array.isArray(model)) {
+      return `models.${key} must be an object`;
+    }
+    if (typeof model.provider !== 'string' || model.provider.length === 0) {
+      return `models.${key}.provider is required`;
+    }
+    if (!config.providers[model.provider]) {
+      return `models.${key}.provider "${model.provider}" not found (available: ${Object.keys(config.providers).join(', ')})`;
+    }
+    if (typeof model.name !== 'string' || model.name.length === 0) {
+      return `models.${key}.name must be a non-empty string`;
+    }
+    const window = model.contextWindowTokens;
+    if (window !== undefined && !(Number.isInteger(window) && window > 0)) {
+      return `models.${key}.contextWindowTokens must be a positive integer (got ${JSON.stringify(window)})`;
+    }
+  }
   const cp = config.controller.provider;
-  if (!config.providers[cp]) return `controller.provider "${cp}" not found`;
+  if (cp !== undefined && !config.providers[cp]) return `controller.provider "${cp}" not found`;
   const wp = config.worker.provider;
-  if (!config.providers[wp]) return `worker.provider "${wp}" not found`;
+  if (wp !== undefined && !config.providers[wp]) return `worker.provider "${wp}" not found`;
+  // String refs must name a `models` entry or be a `"provider/name"`
+  // composite; unknown names are rejected here (before any resolution) and
+  // list the available model names.
+  const modelRefError = validateModelRefValue(config, 'controller.model', config.controller.model);
+  if (modelRefError) return modelRefError;
+  const workerRefError = validateModelRefValue(config, 'worker.model', config.worker.model);
+  if (workerRefError) return workerRefError;
   const workers = config.workers;
   if (workers !== undefined && workers !== null) {
     for (const [id, worker] of Object.entries(workers)) {
       const err = validateWorkerEntry(id, worker);
       if (err) return err;
+      const refError = validateModelRefValue(config, `workers.${id}.model`, worker.model);
+      if (refError) return refError;
     }
   }
   const permission = config.permission;
@@ -498,6 +623,61 @@ export function collectWorkerWarnings(config: WayangConfig): string[] {
     if (!isAcpWorkerType(worker.type)) continue;
     if (worker.cliPath !== undefined) {
       warnings.push(`workers.${id}.cliPath has no effect on type "${worker.type}" (ACP workers use "command")`);
+    }
+  }
+  return warnings;
+}
+
+/** Provider key a `model` reference points at, or null when it names none. */
+function modelRefProviderKey(config: WayangConfig, ref: ModelRef | undefined): string | null {
+  if (ref === undefined) return null;
+  if (typeof ref === 'string') {
+    const named = config.models?.[ref];
+    if (named) return named.provider;
+    const slash = ref.indexOf('/');
+    return slash > 0 ? ref.slice(0, slash) : null;
+  }
+  return typeof ref.provider === 'string' ? ref.provider : null;
+}
+
+/**
+ * Collect non-fatal provider-model warnings (issue #88). Existing configs
+ * keep loading, so deprecated fields warn instead of failing validation; the
+ * caller (`loadConfig`) prints them once.
+ *
+ * - One warning per provider that still declares `modelName` /
+ *   `contextWindowTokens` / `temperature` / `maxOutputTokens`, naming the
+ *   provider and the replacement (`models` + a `model` reference).
+ * - When that provider is also referenced through a `models` entry or a
+ *   `controller.model` / `worker.model` / `workers.<id>.model` reference, a
+ *   second warning records that its deprecated `modelName` is ignored — the
+ *   reference wins. Declaring both is never an error.
+ */
+export function collectProviderWarnings(config: WayangConfig): string[] {
+  const warnings: string[] = [];
+  const referenced = new Set<string>();
+  const refs: Array<ModelRef | undefined> = [config.controller.model, config.worker.model];
+  for (const worker of Object.values(config.workers ?? {})) {
+    if (typeof worker === 'object' && worker !== null) refs.push(worker.model);
+  }
+  for (const ref of refs) {
+    const key = modelRefProviderKey(config, ref);
+    if (key) referenced.add(key);
+  }
+
+  for (const [name, provider] of Object.entries(config.providers)) {
+    if (typeof provider !== 'object' || provider === null) continue;
+    const deprecated: string[] = [];
+    if (provider.modelName !== undefined) deprecated.push('modelName');
+    if (provider.contextWindowTokens !== undefined) deprecated.push('contextWindowTokens');
+    if (provider.temperature !== undefined) deprecated.push('temperature');
+    if (provider.maxOutputTokens !== undefined) deprecated.push('maxOutputTokens');
+    if (deprecated.length === 0) continue;
+    warnings.push(
+      `providers.${name}.${deprecated.join(', ')} ${deprecated.length > 1 ? 'are' : 'is'} deprecated — declare the model under "models" and reference it via controller.model / worker.model (e.g. models: { myModel: { provider: "${name}", name: "<model>" } })`,
+    );
+    if (referenced.has(name)) {
+      warnings.push(`已忽略 providers.${name}.modelName — controller.model / worker.model 的引用优先`);
     }
   }
   return warnings;
