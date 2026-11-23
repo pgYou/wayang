@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { ConversationEntry } from '@/types/index';
+import type { ConversationEntry, ContextUsage } from '@/types/index';
 import { isCompactMarker } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
@@ -38,6 +38,17 @@ interface WorkerStateData {
   runtimeState: WorkerRuntimeState;
   conversation: ConversationEntry[];
   inbox: InboxMessage[];
+  /** Transient UI state — not persisted. */
+  dynamicState: WorkerDynamicState;
+}
+
+interface WorkerDynamicState {
+  /**
+   * Context window usage snapshot (same shape as the controller's, so the
+   * status bar / tooling can read either). Refreshed after every LLM step and
+   * after a compaction; null until the first snapshot of the run.
+   */
+  contextUsage: ContextUsage | null;
 }
 
 export class WorkerState extends BaseWayangState {
@@ -69,6 +80,7 @@ export class WorkerState extends BaseWayangState {
       },
       conversation: [],
       inbox: [],
+      dynamicState: { contextUsage: null },
     };
 
     super(initialData, [

@@ -5,7 +5,7 @@
 ### 规划（实施中，交付后按实际校准）
 
 - 配置协议升级（#88）：provider 只保留连接信息（type / baseURL / apiKey），模型下沉为顶层 models 命名条目；controller / worker / workers.<id> 通过 model 引用。旧的 provider.modelName / contextWindowTokens / temperature / maxOutputTokens 标为废弃但保持向后兼容（作为该 provider 的默认模型），全部旧配置行为不变。
-- puppet worker 上下文压缩（#90）：worker 侧接入上下文管理，支持按窗口阈值压缩、真实 usage 采集与上报；压缩逻辑与 controller 抽成公共实现，避免两套摘要器漂移。
+- puppet worker 上下文压缩（#90）：worker 接入 ContextManager，按 `contextWindowTokens` 的 60% 阈值在每步之后（下一步请求之前）压缩，压缩不计入 `maxTurns` 步数；每步真实 usage 写入 `dynamicState.contextUsage`（与 controller 同结构）；压缩条目带 `compactMeta` 写入 worker conversation.jsonl，`read_worker_conversation` 把它压成一行；摘要失败降级半截断并记日志，同一 run 最多压缩 5 次，超限只截断并 warn；摘要/标记/降级流程抽成 agent 无关的 `context/compaction.ts`，controller 复用同一实现。
 - bash 能力表补齐（#86）：把只读命令与结构化包装器纳入自动通过，减少无意义审批；破坏性/可执行任意代码的形态保持人工确认。
 
 ## v0.9.8 (2026-11-20)

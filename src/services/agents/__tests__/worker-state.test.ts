@@ -182,6 +182,21 @@ describe('WorkerState', () => {
     });
   });
 
+  it('starts with a null contextUsage snapshot and never persists it', async () => {
+    expect(state.get('dynamicState.contextUsage')).toBeNull();
+    state.set('dynamicState.contextUsage', {
+      usedTokens: 120,
+      contextWindowTokens: 1000,
+      ratio: 0.12,
+      source: 'estimate',
+    });
+    // dynamicState is ephemeral: a fresh state over the same directory has
+    // no snapshot until the agent publishes one.
+    const state2 = new WorkerState(tempDir, workerId, logger);
+    await state2.restore();
+    expect(state2.get('dynamicState.contextUsage')).toBeNull();
+  });
+
   it('should not misjudge ClaudeCodeWorker-style records as compact markers', async () => {
     // Legacy success records (subtype=compact, no compactMeta) and new-style
     // task_result records are plain display entries — never windowing markers.

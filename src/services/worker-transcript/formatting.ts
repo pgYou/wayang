@@ -1,6 +1,7 @@
 // Formatting: rendering entries under a character budget, with explicit truncation meta.
 
 import type { ConversationEntry } from '@/types/index';
+import { isCompactMarker } from '@/types/index';
 import { entryLabel, entryText, entryToolCalls, entryToolResults } from './entry-text';
 import type { TranscriptWindow } from './pagination';
 
@@ -24,6 +25,23 @@ export function formatTranscriptEntry(
   position: number,
   opts: FormatOptions,
 ): FormattedEntry {
+  // Compaction markers are rendered as ONE line — the summary text itself is
+  // model-facing context, not something a controller needs to read back, and
+  // in full mode it would otherwise dominate the whole output budget. The
+  // entry still counts as one entry, so pagination/window semantics are
+  // unchanged.
+  if (isCompactMarker(entry)) {
+    const count = entry.compactMeta?.summarizedTokenCount;
+    const summary = count !== undefined
+      ? `[compaction] summarized ${count} tokens`
+      : '[compaction] summarized conversation';
+    return {
+      lines: [`  #${position} [${entryLabel(entry)}] ${summary}`],
+      truncated: false,
+      originalChars: 0,
+    };
+  }
+
   const body = entryText(entry).replace(/\r/g, '');
   const toolNames = entryToolCalls(entry).map((c) => c.toolName);
   const toolNote = toolNames.length > 0 ? ` (tools: ${toolNames.join(', ')})` : '';

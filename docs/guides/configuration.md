@@ -98,7 +98,7 @@ wayang 启动时按下面的顺序找配置：
 | --- | --- | --- | --- | --- |
 | `provider` | 字符串 | 是 | — | 所属 provider 名，必须存在于 `providers` |
 | `name` | 字符串 | 是 | — | 发给 provider 的模型名（OpenAI 协议的 `model` 字段） |
-| `contextWindowTokens` | 正整数 | 否 | 256000 | 上下文窗口（输入侧预算），不是输出上限；controller 用到 60% 时压缩。未声明时由 controller 侧兜底 256000 |
+| `contextWindowTokens` | 正整数 | 否 | 256000 | 上下文窗口（输入侧预算），不是输出上限；controller 与 puppet worker 都在用到 60% 时压缩。未声明时兜底 256000 |
 | `maxOutputTokens` | 数字 | 否 | — | 单次请求的最大输出 token；配置后传给 SDK 的 `maxOutputTokens` |
 | `temperature` | 数字 | 否 | — | 采样温度；配置后传给 SDK 的 `temperature` |
 
