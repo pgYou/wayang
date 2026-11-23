@@ -86,23 +86,30 @@ wayang --resume # 恢复上次会话
 ```json
 {
   "providers": {
-    "my-model": {
-      "endpoint": "https://api.anthropic.com",
-      "modelName": "claude-sonnet-4-20250514",
+    "anthropic": {
+      "baseURL": "https://api.anthropic.com",
       "apiKey": "xxx"
     }
   },
-  "controller": { "provider": "my-model" },
-  "worker": { "provider": "my-model", "maxConcurrency": 3 }
+  "models": {
+    "sonnet": {
+      "provider": "anthropic",
+      "name": "claude-sonnet-4-20250514"
+    }
+  },
+  "controller": { "model": "sonnet" },
+  "worker": { "model": "sonnet", "maxConcurrency": 3 }
 }
 ```
+
+旧写法（把 `modelName` 等直接写在 provider 上，用 `controller.provider` / `worker.provider` 绑定）仍然完全可用，启动时提示一次弃用告警。
 
 API Key 可通过配置文件或环境变量 `WAYANG_LLM_API_KEY` 设置。
 
 Worker 默认使用 `"toolChoice": "required"`——强制每一步都产生工具调用，从而保证 worker 最终必须通过 `done`/`fail` 工具收尾。部分 OpenAI 兼容端点（如内部 llmproxy）不接受 `tool_choice: "required"`（返回 HTTP 400），此时可在 `worker` 段按端点改为：
 
 ```json
-"worker": { "provider": "my-model", "maxConcurrency": 3, "toolChoice": "auto" }
+"worker": { "model": "sonnet", "maxConcurrency": 3, "toolChoice": "auto" }
 ```
 
 ### 启动

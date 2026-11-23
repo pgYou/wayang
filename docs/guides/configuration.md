@@ -12,14 +12,152 @@
 wayang 启动时按下面的顺序找配置：
 
 1. 配置文件存在 → 直接使用，文件里写的值优先生效。
-2. 配置文件不存在，且环境变量 `WAYANG_LLM_API_KEY`、`WAYANG_ENDPOINT`、`WAYANG_MODEL` 三者齐全 → 用它们构造一个名为 `default` 的 provider，照常运行。
+2. 配置文件不存在，且环境变量 `WAYANG_LLM_API_KEY`、`WAYANG_ENDPOINT`、`WAYANG_MODEL` 三者齐全 → 用它们构造一个名为 `default` 的隐式模型（provider `default` + `models.default`），照常运行。
 3. 两者都不满足 → 进入交互式引导（首次运行 `wayang` 时看到的就是它），回答几个问题后结果会自动写回配置文件。
 
 注意：JSON 不支持注释。下文示例中若出现 `//` 旁注，仅是解释文字，抄入配置文件前必须删除该行。
 
 ## 最小可用示例
 
-保存为 `~/.wayang.config.json` 即可直接运行（provider 名可自取，controller/worker 通过名字引用它）：
+保存为 `~/.wayang.config.json` 即可直接运行。provider 只写连接信息，模型在顶层 `models` 里命名，controller/worker 通过 `model` 引用：
+
+```json
+{
+  "providers": {
+    "default": {
+      "baseURL": "https://api.anthropic.com",
+      "apiKey": "sk-xxx"
+    }
+  },
+  "models": {
+    "sonnet": {
+      "provider": "default",
+      "name": "claude-sonnet-4-20250514",
+      "contextWindowTokens": 200000
+    }
+  },
+  "controller": { "model": "sonnet" },
+  "worker": { "model": "sonnet", "maxConcurrency": 3 },
+  "workers": {
+    "codebuddy": {
+      "type": "codebuddy",
+      "description": "Tencent CodeBuddy Code (ACP)",
+      "capabilities": ["code", "refactor", "shell"]
+    }
+  }
+}
+```
+
+旧写法（模型直接写在 provider 上、用 `controller.provider` / `worker.provider` 绑定）仍然完全可用，启动时会提示一次弃用告警；迁移对照见《老配置 → 新配置迁移对照》。
+
+## 字段参考
+
+### 顶层字段
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `providers` | 对象 | 是 | — | LLM 连接定义（baseURL / apiKey），键为自定义名字 |
+| `models` | 对象 | 否 | 无 | 命名模型条目，键为自定义模型名，供 `model` 引用 |
+| `controller` | 对象 | 是 | — | controller 绑定的模型（`model`），旧配置的 `provider` 仍生效 |
+| `worker` | 对象 | 是 | — | puppet worker 默认绑定的模型与并发设置 |
+| `workers` | 对象 | 否 | 无 | 各个 worker 的定义，键为 worker ID |
+| `tavilyApiKey` | 字符串 | 否 | — | 网页搜索工具的 Tavily key，未设置时该工具返回错误 |
+| `skillsDirs` | 字符串数组 | 否 | — | 额外的技能扫描目录（全局与工作区之外） |
+| `idleTimeoutMs` | 数字 | 否 | 1800000 | 常驻 worker 空闲多久后被回收（默认 30 分钟） |
+| `signalWindowSize` | 数字 | 否 | 2000 | 已处理消息保留的热窗口大小 |
+| `permission` | 对象 | 否 | 默认策略 | 路径权限策略，见下 |
+| `logging` | 对象 | 否 | 默认策略 | 会话日志滚动策略 |
+
+`worker` 子字段：
+
+- `model`（推荐，模型引用）：puppet worker 默认使用的模型，见下面的《models 与 model 引用》。与旧的 `provider` 二选一即可。
+- `provider`（已废弃但生效，字符串）：旧写法——直接绑定一个 provider，把它当作默认模型。`model` 存在时以 `model` 为准。
+- `maxConcurrency`（必填，数字）：最多同时运行几个 worker。建议 1–10 之间；wayang 不校验这个值，请自己填 ≥1 的整数。
+- `toolChoice`（可选，`'auto' | 'required' | 'none'`，默认 `'auto'`）：worker 调用工具的模式。部分模型服务（DeepSeek/GLM）会拒绝 `required`；仅当端点支持时用 `required` 强制每步都调用工具以保证收尾。
+- `maxTurns`（可选，正整数，默认不限）：puppet worker 的 LLM 步数上限。未配置即不限制；非法值（非正整数、超过 1000000）视为不限并 warn 一次。达到上限仍未调用 done/fail 时按失败收尾。仅对 puppet 生效——claude-code 用 `workers.<id>.maxTurns`，ACP 类型不消费该键。
+
+`providers.<name>` 子字段：
+
+- `baseURL`（必填，字符串）：OpenAI 兼容 base URL。旧键 `endpoint` 是它的别名，仍然生效，两者同时存在时 `baseURL` 优先。
+- `apiKey`（必填，字符串）：可留空，留空时由环境变量 `WAYANG_LLM_API_KEY` 补齐。
+- `modelName`（已废弃但生效，字符串）：旧写法——该 provider 的默认模型名。新配置请写进 `models`，再用 `model` 引用；provider 仍被 `model` 引用时以引用为准。
+- `temperature`、`maxOutputTokens`（已废弃但生效，数字）：旧写法——该 provider 默认模型的采样温度 / 最大输出 token。新配置请写在 `models` 条目里；配置后会真正进入每次 LLM 请求（见下）。
+- `contextWindowTokens`（已废弃但生效，可选，正整数，默认 256000）：旧写法——该 provider 默认模型的上下文窗口（输入侧预算）。新配置请写在 `models` 条目里。
+
+### models 与 model 引用
+
+`providers` 只描述“怎么连”（baseURL / apiKey），模型（用哪个模型、窗口多大、温度多少）下沉到顶层 `models`，再由 `controller.model` / `worker.model` / `workers.<id>.model` 引用。三种引用写法：
+
+1. **命名条目**（推荐）：`"model": "sonnet"`，`sonnet` 是顶层 `models` 的键。
+2. **组合写法**：`"model": "provider名/模型名"`，例如 `"openai/gpt-4o"`，不需要在 `models` 里登记；按第一个 `/` 切分，模型名本身可以含 `/`。
+3. **内联对象**：`"model": { "provider": "openai", "name": "gpt-4o" }`，等价于一个匿名的 `models` 条目。
+
+`models.<key>` 子字段：
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `provider` | 字符串 | 是 | — | 所属 provider 名，必须存在于 `providers` |
+| `name` | 字符串 | 是 | — | 发给 provider 的模型名（OpenAI 协议的 `model` 字段） |
+| `contextWindowTokens` | 正整数 | 否 | 256000 | 上下文窗口（输入侧预算），不是输出上限；controller 用到 60% 时压缩。未声明时由 controller 侧兜底 256000 |
+| `maxOutputTokens` | 数字 | 否 | — | 单次请求的最大输出 token；配置后传给 SDK 的 `maxOutputTokens` |
+| `temperature` | 数字 | 否 | — | 采样温度；配置后传给 SDK 的 `temperature` |
+
+未配置 `temperature` / `maxOutputTokens` 时请求里不携带这两个字段，行为与升级前完全一致；只有显式配置才会进入请求（#88 的行为变更点）。
+
+解析优先级（`resolveModelRef`）：`model` 引用 > 旧的 `provider` 绑定（把 provider 的 `modelName` / `temperature` / `maxOutputTokens` / `contextWindowTokens` 当作该 provider 的默认模型）> 环境变量构造的隐式 `default` 模型 > 报错。引用的 `models` 条目里未声明的可选字段，会回退到 provider 上对应的旧字段；再没有就保持未定义。
+
+`workers.<id>.model`（可选）：给第三方 worker 指定模型。`claude-code` 会把它解析后传给 Claude Agent SDK 的 `model` 选项；ACP 类 worker（`acp` / `codebuddy` / `opencode`）的协议没有模型字段，配置了只会在启动时记录一条「配置的模型 X 未被该 provider 消费」，不会伪造能力。
+
+完整示例（controller 与 worker 用不同模型，claude-code 单独指定模型，并配置请求参数）：
+
+```json
+{
+  "providers": {
+    "anthropic": { "baseURL": "https://api.anthropic.com", "apiKey": "sk-a" },
+    "deepseek": { "baseURL": "https://api.deepseek.com/v1", "apiKey": "sk-b" }
+  },
+  "models": {
+    "sonnet": {
+      "provider": "anthropic",
+      "name": "claude-sonnet-4-20250514",
+      "contextWindowTokens": 200000,
+      "temperature": 0.3,
+      "maxOutputTokens": 8192
+    },
+    "deepseek-chat": {
+      "provider": "deepseek",
+      "name": "deepseek-chat",
+      "contextWindowTokens": 128000
+    }
+  },
+  "controller": { "model": "sonnet" },
+  "worker": { "model": "deepseek-chat", "maxConcurrency": 3 },
+  "workers": {
+    "claude-code": {
+      "type": "claude-code",
+      "description": "Coding assistant powered by Claude Code",
+      "model": "sonnet"
+    }
+  }
+}
+```
+
+### 老配置 → 新配置迁移对照
+
+0.9.9 起 provider 只保留连接信息，模型下沉到 `models`。旧写法仍被完整支持（加载时给一次弃用告警），不迁移也能跑；按下表逐项替换即可。
+
+| 旧写法 | 新写法 |
+| --- | --- |
+| `providers.<name>.modelName` | `models.<key>.name`，再用 `controller.model` / `worker.model` / `workers.<id>.model` 引用该 key |
+| `providers.<name>.contextWindowTokens` | `models.<key>.contextWindowTokens` |
+| `providers.<name>.temperature` | `models.<key>.temperature` |
+| `providers.<name>.maxOutputTokens` | `models.<key>.maxOutputTokens` |
+| `providers.<name>.endpoint` | `providers.<name>.baseURL` |
+| `controller: { "provider": "x" }` | `controller: { "model": "<key>" }`（或 `"x/<模型名>"`） |
+| `worker: { "provider": "x" }` | `worker: { "model": "<key>" }`（或 `"x/<模型名>"`） |
+| 无（旧配置无法按 worker 指定模型） | `workers.<id>.model`（claude-code 消费；ACP 只记录未消费） |
+
+对照示例（旧）：
 
 ```json
 {
@@ -32,48 +170,28 @@ wayang 启动时按下面的顺序找配置：
     }
   },
   "controller": { "provider": "default" },
-  "worker": { "provider": "default", "maxConcurrency": 3 },
-  "workers": {
-    "codebuddy": {
-      "type": "codebuddy",
-      "description": "Tencent CodeBuddy Code (ACP)",
-      "capabilities": ["code", "refactor", "shell"]
-    }
-  }
+  "worker": { "provider": "default", "maxConcurrency": 3 }
 }
 ```
 
-## 字段参考
+对照示例（新）：
 
-### 顶层字段
-
-| 字段 | 类型 | 必填 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `providers` | 对象 | 是 | — | LLM 服务定义，键为自定义名字 |
-| `controller` | 对象 | 是 | — | controller 绑定的 provider 名，必须在 `providers` 中存在 |
-| `worker` | 对象 | 是 | — | worker 默认绑定与并发设置 |
-| `workers` | 对象 | 否 | 无 | 各个 worker 的定义，键为 worker ID |
-| `tavilyApiKey` | 字符串 | 否 | — | 网页搜索工具的 Tavily key，未设置时该工具返回错误 |
-| `skillsDirs` | 字符串数组 | 否 | — | 额外的技能扫描目录（全局与工作区之外） |
-| `idleTimeoutMs` | 数字 | 否 | 1800000 | 常驻 worker 空闲多久后被回收（默认 30 分钟） |
-| `signalWindowSize` | 数字 | 否 | 2000 | 已处理消息保留的热窗口大小 |
-| `permission` | 对象 | 否 | 默认策略 | 路径权限策略，见下 |
-| `logging` | 对象 | 否 | 默认策略 | 会话日志滚动策略 |
-
-`worker` 子字段：
-
-- `provider`（必填，字符串）：worker 默认使用的 provider 名，必须存在于 `providers`。
-- `maxConcurrency`（必填，数字）：最多同时运行几个 worker。建议 1–10 之间；wayang 不校验这个值，请自己填 ≥1 的整数。
-- `toolChoice`（可选，`'auto' | 'required' | 'none'`，默认 `'auto'`）：worker 调用工具的模式。部分模型服务（DeepSeek/GLM）会拒绝 `required`；仅当端点支持时用 `required` 强制每步都调用工具以保证收尾。
-- `maxTurns`（可选，正整数，默认不限）：puppet worker 的 LLM 步数上限。未配置即不限制；非法值（非正整数、超过 1000000）视为不限并 warn 一次。达到上限仍未调用 done/fail 时按失败收尾。仅对 puppet 生效——claude-code 用 `workers.<id>.maxTurns`，ACP 类型不消费该键。
-
-`providers.<name>` 子字段：
-
-- `endpoint`（必填，字符串）：OpenAI 兼容 base URL。
-- `apiKey`（必填，字符串）：可留空，留空时由环境变量 `WAYANG_LLM_API_KEY` 补齐。
-- `modelName`（必填，字符串）：模型名。
-- `temperature`、`maxOutputTokens`（可选，数字）：目前仅记录，不影响运行。
-- `contextWindowTokens`（可选，正整数，默认 256000）：模型上下文窗口大小（输入侧预算）。controller 在用到 60% 时会自动压缩对话；小窗口模型请显式设置（如 128000），否则请求会在压缩前被 provider 拒绝。
+```json
+{
+  "providers": {
+    "default": { "baseURL": "https://api.anthropic.com", "apiKey": "sk-xxx" }
+  },
+  "models": {
+    "sonnet": {
+      "provider": "default",
+      "name": "claude-sonnet-4-20250514",
+      "contextWindowTokens": 200000
+    }
+  },
+  "controller": { "model": "sonnet" },
+  "worker": { "model": "sonnet", "maxConcurrency": 3 }
+}
+```
 
 `permission` 子字段（全部可选，相对路径以你的 home 目录解析）：
 
@@ -102,6 +220,7 @@ v0.9.7 移除了 worker 单次运行的 wall time 上限（原 #76 能力撤回�
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `type` | 字符串 | 是 | — | `claude-code` / `acp` / `codebuddy` / `opencode` 四选一 |
+| `model` | 模型引用 | 否 | 无 | 该 worker 使用的模型（`models` 键 / `"provider/name"` / 内联对象）。claude-code 传给 SDK 的 `model` 选项；ACP 类协议无模型字段，只在启动时记录未消费 |
 | `description` | 字符串 | 是 | — | 给 controller 看的自然语言描述，非空 |
 | `enable` | 布尔值 | 否 | `true` | 是否启用这个 worker |
 | `emoji` | 字符串 | 否 | 按类型 | 界面显示图标；缺省为 🤖（claude-code）/ 🧩（acp）/ 🐧（codebuddy）/ 🦉（opencode） |
@@ -129,8 +248,8 @@ v0.9.7 移除了 worker 单次运行的 wall time 上限（原 #76 能力撤回�
 | --- | --- | --- |
 | `WAYANG_LLM_API_KEY` | provider API key | 文件存在时仅补齐留空的 `apiKey`，文件值优先；无文件时是构造来源之一 |
 | `WAYANG_ENDPOINT` | endpoint | 仅在配置文件不存在时使用，文件优先 |
-| `WAYANG_MODEL` | 模型名 | 同上 |
-| `WAYANG_CONTEXT_WINDOW_TOKENS` | 上下文窗口 | 仅环境变量配置方式（无文件）时使用 |
+| `WAYANG_MODEL` | 模型名 | 同上；等价于隐式 `models.default.name` |
+| `WAYANG_CONTEXT_WINDOW_TOKENS` | 上下文窗口 | 仅环境变量配置方式（无文件）时使用；等价于隐式 `models.default.contextWindowTokens` |
 | `WAYANG_TAVILY_API_KEY` | Tavily key | 配置文件的 `tavilyApiKey` 优先 |
 
 ## 四类 worker 怎么选
@@ -211,16 +330,20 @@ v0.9.7 移除了 worker 单次运行的 wall time 上限（原 #76 能力撤回�
 - 给 worker 加能力：把标签写进 `capabilities`（如 `"test"`、`"docs"`），并在 `description` 里说清楚，controller 按这些信息决定把任务分给谁。
 - 限制可见目录：用 `permission.allowedDirs`（始终允许）与 `permission.sensitiveDirs`（命中需审批）。敏感目录列表优先级高于一切 allow 规则，只能选"问"或"拒"（`sensitiveMode`）。
 - 让 add_task 的工作区落在 home 外：`permission.extraWorkspaceRoots` 列出根目录（如 `/codev`），声明的 `workspace` 指向其内路径才放行；默认一律拒绝并提示改用 `allowedDirs`。
-- controller 与 worker 用不同模型：定义两个 provider，分别绑定 `controller.provider` 与 `worker.provider`：
+- controller 与 worker 用不同模型：定义两个 provider 与两个 `models` 条目，分别用 `controller.model` 与 `worker.model` 引用：
 
 ```json
 {
   "providers": {
-    "strong": { "endpoint": "https://api.anthropic.com", "apiKey": "sk-a", "modelName": "claude-sonnet-4-20250514" },
-    "cheap": { "endpoint": "https://api.deepseek.com/v1", "apiKey": "sk-b", "modelName": "deepseek-chat", "contextWindowTokens": 128000 }
+    "strong": { "baseURL": "https://api.anthropic.com", "apiKey": "sk-a" },
+    "cheap": { "baseURL": "https://api.deepseek.com/v1", "apiKey": "sk-b" }
   },
-  "controller": { "provider": "strong" },
-  "worker": { "provider": "cheap", "maxConcurrency": 3 }
+  "models": {
+    "sonnet": { "provider": "strong", "name": "claude-sonnet-4-20250514" },
+    "deepseek-chat": { "provider": "cheap", "name": "deepseek-chat", "contextWindowTokens": 128000 }
+  },
+  "controller": { "model": "sonnet" },
+  "worker": { "model": "deepseek-chat", "maxConcurrency": 3 }
 }
 ```
 
@@ -234,7 +357,9 @@ v0.9.7 移除了 worker 单次运行的 wall time 上限（原 #76 能力撤回�
 | `workers.<id>.type is required (allowed: claude-code, acp, codebuddy, opencode)` | 缺少 type 字段，补上 |
 | `workers.<id>.command is required for type "acp" (set workers.<id>.command to the ACP agent executable)` | 通用 acp 行必须写 `command`，填该 CLI 的可执行文件名 |
 | `workers.<id>.<key> is not supported for type "claude-code" (claude-code uses cliPath)` | claude-code 行混入了 ACP 字段，删掉 `command`/`args`/`env`/`protocol`/`trustUpdatesAfterCancel` |
-| `controller.provider "foo" not found`（worker.provider 同理） | 绑定的名字不在 `providers` 里，检查拼写 |
+| `controller.provider "foo" not found`（worker.provider 同理） | 旧写法绑定的名字不在 `providers` 里，检查拼写 |
+| `controller.model "foo" is not a known model (available: ...; or use "provider/model")` | `model` 既不是 `models` 的键，也不是 `"provider/model"` 组合；检查拼写或改成组合写法 |
+| `models.<key>.provider "foo" not found` | `models` 条目指向的 provider 不存在，检查 `providers` 的键 |
 | `providers.<name>.apiKey is required (set WAYANG_LLM_API_KEY or configure in config file)` | key 缺失，填进文件或设环境变量 |
 | `providers.<name>.contextWindowTokens must be a positive integer (got ...)` | 该字段须为正整数 |
 | `permission.sensitiveMode must be 'ask' or 'deny' (got ...)` | 改为 `ask` 或 `deny` |
