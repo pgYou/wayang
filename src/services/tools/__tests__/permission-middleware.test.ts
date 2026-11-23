@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { wrapWithPermissionMiddleware } from '@/services/tools/permission-middleware';
+import { decideToolAccess, FILE_TOOL_NAMES, type WorkerAccessScope } from '@/services/tools/permission-rules';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import { createMockLogger } from '@/__tests__/helpers';
 
@@ -723,6 +727,74 @@ describe('wrapWithPermissionMiddleware', () => {
       await pending;
 
       expect(auditCalls(logger).map((record) => record.decision)).toEqual(['allowed', 'denied']);
+    });
+  });
+
+  /**
+   * 0.9.9: inspect_json rides the SAME file-tool gate as read_file —
+   * `decideToolAccess` → `evaluateFileAccess`, so an out-of-workspace read
+   * asks with the read-within-home rule and a workspace-internal read runs
+   * silently. Wired with the real policy, mirroring `wireWorker`.
+   */
+  describe('inspect_json shares the read_file path verdicts', () => {
+    let ws: string;
+    let home: string;
+
+    beforeEach(() => {
+      ws = mkdtempSync(join(tmpdir(), 'wayang-mw-ws-'));
+      home = mkdtempSync(join(tmpdir(), 'wayang-mw-home-'));
+    });
+
+    afterEach(() => {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    function gateWithRealPolicy(): { result: ReturnType<typeof wrapWithPermissionMiddleware>; execute: ReturnType<typeof vi.fn> } {
+      const tools = mockTool('inspect_json', 'ran:inspect_json');
+      const scope: WorkerAccessScope = { userHome: home, workspace: ws };
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: [...FILE_TOOL_NAMES],
+        decide: (toolName, args) => decideToolAccess(scope, toolName, args),
+        describeCall: (name, args) => `${name}: ${args.path}`,
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+      });
+      return { result, execute: tools.inspect_json.execute };
+    }
+
+    it('a read outside the workspace asks with the read-within-home rule, like read_file', async () => {
+      const outside = join(home, 'shared', 'conf.json');
+      mkdirSync(join(home, 'shared'), { recursive: true });
+      writeFileSync(outside, '{}', 'utf-8');
+      const { result, execute } = gateWithRealPolicy();
+
+      const pending = result.wrappedTools.inspect_json.execute({ path: outside, pointers: ['/a'] });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+      expect(queue.enqueue.mock.calls[0][0].type).toBe('permission_request');
+      expect(payload.toolName).toBe('inspect_json');
+      expect(payload.operation).toBe('read');
+      expect(payload.matchedRule).toBe('read-within-home');
+      // Canonical (realpath) spelling of the temp file — segment check stays
+      // portable across symlinked temp roots.
+      expect(payload.resolvedPath).toContain('conf.json');
+
+      result.resolvePermission(payload.requestId, false, 'no');
+      await pending;
+      // The real execute never ran — the call was refused.
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('a workspace-internal read is allowed without any prompt', async () => {
+      writeFileSync(join(ws, 'local.json'), '{}', 'utf-8');
+      const { result } = gateWithRealPolicy();
+
+      const output = await result.wrappedTools.inspect_json.execute({ path: 'local.json' });
+      expect(output).toBe('ran:inspect_json');
+      expect(queue.enqueue).not.toHaveBeenCalled();
     });
   });
 });

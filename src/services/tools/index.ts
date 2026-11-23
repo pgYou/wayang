@@ -14,6 +14,7 @@ import { querySignalsTool } from './query-signals';
 import { skipReplyTool } from './skip-reply';
 import { bashTool } from './bash';
 import { readFileTool } from './read-file';
+import { inspectJsonTool } from './inspect-json';
 import { writeFileTool } from './write-file';
 import { editFileTool } from './edit-file';
 import { searchFilesTool } from './search-files';
@@ -223,6 +224,7 @@ export function createWorkerTools(deps: WorkerToolDeps) {
   return {
     bash: bashTool({ cwd: deps.cwd }),
     read_file: readFileTool({ cwd: deps.cwd }),
+    inspect_json: inspectJsonTool({ cwd: deps.cwd }),
     write_file: writeFileTool({ cwd: deps.cwd }),
     edit_file: editFileTool({ cwd: deps.cwd }),
     search_files: searchFilesTool({ cwd: deps.cwd }),

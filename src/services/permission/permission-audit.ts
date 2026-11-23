@@ -126,10 +126,10 @@ export interface PermissionAuditEntry {
   provider?: string;
 }
 
-/** Operation implied by a gated tool name (`bash` runs commands). */
+/** Operation implied by a gated tool name (`bash` / `run_process` run commands). */
 export function operationForTool(toolName: string): PermissionOperation {
-  if (toolName === 'bash') return 'exec';
-  if (toolName === 'read_file' || toolName === 'search_files' || toolName === 'search_content') return 'read';
+  if (toolName === 'bash' || toolName === 'run_process') return 'exec';
+  if (toolName === 'read_file' || toolName === 'search_files' || toolName === 'search_content' || toolName === 'inspect_json') return 'read';
   return 'write';
 }
 
