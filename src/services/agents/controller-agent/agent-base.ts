@@ -4,33 +4,22 @@
 // facade live in the layers above (turn-run.ts / controller-agent.ts).
 
 import { BaseAgent } from '../base-agent';
-import { ContextManager, COMPACT_MAX_RETRIES } from '../context-manager';
+import { ContextManager } from '../context-manager';
 import type { ControllerAgentState } from '../controller-state';
 import type { ToolSet } from 'ai';
 import type { Logger } from '@/infra/logger';
 import type { ContextUsage, ContextLastUsage } from '@/types/index';
 import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType, ESystemSubtype } from '@/types/index';
-import { generateText } from 'ai';
-import { buildSummaryInput } from '../utils/summarizer-input';
 import { buildLlmCallStartPayload, debugLoggingEnabled } from '../utils/llm-call-logging';
 import { recordToolCalls, ToolCallRecorder } from '../utils/tool-call-recorder';
 import type { ResolvedModel } from '@/services/config/model-resolution';
+import { compactContext } from '../context/compaction';
 
-import {
-  SUMMARIZER_SYSTEM_PROMPT,
-  buildSummarizerPrompt,
-  buildControllerSystemPrompt,
-} from '../prompts/index';
+import { buildControllerSystemPrompt } from '../prompts/index';
 import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import { SystemContext } from '@/infra/system-context';
-
-/**
- * Share of the context window (in characters) the summarizer input may use —
- * leaves room for the summarizer prompt and its output.
- */
-const SUMMARIZER_INPUT_RATIO = 0.5;
 
 export class ControllerAgentBase extends BaseAgent {
   protected readonly state: ControllerAgentState;
@@ -228,61 +217,17 @@ export class ControllerAgentBase extends BaseAgent {
    *
    * Retries up to COMPACT_MAX_RETRIES times on failure.
    * Falls back to truncating half of the history in memory (file preserved).
+   * The flow itself lives in the shared context/compaction layer (#90) — the
+   * controller only supplies its state, context manager, model and logger.
    */
   async performCompaction(): Promise<void> {
-    try {
-      // Capture the previous summary before compact() replaces it — the
-      // summarizer folds it in so repeated compactions stay incremental.
-      const previousSummary = this.contextManager.getCompactSummary();
-      const entryCount = this.state.get<ConversationEntry[]>('conversation').length;
-
-      await this.contextManager.compact(
-        async (entries) => {
-          // Budget the summarizer input in characters against the model
-          // window: CJK text runs close to one token per character, so a
-          // character budget never underestimates the request size.
-          const budget = Math.floor(this.contextManager.getContextWindowTokens() * SUMMARIZER_INPUT_RATIO)
-            - (previousSummary?.length ?? 0);
-          const entryTexts = buildSummaryInput(entries, Math.max(budget, 0));
-          if (previousSummary) {
-            entryTexts.unshift(`[Previous Summary]\n${previousSummary}`);
-          }
-
-          let lastError: unknown;
-          for (let attempt = 0; attempt <= COMPACT_MAX_RETRIES; attempt++) {
-            try {
-              const { text } = await generateText({
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- WayangModel (custom provider wrapper) deliberately crossing into the SDK's LanguageModel type here; opaque boundary
-                model: this.model as any,
-                system: SUMMARIZER_SYSTEM_PROMPT,
-                prompt: buildSummarizerPrompt(entryTexts),
-              });
-              return text;
-            } catch (err) {
-              lastError = err;
-              this.logger.warn({ attempt: attempt + 1, error: String(err) }, 'Compaction summarizer failed');
-            }
-          }
-          throw lastError;
-        },
-        { model: this.resolvedModel.modelName },
-      );
-      this.logger.info(
-        { model: this.resolvedModel.modelName, summarizedEntries: entryCount },
-        'Compaction done',
-      );
-    } catch (err) {
-      // All retries failed — fallback: truncate half of history in memory only.
-      // Truncation goes through the context manager so its verbatim-zone index
-      // and real-usage mark stay consistent with the shortened array.
-      this.logger.warn({ error: String(err) }, 'Compaction failed, falling back to half-truncation');
-      const total = this.state.get<ConversationEntry[]>('conversation').length;
-      if (total > 4) {
-        const half = Math.floor(total / 2);
-        this.contextManager.truncateHistory(half);
-        this.logger.info({ kept: half, total }, 'History truncated (half) as compaction fallback');
-      }
-    }
+    await compactContext({
+      state: this.state,
+      contextManager: this.contextManager,
+      model: this.model,
+      modelName: this.resolvedModel.modelName,
+      logger: this.logger,
+    });
     // Refresh the status bar / `/context` right away instead of waiting for
     // the next LLM step to report usage.
     this.updateContextUsage();
