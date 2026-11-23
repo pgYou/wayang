@@ -184,17 +184,24 @@ describe('WorkerAgent context compaction (issue #90)', () => {
     expect(jsonl).toContain('summarizedTokenCount');
 
     // Step 3 runs on the compacted context: summary in the system prompt, old
-    // entries gone from the messages, seeded continuation turn only.
+    // entries gone from the messages, seeded continuation turn only. The seed
+    // also carries the CURRENT task description — the verbatim zone is empty,
+    // so without it the model could not say what its task is.
     expect(captured.systems[3]).toContain('[Conversation Summary]');
     expect(captured.systems[3]).toContain('SUMMARY: half of the task is done');
     expect(captured.requests[3]).toEqual([
       { role: 'user', content: expect.stringContaining('[Conversation compacted]') },
     ]);
-    expect(JSON.stringify(captured.requests[3])).not.toContain('the task prompt');
+    expect((captured.requests[3]![0] as any).content).toContain('[Current task]');
+    expect((captured.requests[3]![0] as any).content).toContain('the task prompt');
+    // The seed says where the summary lives and warns against re-running.
+    expect((captured.requests[3]![0] as any).content).toContain('summary of completed work is in the system prompt');
+    expect((captured.requests[3]![0] as any).content).toContain('do not re-run an operation that already succeeded');
 
-    // The summary was built from the pre-compaction conversation.
+    // The summary was built from the pre-compaction conversation — minus the
+    // current task description, which is re-injected verbatim instead.
     const prompt = (vi.mocked(generateText).mock.calls[0]![0] as any).prompt as string;
-    expect(prompt).toContain('the task prompt');
+    expect(prompt).not.toContain('the task prompt');
   });
 
   it('c) keeps tool call/result pairs intact on the rebuilt post-compaction request', async () => {
@@ -278,4 +285,37 @@ describe('WorkerAgent context compaction (issue #90)', () => {
     const warns = vi.mocked(ctx.logger.warn).mock.calls.map((c) => String(c[1]));
     expect(warns.some((m) => m.includes('Compaction limit reached'))).toBe(true);
   });
+
+  it('f) a reused worker keeps the second task description when the second stage compacts on its first step', async () => {
+    const worker = newWorker();
+    vi.mocked(generateText).mockResolvedValue({ text: 'SUMMARY' } as any);
+    // Stage 1 fills the context and compacts; its last step reports BIG usage
+    // so stage 2 is already full before its first request.
+    mockStepLoop(worker, [
+      { text: 's0', usage: BIG },
+      { text: 's1', usage: BIG },
+      { text: 's2', usage: BIG },
+      { text: 'done stage 1', usage: BIG, done: 'stage 1 done' },
+    ]);
+    await worker.run(task('stage1', 'FIRST stage task'), {});
+
+    // Stage 2 on the SAME instance: prepareStep(0) compacts before the model
+    // has produced anything. The task description must still reach the model.
+    vi.mocked(generateText).mockClear();
+    const captured = mockStepLoop(worker, [
+      { text: 's0-2', usage: SMALL },
+      { text: 'done stage 2', usage: SMALL, done: 'stage 2 done' },
+    ]);
+    const result = await worker.run(task('stage2', 'SECOND stage task: write the report'), {});
+
+    expect(result).toEqual({ status: 'completed', summary: 'stage 2 done' });
+    const request = JSON.stringify(captured.requests[0]);
+    expect(request).toContain('SECOND stage task: write the report');
+    expect(request).toContain('[Current task]');
+    // The description was excluded from the summarizer input (it is re-injected
+    // instead), so the summary cannot paraphrase it away.
+    const prompt = (vi.mocked(generateText).mock.calls[0]![0] as any).prompt as string;
+    expect(prompt).not.toContain('SECOND stage task: write the report');
+  });
+
 });

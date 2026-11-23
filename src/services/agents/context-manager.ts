@@ -284,8 +284,14 @@ export class ContextManager {
 
     const summary = await summarizer(conversation);
 
-    // Cache the summary and set startIdx to current length
-    // (entries after this index — i.e. future entries — will be included verbatim)
+    // Cache the summary and set startIdx to current length. Entries AFTER this
+    // index (the marker itself is skipped by the SDK conversion, then every
+    // entry appended later) form the verbatim zone. The verbatim zone can be
+    // EMPTY right after a compaction, so a caller that needs the current task
+    // description always visible must re-inject it into the rebuilt request —
+    // see WorkerAgent.rebuiltStep(). The summarizer input itself may exclude
+    // that entry (ContextCompactionDeps.excludeEntryUuids) so the summary
+    // cannot paraphrase the task away.
     this.compactSummary = summary;
     this.compactStartIdx = conversation.length;
     // The pre-compaction real usage is stale — the next call sends the

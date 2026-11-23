@@ -37,6 +37,12 @@ export interface ContextCompactionDeps {
   /** Model name stamped into the marker's compactMeta (omitted when absent). */
   modelName?: string;
   logger: Logger;
+  /**
+   * Entry uuids left out of the summarizer input. The worker excludes its
+   * current task-description entry (#90): that description is re-injected into
+   * the rebuilt request, and a summary could otherwise paraphrase it away.
+   */
+  excludeEntryUuids?: readonly string[];
 }
 
 export type CompactionOutcome = 'summarized' | 'truncated' | 'skipped';
@@ -74,7 +80,11 @@ export async function compactContext(deps: ContextCompactionDeps): Promise<Compa
         // character budget never underestimates the request size.
         const budget = Math.floor(contextManager.getContextWindowTokens() * SUMMARIZER_INPUT_RATIO)
           - (previousSummary?.length ?? 0);
-        const entryTexts = buildSummaryInput(entries, Math.max(budget, 0));
+        const excluded = new Set(deps.excludeEntryUuids ?? []);
+        const summaryEntries = excluded.size > 0
+          ? entries.filter((entry) => !excluded.has((entry as ConversationEntry).uuid))
+          : entries;
+        const entryTexts = buildSummaryInput(summaryEntries, Math.max(budget, 0));
         if (previousSummary) {
           entryTexts.unshift(`[Previous Summary]\n${previousSummary}`);
         }

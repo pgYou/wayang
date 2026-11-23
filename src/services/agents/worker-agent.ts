@@ -28,11 +28,15 @@ import type { WorkspaceRef } from '@/infra/workspace-registry';
 /**
  * Request-only turn seeded after a compaction leaves nothing verbatim: the
  * provider rejects an empty messages array, and the model still needs a turn
- * to answer. It is never written to the conversation.
+ * to answer. It is never written to the conversation. The wording names the
+ * summary's location and tells the model to re-inspect state instead of
+ * re-running finished work from memory — the verbatim zone may be empty, so
+ * "don't repeat" alone would leave the model guessing what is already done.
  */
 const COMPACTION_CONTINUATION =
-  '[Conversation compacted] The earlier conversation was summarized in the system prompt above. '
-  + 'Continue the task from where it left off; do not repeat finished work.';
+  '[Conversation compacted] The context has just been compacted: the summary of completed work is in the system prompt above. '
+  + 'If that summary is not enough to continue safely, re-inspect the necessary state first — '
+  + 'do not re-run an operation that already succeeded just because you do not remember its result.';
 
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly state: WorkerState;
@@ -67,6 +71,17 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
    * from an earlier stage is already baked into the run's initial messages.
    */
   private contextOverriddenThisRun = false;
+  /**
+   * Description of the task the CURRENT run executes (#90). The task prompt
+   * is appended as a user entry in run(); a compaction between two steps
+   * summarizes everything before its marker, including that entry. To keep the
+   * model aware of what it is doing, the description is excluded from the
+   * summarizer input and re-injected into every rebuilt post-compaction
+   * request (see rebuiltStep()). Reset per run.
+   */
+  private currentTaskDescription?: string;
+  /** uuid of the current run's task-description entry (excluded from summaries). */
+  private currentTaskEntryUuid?: string;
 
   constructor(
     model: ResolvedModel,
@@ -146,6 +161,10 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     // this run's initial messages).
     this.compactionsThisRun = 0;
     this.contextOverriddenThisRun = false;
+    // The current task description is re-injected after a compaction, so it
+    // must be tracked per run (a multi-stage worker runs several tasks).
+    this.currentTaskDescription = task.description;
+    this.currentTaskEntryUuid = generateId('u');
 
     // --- Turn identity: one worker run = one turn ---
     // The engine passes the task's execution turn id; rootTurnId is inherited
@@ -171,7 +190,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     const promptTs = nowISO();
     this.state.append('conversation', applyTurnEnvelope({
       type: EEntryType.User,
-      uuid: generateId('u'),
+      uuid: this.currentTaskEntryUuid,
       parentUuid: null,
       sessionId: this.ctx.sessionId,
       timestamp: promptTs,
@@ -334,10 +353,37 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     // continuation turn in that case; it is not persisted, so the next rebuild
     // is driven by the reply alone.
     const needsSeed = messages.length === 0 || messages[0]?.role !== 'user';
-    return {
-      messages: needsSeed ? [{ role: 'user', content: COMPACTION_CONTINUATION }, ...messages] : messages,
-      system: this.contextManager.getSystemPrompt(),
-    };
+    if (needsSeed) {
+      return {
+        messages: [{ role: 'user', content: this.seedContent() }, ...messages],
+        system: this.contextManager.getSystemPrompt(),
+      };
+    }
+    // The verbatim zone starts with a user turn (e.g. after a truncation that
+    // kept the task prompt). If the CURRENT task description was still cut,
+    // re-inject it ahead of the surviving history so the model always knows
+    // what it is working on.
+    if (this.currentTaskDescription !== undefined && !this.messagesContainTask(messages)) {
+      return {
+        messages: [{ role: 'user', content: `[Current task]\n${this.currentTaskDescription}` }, ...messages],
+        system: this.contextManager.getSystemPrompt(),
+      };
+    }
+    return { messages, system: this.contextManager.getSystemPrompt() };
+  }
+
+  /** The seed's text: the compaction notice plus the current task description. */
+  private seedContent(): string {
+    return this.currentTaskDescription === undefined
+      ? COMPACTION_CONTINUATION
+      : `${COMPACTION_CONTINUATION}\n\n[Current task]\n${this.currentTaskDescription}`;
+  }
+
+  /** Is the current task description already in the verbatim messages? */
+  private messagesContainTask(messages: ModelMessage[]): boolean {
+    const task = this.currentTaskDescription;
+    if (task === undefined) return true;
+    return messages.some((message) => message.role === 'user' && message.content === task);
   }
 
   /**
@@ -363,6 +409,11 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
         model: this.model,
         modelName: this.resolvedModel.modelName,
         logger: this.logger,
+        // The current task description is re-injected into the rebuilt request
+        // (see rebuiltStep), so it is left out of the summarizer input: a
+        // summary could otherwise paraphrase it away while the verbatim zone is
+        // empty, leaving the model unable to say what its task is.
+        excludeEntryUuids: this.currentTaskEntryUuid !== undefined ? [this.currentTaskEntryUuid] : [],
       });
       // A no-op (too few entries) must not burn the per-run budget.
       if (result.outcome === 'skipped') return this.rebuiltStep();
