@@ -110,7 +110,7 @@ Old-style configs that set `modelName` / `contextWindowTokens` / `temperature` /
 
 API key can be set via config or the `WAYANG_LLM_API_KEY` environment variable.
 
-`contextWindowTokens` (optional, per `models` entry) is the model's context window in tokens: the input budget the prompt must fit into, not the protocol's `max_tokens` output cap. The controller compacts the conversation once it reaches 60% of this budget. It defaults to 256000; set it explicitly for smaller-window models (e.g. `128000`), otherwise the provider rejects requests before compaction triggers. With env-only configuration use `WAYANG_CONTEXT_WINDOW_TOKENS`. A model entry's `temperature` and `maxOutputTokens` are sent on every request when configured; unset means "use the provider default".
+`contextWindowTokens` (optional, per `models` entry) is the model's context window in tokens: the input budget the prompt must fit into, not the protocol's `max_tokens` output cap. Both the controller and puppet workers compact the conversation once it reaches 60% of this budget. It defaults to 256000; set it explicitly for smaller-window models (e.g. `128000`), otherwise the provider rejects requests before compaction triggers. With env-only configuration use `WAYANG_CONTEXT_WINDOW_TOKENS`. A model entry's `temperature` and `maxOutputTokens` are sent on every request when configured; unset means "use the provider default".
 
 Workers default to `"toolChoice": "auto"` — the model decides whether to call a tool, since thinking endpoints (DeepSeek/GLM) reject `tool_choice: "required"` with HTTP 400. On endpoints that support it, set `"required"` to force a tool call every step, so a worker always finishes via its `done`/`fail` tools:
 

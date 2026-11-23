@@ -2,11 +2,11 @@
 
 ## v0.9.9 (2026-11-23)
 
-### 规划（实施中，交付后按实际校准）
+### 变更
 
-- 配置协议升级（#88）：provider 只保留连接信息（type / baseURL / apiKey），模型下沉为顶层 models 命名条目；controller / worker / workers.<id> 通过 model 引用。旧的 provider.modelName / contextWindowTokens / temperature / maxOutputTokens 标为废弃但保持向后兼容（作为该 provider 的默认模型），全部旧配置行为不变。
+- 配置协议升级（#88）：provider 只保留连接信息（type / baseURL / apiKey），模型下沉为顶层 `models` 命名条目；controller / worker / workers.<id> 通过 `model` 引用。`SystemContext` 以 `ResolvedModel` 把解析后的模型传给各 agent 与请求参数：`temperature` / `maxOutputTokens` 仅在模型声明时随请求发送，claude-code worker 把模型名传给 SDK，ACP 行记录「配置的模型未使用」后忽略。旧的 provider.modelName / contextWindowTokens / temperature / maxOutputTokens 标为废弃但保持向后兼容（作为该 provider 的默认模型），全部旧配置行为不变。文档：configuration.md 新增「models 与 model 引用」章节与旧→新配置迁移表，README / zh-CN 示例迁移到 models + model 引用；另新增一套 parallel-stream W logo（SVG / PNG / banner / favicon）。
 - puppet worker 上下文压缩（#90）：worker 接入 ContextManager，按 `contextWindowTokens` 的 60% 阈值在每步之后（下一步请求之前）压缩，压缩不计入 `maxTurns` 步数；每步真实 usage 写入 `dynamicState.contextUsage`（与 controller 同结构）；压缩条目带 `compactMeta` 写入 worker conversation.jsonl，`read_worker_conversation` 把它压成一行；摘要失败降级半截断并记日志，同一 run 最多压缩 5 次，超限只截断并 warn；摘要/标记/降级流程抽成 agent 无关的 `context/compaction.ts`，controller 复用同一实现。
-- bash 能力表补齐（#86）：把只读命令与结构化包装器纳入自动通过，减少无意义审批；破坏性/可执行任意代码的形态保持人工确认。
+- bash 能力表补齐（#86）：新增 23 个命令分类（校验和类 `sha256sum` / `md5sum` / `shasum` / `cksum`、`gh` 的 list / view / auth status 只读子命令、`git` 扩展只读子命令与 list-only 标志、`node` / `python` / `npm` 的纯版本探测、只读 `awk` 脚本等），并拆解 9 类包装器 / 复合形态（字面量赋值前缀、`timeout` / `watch` 启动器、`xargs`、`cd` 链含 `;`、字面量 `for` 循环、命令替换、进程替换等），共 115 条表驱动用例；拆解只给 gate 一个更明确的命令，解析不了仍 ask，破坏性 / 可执行任意代码的形态保持人工确认。
 
 ## v0.9.8 (2026-11-20)
 
