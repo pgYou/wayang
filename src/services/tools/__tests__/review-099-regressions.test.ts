@@ -129,6 +129,37 @@ describe('0.9.9 review regression matrix', () => {
     });
   });
 
+  describe('P1-6 unknown reasons name the actual failed check', () => {
+    it('an off-table verb says it is not on the capability tables', () => {
+      for (const command of ['ps aux', 'some-unknown-command --flag']) {
+        const result = verdict(command);
+        expect(result.decision).toBe('ask');
+        expect(result.matchedRule).toBe('unknown-capability');
+        expect(result.reason).toContain('not on the bash capability tables');
+        expect(result.reason).not.toContain('subcommand');
+      }
+    });
+
+    it('a non-read subcommand of a table verb names the subcommand, not a missing table entry', () => {
+      for (const command of ['git branch -D x', 'npm run build']) {
+        const result = verdict(command);
+        expect(result.decision).toBe('ask');
+        expect(result.matchedRule).toBe('unknown-capability');
+        expect(result.reason).toContain('is on the capability tables');
+        expect(result.reason).toContain('subcommand / shape is not covered as read-only');
+      }
+    });
+
+    it('git -c names the configuration override', () => {
+      const result = verdict('git -c core.pager=cat status');
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRule).toBe('unknown-capability');
+      expect(result.reason).toContain('git -c');
+      expect(result.reason).toContain('external configuration');
+      expect(result.reason).not.toContain('not on the bash capability tables');
+    });
+  });
+
   describe('gate baseline from the review run', () => {
     it.each([
       ['sha256sum /etc/hostname', 'outside-all'],

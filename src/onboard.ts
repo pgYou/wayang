@@ -25,6 +25,44 @@ function fillApiKeys(config: WayangConfig): void {
   config.tavilyApiKey = config.tavilyApiKey || process.env.WAYANG_TAVILY_API_KEY || undefined;
 }
 
+/** Values onboard collected for the default model. */
+export interface OnboardModelValues {
+  endpoint: string;
+  apiKey: string;
+  modelName: string;
+  /** Present when the user / env declared one (invalid values are left for validateConfig). */
+  contextWindowTokens?: number;
+  maxConcurrency: number;
+}
+
+/**
+ * Build the config onboard writes (issue #88, new shape): a provider with
+ * `type` + `baseURL` (no deprecated `modelName` / window fields), a
+ * `models.default` entry carrying the model name and window, and
+ * `controller.model` / `worker.model` referencing that entry. A new user must
+ * not start with the four deprecation warnings the legacy shape produced.
+ */
+export function buildOnboardConfig(values: OnboardModelValues): WayangConfig {
+  return {
+    providers: {
+      default: {
+        type: 'openai-compatible',
+        baseURL: values.endpoint,
+        apiKey: values.apiKey,
+      },
+    },
+    models: {
+      default: {
+        provider: 'default',
+        name: values.modelName,
+        ...(values.contextWindowTokens !== undefined && { contextWindowTokens: values.contextWindowTokens }),
+      },
+    },
+    controller: { model: 'default' },
+    worker: { model: 'default', maxConcurrency: values.maxConcurrency },
+  };
+}
+
 /** Detect whether Claude Code CLI is installed. */
 function detectClaudeCode(): string | null {
   try {
@@ -126,18 +164,13 @@ async function buildConfigInteractive(): Promise<WayangConfig> {
     process.exit(1);
   }
 
-  const config: WayangConfig = {
-    providers: {
-      default: {
-        endpoint: answers.endpoint,
-        apiKey: answers.apiKey,
-        modelName: answers.modelName,
-        ...(answers.contextWindowTokens > 0 && { contextWindowTokens: answers.contextWindowTokens }),
-      },
-    },
-    controller: { provider: 'default' },
-    worker: { provider: 'default', maxConcurrency: answers.maxConcurrency ?? 3 },
-  };
+  const config: WayangConfig = buildOnboardConfig({
+    endpoint: answers.endpoint,
+    apiKey: answers.apiKey,
+    modelName: answers.modelName,
+    ...(answers.contextWindowTokens > 0 && { contextWindowTokens: answers.contextWindowTokens }),
+    maxConcurrency: answers.maxConcurrency ?? 3,
+  });
 
   // Offer Claude Code worker setup
   const claudePath = detectClaudeCode();
@@ -182,18 +215,13 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
     if (envKey && envEndpoint && envModel) {
       // Optional — invalid values are reported by validateConfig below.
       const envWindow = process.env.WAYANG_CONTEXT_WINDOW_TOKENS;
-      config = {
-        providers: {
-          default: {
-            endpoint: envEndpoint,
-            apiKey: envKey,
-            modelName: envModel,
-            ...(envWindow && { contextWindowTokens: Number(envWindow) }),
-          },
-        },
-        controller: { provider: 'default' },
-        worker: { provider: 'default', maxConcurrency: 3 },
-      };
+      config = buildOnboardConfig({
+        endpoint: envEndpoint,
+        apiKey: envKey,
+        modelName: envModel,
+        ...(envWindow && { contextWindowTokens: Number(envWindow) }),
+        maxConcurrency: 3,
+      });
     } else if (nonInteractive) {
       throw new Error(`Config not found at ${configPath} and WAYANG_* env vars are incomplete. Run \`wayang\` once to configure.`);
     } else {
