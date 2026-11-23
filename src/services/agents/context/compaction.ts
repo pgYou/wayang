@@ -27,6 +27,15 @@ const SUMMARIZER_INPUT_RATIO = 0.5;
  */
 export const MAX_COMPACTIONS_PER_RUN = 5;
 
+/**
+ * Per-attempt timeout for the summarizer call. Without it a hung provider
+ * would sit inside prepareStep for as long as the agent's idle watchdog (5
+ * minutes) — and that watchdog only watches toolsInFlight, so a compaction
+ * between steps could get the whole task killed as idle. A timeout is treated
+ * as a summarizer failure: after the retries the caller truncates instead.
+ */
+export const SUMMARIZER_TIMEOUT_MS = 60_000;
+
 export interface ContextCompactionDeps {
   /** State holding the `conversation` array the marker is appended to. */
   state: BaseWayangState;
@@ -91,16 +100,30 @@ export async function compactContext(deps: ContextCompactionDeps): Promise<Compa
 
         let lastError: unknown;
         for (let attempt = 0; attempt <= COMPACT_MAX_RETRIES; attempt++) {
+          // A fresh controller per attempt: one hung request must not eat the
+          // whole idle-watchdog window (see SUMMARIZER_TIMEOUT_MS).
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), SUMMARIZER_TIMEOUT_MS);
           try {
             const { text } = await generateText({
               model,
               system: SUMMARIZER_SYSTEM_PROMPT,
               prompt: buildSummarizerPrompt(entryTexts),
+              abortSignal: controller.signal,
             });
             return text;
           } catch (err) {
             lastError = err;
-            logger.warn({ attempt: attempt + 1, error: String(err) }, 'Compaction summarizer failed');
+            if (controller.signal.aborted) {
+              logger.warn(
+                { attempt: attempt + 1, timeoutMs: SUMMARIZER_TIMEOUT_MS, error: String(err) },
+                'Compaction summarizer timed out',
+              );
+            } else {
+              logger.warn({ attempt: attempt + 1, error: String(err) }, 'Compaction summarizer failed');
+            }
+          } finally {
+            clearTimeout(timer);
           }
         }
         throw lastError;

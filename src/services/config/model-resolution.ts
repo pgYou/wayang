@@ -166,26 +166,29 @@ export function resolveModelRef(
 
   if (legacyProviderKey !== undefined) {
     const provider = requireProvider(config, legacyProviderKey);
-    if (!provider.modelName) {
-      throw new ConfigError('controller.model 未配置，且 provider 未声明 modelName');
+    if (provider.modelName) {
+      // #88 — a legacy provider binding keeps its pre-#88 behaviour EXACTLY:
+      // `modelName` + the window budget resolve, while `temperature` /
+      // `maxOutputTokens` stay "recorded only". They were never sent before #88
+      // (base-agent reads them off `ResolvedModel` unconditionally), so filling
+      // them here would silently change sampling for every existing config.
+      // `contextWindowTokens` IS filled: it is a compaction budget, not a request
+      // parameter, and it was effective before #88 too. The new `models` /
+      // composite / inline forms opt in through `fromModelConfig` / the composite
+      // branch above.
+      return {
+        providerKey: legacyProviderKey,
+        modelName: provider.modelName,
+        baseURL: requireBaseURL(legacyProviderKey, provider),
+        apiKey: requireApiKey(legacyProviderKey, provider),
+        contextWindowTokens: provider.contextWindowTokens,
+        source: 'legacy-provider',
+      };
     }
-    // #88 — a legacy provider binding keeps its pre-#88 behaviour EXACTLY:
-    // `modelName` + the window budget resolve, while `temperature` /
-    // `maxOutputTokens` stay "recorded only". They were never sent before #88
-    // (base-agent reads them off `ResolvedModel` unconditionally), so filling
-    // them here would silently change sampling for every existing config.
-    // `contextWindowTokens` IS filled: it is a compaction budget, not a request
-    // parameter, and it was effective before #88 too. The new `models` /
-    // composite / inline forms opt in through `fromModelConfig` / the composite
-    // branch above.
-    return {
-      providerKey: legacyProviderKey,
-      modelName: provider.modelName,
-      baseURL: requireBaseURL(legacyProviderKey, provider),
-      apiKey: requireApiKey(legacyProviderKey, provider),
-      contextWindowTokens: provider.contextWindowTokens,
-      source: 'legacy-provider',
-    };
+    // No `modelName` on the legacy provider: fall through to the environment
+    // fallback (configuration.md §priority: legacy binding > env > error).
+    // Throwing here made that documented env fallback unreachable whenever a
+    // provider key was bound.
   }
 
   if (envFallback) {

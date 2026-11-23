@@ -208,6 +208,41 @@ describe('resolveModelRef: env fallback', () => {
       source: 'env',
     });
   });
+
+  it('falls back to env when the legacy provider declares no modelName (P1-4)', () => {
+    const config: WayangConfig = {
+      providers: { default: { baseURL: 'http://base', apiKey: 'sk-file' } },
+      controller: { provider: 'default' },
+      worker: { maxConcurrency: 1 },
+    };
+    const resolved = resolveModelRef(config, undefined, 'default', {
+      apiKey: 'sk-env',
+      baseURL: 'http://env',
+      modelName: 'env-model',
+      contextWindowTokens: 64_000,
+    });
+    expect(resolved).toEqual({
+      providerKey: 'default',
+      modelName: 'env-model',
+      baseURL: 'http://env',
+      apiKey: 'sk-env',
+      contextWindowTokens: 64_000,
+      maxOutputTokens: undefined,
+      temperature: undefined,
+      source: 'env',
+    });
+  });
+
+  it('still throws when the legacy provider has no modelName and env is incomplete', () => {
+    const config: WayangConfig = {
+      providers: { default: { baseURL: 'http://base', apiKey: 'sk-file' } },
+      controller: { provider: 'default' },
+      worker: { maxConcurrency: 1 },
+    };
+    expect(() => resolveModelRef(config, undefined, 'default', { apiKey: 'sk-env' })).toThrow(
+      'controller.model 未配置，且 provider 未声明 modelName',
+    );
+  });
 });
 
 describe('resolveModelRef: request parameters (#88 legacy vs new writings)', () => {

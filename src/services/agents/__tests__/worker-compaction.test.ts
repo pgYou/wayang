@@ -318,4 +318,42 @@ describe('WorkerAgent context compaction (issue #90)', () => {
     expect(prompt).not.toContain('SECOND stage task: write the report');
   });
 
+  it('g) a hung summarizer times out, degrades to half-truncation and the task still finishes', async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = newWorker();
+      // A summarizer call that never resolves on its own: it only rejects when
+      // the per-attempt AbortController fires.
+      vi.mocked(generateText).mockImplementation(((opts: any) =>
+        new Promise((_, reject) => {
+          opts.abortSignal?.addEventListener('abort', () => reject(new Error('aborted')));
+        })) as any);
+      mockStepLoop(worker, [
+        { text: 's0', usage: BIG },
+        { text: 's1', usage: BIG },
+        { text: 's2', usage: BIG },
+        { text: 's3', usage: BIG },
+        { text: 'done', usage: SMALL, done: 'finished after timeout' },
+      ]);
+
+      const runPromise = worker.run(task('g', 'timeout task'), {});
+      // Let the first steps run until the compaction call actually schedules
+      // its timer, then keep firing every 60 s attempt timer (a later step may
+      // start another compaction) until none is left.
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 10 && vi.getTimerCount() > 0; i += 1) {
+        await vi.advanceTimersByTimeAsync(60_000);
+      }
+      const result = await runPromise;
+
+      expect(result).toEqual({ status: 'completed', summary: 'finished after timeout' });
+      // Timeout → summarizer failure → truncation fallback, never a hang.
+      expect(compactMarkers(worker)).toHaveLength(0);
+      const warns = vi.mocked(ctx.logger.warn).mock.calls.map((c) => String(c[1]));
+      expect(warns.some((m) => m.includes('Compaction summarizer timed out'))).toBe(true);
+      expect(warns.some((m) => m.includes('Compaction failed, falling back to half-truncation'))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
