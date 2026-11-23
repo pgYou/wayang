@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.9 (2026-11-23)
+
+### 规划（实施中，交付后按实际校准）
+
+- 配置协议升级（#88）：provider 只保留连接信息（type / baseURL / apiKey），模型下沉为顶层 models 命名条目；controller / worker / workers.<id> 通过 model 引用。旧的 provider.modelName / contextWindowTokens / temperature / maxOutputTokens 标为废弃但保持向后兼容（作为该 provider 的默认模型），全部旧配置行为不变。
+- puppet worker 上下文压缩（#90）：worker 侧接入上下文管理，支持按窗口阈值压缩、真实 usage 采集与上报；压缩逻辑与 controller 抽成公共实现，避免两套摘要器漂移。
+- bash 能力表补齐（#86）：把只读命令与结构化包装器纳入自动通过，减少无意义审批；破坏性/可执行任意代码的形态保持人工确认。
+
 ## v0.9.8 (2026-11-20)
 
 ### 修复
