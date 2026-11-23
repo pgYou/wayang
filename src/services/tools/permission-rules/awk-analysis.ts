@@ -61,12 +61,53 @@ export function awkScriptsOf(words: readonly string[]): string[] | undefined {
 }
 
 /**
+ * Does the awk program text contain a redirection (`>`) or a pipe (`|`)
+ * OUTSIDE a string literal? Coarse on purpose (#86): awk's `>` is also
+ * "greater than" and `|` is also "or", so a comparison asks too. A false
+ * positive only asks; missing a real `print … > file` / `print … | cmd` would
+ * run arbitrary code. An unterminated or unparseable quote also asks.
+ */
+function hasAwkRedirectOrPipe(script: string): boolean {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < script.length; i += 1) {
+    const char = script[i];
+    if (char === undefined) break;
+    if (quote !== null) {
+      // A backslash escapes the next character inside a string literal.
+      if (char === '\\') {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    // A backslash outside a string escapes the next character too.
+    if (char === '\\') {
+      i += 1;
+      continue;
+    }
+    if (char === '>' || char === '|') return true;
+  }
+  // Unterminated string: the program text cannot be read confidently — ask.
+  return quote !== null;
+}
+
+/**
  * Can this awk program be verified as read-only? Rejects command execution
  * (`system(`), a command pipe into `getline`, a file read through `getline <`,
  * a `print` / `printf` redirection into a file, and `@load` / `@include`.
  * A false negative only asks; a false positive would run arbitrary code.
  */
 export function isReadOnlyAwkScript(script: string): boolean {
+  // Program-level `>` / `|` first: the literal-target regexes below only see
+  // a quoted target, so `print "y" > f` (target held in a variable) and
+  // `print "x" | c` used to pass. Any redirection or pipe outside a string
+  // literal makes the whole command ask.
+  if (hasAwkRedirectOrPipe(script)) return false;
   if (/\bsystem\s*\(/.test(script)) return false;
   // `cmd | getline` runs a command; `getline < "file"` reads a file.
   if (/\|\s*getline\b/.test(script)) return false;

@@ -73,6 +73,33 @@ describe('0.9.9 review regression matrix', () => {
     });
   });
 
+  describe('P1-1 awk — a program-level redirect / pipe is not a read', () => {
+    it.each([
+      // The target lives in a variable, so the old literal-target regex missed it.
+      ["awk 'BEGIN{f=\"/etc/x\"; print \"y\" > f}'", 'exec-capability'],
+      // A pipe into a command held in a variable.
+      ["awk 'BEGIN{c=\"sh -c id\"; print \"x\" | c}'", 'exec-capability'],
+      // `>` / `|` outside a string literal ask even when awk reads them as
+      // "greater than" / "or" — coarse on purpose (fail closed).
+      ["awk 'BEGIN{if (1 > 0) print \"y\"}'", 'exec-capability'],
+      ["awk 'BEGIN{print (1 || 0)}'", 'exec-capability'],
+      // An unterminated string literal cannot be parsed confidently.
+      ["awk 'BEGIN{print \"unterminated'", 'exec-capability'],
+    ])('%s → ask (%s)', (command, rule) => {
+      const result = verdict(command);
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRule).toBe(rule);
+    });
+
+    it('a read-only program without a redirect / pipe still allows', () => {
+      expect(verdict("awk 'BEGIN{print 1}'").decision).toBe('allow');
+      expect(verdict("awk '{print $1}' src/index.ts").decision).toBe('allow');
+      expect(verdict("awk -F: '{print $1}' src/index.ts").decision).toBe('allow');
+      // A `>` / `|` INSIDE a string literal is just text, not a redirection.
+      expect(verdict("awk 'BEGIN{print \"a>b|c\"}'").decision).toBe('allow');
+    });
+  });
+
   describe('P0-3 heredoc — an unquoted delimiter lets the shell expand the body', () => {
     it.each([
       "cat <<'EOF'\n$(rm -rf x)\nEOF",
