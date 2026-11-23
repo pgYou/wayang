@@ -91,7 +91,8 @@ function cdAskReason(scope: WorkerAccessScope, argument: string, abs: string, ve
  * silent part of home, outside the scope entirely — asks, naming the target, the
  * canonical path and WHY. Nothing about the slice can turn an ask into an allow:
  * an unjudged shape keeps the #51 fallback, and a subject that is not a
- * `cd`-only `&&` chain stops the walk at once (`;`, `||`, `|` are never crossed).
+ * `cd`-only `&&` chain stops the walk at once (`||`, `|` are never crossed;
+ * `;` is walked too, because the shell keeps the new cwd after a `;`).
  *
  * The cursor is a plain local variable: the function is pure apart from the
  * read-only `realpath` lookups the policy itself performs, it holds no state
@@ -101,7 +102,10 @@ export function applyCdChain(scope: WorkerAccessScope, segments: readonly ShellS
   let cwd = scope.workspace;
   let i = 0;
 
-  while (i + 1 < segments.length && segments[i].operator === '&&') {
+  while (
+    i + 1 < segments.length &&
+    (segments[i].operator === '&&' || segments[i].operator === ';')
+  ) {
     const argument = literalCdTarget(segments[i]);
     if (argument === undefined) break;
     const expanded = expandHome(argument);

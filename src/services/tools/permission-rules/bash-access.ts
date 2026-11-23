@@ -3,6 +3,13 @@
 import { classifyRedirections, tokenizeShellLite } from '@/services/tools/shell-lexer';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { evaluateCapabilityGate, redirectWriteScopeAsk } from './bash-capability';
+import {
+  applyAssignmentPrefix,
+  evaluateForLoop,
+  evaluateProcessSubstitutions,
+  unfoldLaunchers,
+  unfoldXargs,
+} from './bash-compound';
 import { segmentAccess, unanalyzedInnerCommand, unverifiedReadOnlyCommand } from './bash-classification';
 import { isDangerousCommandLine } from './bash-head';
 import { commandAccess, extractPathCandidates, type BashCandidate } from './bash-paths';
@@ -122,16 +129,37 @@ export function evaluateBashCommand(
     };
   }
 
-  // The `cd` slice: a leading run of literal `cd <dir>` segments chained ONLY by
-  // `&&` is walked with a local cwd CURSOR (see `applyCdChain`), and each target
-  // is judged as a read against the scope it lands in. Consumed segments drop
-  // out of the analysis below, so the rest of the line is judged exactly as
+  // #86 — a literal `for` loop is expanded and every iteration judged before
+  // the per-segment gate runs (see `evaluateForLoop`).
+  const loop = evaluateForLoop(scope, expandedCommand, depth);
+  if (loop !== undefined) return loop;
+
+  // #86 — a literal assignment prefix runs nothing: drop it, remember its
+  // value and substitute `$VAR` in the rest of the line. `X=$(cmd)` is judged
+  // recursively here; `export` / array shapes ask explicitly.
+  const assignment = applyAssignmentPrefix(scope, tokenized.segments, depth);
+  if (assignment.decision !== undefined) return assignment.decision;
+
+  // #86 — `timeout <dur> cmd` / `watch -n <n> cmd` are unfolded so the inner
+  // command meets the ordinary tiers (destructive, `-c`, substitutions,
+  // capability); an unknown launcher option leaves the shape untouched (ask).
+  const unfolded = unfoldLaunchers(assignment.segments);
+
+  // #86 — `xargs <cmd>` is replaced by its inner command. A placeholder or
+  // `-I` / `-n` / `-L` / `-a` operand is not knowable statically and asks.
+  const xargs = unfoldXargs(unfolded);
+  if (xargs.decision !== undefined) return xargs.decision;
+
+  // The `cd` slice: a leading run of literal `cd <dir>` segments chained by
+  // `&&` or `;` is walked with a local cwd CURSOR (see `applyCdChain`), and each
+  // target is judged as a read against the scope it lands in. Consumed segments
+  // drop out of the analysis below, so the rest of the line is judged exactly as
   // before — against the directory the shell will actually be in. The verdict
   // for a target that lands elsewhere is an ASK carrying its own reason (or, in
   // `sensitiveMode: 'deny'`, the policy's refusal). Nothing here can loosen a
   // judgement: shapes the slice does not recognize (`cd -`, `cd $X`, `(cd …`,
-  // `cd a; cd b`, pushd/popd) are left untouched for the #51 fallback.
-  const cdChain = applyCdChain(scope, tokenized.segments);
+  // pushd/popd) are left untouched for the #51 fallback.
+  const cdChain = applyCdChain(scope, xargs.segments);
   if (cdChain.decision?.decision === 'deny') return cdChain.decision;
   const cdAsk = cdChain.decision?.decision === 'ask' ? cdChain.decision : undefined;
 
@@ -352,6 +380,13 @@ export function evaluateBashCommand(
   // unanalyzed-inner-command shapes were checked above).
   const capabilityAsk = evaluateCapabilityGate(scope, segments, cdChain.cwd ?? scope.workspace);
   if (capabilityAsk) return { ...capabilityAsk, access: lineAccess };
+
+  // #86 — process substitutions (`<(cmd)` / `>(cmd)`) are judged after the
+  // capability gate: the outer verb keeps its own class (`bash <(true)` stays
+  // exec-capability), while a read outer verb reaches this tier with the inner
+  // command as the only thing left to judge. Inner deny refuses, inner ask asks.
+  const processAsk = evaluateProcessSubstitutions(scope, segments, depth);
+  if (processAsk) return { ...processAsk, access: lineAccess };
 
   if (firstAllow) return firstAllow;
   // No candidate to judge: the line is a verified read or a write whose

@@ -68,6 +68,11 @@ function shellScriptOf(segment: ShellSegment): ShellScript | 'missing-operand' |
       return { shell: head.command, script: word.slice('--command='.length) };
     }
     if (word.startsWith('--')) continue; // other long flags take no value here
+    // A command / process substitution operand (`bash "$(cat s.sh)"`,
+    // `bash <(true)`) is not a script FILE this gate could read: its inner
+    // command is judged by the substitution tiers, so do not report a
+    // "script file" here (that would mislabel the shape).
+    if (word.includes(CMDSUBST_PLACEHOLDER)) return undefined;
     // The first operand without a `-c` before it is the script FILE: its
     // contents are not on the command line, so (#51) it is reported as an
     // unanalyzed inner command instead of silently returning `undefined`.
