@@ -32,10 +32,12 @@ describe('resolveModelRef: legacy config (pre-#88)', () => {
       baseURL: 'http://localhost:8000/v1',
       apiKey: 'sk-test',
       contextWindowTokens: 128_000,
-      maxOutputTokens: 4096,
-      temperature: 0.2,
       source: 'legacy-provider',
     });
+    // #88: a legacy binding stays "recorded only" — the deprecated request
+    // parameters must NOT reach `ResolvedModel` (base-agent would send them).
+    expect(resolved.temperature).toBeUndefined();
+    expect(resolved.maxOutputTokens).toBeUndefined();
   });
 
   it('prefers baseURL over the deprecated endpoint alias', () => {

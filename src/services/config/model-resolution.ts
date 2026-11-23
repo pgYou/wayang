@@ -22,6 +22,11 @@ export interface ResolvedModel {
   apiKey: string;
   /** Undefined when undeclared — ContextManager applies the 256k default. */
   contextWindowTokens?: number;
+  /**
+   * Request parameters. Filled only by the `models` / `composite` / `inline`
+   * sources (and env): a `legacy-provider` resolution deliberately leaves them
+   * undefined so pre-#88 configs keep their recorded-only behaviour.
+   */
   maxOutputTokens?: number;
   temperature?: number;
   source: ResolvedModelSource;
@@ -113,7 +118,8 @@ function fromModelConfig(config: WayangConfig, model: ModelConfig, source: Resol
  * 1. An explicit `ref` — a `models` key, a `"provider/name"` composite, or an
  *    inline model object (an anonymous `models` entry, never registered).
  * 2. Otherwise the provider named by `legacyProviderKey`, used as an implicit
- *    model (`modelName` and the deprecated window/temperature fields).
+ *    model (`modelName` + the deprecated window budget; the deprecated
+ *    temperature / maxOutputTokens stay recorded only — see the branch).
  * 3. Otherwise the `envFallback`, when it carries apiKey + baseURL + modelName.
  * 4. Otherwise a `ConfigError`.
  */
@@ -163,14 +169,21 @@ export function resolveModelRef(
     if (!provider.modelName) {
       throw new ConfigError('controller.model 未配置，且 provider 未声明 modelName');
     }
+    // #88 — a legacy provider binding keeps its pre-#88 behaviour EXACTLY:
+    // `modelName` + the window budget resolve, while `temperature` /
+    // `maxOutputTokens` stay "recorded only". They were never sent before #88
+    // (base-agent reads them off `ResolvedModel` unconditionally), so filling
+    // them here would silently change sampling for every existing config.
+    // `contextWindowTokens` IS filled: it is a compaction budget, not a request
+    // parameter, and it was effective before #88 too. The new `models` /
+    // composite / inline forms opt in through `fromModelConfig` / the composite
+    // branch above.
     return {
       providerKey: legacyProviderKey,
       modelName: provider.modelName,
       baseURL: requireBaseURL(legacyProviderKey, provider),
       apiKey: requireApiKey(legacyProviderKey, provider),
       contextWindowTokens: provider.contextWindowTokens,
-      maxOutputTokens: provider.maxOutputTokens,
-      temperature: provider.temperature,
       source: 'legacy-provider',
     };
   }

@@ -41,7 +41,9 @@ describe('evaluateBashAccess capability gate (#51 layer 2)', () => {
       { command: "python -c 'print(1)'", rule: 'exec-capability' },
       { command: "node -e '0'", rule: 'exec-capability' },
       { command: "awk 'BEGIN{system(\"id\")}'", rule: 'exec-capability' },
-      { command: 'bash <<EOF\ntrue\nEOF', rule: 'exec-capability' },
+      // An unquoted heredoc is expanded by the real shell, so the gate asks
+      // before it ever reaches the exec classification of the `bash` verb.
+      { command: 'bash <<EOF\ntrue\nEOF', rule: 'dynamic-shell' },
       { command: "bash <<< 'true'", rule: 'exec-capability' },
       { command: 'bash <(true)', rule: 'exec-capability' },
       // ksh is NOT on the shell-`-c` recursion table, so the head word itself

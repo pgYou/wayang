@@ -100,7 +100,15 @@ function headIndex(words: readonly string[]): number {
  * place — returns `undefined`, and the caller keeps the verdict `unknown`.
  */
 export function headCommand(segment: ShellSegment): { command: string; words: string[] } | undefined {
-  const words = segmentWords(segment);
+  return headOfWords(segmentWords(segment));
+}
+
+/**
+ * The command position of a bare word list — the same computation
+ * `headCommand` applies to a segment. Used by the xargs unfold, which judges an
+ * inner command it holds as plain words.
+ */
+export function headOfWords(words: readonly string[]): { command: string; words: string[] } | undefined {
   const i = headIndex(words);
   const command = words[i];
   if (command === undefined || command === CMDSUBST_PLACEHOLDER) return undefined;
@@ -117,6 +125,29 @@ function isDangerousHead(command: string, words: readonly string[]): boolean {
   if (command === 'rm' || command === 'dd') return words.length > 1;
   if (command === 'kill') return words.includes('-9');
   return false;
+}
+
+/**
+ * The destructive tier on a bare word list that starts at the command word,
+ * with the arity conditions IGNORED. An xargs-expanded `rm` gets its operands
+ * from stdin, so the "rm needs an operand" condition would never fire even
+ * though the command deletes whatever stdin names. `sudo` before the head
+ * counts exactly like the segment tier.
+ */
+export function isDestructiveTierHead(words: readonly string[]): boolean {
+  const index = headIndex(words);
+  const head = words[index];
+  if (head === undefined || head === CMDSUBST_PLACEHOLDER) {
+    return words.some((word) => isDangerousCommand(word) || word.startsWith('mkfs.'));
+  }
+  if (words.slice(0, index).includes('sudo')) return true;
+  return (
+    isDangerousCommand(head) ||
+    head.startsWith('mkfs.') ||
+    head === 'rm' ||
+    head === 'dd' ||
+    head === 'kill'
+  );
 }
 
 /**

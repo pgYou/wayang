@@ -81,7 +81,7 @@ wayang 启动时按下面的顺序找配置：
 - `baseURL`（必填，字符串）：OpenAI 兼容 base URL。旧键 `endpoint` 是它的别名，仍然生效，两者同时存在时 `baseURL` 优先。
 - `apiKey`（必填，字符串）：可留空，留空时由环境变量 `WAYANG_LLM_API_KEY` 补齐。
 - `modelName`（已废弃但生效，字符串）：旧写法——该 provider 的默认模型名。新配置请写进 `models`，再用 `model` 引用；provider 仍被 `model` 引用时以引用为准。
-- `temperature`、`maxOutputTokens`（已废弃但生效，数字）：旧写法——该 provider 默认模型的采样温度 / 最大输出 token。新配置请写在 `models` 条目里；配置后会真正进入每次 LLM 请求（见下）。
+- `temperature`、`maxOutputTokens`（已废弃，数字，仅记录）：旧写法——这两个字段只作为配置记录保留，不会进入 LLM 请求。只有写在 `models` 条目（或 `provider/model` 组合串、内联对象）上时才会真正随请求发送（见下）。
 - `contextWindowTokens`（已废弃但生效，可选，正整数，默认 256000）：旧写法——该 provider 默认模型的上下文窗口（输入侧预算）。新配置请写在 `models` 条目里。
 
 ### models 与 model 引用
@@ -99,12 +99,12 @@ wayang 启动时按下面的顺序找配置：
 | `provider` | 字符串 | 是 | — | 所属 provider 名，必须存在于 `providers` |
 | `name` | 字符串 | 是 | — | 发给 provider 的模型名（OpenAI 协议的 `model` 字段） |
 | `contextWindowTokens` | 正整数 | 否 | 256000 | 上下文窗口（输入侧预算），不是输出上限；controller 与 puppet worker 都在用到 60% 时压缩。未声明时兜底 256000 |
-| `maxOutputTokens` | 数字 | 否 | — | 单次请求的最大输出 token；配置后传给 SDK 的 `maxOutputTokens` |
-| `temperature` | 数字 | 否 | — | 采样温度；配置后传给 SDK 的 `temperature` |
+| `maxOutputTokens` | 数字 | 否 | — | 单次请求的最大输出 token；仅 `models` 条目（新写法）下传给 SDK 的 `maxOutputTokens`，provider 上的同名字段仅记录 |
+| `temperature` | 数字 | 否 | — | 采样温度；仅 `models` 条目（新写法）下传给 SDK 的 `temperature`，provider 上的同名字段仅记录 |
 
-未配置 `temperature` / `maxOutputTokens` 时请求里不携带这两个字段，行为与升级前完全一致；只有显式配置才会进入请求（#88 的行为变更点）。
+未配置、或仅配置在 legacy provider 上时，请求里不携带 `temperature` / `maxOutputTokens`，行为与升级前完全一致；只有新写法（`models` / 组合串 / 内联对象）显式配置才会进入请求（#88 的行为变更点）。
 
-解析优先级（`resolveModelRef`）：`model` 引用 > 旧的 `provider` 绑定（把 provider 的 `modelName` / `temperature` / `maxOutputTokens` / `contextWindowTokens` 当作该 provider 的默认模型）> 环境变量构造的隐式 `default` 模型 > 报错。引用的 `models` 条目里未声明的可选字段，会回退到 provider 上对应的旧字段；再没有就保持未定义。
+解析优先级（`resolveModelRef`）：`model` 引用 > 旧的 `provider` 绑定（把 provider 的 `modelName` / `contextWindowTokens` 当作该 provider 的默认模型；provider 上的 `temperature` / `maxOutputTokens` 仅记录、不进入请求）> 环境变量构造的隐式 `default` 模型 > 报错。引用的 `models` 条目里未声明的可选字段，会回退到 provider 上对应的旧字段（仅 `models` 条目 / `provider/model` 组合串 / 内联对象这三种新写法会回退并随请求发送）；再没有就保持未定义。
 
 `workers.<id>.model`（可选）：给第三方 worker 指定模型。`claude-code` 会把它解析后传给 Claude Agent SDK 的 `model` 选项；ACP 类 worker（`acp` / `codebuddy` / `opencode`）的协议没有模型字段，配置了只会在启动时记录一条「配置的模型 X 未被该 provider 消费」，不会伪造能力。
 

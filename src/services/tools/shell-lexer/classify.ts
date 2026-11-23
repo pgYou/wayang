@@ -40,8 +40,7 @@ export interface RedirectionClassification {
  *                even when it lands inside the workspace, because the shell
  *                would create/replace a file there).
  */
-export function classifyRedirections(segments: ShellSegment[]): RedirectionClassification {
-  const result: RedirectionClassification = {
+export function classifyRedirections(segments: ShellSegment[]): RedirectionClassification {  const result: RedirectionClassification = {
     writeTargets: [],
     readTargets: [],
     duplicates: [],
@@ -83,4 +82,27 @@ export function classifyRedirections(segments: ShellSegment[]): RedirectionClass
   }
 
   return result;
+}
+
+/**
+ * The operator of the first here-doc whose delimiter was NOT quoted (or whose
+ * quoting the lexer could not determine).
+ *
+ * Such a body is EXPANDED by the real shell — a `$(rm -rf x)` inside it runs —
+ * while the lexer skips the whole body as data, so the gate never sees the
+ * command. A quoted delimiter (`<<'EOF'`) keeps the body literal and is safe to
+ * skip. Callers must ask for the unquoted case: the gate cannot judge a body it
+ * does not analyze.
+ */
+export function unquotedHeredocOperator(segments: readonly ShellSegment[]): string | undefined {
+  for (const segment of segments) {
+    for (const token of segment.tokens) {
+      if (token.kind !== 'redirect') continue;
+      if (token.redirect.kind !== 'here-doc') continue;
+      // `undefined` means "could not tell" — treated as unquoted (fail closed).
+      if (token.redirect.delimiterQuoted === true) continue;
+      return token.redirect.operator;
+    }
+  }
+  return undefined;
 }

@@ -1,6 +1,6 @@
 // The bash gate proper: candidate sweep + destructive tier + `-c` / substitution recursion.
 
-import { classifyRedirections, tokenizeShellLite } from '@/services/tools/shell-lexer';
+import { classifyRedirections, tokenizeShellLite, unquotedHeredocOperator } from '@/services/tools/shell-lexer';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { evaluateCapabilityGate, redirectWriteScopeAsk } from './bash-capability';
 import {
@@ -126,6 +126,22 @@ export function evaluateBashCommand(
       decision: 'ask',
       matchedRule: 'dynamic-shell',
       reason: `could not parse the shell command (${tokenized.error})`,
+    };
+  }
+
+  // #86 — an unquoted here-doc body is EXPANDED by the real shell (a
+  // `$(rm -rf x)` inside it runs), while the lexer skips the whole body as
+  // data. The gate cannot judge a command whose body it never sees: ask for the
+  // whole line. A quoted delimiter (`<<'EOF'`) keeps the body literal and stays
+  // on the ordinary path below.
+  const heredoc = unquotedHeredocOperator(tokenized.segments);
+  if (heredoc !== undefined) {
+    return {
+      decision: 'ask',
+      matchedRule: 'dynamic-shell',
+      reason:
+        `heredoc ${heredoc} body may contain command substitutions — the bash capability gate ` +
+        'does not analyze heredoc bodies, controller approval is required (fail-closed)',
     };
   }
 

@@ -221,18 +221,27 @@ describe('#86 B — wrapper / compound decomposition', () => {
   });
 
   describe('xargs', () => {
-    it.each(['find . | xargs grep x', "find . -name '*.ts' | xargs wc -l", 'ls | xargs cat'])(
-      '%s → allow',
-      (command) => {
-        allow(command);
-      },
-    );
+    it.each([
+      // A literal operand keeps the ordinary gate: the inner command is judged
+      // exactly as if it had been written out.
+      'find . -name "*.ts" | xargs cat package.json',
+      'find . -name "*.ts" | xargs wc -l package.json',
+      'ls | xargs cat package.json',
+    ])('%s → allow', (command) => {
+      allow(command);
+    });
 
     it.each([
       { command: 'find . | xargs rm -rf', rule: 'dangerous-bash' },
+      { command: 'xargs rm', rule: 'dangerous-bash' },
       { command: 'echo hi | xargs -n1 echo', rule: 'unknown-capability' },
       { command: 'find . | xargs -I{} cat {}', rule: 'unknown-capability' },
       { command: 'xargs sh -c "rm -rf x"', rule: 'dangerous-bash' },
+      // #86: a read / write verb with no literal operand gets its operands from
+      // stdin — the gate cannot judge what it touches.
+      { command: 'find . | xargs grep x', rule: 'unknown-capability' },
+      { command: 'find . -name "*.ts" | xargs wc -l', rule: 'unknown-capability' },
+      { command: 'ls | xargs cat', rule: 'unknown-capability' },
     ])('$command → ask ($rule)', ({ command, rule }) => {
       ask(command, rule);
     });

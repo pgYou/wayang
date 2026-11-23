@@ -106,7 +106,7 @@ Or create `~/.wayang.config.json` manually:
 }
 ```
 
-Old-style configs that set `modelName` / `contextWindowTokens` / `temperature` / `maxOutputTokens` directly on a provider and bind it with `controller.provider` / `worker.provider` still work unchanged (with a one-time deprecation warning).
+Old-style configs that bind a provider with `controller.provider` / `worker.provider` still work unchanged (with a one-time deprecation warning): `modelName` and `contextWindowTokens` stay effective, while `temperature` / `maxOutputTokens` set on the provider remain recorded only and are not sent. Those two parameters take effect only when declared on a `models` entry (or a `provider/model` composite / inline model object).
 
 API key can be set via config or the `WAYANG_LLM_API_KEY` environment variable.
 

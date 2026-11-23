@@ -30,7 +30,8 @@ import {
   type ShellWord,
 } from '@/services/tools/shell-lexer';
 import { evaluateBashCommand } from './bash-access';
-import { headCommand } from './bash-head';
+import { headCommand, headOfWords, isDestructiveTierHead } from './bash-head';
+import { commandEntry } from './command-tables';
 import { MAX_CMDSUBST_DEPTH } from './substitutions';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
@@ -75,6 +76,34 @@ const XARGS_FLAGS: ReadonlySet<string> = new Set([
 const XARGS_DYNAMIC_OPTIONS: ReadonlySet<string> = new Set([
   '-I', '--replace', '-L', '--max-lines', '-n', '--max-args', '-a', '--arg-file',
 ]);
+
+/**
+ * Verbs whose FIRST operand is not a path: `grep` / `rg` take their pattern
+ * there and `sed` its script, so `xargs grep x` names no file at all — the
+ * files come from stdin. That first word is skipped when looking for a literal
+ * path operand.
+ */
+const XARGS_NON_PATH_FIRST_OPERAND: ReadonlySet<string> = new Set(['grep', 'rg', 'sed']);
+
+/**
+ * The literal words of an xargs-expanded inner command that could name a path.
+ * Options are skipped; for the verbs above the first non-option word is the
+ * pattern / script, not a path, and is skipped too.
+ */
+function xargsLiteralPathOperands(words: readonly string[]): string[] {
+  const head = headOfWords(words);
+  const operands: string[] = [];
+  let patternSeen = false;
+  for (const word of (head?.words ?? words).slice(1)) {
+    if (word.startsWith('-')) continue;
+    if (!patternSeen && XARGS_NON_PATH_FIRST_OPERAND.has(head?.command ?? '')) {
+      patternSeen = true;
+      continue;
+    }
+    operands.push(word);
+  }
+  return operands;
+}
 
 /** One word token plus its index in the segment's token list. */
 interface IndexedWord {
@@ -494,6 +523,40 @@ export function unfoldXargs(segments: readonly ShellSegment[]): CompoundResult {
     if (segment.tokens.slice(0, tokenIndex).some((token) => token.kind === 'redirect')) {
       result.push(segment);
       continue;
+    }
+
+    // #86 — the expanded inner verb is judged on its own. A destructive-tier
+    // verb asks whatever its arity: its operands come from stdin, so the
+    // `rm`-needs-an-operand condition would never fire even though the command
+    // deletes whatever stdin names. A read / write verb with no literal operand
+    // asks too — everything it touches arrives from stdin, so the gate cannot
+    // make the outside-all call. (A literal operand keeps the ordinary gate.)
+    const innerHead = headOfWords(innerWords);
+    if (isDestructiveTierHead(innerWords)) {
+      return {
+        segments,
+        decision: ask(
+          'dangerous-bash',
+          `xargs runs \`${innerHead?.command ?? innerWords[0] ?? '…'}\` with operands from stdin — ` +
+            'controller approval is required (destructive command, fail-closed)',
+        ),
+      };
+    }
+    const innerEntry = commandEntry(innerHead?.command ?? '');
+    if (
+      innerEntry !== undefined &&
+      (innerEntry.capability === 'write' || innerEntry.capability === 'read') &&
+      xargsLiteralPathOperands(innerWords).length === 0
+    ) {
+      return {
+        segments,
+        decision: ask(
+          'unknown-capability',
+          `xargs runs \`${innerHead?.command ?? innerWords[0] ?? '…'}\` with no literal operand — ` +
+            'its operands come from stdin, so the gate cannot judge what it touches — ' +
+            'controller approval is required (fail-closed, issue #51)',
+        ),
+      };
     }
 
     changed = true;

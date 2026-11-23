@@ -9,10 +9,18 @@
 // that carries one of those shapes is not verified as a read: the segment stays
 // `unknown` and the capability gate asks.
 
-/** awk options that consume the NEXT word as their value. */
+/**
+ * awk options that consume the NEXT word as their value.
+ *
+ * The load / include family is deliberately NOT here: `-i` / `--include` /
+ * `--load` are execution-capability entry points (`-i inplace` rewrites files
+ * in place, and a load / include pulls in arbitrary awk code or a shared
+ * library). They fall through to the unknown-option branch below and the
+ * segment asks.
+ */
 const AWK_VALUE_OPTIONS: ReadonlySet<string> = new Set([
-  '-F', '-v', '-e', '-i', '-o',
-  '--field-separator', '--assign', '--source', '--include', '--load',
+  '-F', '-v', '-e', '-o',
+  '--field-separator', '--assign', '--source',
 ]);
 
 /**

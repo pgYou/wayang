@@ -64,10 +64,22 @@ export function scanRedirect(
         };
       }
       const stripTabs = command[start + 2] === '-';
-      const target = scanRedirectTarget(command, start + (stripTabs ? 3 : 2));
+      const targetStart = start + (stripTabs ? 3 : 2);
+      const target = scanRedirectTarget(command, targetStart);
       if ('error' in target) return target;
+      // Whether the delimiter was quoted is a property of the SOURCE, not of
+      // the quote-removed word: any quoting in the delimiter makes the body
+      // literal (POSIX), an unquoted one is expanded by the real shell. Read it
+      // off the raw slice; a substitution-built delimiter has no quote
+      // characters and therefore counts as unquoted (fail closed).
+      const delimiterQuoted = /['"\\]/.test(command.slice(targetStart, target.next));
       return {
-        redirect: { operator: stripTabs ? '<<-' : '<<', kind: 'here-doc', target: target.word },
+        redirect: {
+          operator: stripTabs ? '<<-' : '<<',
+          kind: 'here-doc',
+          target: target.word,
+          delimiterQuoted,
+        },
         next: target.next,
         heredoc: { delimiter: target.word.text, stripTabs },
       };

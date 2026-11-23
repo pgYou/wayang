@@ -1061,7 +1061,12 @@ describe('evaluateBashAccess', () => {
     });
 
     it('the escalation is not a one-path decision (no askPaths)', () => {
-      expect(evaluateBashAccess(scope(), 'xargs rm').askPaths).toBeUndefined();
+      // #86: `xargs rm` is a destructive verb with operands from stdin — the
+      // whole command asks as `dangerous-bash`, not just "askPaths is empty".
+      const verdict = evaluateBashAccess(scope(), 'xargs rm');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dangerous-bash');
+      expect(verdict.askPaths).toBeUndefined();
     });
 
     it('#86: an xargs inner command is judged, not merely labelled unanalyzed', () => {
@@ -1070,7 +1075,12 @@ describe('evaluateBashAccess', () => {
       const verdict = evaluateBashAccess(scope(), 'xargs rm -rf build');
       expect(verdict.decision).toBe('ask');
       expect(verdict.matchedRule).toBe('dangerous-bash');
-      expect(evaluateBashAccess(scope(), 'find . | xargs grep x').decision).toBe('allow');
+      // A literal operand keeps the ordinary gate; a read verb whose operands
+      // come from stdin asks (#86).
+      expect(evaluateBashAccess(scope(), 'find . | xargs cat package.json').decision).toBe('allow');
+      const stdinRead = evaluateBashAccess(scope(), 'find . | xargs grep x');
+      expect(stdinRead.decision).toBe('ask');
+      expect(stdinRead.matchedRule).toBe('unknown-capability');
     });
 
     it('#86: a literal for loop is expanded and its body judged per iteration', () => {
