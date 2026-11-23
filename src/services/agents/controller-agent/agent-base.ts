@@ -8,14 +8,14 @@ import { ContextManager, COMPACT_MAX_RETRIES } from '../context-manager';
 import type { ControllerAgentState } from '../controller-state';
 import type { ToolSet } from 'ai';
 import type { Logger } from '@/infra/logger';
-import type { ProviderConfig, ContextUsage, ContextLastUsage } from '@/types/index';
+import type { ContextUsage, ContextLastUsage } from '@/types/index';
 import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType, ESystemSubtype } from '@/types/index';
 import { generateText } from 'ai';
 import { buildSummaryInput } from '../utils/summarizer-input';
 import { buildLlmCallStartPayload, debugLoggingEnabled } from '../utils/llm-call-logging';
 import { recordToolCalls, ToolCallRecorder } from '../utils/tool-call-recorder';
-import { ConfigError } from '@/services/config/model-resolution';
+import type { ResolvedModel } from '@/services/config/model-resolution';
 
 import {
   SUMMARIZER_SYSTEM_PROMPT,
@@ -38,7 +38,7 @@ export class ControllerAgentBase extends BaseAgent {
   protected readonly tools: ToolSet;
   protected readonly logger: Logger;
   protected readonly ctx: SystemContext;
-  protected readonly provider: ProviderConfig;
+  protected readonly resolvedModel: ResolvedModel;
   /** Live tool execution records — merged into entries at step finish. */
   protected readonly recorder: ToolCallRecorder;
   /** Turn id of the most recent run — used to stamp late error entries. */
@@ -67,7 +67,7 @@ export class ControllerAgentBase extends BaseAgent {
   constructor(
     ctx: SystemContext,
     state: ControllerAgentState,
-    provider: ProviderConfig,
+    model: ResolvedModel,
     tools: ToolSet,
     skills: import('@/services/skills/registry').SkillRegistry,
     recorder: ToolCallRecorder = new ToolCallRecorder(),
@@ -79,10 +79,10 @@ export class ControllerAgentBase extends BaseAgent {
      */
     controllerRules?: string,
   ) {
-    super(provider);
+    super(model);
     this.ctx = ctx;
     this.state = state;
-    this.provider = provider;
+    this.resolvedModel = model;
     this.recorder = recorder;
     this.tools = recordToolCalls(tools, recorder);
     this.logger = ctx.logger;
@@ -96,7 +96,8 @@ export class ControllerAgentBase extends BaseAgent {
     this.contextManager = new ContextManager(
       state,
       buildControllerSystemPrompt(this.ctx, skills, { rules: controllerRules }),
-      provider.contextWindowTokens,
+      // Undefined stays undefined — ContextManager owns the 256k default.
+      model.contextWindowTokens,
     );
     this.setHooks({
       beforeLLM: ({ messageCount, messages }) => {
@@ -105,13 +106,8 @@ export class ControllerAgentBase extends BaseAgent {
         // Default payload is metadata only (model / message count / token
         // estimate); WAYANG_LOG_PROMPTS=1 adds the full sanitized messages.
         if (!debugLoggingEnabled(this.logger)) return;
-        // #88 step2: replace with resolveModelRef
-        const modelName = this.provider.modelName;
-        if (!modelName) {
-          throw new ConfigError('provider modelName is required');
-        }
         this.logger.debug(
-          buildLlmCallStartPayload(messages, messageCount, modelName),
+          buildLlmCallStartPayload(messages, messageCount, this.resolvedModel.modelName),
           'LLM call start',
         );
       },
@@ -269,10 +265,10 @@ export class ControllerAgentBase extends BaseAgent {
           }
           throw lastError;
         },
-        { model: this.provider.modelName },
+        { model: this.resolvedModel.modelName },
       );
       this.logger.info(
-        { model: this.provider.modelName, summarizedEntries: entryCount },
+        { model: this.resolvedModel.modelName, summarizedEntries: entryCount },
         'Compaction done',
       );
     } catch (err) {

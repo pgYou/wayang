@@ -10,7 +10,8 @@ import { applyTurnEnvelope, type TurnEnvelope } from './utils/entry-envelope';
 import { ToolCallRecorder } from './utils/tool-call-recorder';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { ProviderConfig, TaskDetail, WayangConfig } from '@/types/index';
+import type { TaskDetail, WayangConfig } from '@/types/index';
+import type { ResolvedModel } from '@/services/config/model-resolution';
 import type { ConversationEntry, ConversationIndex, TurnView } from '@/types/conversation';
 import { EEntryType, ESystemSubtype } from '@/types/index';
 import type { StateEvent } from '@/infra/state/base-state';
@@ -35,13 +36,13 @@ export class ControllerAgent extends ControllerTurnRun implements Subscribable {
    */
   static create(opts: {
     ctx: SystemContext;
-    provider: ProviderConfig;
+    model: ResolvedModel;
     config: WayangConfig;
     engine: TaskExecuteEngine;
     signalQueue: SignalQueue;
     skills: import('@/services/skills/registry').SkillRegistry;
   }): ControllerAgent {
-    const { ctx, provider, engine, signalQueue, skills } = opts;
+    const { ctx, model, engine, signalQueue, skills } = opts;
     const state = new ControllerAgentState(ctx);
     // Recorder gets the logger so attachTask misses (no live tool-call
     // record) surface as debug logs instead of silent no-ops.
@@ -141,7 +142,7 @@ export class ControllerAgent extends ControllerTurnRun implements Subscribable {
       generalWorkspaceDir,
     });
 
-    return new ControllerAgent(ctx, state, provider, tools, skills, recorder, controllerRules);
+    return new ControllerAgent(ctx, state, model, tools, skills, recorder, controllerRules);
   }
 
   /** Initialize session metadata. Called by Supervisor at start. */

@@ -99,8 +99,8 @@ export class ControllerTurnRun extends ControllerAgentBase {
         const entry = buildAssistantEntry(event, this.ctx.sessionId, streamingUuid, {
           startedAt: meta?.startedAt,
           firstTokenAt: meta?.firstTokenAt,
-          temperature: this.provider.temperature,
-          maxOutputTokens: this.provider.maxOutputTokens,
+          temperature: this.resolvedModel.temperature,
+          maxOutputTokens: this.resolvedModel.maxOutputTokens,
           recordedToolCalls: (toolCallId) => this.recorder.lookup(toolCallId),
         });
         applyTurnEnvelope(entry, turnEnv);

@@ -215,8 +215,8 @@ export interface AssistantEntry extends ConversationEntryEnvelope {
   stepIndex?: number;
   /**
    * Model that produced this step. provider/model are best effort from the
-   * SDK event; temperature/maxOutputTokens are backfilled from ProviderConfig
-   * (the values the run was configured with), never fabricated.
+   * SDK event; temperature/maxOutputTokens are backfilled from the resolved
+   * model (the values the run was configured with), never fabricated.
    */
   model?: {
     provider?: string;

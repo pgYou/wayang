@@ -6,7 +6,7 @@ import type { ControllerSignal } from '@/types/index';
 import { SkillRegistry } from '@/services/skills/registry';
 import { ToolCallRecorder } from '../utils/tool-call-recorder';
 import { ConversationIndexBuilder } from '@/services/conversation/conversation-index';
-import { mockProvider, createMockCtx, createMockLogger } from '@/__tests__/helpers';
+import { mockModel, createMockCtx, createMockLogger } from '@/__tests__/helpers';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -66,7 +66,7 @@ describe('ControllerAgent', () => {
     agent = new ControllerAgent(
       createMockCtx(),
       state as ControllerAgentState,
-      mockProvider,
+      mockModel,
       {}, // tools
       skills,
     );
@@ -328,7 +328,7 @@ describe('ControllerAgent', () => {
       const localAgent = new ControllerAgent(
         createMockCtx({ workspaceDir: wsDir, sessionDir: sessDir }),
         localState as ControllerAgentState,
-        mockProvider,
+        mockModel,
         {},
         skills,
       );
@@ -510,7 +510,7 @@ describe('ControllerAgent', () => {
     expect(prompt).toContain('Task t-1-abcd added');
   });
 
-  it('should stamp compactMeta.model from the current provider config', async () => {
+  it('should stamp compactMeta.model from the resolved model', async () => {
     for (let i = 0; i < 4; i++) {
       state.append('conversation', {
         type: 'user',
@@ -529,15 +529,15 @@ describe('ControllerAgent', () => {
       .map((call: any[]) => call[1])
       .find((e: any) => e?.type === 'system' && e?.subtype === 'compact');
     expect(marker).toBeDefined();
-    expect(marker.compactMeta.model).toBe(mockProvider.modelName);
+    expect(marker.compactMeta.model).toBe(mockModel.modelName);
   });
 
-  it('should omit compactMeta.model when the provider config carries no model name', async () => {
-    const noModelProvider = { ...mockProvider, modelName: undefined } as any;
+  it('should omit compactMeta.model when the resolved model carries no model name', async () => {
+    const noNameModel = { ...mockModel, modelName: undefined } as any;
     const agentNoModel = new ControllerAgent(
       createMockCtx(),
       state as ControllerAgentState,
-      noModelProvider,
+      noNameModel,
       {},
       skills,
     );
@@ -845,7 +845,7 @@ describe('ControllerAgent: user abort (ESC)', () => {
     agent = new ControllerAgent(
       createMockCtx(),
       state as ControllerAgentState,
-      mockProvider,
+      mockModel,
       {}, // tools
       skills,
     );
@@ -1017,7 +1017,7 @@ describe('ControllerAgent: user abort (ESC)', () => {
     const taskAgent = new ControllerAgent(
       createMockCtx(),
       state as ControllerAgentState,
-      mockProvider,
+      mockModel,
       {}, // tools
       skills,
       recorder,
@@ -1073,7 +1073,7 @@ describe('ControllerAgent: user abort (ESC)', () => {
     const logAgent = new ControllerAgent(
       createMockCtx({ logger }),
       state as ControllerAgentState,
-      mockProvider,
+      mockModel,
       {}, // tools
       skills,
     );

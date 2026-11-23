@@ -9,7 +9,8 @@ import {
   type PrepareStepFunction,
 } from 'ai';
 import { createModel } from './model-factory';
-import type { ProviderConfig, ToolChoice } from '@/types/index';
+import type { ResolvedModel } from '@/services/config/model-resolution';
+import type { ToolChoice } from '@/types/index';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
 
@@ -98,13 +99,16 @@ export abstract class BaseAgent {
    */
   abortController: AbortController;
   protected readonly model: ReturnType<typeof createModel>;
+  /** The resolved model config behind `model` — per-model request settings live here (issue #88). */
+  protected readonly resolvedModel: ResolvedModel;
 
   protected hooks: AgentHooks = {};
 
-  constructor(provider: ProviderConfig) {
+  constructor(model: ResolvedModel) {
     this.id = generateId('agent');
     this.abortController = new AbortController();
-    this.model = createModel(provider);
+    this.resolvedModel = model;
+    this.model = createModel(model);
   }
 
   /**
@@ -225,6 +229,11 @@ export abstract class BaseAgent {
         stopWhen: stopConditions.length > 0 ? stopConditions : undefined,
         abortSignal: callAbort.signal,
         ...(opts.prepareStep && { prepareStep: opts.prepareStep }),
+        // issue #88: per-model request settings. Only an explicitly configured
+        // value is sent — omitted keys keep the provider/SDK default, so
+        // pre-#88 configs behave exactly as before.
+        ...(this.resolvedModel.temperature !== undefined && { temperature: this.resolvedModel.temperature }),
+        ...(this.resolvedModel.maxOutputTokens !== undefined && { maxOutputTokens: this.resolvedModel.maxOutputTokens }),
         onStepFinish: onStep,
         onError: ({ error }) => {
           lastStreamError = error;

@@ -11,6 +11,7 @@ import { GenericAcpWorker } from '@/services/agents/acp/generic-acp-worker';
 import { getWorkerMeta } from '@/services/agents/worker-defaults';
 import { formatLlmError } from '@/utils/llm-error';
 import { generateId } from '@/utils/id';
+import { resolveModelRef, type ResolvedModel } from '@/services/config/model-resolution';
 import { WorkerWiringEngine } from './worker-wiring';
 import { PUPPET_WORKER_TYPE } from './engine-base';
 
@@ -127,7 +128,7 @@ export class WorkerDispatchEngine extends WorkerWiringEngine {
     const workspaceDir = this.taskWorkspaceDir(task);
 
     if (type === PUPPET_WORKER_TYPE) {
-      return new WorkerAgent(this.workerProvider, this.ctx, this.skills, this.ctx.config.worker.toolChoice, workspaceDir);
+      return new WorkerAgent(this.workerModel, this.ctx, this.skills, this.ctx.config.worker.toolChoice, workspaceDir);
     }
 
     const config = this.workerConfigs?.[type];
@@ -138,17 +139,25 @@ export class WorkerDispatchEngine extends WorkerWiringEngine {
       throw new Error(`Worker type "${type}" is disabled`);
     }
 
+    // issue #88: `workers.<id>.model` is resolved once here, at dispatch. The
+    // claude-code SDK consumes it through its `model` option; the ACP protocol
+    // has no model field, so its rows only record that the value is unused.
+    const model = config.model !== undefined ? resolveModelRef(this.ctx.config, config.model) : undefined;
+
     switch (config.type) {
       case 'claude-code':
-        return new ClaudeCodeWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
+        return new ClaudeCodeWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills, model);
       // ACP workers: same constructor shape as ClaudeCodeWorker (freeze §7 ①).
       // Construction never spawns — a missing CLI fails fast in run() (C1
       // preflight), so the createWorker stage cannot crash on it.
       case 'acp':
+        this.noteUnconsumedWorkerModel(type, model);
         return new GenericAcpWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
       case 'codebuddy':
+        this.noteUnconsumedWorkerModel(type, model);
         return new CodebuddyAcpWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
       case 'opencode':
+        this.noteUnconsumedWorkerModel(type, model);
         return new OpenCodeAcpWorker(config, this.ctx.sessionDir, workspaceDir, this.ctx, this.skills);
       default: {
         // Exhaustiveness: a new WORKER_TYPES entry without a case above fails
@@ -158,6 +167,19 @@ export class WorkerDispatchEngine extends WorkerWiringEngine {
         throw new Error(`Unsupported worker type: "${_exhaustive}"`);
       }
     }
+  }
+
+  /**
+   * ACP has no protocol-level model field (session/new carries only cwd +
+   * mcpServers), so a configured `workers.<id>.model` cannot reach the agent.
+   * Say so once at worker start instead of pretending it was consumed.
+   */
+  private noteUnconsumedWorkerModel(workerType: string, model: ResolvedModel | undefined): void {
+    if (!model) return;
+    this.logger.warn(
+      { workerType, model: model.modelName, provider: model.providerKey },
+      `配置的模型 ${model.modelName} 未被该 provider 消费（ACP 协议无模型字段）`,
+    );
   }
 
   protected async spawnWorker(task: TaskDetail, workerId: string): Promise<WorkerResult> {

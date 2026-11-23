@@ -160,9 +160,10 @@ export interface WorkerConfig {
    */
   type: WorkerType;
   /**
-   * Model reference for LLM-backed workers (issue #88): a `models` key, a
-   * `"provider/name"` composite, or an inline model object. Optional —
-   * third-party workers ignore it.
+   * Model reference for the worker (issue #88): a `models` key, a
+   * `"provider/name"` composite, or an inline model object. Optional.
+   * `claude-code` passes it to the SDK's `model` option; ACP rows have no
+   * protocol model field, so the value is only reported as unused at start.
    */
   model?: ModelRef;
   /** Whether this worker is enabled. Defaults to true. */

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { WorkerAgent } from '@/services/agents/worker-agent';
 import { SkillRegistry } from '@/services/skills/registry';
-import { mockProvider, createMockCtx } from '@/__tests__/helpers';
+import { mockModel, createMockCtx } from '@/__tests__/helpers';
 import { EEntryType } from '@/types/index';
 import type { ModelMessage } from 'ai';
 
@@ -52,7 +52,7 @@ describe('WorkerAgent', () => {
       // (provider, ctx, skills, toolChoice, workspaceDir) — the engine passes
       // the task's workspace here.
       const worker = new WorkerAgent(
-        mockProvider,
+        mockModel,
         createMockCtx({ workspaceDir: procDir, sessionDir }),
         skills,
         undefined,
@@ -73,19 +73,19 @@ describe('WorkerAgent', () => {
   });
 
   it('should create worker with unique id', () => {
-    const w1 = new WorkerAgent(mockProvider, createMockCtx(), skills);
-    const w2 = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const w1 = new WorkerAgent(mockModel, createMockCtx(), skills);
+    const w2 = new WorkerAgent(mockModel, createMockCtx(), skills);
     expect(w1.id).not.toBe(w2.id);
   });
 
   it('should return completed result via complete() callback', () => {
-    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const worker = new WorkerAgent(mockModel, createMockCtx(), skills);
     worker.complete('All done successfully');
     expect(worker['_terminalResult']).toEqual({ status: 'completed', summary: 'All done successfully' });
   });
 
   it('should return failed result via fail() callback', () => {
-    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const worker = new WorkerAgent(mockModel, createMockCtx(), skills);
     worker.fail('Something went wrong');
     expect(worker['_terminalResult']).toEqual({ status: 'failed', error: 'Something went wrong' });
   });
@@ -93,7 +93,7 @@ describe('WorkerAgent', () => {
   it('fails (never completed) when the loop ends without done/fail', async () => {
     mockStreamResponse('some text without calling done');
 
-    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const worker = new WorkerAgent(mockModel, createMockCtx(), skills);
     const result = await worker.run(
       { id: 't-5', title: 'test', description: 'test', workerId: 'w-5', priority: 'normal', status: 'running', createdAt: Date.now() },
       {},
@@ -109,7 +109,7 @@ describe('WorkerAgent', () => {
     // Unset → unlimited → collectLoop receives maxSteps: undefined (no
     // stepCountIs condition is armed at all — resolveMaxTurns folded
     // Infinity away before it could reach the SDK).
-    const uncapped = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const uncapped = new WorkerAgent(mockModel, createMockCtx(), skills);
     const uncappedSpy = vi
       .spyOn(uncapped as any, 'collectLoop')
       .mockResolvedValue({ text: 'x', steps: 1 } as any);
@@ -121,7 +121,7 @@ describe('WorkerAgent', () => {
 
     // A valid positive integer reaches the loop as-is.
     const capped = new WorkerAgent(
-      mockProvider,
+      mockModel,
       createMockCtx({ config: { providers: {}, controller: {}, worker: { maxTurns: 4 } } as any }),
       skills,
     );
@@ -139,7 +139,7 @@ describe('WorkerAgent', () => {
     mockStreamResponse('ran out of budget', [], 2);
 
     const worker = new WorkerAgent(
-      mockProvider,
+      mockModel,
       createMockCtx({ config: { providers: {}, controller: {}, worker: { maxTurns: 2 } } as any }),
       skills,
     );
@@ -156,7 +156,7 @@ describe('WorkerAgent', () => {
   it('should default toolChoice to auto when not configured', async () => {
     mockStreamResponse('some text');
 
-    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const worker = new WorkerAgent(mockModel, createMockCtx(), skills);
     await worker.run(
       { id: 't-tc1', title: 'test', description: 'test', workerId: 'w-tc1', priority: 'normal', status: 'running', createdAt: Date.now() },
       {},
@@ -170,7 +170,7 @@ describe('WorkerAgent', () => {
   it('should pass configured toolChoice through to the LLM call', async () => {
     mockStreamResponse('some text');
 
-    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills, 'auto');
+    const worker = new WorkerAgent(mockModel, createMockCtx(), skills, 'auto');
     await worker.run(
       { id: 't-tc2', title: 'test', description: 'test', workerId: 'w-tc2', priority: 'normal', status: 'running', createdAt: Date.now() },
       {},
@@ -182,7 +182,7 @@ describe('WorkerAgent', () => {
   it('should return failed when abort signal is already set before run', async () => {
     mockStreamResponse('');
 
-    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const worker = new WorkerAgent(mockModel, createMockCtx(), skills);
     worker.abort();
 
     const result = await worker.run(
@@ -195,7 +195,7 @@ describe('WorkerAgent', () => {
   });
 
   it('should return terminal result when complete() called via done tool', async () => {
-    const worker = new WorkerAgent(mockProvider, createMockCtx(), skills);
+    const worker = new WorkerAgent(mockModel, createMockCtx(), skills);
 
     // Simulate: LLM calls done tool → complete() is invoked during stream
     vi.mocked(streamText).mockImplementation(((_opts: any) => {
@@ -239,7 +239,7 @@ describe('WorkerAgent', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'wayang-wa-ws-'));
     try {
       const ctx = createMockCtx({ sessionDir: tempDir });
-      const worker = new WorkerAgent(mockProvider, ctx, skills, undefined, tempDir);
+      const worker = new WorkerAgent(mockModel, ctx, skills, undefined, tempDir);
       await worker.run(
         {
           id: 't-ws', title: 'test', description: 'workspace stamp',
@@ -280,7 +280,7 @@ describe('WorkerAgent', () => {
     try {
       // Mock ctx sessionId is 'test-session' — every entry must carry it
       const ctx = createMockCtx({ sessionDir: tempDir });
-      const worker = new WorkerAgent(mockProvider, ctx, skills);
+      const worker = new WorkerAgent(mockModel, ctx, skills);
       await worker.run(
         { id: 't-sid', title: 'test', description: 'test session id', workerId: 'w-sid', priority: 'normal', status: 'running', createdAt: Date.now() },
         {},
@@ -397,7 +397,7 @@ describe('WorkerAgent controller-message injection', () => {
         },
       });
 
-      w.current = new WorkerAgent(mockProvider, ctx, skills);
+      w.current = new WorkerAgent(mockModel, ctx, skills);
       await w.current.run(task('inj-1', 'do the thing'), {});
       const worker = w.current;
 
@@ -437,7 +437,7 @@ describe('WorkerAgent controller-message injection', () => {
         },
       });
 
-      w.current = new WorkerAgent(mockProvider, ctx, skills);
+      w.current = new WorkerAgent(mockModel, ctx, skills);
       await w.current.run(task('inj-2a', 'first stage'), {});
       // Second stage on the same worker (assignToExistingWorker path): the
       // conversation carries forward, the inbox is empty.
@@ -480,7 +480,7 @@ describe('WorkerAgent controller-message injection', () => {
       const ctx = createMockCtx({ sessionDir: tempDir });
       const captured = mockStepLoop({ replies: ['r0', 'r1', 'r2'] });
 
-      const worker = new WorkerAgent(mockProvider, ctx, skills);
+      const worker = new WorkerAgent(mockModel, ctx, skills);
       await worker.run(task('inj-3', 'quiet task'), {});
 
       expect(captured.requests).toEqual([

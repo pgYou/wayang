@@ -18,12 +18,12 @@ export interface BuildAssistantEntryExtras {
   /** End of this step, used when the caller knows it better than build time. */
   endedAt?: string;
   /**
-   * Sampling temperature from ProviderConfig — recorded on AssistantEntry.model
-   * when configured. Metadata-only: not fabricated when absent.
+   * Sampling temperature from the resolved model — recorded on
+   * AssistantEntry.model when configured. Metadata-only: not fabricated when absent.
    */
   temperature?: number;
   /**
-   * Max output tokens from ProviderConfig — recorded on AssistantEntry.model
+   * Max output tokens from the resolved model — recorded on AssistantEntry.model
    * when configured. Metadata-only: not fabricated when absent.
    */
   maxOutputTokens?: number;
@@ -166,7 +166,7 @@ export function buildAssistantEntry(
 
   // --- Model metadata (best effort) ---
   // provider/model come from the SDK event; temperature/maxOutputTokens are
-  // backfilled from ProviderConfig via extras. Any source missing → omitted.
+  // backfilled from the resolved model via extras. Any source missing → omitted.
   const modelInfo = (event as { model?: { provider?: string; modelId?: string } }).model;
   const model =
     (modelInfo && (modelInfo.provider !== undefined || modelInfo.modelId !== undefined))

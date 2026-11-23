@@ -7,7 +7,8 @@ import { ToolCallRecorder, recordToolCalls } from '@/services/agents/utils/tool-
 import { controllerMessageContent, createInboxInjection } from '@/services/agents/utils/inbox-injection';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { WorkerResult, TaskDetail, ProviderConfig, ToolChoice, IWorkerInstance, WorkerLiveStatus } from '@/types/index';
+import type { WorkerResult, TaskDetail, ToolChoice, IWorkerInstance, WorkerLiveStatus } from '@/types/index';
+import type { ResolvedModel } from '@/services/config/model-resolution';
 import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType } from '@/types/index';
 import type { Logger } from '@/infra/logger';
@@ -29,7 +30,6 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   /** Workspace this worker executes in — fixed at construction (IWorkerInstance). */
   readonly workspaceDir: string;
   private readonly toolChoice: ToolChoice | undefined;
-  private readonly provider: ProviderConfig;
   private contextManager: ContextManager;
   private readonly ctx: SystemContext;
   /** Live tool execution records — merged into entries at step finish. */
@@ -43,7 +43,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly workspaceRef?: WorkspaceRef;
 
   constructor(
-    provider: ProviderConfig,
+    model: ResolvedModel,
     ctx: SystemContext,
     skills: SkillRegistry,
     /** Tool-choice mode (worker.toolChoice in config). Falls back to 'auto' —
@@ -56,8 +56,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
      *  for callers without a task context (legacy tasks, direct construction). */
     workspaceDir?: string,
   ) {
-    super(provider);
-    this.provider = provider;
+    super(model);
     this.ctx = ctx;
     this.logger = ctx.logger;
     this.workspaceDir = workspaceDir ?? ctx.workspaceDir;
@@ -72,14 +71,16 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       ctx.logger,
       this.workspaceRef,
     );
-    // No context window budget: workers never call isFull()/compact today,
-    // so passing provider.contextWindowTokens would be a dead setting.
+    // The model's context window is passed through for #90 (worker-side
+    // compaction). Workers still never call isFull()/compact, so the value is
+    // inert until that lands — no compaction is implemented here.
     // The prompt is built for THIS worker's workspace, not the process
     // workspace: project rules (AGENTS.md) and the Environment section must
     // describe the directory the worker's tools actually run in.
     this.contextManager = new ContextManager(
       this.state,
       buildWorkerSystemPrompt(this.ctx, skills, this.workspaceDir),
+      model.contextWindowTokens,
     );
   }
 
@@ -198,8 +199,8 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
         const entry = buildAssistantEntry(event, this.ctx.sessionId, undefined, {
           startedAt: meta?.startedAt,
           firstTokenAt: meta?.firstTokenAt,
-          temperature: this.provider.temperature,
-          maxOutputTokens: this.provider.maxOutputTokens,
+          temperature: this.resolvedModel.temperature,
+          maxOutputTokens: this.resolvedModel.maxOutputTokens,
           recordedToolCalls: (toolCallId) => this.recorder.lookup(toolCallId),
         });
         applyTurnEnvelope(entry, turnEnv);

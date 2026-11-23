@@ -4,7 +4,8 @@
 import type { SystemContext } from '@/infra/system-context';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import type { Logger } from '@/infra/logger';
-import type { ActiveWorkerInfo, IWorkerInstance, ProviderConfig, WorkerConfig } from '@/types/index';
+import type { ActiveWorkerInfo, IWorkerInstance, WorkerConfig } from '@/types/index';
+import type { ResolvedModel } from '@/services/config/model-resolution';
 import { TaskPoolState } from '@/services/task/task-pool-state';
 import { BaseWayangState } from '@/infra/state/base-state';
 import type { Subscribable } from '@/infra/state/subscribable';
@@ -37,7 +38,7 @@ export class TaskEngineBase implements Subscribable {
 
   protected readonly logger: Logger;
   protected readonly maxConcurrency: number;
-  protected readonly workerProvider: ProviderConfig;
+  protected readonly workerModel: ResolvedModel;
   protected readonly workerConfigs?: Record<string, WorkerConfig>;
   protected readonly skills: SkillRegistry;
 
@@ -97,7 +98,7 @@ export class TaskEngineBase implements Subscribable {
     this.permission = options.permission ?? ctx.config.permission;
     this.onTaskWorkspace = options.onTaskWorkspace;
     this.maxConcurrency = ctx.maxConcurrency;
-    this.workerProvider = ctx.workerProvider;
+    this.workerModel = ctx.workerModel;
     this.workerConfigs = ctx.config.workers;
     this.skills = skills;
     this.idleTimeoutMs = ctx.config.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;

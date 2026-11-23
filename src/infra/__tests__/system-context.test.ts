@@ -42,8 +42,8 @@ describe('SystemContext', () => {
     expect(ctx.sessionId).toBe('test-session');
     expect(ctx.sessionDir).toBe('/tmp/wayang-test');
     expect(ctx.workspaceDir).toBe('/tmp/workspace');
-    expect(ctx.controllerProvider.modelName).toBe('claude-sonnet-4-20250514');
-    expect(ctx.workerProvider.modelName).toBe('claude-sonnet-4-20250514');
+    expect(ctx.controllerModel.modelName).toBe('claude-sonnet-4-20250514');
+    expect(ctx.workerModel.modelName).toBe('claude-sonnet-4-20250514');
     expect(ctx.maxConcurrency).toBe(3);
   });
 

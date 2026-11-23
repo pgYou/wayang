@@ -97,6 +97,12 @@ export class ClaudeWorkerRun extends ClaudeWorkerStream {
       if (this.config.cliPath) {
         options.pathToClaudeCodeExecutable = this.config.cliPath;
       }
+      // issue #88: `workers.<id>.model`, resolved by the engine. The SDK's
+      // option is literally `model` (see @anthropic-ai/claude-agent-sdk
+      // Options.model); undefined keeps the CLI's default model.
+      if (this.resolvedModel) {
+        options.model = this.resolvedModel.modelName;
+      }
       if (this._askController) {
         options.mcpServers = {
           wayang: createSdkMcpServer({
