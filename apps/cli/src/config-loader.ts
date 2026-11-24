@@ -1,8 +1,14 @@
 /**
- * Wayang — interactive onboard flow
+ * Wayang CLI — config loading + interactive onboard flow.
  *
- * Runs before Ink render when no config file exists.
- * Uses prompts library for terminal interaction.
+ * Moved from `packages/core/src/onboard.ts` (monorepo-design 4.1 改造一):
+ * file reading, env-var fallback and terminal prompts are host concerns —
+ * the CLI owns locating the config file, reading/writing the JSON and
+ * merging environment variables, and produces a validated `WayangConfig`
+ * object. core receives the object and never senses where it came from.
+ *
+ * Runs before Ink render when no config file exists. Uses the prompts
+ * library for terminal interaction.
  */
 
 import * as fs from 'node:fs';
@@ -11,7 +17,7 @@ import * as childProcess from 'node:child_process';
 import prompts from 'prompts';
 import type { WayangConfig, WorkerConfig } from '@wayang-ai/protocol';
 import { validateConfig, collectWorkerWarnings, collectProviderWarnings, normalizeWorkerTypes } from '@wayang-ai/protocol';
-import { warnDeprecatedPermissionKeys } from './infra/permission/permission-config';
+import { warnDeprecatedPermissionKeys } from '@wayang-ai/core/infra/permission/permission-config';
 
 /** Fill missing apiKeys from environment variables. */
 function fillApiKeys(config: WayangConfig): void {
@@ -107,7 +113,7 @@ async function promptClaudeCodeWorker(claudeDetected: boolean): Promise<WorkerCo
       message: 'Max turns per task',
       initial: 1000,
       min: 1,
-      max: 10000,
+      max: 10_000,
     },
   ]);
 

@@ -18,6 +18,16 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 import { spawn } from 'node:child_process';
 import { connectRemoteServer } from '@/client/connect';
 import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
+import { CONFIG_OBJECT_ENV } from '@/config-env';
+import type { WayangConfig } from '@wayang-ai/protocol';
+
+/** The config object bootstrap resolved once and hands to the server child. */
+const fixtureConfig: WayangConfig = {
+  providers: { fake: { type: 'openai-compatible', baseURL: 'http://fake', apiKey: 'k' } },
+  models: { default: { provider: 'fake', name: 'fake-model' } },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 1 },
+};
 
 // --- Fake child process ---
 
@@ -76,6 +86,7 @@ afterEach(() => {
 function connect(options: Partial<Parameters<typeof connectRemoteServer>[0]> = {}) {
   return connectRemoteServer({
     configPath: '/fake/config.json',
+    config: fixtureConfig,
     wayangRootDir: '/fake/root',
     workspaceDir: '/fake/workspace',
     session: 'new',
@@ -96,8 +107,14 @@ describe('connectRemoteServer — spawn contract', () => {
     const connection = await pending;
 
     expect(spawn).toHaveBeenCalledOnce();
-    const [execPath, args] = vi.mocked(spawn).mock.calls[0];
+    const [execPath, args, spawnOptions] = vi.mocked(spawn).mock.calls[0];
     expect(execPath).toBe(process.execPath);
+    // Config handoff (design 4.1): the resolved object travels in the child
+    // env — not argv, which `ps` would expose — so the server boots from the
+    // object without a second parse.
+    expect((spawnOptions?.env as Record<string, string | undefined>)[CONFIG_OBJECT_ENV]).toBe(
+      JSON.stringify(fixtureConfig),
+    );
     expect(args).toEqual([
       EXPECTED_ENTRY,
       'server',

@@ -11,9 +11,17 @@ import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client'
 import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
 import { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
 import type { WorkspaceRef } from '@wayang-ai/core/infra/workspace-registry';
+import type { WayangConfig } from '@wayang-ai/protocol';
+import { CONFIG_OBJECT_ENV } from '../config-env';
 
 export interface ConnectOptions {
   configPath: string;
+  /**
+   * The config object bootstrap resolved ONCE (design 4.1 改造一). It is
+   * handed to the server child through the environment, so the server boots
+   * from the object and never re-reads or re-validates the config file.
+   */
+  config: WayangConfig;
   /** Root dir for the `--wayang-root` flag (the server joins `.wayang` itself). */
   wayangRootDir: string;
   workspaceDir: string;
@@ -55,7 +63,16 @@ export async function connectRemoteServer(options: ConnectOptions): Promise<Remo
   if (options.injectPreviousTasks) args.push('--inject-previous-tasks');
   if (options.logLevel) args.push('--log-level', options.logLevel);
 
-  const child = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  // Config handoff (design 4.1): the object bootstrap resolved travels in the
+  // child env (not argv — `ps` would expose the API keys). server-entry
+  // deserializes it; the server then runs on the object with zero re-parse.
+  const child = spawn(process.execPath, args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      [CONFIG_OBJECT_ENV]: JSON.stringify(options.config),
+    },
+  });
 
   let stderrTail = '';
   child.stderr?.setEncoding('utf-8');

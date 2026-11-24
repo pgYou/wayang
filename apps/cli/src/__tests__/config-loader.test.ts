@@ -2,12 +2,16 @@
 // `models.default` entry and `controller.model` / `worker.model` references.
 // A new user must not start with the legacy provider fields' deprecation
 // warnings (the review measured four on every startup).
+//
+// Migrated from packages/core/src/__tests__/onboard.test.ts together with the
+// loader itself (monorepo-design 4.1 改造一): config loading is a host (cli)
+// concern now.
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildOnboardConfig, loadConfig } from '@/onboard';
+import { buildOnboardConfig, loadConfig } from '@/config-loader';
 import { validateConfig, collectProviderWarnings } from '@wayang-ai/protocol';
 
 describe('onboard config generation (issue #88)', () => {

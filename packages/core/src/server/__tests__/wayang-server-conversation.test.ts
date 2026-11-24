@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import type { WayangConfig } from '@wayang-ai/protocol';
 
 /**
  * Handler-layer tests for the read-only conversation RPCs
@@ -115,18 +116,17 @@ function fixtureIndex() {
 
 // --- Boot ---
 
-let configPath: string;
 let tempRoot: string;
 let exitSpy: ReturnType<typeof vi.spyOn>;
+/** Injected config object (design 4.1) — the server runs on the object, no file. */
+const config: WayangConfig = {
+  providers: { fake: { endpoint: 'http://localhost:9/v1', apiKey: 'test-key', modelName: 'fake-model' } },
+  controller: { provider: 'fake' },
+  worker: { provider: 'fake', maxConcurrency: 1 },
+};
 
 beforeAll(() => {
   tempRoot = mkdtempSync(join(tmpdir(), 'wayang-rpc-test-'));
-  configPath = join(tempRoot, 'config.json');
-  writeFileSync(configPath, JSON.stringify({
-    providers: { fake: { endpoint: 'http://localhost:9/v1', apiKey: 'test-key', modelName: 'fake-model' } },
-    controller: { provider: 'fake' },
-    worker: { provider: 'fake', maxConcurrency: 1 },
-  }));
   exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 });
 
@@ -153,7 +153,7 @@ async function bootServer(): Promise<Booted> {
 
   void runWayangServer(
     {
-      configPath,
+      config,
       dataDir: join(tempRoot, 'home'),
       workspaceDir: join(tempRoot, 'workspace'),
       session: { mode: 'new' },

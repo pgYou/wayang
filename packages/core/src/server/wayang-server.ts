@@ -6,7 +6,6 @@
  * client; the server receives decisions as options.
  */
 
-import { loadConfig } from '../onboard';
 import { Supervisor } from '../services/supervisor';
 import { getSession } from '../infra/session-helpers';
 import { RpcServer } from '@wayang-ai/protocol/rpc/rpc-server';
@@ -14,10 +13,16 @@ import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
 import { METHOD, NOTIFY, RpcError, RPC_ERROR, type RpcTarget } from '@wayang-ai/protocol/rpc/protocol';
 import { serializeTurnView, summarizeTurn, DEFAULT_TURN_TEXT_LIMIT } from '../services/conversation/turn-serialize';
 import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
-import type { TaskDetail } from '@wayang-ai/protocol';
+import type { TaskDetail, WayangConfig } from '@wayang-ai/protocol';
 
 export interface WayangServerOptions {
-  configPath: string;
+  /**
+   * Fully resolved config object injected by the host (design 4.1 改造一).
+   * The server never reads a config file, never consults env vars for its
+   * config and never prompts — it consumes the declared configuration as
+   * given.
+   */
+  config: WayangConfig;
   /** Wayang home dir (the `~/.wayang` equivalent, parent of `sessions/`). */
   dataDir: string;
   workspaceDir: string;
@@ -32,7 +37,7 @@ export async function runWayangServer(
   options: WayangServerOptions,
   io: { stdin: import('node:stream').Readable; stdout: import('node:stream').Writable } = process,
 ): Promise<void> {
-  const config = await loadConfig(options.configPath, { nonInteractive: true });
+  const config = options.config;
 
   let resume: { sessionId: string; sessionDir: string } | undefined;
   if (options.session.mode === 'resume') {

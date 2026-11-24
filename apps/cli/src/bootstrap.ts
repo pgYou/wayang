@@ -16,7 +16,7 @@ import type { WorkspaceRef } from '@wayang-ai/core/infra/workspace-registry';
 import { SESSION_LOCKED_MARKER } from '@wayang-ai/core/infra/session-lock';
 import { SessionManager } from '@wayang-ai/core/services/session/session-manager';
 import { renderInkUI } from './tui/render';
-import { loadConfig } from '@wayang-ai/core/onboard';
+import { loadConfig } from './config-loader';
 import { selectSessionInteractive } from './session-select';
 
 // --- Types ---
@@ -151,9 +151,11 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
   // the server's `--wayang-root` (root semantics) does not double-join `.wayang`.
   const wayangHome = path.join(options.wayangRootDir, '.wayang');
 
-  // Client-side load keeps interactive onboarding in the terminal; the
-  // server reloads the (now persisted) config non-interactively.
-  await loadConfig(options.configPath);
+  // Single config-resolution point of the TUI path (design 4.1 改造一): the
+  // client-side load keeps interactive onboarding in the terminal AND its
+  // result — the object — is what the server child runs on (handed over via
+  // the spawn env). No second parse anywhere downstream.
+  const config = await loadConfig(options.configPath);
 
   let session: 'new' | { resume: string } = 'new';
   let injectPreviousTasks = false;
@@ -227,6 +229,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<void> {
 
   const { remote, stop } = await connectToServer({
     configPath: options.configPath,
+    config,
     // Pass the ROOT dir: the server's `--wayang-root` flag expects it and joins
     // `.wayang` itself. Passing the pre-joined dir caused a double join.
     wayangRootDir: options.wayangRootDir,

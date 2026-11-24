@@ -5,12 +5,22 @@
  * dedicated slim bundle: the TUI client spawns this file instead of re-using
  * the full cli.js, so the server process never carries ink/react. Argument
  * parsing is shared with cli.ts via parseCliArgs — no drift by construction.
+ *
+ * Config handoff (design 4.1 改造一): the spawning client already resolved
+ * and validated the config once and passes the object through the child
+ * environment (`WAYANG_CONFIG_OBJECT`, a JSON serialization). This entry
+ * deserializes it and hands the OBJECT to `serverMain` — no second parse.
+ * Standalone invocations (no env object) fall back to reading `--config`
+ * non-interactively, so the argv surface keeps working when run by hand.
  */
 
 import * as path from 'node:path';
 import { parseCliArgs, resolveWayangRoot } from './cli-args';
 import { normalizeWorkspacePath } from '@wayang-ai/core/infra/workspace-registry';
 import { serverMain } from '@wayang-ai/core/server/main';
+import { loadConfig } from './config-loader';
+import { CONFIG_OBJECT_ENV } from './config-env';
+import type { WayangConfig } from '@wayang-ai/protocol';
 
 const result = parseCliArgs(process.argv.slice(2));
 
@@ -41,14 +51,30 @@ const configPath = flags.config
   ? path.resolve(flags.config)
   : path.join(wayangRoot, '.wayang.config.json');
 
-serverMain({
-  configPath,
-  dataDir: path.join(wayangRoot, '.wayang'),
-  workspaceDir,
-  session: flags.session ?? 'new',
-  injectPreviousTasks: flags.injectPreviousTasks,
-  logLevel: flags.logLevel ?? (flags.verbose ? 'debug' : 'info'),
-}).catch((err: unknown) => {
-  console.error('Fatal:', err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+/** The config object, never a path: from the client's env handoff, or a single non-interactive load. */
+async function resolveServerConfig(): Promise<WayangConfig> {
+  const injected = process.env[CONFIG_OBJECT_ENV];
+  if (injected !== undefined) {
+    return JSON.parse(injected) as WayangConfig;
+  }
+  // Standalone run (not spawned by the TUI client): the argv surface keeps
+  // its `--config` meaning. Still app-side parsing — core only ever sees the
+  // resulting object.
+  return loadConfig(configPath, { nonInteractive: true });
+}
+
+resolveServerConfig()
+  .then((config) =>
+    serverMain({
+      config,
+      dataDir: path.join(wayangRoot, '.wayang'),
+      workspaceDir,
+      session: flags.session ?? 'new',
+      injectPreviousTasks: flags.injectPreviousTasks,
+      logLevel: flags.logLevel ?? (flags.verbose ? 'debug' : 'info'),
+    }),
+  )
+  .catch((err: unknown) => {
+    console.error('Fatal:', err instanceof Error ? err.message : err);
+    process.exit(1);
+  });

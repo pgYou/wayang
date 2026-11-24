@@ -42,6 +42,7 @@
 import * as path from 'node:path';
 import { parseCliArgs, resolveWayangRoot } from './cli-args';
 import { bootstrap } from './bootstrap';
+import { loadConfig } from './config-loader';
 import { normalizeWorkspacePath } from '@wayang-ai/core/infra/workspace-registry';
 import { SessionLockedError, formatSessionLockHint } from '@wayang-ai/core/infra/session-lock';
 import { serverMain } from '@wayang-ai/core/server/main';
@@ -103,14 +104,21 @@ function fatal(err: unknown): never {
 }
 
 if (input[0] === 'server') {
-  serverMain({
-    configPath,
-    dataDir: path.join(wayangRoot, '.wayang'),
-    workspaceDir,
-    session: flags.session ?? 'new',
-    injectPreviousTasks: flags.injectPreviousTasks,
-    logLevel: flags.logLevel ?? (flags.verbose ? 'debug' : 'info'),
-  }).catch(fatal);
+  // The CLI is the single config-resolution point (design 4.1): load once,
+  // non-interactively, and hand the OBJECT to the headless server — core
+  // never re-parses, re-reads or re-validates.
+  loadConfig(configPath, { nonInteractive: true })
+    .then((config) =>
+      serverMain({
+        config,
+        dataDir: path.join(wayangRoot, '.wayang'),
+        workspaceDir,
+        session: flags.session ?? 'new',
+        injectPreviousTasks: flags.injectPreviousTasks,
+        logLevel: flags.logLevel ?? (flags.verbose ? 'debug' : 'info'),
+      }),
+    )
+    .catch(fatal);
 } else {
   // --resume [id]: id is the first positional argument
   const resumeFlag = flags.resume;

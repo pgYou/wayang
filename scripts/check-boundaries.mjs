@@ -32,8 +32,8 @@ const PACKAGES = [
 /** Namespaces each package may reference through its own `@/` alias. */
 const OWNED = {
   protocol: ['types', 'rpc'],
-  core: ['services', 'infra', 'server', 'utils', 'onboard', '__tests__', 'client'],
-  cli: ['tui', 'client', 'cli', 'cli-args', 'bootstrap', 'session-select', '__tests__', 'server-entry'],
+  core: ['services', 'infra', 'server', 'utils', '__tests__', 'client'],
+  cli: ['tui', 'client', 'cli', 'cli-args', 'bootstrap', 'config-loader', 'config-env', 'session-select', '__tests__', 'server-entry'],
   desktop: [],
 };
 

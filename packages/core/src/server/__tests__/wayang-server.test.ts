@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -8,6 +8,7 @@ import { RpcClient } from '@wayang-ai/protocol/rpc/rpc-client';
 import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
 import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
 import { startFakeProvider, isControllerRequest, type FakeProvider } from '@/__tests__/fake-openai-provider';
+import type { WayangConfig } from '@wayang-ai/protocol';
 
 /**
  * In-process integration: runWayangServer wired to a real Supervisor over
@@ -18,7 +19,7 @@ import { startFakeProvider, isControllerRequest, type FakeProvider } from '@/__t
 let provider: FakeProvider;
 let dataDir: string;
 let workspaceDir: string;
-let configPath: string;
+let config: WayangConfig;
 let exitSpy: ReturnType<typeof vi.spyOn>;
 
 beforeAll(async () => {
@@ -26,12 +27,13 @@ beforeAll(async () => {
   const root = mkdtempSync(join(tmpdir(), 'wayang-server-test-'));
   dataDir = join(root, 'home');
   workspaceDir = join(root, 'workspace');
-  configPath = join(root, 'config.json');
-  writeFileSync(configPath, JSON.stringify({
+  // Injected config object (design 4.1): the server runs on the object the
+  // host hands it — no config file involved at all.
+  config = {
     providers: { fake: { endpoint: provider.baseURL, apiKey: 'test-key', modelName: 'fake-model' } },
     controller: { provider: 'fake' },
     worker: { provider: 'fake', maxConcurrency: 1 },
-  }));
+  };
   exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 });
 
@@ -40,7 +42,6 @@ afterAll(async () => {
   await provider.close();
   rmSync(dataDir, { recursive: true, force: true });
   rmSync(workspaceDir, { recursive: true, force: true });
-  rmSync(configPath, { force: true });
 });
 
 interface Booted {
@@ -60,7 +61,7 @@ async function bootServer(): Promise<Booted> {
 
   void runWayangServer(
     {
-      configPath,
+      config,
       dataDir,
       workspaceDir,
       session: { mode: 'new' },
@@ -167,7 +168,7 @@ describe('WayangServer over RPC', () => {
     const serverIn = new PassThrough();
     const serverOut = new PassThrough();
     await expect(runWayangServer(
-      { configPath, dataDir, workspaceDir, session: { mode: 'resume', sessionId: 'does-not-exist' }, logLevel: 'silent' },
+      { config, dataDir, workspaceDir, session: { mode: 'resume', sessionId: 'does-not-exist' }, logLevel: 'silent' },
       { stdin: serverIn, stdout: serverOut },
     )).rejects.toThrow(/not found/i);
   }, 10_000);

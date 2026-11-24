@@ -15,11 +15,13 @@ import { tmpdir } from 'node:os';
 
 vi.mock('@/client/connect');
 vi.mock('@/tui/render');
-vi.mock('@/onboard');
+vi.mock('@/config-loader');
 vi.mock('@/session-select');
 
 import { bootstrap } from '@/bootstrap';
 import { connectRemoteServer } from '@/client/connect';
+import { loadConfig } from '@/config-loader';
+import type { WayangConfig } from '@wayang-ai/protocol';
 import { selectSessionInteractive } from '@/session-select';
 import type { SessionMeta } from '@wayang-ai/core/infra/session-helpers';
 
@@ -45,11 +47,23 @@ function writeSessionMeta(sessionId: string, meta: Partial<SessionMeta> & { work
   writeFileSync(join(dir, 'meta.json'), JSON.stringify(full));
 }
 
+/** One config object, fresh per reset — the value bootstrap must forward. */
+const fixtureConfig: WayangConfig = {
+  providers: { fake: { type: 'openai-compatible', baseURL: 'http://fake', apiKey: 'k' } },
+  models: { default: { provider: 'fake', name: 'fake-model' } },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 1 },
+};
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'wayang-bootstrap-test-'));
   vi.mocked(connectRemoteServer).mockReset();
   vi.mocked(connectRemoteServer).mockResolvedValue({ remote: {} as never, stop: vi.fn() });
   vi.mocked(selectSessionInteractive).mockReset();
+  // The single-parse flow hands bootstrap's loadConfig result (the config
+  // object) to the server spawn — give every test one stable object to assert.
+  vi.mocked(loadConfig).mockReset();
+  vi.mocked(loadConfig).mockResolvedValue(fixtureConfig);
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -105,6 +119,10 @@ describe('bootstrap — wayangRootDir root semantics', () => {
     expect(call.injectPreviousTasks).toBe(true);
     expect(call.workspaceDir).toBe('/repo-a');
     expect(call.configPath).toBe(join(root, 'wayang.config.json'));
+    // Single-parse handoff (design 4.1): the object loadConfig returned is
+    // what the server child receives — no path-only re-read downstream.
+    expect(call.config).toBe(fixtureConfig);
+    expect(vi.mocked(loadConfig).mock.calls[0]?.[0]).toBe(join(root, 'wayang.config.json'));
   });
 
   it('sessionless with no prior sessions: starts a new session', async () => {
