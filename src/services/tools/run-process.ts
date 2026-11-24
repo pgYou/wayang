@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, openSync, statSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, openSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { defineTool, safeExecute } from './common';
 import { expandHome } from './permission-rules';
@@ -47,7 +47,7 @@ export function runProcessTool(deps: { cwd?: string } = {}) {
   }
 
   return defineTool({
-    description: `Run a process from a structured argv array — no shell is involved, so shell metacharacters ($, backticks, ;, &&) are passed to the program literally. Use it instead of bash when driving a built CLI, a dev server or a smoke-test target. Foreground waits for exit and returns exitCode/signal/stdout/stderr/durationMs (timeout: SIGTERM, then SIGKILL after 3s); background=true starts it, logs to .agents/tmp/run-process-<ts>.log and returns pid + logFile immediately. Requires controller approval for every call. Approval limits: the static gate scans only the argv words and cwd (sensitive list + workspace/allowedDirs scope) — runtime side effects of the program itself (writes or network beyond argv) cannot be covered statically, which is why every call still asks.`,
+    description: `Run a process from a structured argv array — no shell is involved, so shell metacharacters ($, backticks, ;, &&) are passed to the program literally. Use it instead of bash when driving a built CLI, a dev server or a smoke-test target. Foreground waits for exit and returns exitCode/signal/stdout/stderr/durationMs (timeout: SIGTERM, then SIGKILL after 3s); background=true starts it, logs to a unique .agents/tmp/run-process-<ts>-<pid>-<rand>.log and returns pid + logFile immediately. Requires controller approval for every call. Approval limits: the static gate scans only the argv words and cwd (sensitive list + workspace/allowedDirs scope) — runtime side effects of the program itself (writes or network beyond argv) cannot be covered statically, which is why every call still asks.`,
     parameters: z.object({
       command: z.array(z.string()).min(1).describe('Argv to spawn: command[0] is the executable, the rest are its arguments (never shell-interpreted)'),
       cwd: z.string().optional().describe('Working directory (relative to workspace or absolute); defaults to the task workspace'),
@@ -66,17 +66,31 @@ export function runProcessTool(deps: { cwd?: string } = {}) {
         // the log lives on after the call so the worker can read it back.
         const tmpDir = join(workspace, '.agents', 'tmp');
         mkdirSync(tmpDir, { recursive: true });
-        const logFile = join(tmpDir, `run-process-${Date.now()}.log`);
-        // stdout and stderr share one append fd — the child writes the file
-        // directly, so nothing keeps the parent's event loop (or lifetime)
-        // tied to the child; child.unref() detaches it for real.
+        // Date.now() alone collides when two calls land in the same
+        // millisecond — both would then append into ONE interleaved log — so
+        // the name carries the pid and a random suffix too (review round 3,
+        // D1).
+        const logFile = join(
+          tmpDir,
+          `run-process-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}.log`,
+        );
+        // stdout and stderr share one append fd — the child dups it at spawn,
+        // so the parent closes ITS copy right away (each background call used
+        // to leak one fd for the child's lifetime); nothing keeps the parent's
+        // event loop (or lifetime) tied to the child; child.unref() detaches
+        // it for real.
         const fd = openSync(logFile, 'a');
-        const child = spawn(executable, argv, {
-          cwd: dir,
-          env: childEnv,
-          shell: false,
-          stdio: ['ignore', fd, fd],
-        });
+        let child;
+        try {
+          child = spawn(executable, argv, {
+            cwd: dir,
+            env: childEnv,
+            shell: false,
+            stdio: ['ignore', fd, fd],
+          });
+        } finally {
+          closeSync(fd);
+        }
         // A spawn failure (ENOENT & friends) is async and would otherwise be
         // an unhandled 'error' event — write it where the reader will look.
         child.on('error', (err) => {
@@ -116,15 +130,23 @@ export function runProcessTool(deps: { cwd?: string } = {}) {
       const outcome = await new Promise<{ exitCode: number | null; signal: string | null; error?: string }>((settle) => {
         // Whichever fires first settles; a promise ignores the later one.
         child.on('error', (err) => settle({ exitCode: null, signal: null, error: (err as Error).message }));
+        // The SIGKILL grace timer is created only when the timeout fired;
+        // kept in reach so the child's exit can cancel it (review round 3, D1).
+        let sigkillTimer: NodeJS.Timeout | undefined;
         const killTimer = setTimeout(() => {
           timedOut = true;
           child.kill('SIGTERM');
           // A process that traps SIGTERM still dies here.
-          setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS).unref();
+          sigkillTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
+          sigkillTimer.unref();
         }, timeout);
         child.on('close', (exitCode, signal) => settle({ exitCode, signal: signal ?? null }));
-        // Never let the timers outlive the child.
-        const clear = () => clearTimeout(killTimer);
+        // Never let the timers outlive the child — BOTH of them: a child that
+        // died from the SIGTERM must not keep a 3s SIGKILL timer armed.
+        const clear = () => {
+          clearTimeout(killTimer);
+          if (sigkillTimer !== undefined) clearTimeout(sigkillTimer);
+        };
         child.on('close', clear);
         child.on('error', clear);
       });

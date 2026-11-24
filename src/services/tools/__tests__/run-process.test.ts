@@ -2,8 +2,8 @@
 // kill (SIGTERM → SIGKILL), per-stream output caps, background mode with a
 // log file, and structured spawn errors.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runProcessTool } from '@/services/tools/run-process';
@@ -114,13 +114,72 @@ describe('run_process background mode', () => {
     const result = JSON.parse(out);
     expect(typeof result.pid).toBe('number');
     expect(result.logFile).toContain(join(cwd, '.agents', 'tmp'));
-    expect(result.logFile).toMatch(/run-process-\d+\.log$/);
+    expect(result.logFile).toMatch(/run-process-\d+-\d+-[a-z0-9]+\.log$/);
     expect(result.note).toContain('NOT managed');
 
-    // Give the child time to flush, then read the log back.
+    // Give the child time to flush, then read the log back. The child keeps
+    // writing AFTER the parent closed its own copy of the log fd (D1), so
+    // both lines arriving here is the behavioral proof the close is safe.
     await new Promise((r) => setTimeout(r, 900));
     const log = readFileSync(result.logFile, 'utf-8');
     expect(log).toContain('bg-line-1');
     expect(log).toContain('bg-line-2');
+  });
+
+  it('consecutive background calls get distinct log files — no interleaved appends (D1)', async () => {
+    // Two calls in the same millisecond used to resolve the same
+    // run-process-<ts>.log name and append into one interleaved file.
+    const first = JSON.parse(
+      await exec(runProcessTool({ cwd }), { command: ['echo', 'first-line'], background: true }),
+    );
+    const second = JSON.parse(
+      await exec(runProcessTool({ cwd }), { command: ['echo', 'second-line'], background: true }),
+    );
+    expect(first.logFile).not.toBe(second.logFile);
+
+    await new Promise((r) => setTimeout(r, 500));
+    // Each child wrote to its own file only.
+    expect(readFileSync(first.logFile, 'utf-8')).toBe('first-line\n');
+    expect(readFileSync(second.logFile, 'utf-8')).toBe('second-line\n');
+  });
+
+  it('a background call does not leak a parent fd for the log (D1)', async () => {
+    // The parent closes its copy of the append fd right after spawn (the
+    // child holds its own dup), so the process fd table is unchanged.
+    const fdDir = '/proc/self/fd';
+    const fdCount = () => readdirSync(fdDir).length;
+    const before = fdCount();
+    await exec(runProcessTool({ cwd }), { command: ['echo', 'leak-check'], background: true });
+    expect(fdCount()).toBe(before);
+  });
+});
+
+describe('run_process timer cleanup', () => {
+  it('a SIGTERM-killed child has its SIGKILL grace timer cleared (D1)', async () => {
+    // Timeout fires → SIGTERM kills the child → 'close' must cancel the
+    // pending 3s SIGKILL timer too, not just the outer timeout timer (it
+    // used to be only unref'd, staying armed on a dead child for the grace
+    // period). Asserted by watching which timers the call creates and clears:
+    // the 3s grace timer is created, and it must be among the cleared ones.
+    const GRACE_MS = 3_000; // KILL_GRACE_MS in run-process.ts
+    const stSpy = vi.spyOn(globalThis, 'setTimeout');
+    const ctSpy = vi.spyOn(globalThis, 'clearTimeout');
+    try {
+      const out = await exec(runProcessTool({ cwd }), { command: ['sleep', '30'], timeoutMs: 300 });
+      const result = JSON.parse(out);
+      expect(result.signal).toBe('SIGTERM');
+
+      const graceHandles = stSpy.mock.results
+        .map((r, i) => ({ handle: r.value, delay: stSpy.mock.calls[i]?.[1] }))
+        .filter((entry) => entry.delay === GRACE_MS)
+        .map((entry) => entry.handle);
+      expect(graceHandles.length).toBeGreaterThanOrEqual(1);
+
+      const clearedHandles = ctSpy.mock.calls.map((call) => call[0]);
+      expect(graceHandles.some((handle) => clearedHandles.includes(handle))).toBe(true);
+    } finally {
+      stSpy.mockRestore();
+      ctSpy.mockRestore();
+    }
   });
 });
