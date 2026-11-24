@@ -123,6 +123,39 @@ describe('readWorkerConversationTool', () => {
     expect(meta.truncated).toBe(false);
   });
 
+  it('renders a compaction marker as one line and never expands the summary', async () => {
+    const summary = `SUMMARY_BEGIN ${'x'.repeat(500)} SUMMARY_END`;
+    const marker = {
+      ...makeEntry('system', summary, { subtype: 'compact' }),
+      compactMeta: { summarizedTokenCount: 1234, createdAt: new Date().toISOString() },
+    };
+    fx.writeTranscript('cw-compaction', [
+      makeEntry('user', 'Do the long task.'),
+      makeEntry('assistant', 'working'),
+      marker,
+      makeEntry('assistant', 'done after compaction'),
+    ]);
+
+    // full=true would otherwise dump the whole summary — it stays one line.
+    const out = await exec(makeTool(), { workerId: 'cw-compaction', full: true });
+    expect(out).toContain('[compaction] summarized 1234 tokens');
+    expect(out).not.toContain('SUMMARY_BEGIN');
+    expect(out).not.toContain('SUMMARY_END');
+    const meta = readMeta(out);
+    expect(meta.totalEntries).toBe(4);
+    expect(meta.returnedEntries).toBe(4);
+    expect(countEntryLines(out)).toBe(4);
+
+    // Pagination semantics are untouched: the marker still counts as one entry.
+    const paged = await exec(makeTool(), { workerId: 'cw-compaction', limit: 2 });
+    const pagedMeta = readMeta(paged);
+    expect(pagedMeta.startIndex).toBe(3);
+    expect(pagedMeta.endIndex).toBe(4);
+    expect(pagedMeta.returnedEntries).toBe(2);
+    expect(paged).toContain('[compaction] summarized 1234 tokens');
+    expect(paged).not.toContain('SUMMARY_BEGIN');
+  });
+
   it('filters by entry type, keeping both counts visible', async () => {
     fx.writeTranscript('cw-1', entries);
     const tool = makeTool();

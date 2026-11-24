@@ -89,26 +89,33 @@ Or create `~/.wayang.config.json` manually:
 ```json
 {
   "providers": {
-    "my-model": {
-      "endpoint": "https://api.anthropic.com",
-      "modelName": "claude-sonnet-4-20250514",
-      "apiKey": "xxx",
+    "anthropic": {
+      "baseURL": "https://api.anthropic.com",
+      "apiKey": "xxx"
+    }
+  },
+  "models": {
+    "sonnet": {
+      "provider": "anthropic",
+      "name": "claude-sonnet-4-20250514",
       "contextWindowTokens": 200000
     }
   },
-  "controller": { "provider": "my-model" },
-  "worker": { "provider": "my-model", "maxConcurrency": 3 }
+  "controller": { "model": "sonnet" },
+  "worker": { "model": "sonnet", "maxConcurrency": 3 }
 }
 ```
 
+Old-style configs that bind a provider with `controller.provider` / `worker.provider` still work unchanged (with a one-time deprecation warning): `modelName` and `contextWindowTokens` stay effective, while `temperature` / `maxOutputTokens` set on the provider remain recorded only and are not sent. Those two parameters take effect only when declared on a `models` entry (or a `provider/model` composite / inline model object).
+
 API key can be set via config or the `WAYANG_LLM_API_KEY` environment variable.
 
-`contextWindowTokens` (optional, per provider) is the model's context window in tokens: the input budget the prompt must fit into, not the protocol's `max_tokens` output cap. The controller compacts the conversation once it reaches 90% of this budget. It defaults to 256000; set it explicitly for smaller-window models (e.g. `128000`), otherwise the provider rejects requests before compaction triggers. With env-only configuration use `WAYANG_CONTEXT_WINDOW_TOKENS`.
+`contextWindowTokens` (optional, per `models` entry) is the model's context window in tokens: the input budget the prompt must fit into, not the protocol's `max_tokens` output cap. Both the controller and puppet workers compact the conversation once it reaches 60% of this budget. It defaults to 256000; set it explicitly for smaller-window models (e.g. `128000`), otherwise the provider rejects requests before compaction triggers. With env-only configuration use `WAYANG_CONTEXT_WINDOW_TOKENS`. A model entry's `temperature` and `maxOutputTokens` are sent on every request when configured; unset means "use the provider default".
 
 Workers default to `"toolChoice": "auto"` — the model decides whether to call a tool, since thinking endpoints (DeepSeek/GLM) reject `tool_choice: "required"` with HTTP 400. On endpoints that support it, set `"required"` to force a tool call every step, so a worker always finishes via its `done`/`fail` tools:
 
 ```json
-"worker": { "provider": "my-model", "maxConcurrency": 3, "toolChoice": "required" }
+"worker": { "model": "sonnet", "maxConcurrency": 3, "toolChoice": "required" }
 ```
 
 ### Run

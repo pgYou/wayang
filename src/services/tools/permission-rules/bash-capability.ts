@@ -14,12 +14,24 @@ import {
 } from '@/services/tools/shell-lexer';
 import { commandEntry, isInertCommand } from './command-tables';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
-import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead } from './bash-classification';
-import { headCommand } from './bash-head';
+import { isDateSetFlag, isGitConfigOptionWord, isReadOnlySegment, isWriteCommandHead } from './bash-classification';
+import { headCommand, wrapperPrefixWords } from './bash-head';
 import { SHELL_COMMANDS } from './shell-script';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
-/** What ONE segment is capable of, beyond the read/write access split. */
+/**
+ * What ONE segment is capable of, beyond the read/write access split.
+ *
+ * `unknown` is split by cause so the ask reason can say WHICH check failed
+ * (the review found one blanket "not on the capability tables" message behind
+ * three unrelated situations):
+ * - `unknown` — the head word is not on any capability table (or there is no
+ *   command word at all);
+ * - `unknown-subcommand` — the verb IS on a table, but this subcommand / shape
+ *   is not covered as read-only (`git branch -D x`, `npm run build`);
+ * - `unknown-git-config` — `git -c <name>=<value>` loads external
+ *   configuration before the subcommand runs.
+ */
 export type SegmentCapability =
   | 'read'
   | 'write'
@@ -27,7 +39,9 @@ export type SegmentCapability =
   | 'exec'
   | 'network'
   | 'dynamic'
-  | 'unknown';
+  | 'unknown'
+  | 'unknown-subcommand'
+  | 'unknown-git-config';
 
 /**
  * Launchers `headCommand` does NOT strip (it strips the wrapper-marked
@@ -43,6 +57,14 @@ const LAUNCHER_COMMANDS: ReadonlySet<string> = new Set([
 
 /** `source` / `.` run a script inside the current shell — inherently dynamic. */
 const DYNAMIC_COMMANDS: ReadonlySet<string> = new Set(['source', '.']);
+
+/**
+ * Verbs that detach a process from the run that started it: `nohup` (SIGHUP
+ * immune), `setsid` (new session), `disown` (removed from the job table). With
+ * a trailing `&` these are THE backgrounding idioms; without it `nohup` /
+ * `setsid` still escape the task lifecycle. None of them is "read-only".
+ */
+const DETACHED_COMMANDS: ReadonlySet<string> = new Set(['nohup', 'setsid', 'disown']);
 
 /** A leading shell variable assignment (`FOO=1`), not a command word. */
 const ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -162,9 +184,12 @@ function launcherCapability(command: string, words: readonly string[]): SegmentC
 function capabilityOfHead(command: string, words: readonly string[]): SegmentCapability {
   if (DYNAMIC_WORD_PATTERN.test(command) || command.includes(CMDSUBST_PLACEHOLDER)) return 'dynamic';
   if (DYNAMIC_COMMANDS.has(command)) return 'dynamic';
-  // `git -c <name>=<value>` pulls in external configuration before the
-  // subcommand runs — the read classification does not cover that shape.
-  if (command === 'git' && words.slice(1).includes('-c')) return 'unknown';
+  // `git -c <name>=<value>` — split or glued (see `isGitConfigOptionWord`) —
+  // pulls in external configuration before the subcommand runs: the read
+  // classification does not cover that shape.
+  if (command === 'git' && words.slice(1).some((word) => isGitConfigOptionWord(word))) {
+    return 'unknown-git-config';
+  }
   // `env -S <string>` builds a command line from the string: a shell shape.
   if (command === 'env' && words.includes('-S')) return 'exec';
   if (LAUNCHER_COMMANDS.has(command)) return launcherCapability(command, words);
@@ -178,10 +203,11 @@ function capabilityOfHead(command: string, words: readonly string[]): SegmentCap
   // this branch — in a launcher interior they keep the historic `unknown`
   // ask, and on the direct path `isWriteCommandHead` settles them earlier.
   if (entry.capability === 'write' && entry.capabilityOnlyWrite === true) return 'write';
-  // `read` / `inert` entries reaching this point failed their own gate (a
-  // non-bare inert verb, an unverified read, a `wrapper` / `danger` entry) —
-  // `unknown`, exactly the verdict they kept before the tables merged.
-  return 'unknown';
+  // The verb IS on a table, but this subcommand / shape is not covered as
+  // read-only (a non-read git subcommand, `npm run build`, a non-bare inert
+  // verb, a `wrapper` / `danger` entry). Distinguished from an off-table verb
+  // so the ask reason names the real cause.
+  return 'unknown-subcommand';
 }
 
 /**
@@ -362,15 +388,34 @@ export function evaluateCapabilityGate(
         'network-capability',
         `\`${headWord(segment)}\` reaches the network — controller approval is required (network capability)`,
       );
-    } else if (capability === 'unknown') {
-      unknownAsk ??= ask(
-        'unknown-capability',
-        `\`${headWord(segment)}\` is not on the bash capability tables — controller approval is required (unknown capability)`,
-      );
+    } else if (capability === 'unknown' || capability === 'unknown-subcommand' || capability === 'unknown-git-config') {
+      unknownAsk ??= ask('unknown-capability', unknownCapabilityReason(segment, capability));
     }
   }
 
   return execAsk ?? networkAsk ?? unknownAsk;
+}
+
+/**
+ * The reason text for an `unknown` verdict, naming the check that actually
+ * failed. The review found one blanket "not on the capability tables" message
+ * behind three unrelated situations, which sent debugging down the wrong path.
+ */
+function unknownCapabilityReason(
+  segment: ShellSegment,
+  capability: 'unknown' | 'unknown-subcommand' | 'unknown-git-config',
+): string {
+  const word = headWord(segment);
+  switch (capability) {
+    case 'unknown-git-config':
+      return '`git -c <name>=<value>` loads external configuration before the subcommand runs — '
+        + 'controller approval is required (unknown capability)';
+    case 'unknown-subcommand':
+      return `\`${word}\` is on the capability tables, but this subcommand / shape is not covered as read-only — `
+        + 'controller approval is required (unknown capability)';
+    default:
+      return `\`${word}\` is not on the bash capability tables — controller approval is required (unknown capability)`;
+  }
 }
 
 /**
@@ -394,6 +439,47 @@ export function redirectWriteScopeAsk(
       return ask(
         'write-scope',
         `output redirection target "${target}" resolves outside the workspace (${abs}) — controller approval is required`,
+      );
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The background / detached tier (#86): a segment terminated by the background
+ * operator `&`, or carrying a detached-process verb (`nohup`, `setsid`,
+ * `disown`) in its wrapper prefix or command position, runs OUTSIDE the task
+ * lifecycle — the worker cannot observe the process's exit and abort /
+ * abortAll cannot clean it up. A read-only inner command does not change that:
+ * `nohup git status &` backgrounds a read, and `nohup bash -c '<judged read>'`
+ * detaches a script this gate already allowed. The caller therefore runs this
+ * tier BEFORE every tier that can allow the line, and the resulting ask
+ * carries no `askPaths` — an approval-memory grant for the inner command must
+ * never cover a detached run.
+ *
+ * Returns the ask REASON (the caller attaches the matched rule and any
+ * sensitive-hit fields), or `undefined` when no segment detaches.
+ */
+export function detachedExecutionAsk(segments: readonly ShellSegment[]): string | undefined {
+  for (const segment of segments) {
+    // The lexer records the terminating operator verbatim (`&&`, `||`, `|&`,
+    // `;;`, …); only a single `&` backgrounds the segment's command.
+    if (segment.operator === '&') {
+      return (
+        `\`${headWord(segment)} … &\` runs in the background, detached from the task lifecycle — ` +
+        'the worker cannot observe its exit and abort cannot clean it up — ' +
+        'controller approval is required (fail-closed)'
+      );
+    }
+    const head = headCommand(segment);
+    const detached =
+      wrapperPrefixWords(wordTexts(segment)).find((word) => DETACHED_COMMANDS.has(word)) ??
+      (head !== undefined && DETACHED_COMMANDS.has(head.command) ? head.command : undefined);
+    if (detached !== undefined) {
+      return (
+        `\`${detached}\` starts a process detached from the task lifecycle ` +
+        '(background / SIGHUP-immune: the worker cannot observe its exit, abort cannot clean it up) — ' +
+        'controller approval is required (fail-closed)'
       );
     }
   }

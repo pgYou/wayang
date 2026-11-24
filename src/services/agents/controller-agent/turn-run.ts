@@ -12,6 +12,7 @@ import type { ControllerSignal } from '@/types/index';
 import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType, ESystemSubtype } from '@/types/index';
 import { signalToEntry } from '../utils/signal-to-entry';
+import { ensureUserTurn } from '../utils/conversation-to-sdk-messages';
 
 export class ControllerTurnRun extends ControllerAgentBase {
   /** Run the controller agent — streams text chunks while updating streamingEntries in state. */
@@ -73,7 +74,11 @@ export class ControllerTurnRun extends ControllerAgentBase {
 
     const gen = this.streamLoop({
       system: this.contextManager.getSystemPrompt(),
-      messages: this.contextManager.getMessages(),
+      // A compacted verbatim zone can open with a non-user entry (retained
+      // assistant/system originals) — gateways validate the message sequence
+      // strictly (issue #95), so the request must open with a user turn.
+      // Seeding is request-only and never touches the persisted conversation.
+      messages: ensureUserTurn(this.contextManager.getMessages()),
       tools: this.tools,
       maxSteps: 50,
       stopTools: ['skip_reply'],
@@ -99,8 +104,8 @@ export class ControllerTurnRun extends ControllerAgentBase {
         const entry = buildAssistantEntry(event, this.ctx.sessionId, streamingUuid, {
           startedAt: meta?.startedAt,
           firstTokenAt: meta?.firstTokenAt,
-          temperature: this.provider.temperature,
-          maxOutputTokens: this.provider.maxOutputTokens,
+          temperature: this.resolvedModel.temperature,
+          maxOutputTokens: this.resolvedModel.maxOutputTokens,
           recordedToolCalls: (toolCallId) => this.recorder.lookup(toolCallId),
         });
         applyTurnEnvelope(entry, turnEnv);

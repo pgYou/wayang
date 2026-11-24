@@ -96,7 +96,7 @@ export class Supervisor {
     }
 
     this.ctx.logger.info(
-      { controllerEndpoint: this.ctx.controllerProvider.endpoint, controllerModel: this.ctx.controllerProvider.modelName },
+      { controllerEndpoint: this.ctx.controllerModel.baseURL, controllerModel: this.ctx.controllerModel.modelName },
       'Provider config',
     );
 
@@ -123,7 +123,7 @@ export class Supervisor {
     });
     this.controllerAgent = ControllerAgent.create({
       ctx: this.ctx,
-      provider: this.ctx.controllerProvider,
+      model: this.ctx.controllerModel,
       config,
       engine: this.engine,
       signalQueue: this.signalQueue,

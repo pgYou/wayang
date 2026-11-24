@@ -244,13 +244,17 @@ describe('evaluateBashAccess', () => {
       expect(verdict.matchedRule).toBe('no-path');
 
       // The shapes the slice does NOT resolve keep the #51 fail-closed ask
-      // (inside the capability gate's unknown path now).
-      for (const unresolved of [`cd ${ws}; git diff v0.4.0 HEAD`, 'cd $DIR && git diff HEAD']) {
-        const ask = evaluateBashAccess(scope(), unresolved);
-        expect(ask.decision).toBe('ask');
-        expect(ask.matchedRule).toBe('unknown-capability');
-        expect(ask.reason).toContain('cd <dir>');
-      }
+      // (inside the capability gate's unknown path now). A `;` chain IS
+      // resolved since #86: the shell keeps the new cwd after a `;`, exactly
+      // like `&&`, so it is walked with the same cursor.
+      const unresolved = 'cd $DIR && git diff HEAD';
+      const ask = evaluateBashAccess(scope(), unresolved);
+      expect(ask.decision).toBe('ask');
+      expect(ask.matchedRule).toBe('unknown-capability');
+      expect(ask.reason).toContain('cd <dir>');
+      const semicolon = evaluateBashAccess(scope(), `cd ${ws}; git diff v0.4.0 HEAD`);
+      expect(semicolon.decision).toBe('allow');
+      expect(semicolon.matchedRule).toBe('no-path');
     });
   });
 
@@ -450,12 +454,14 @@ describe('evaluateBashAccess', () => {
       expect(verdict.reason).toContain('command substitution');
     });
 
-    it("awk '{print $1}' file is NOT command substitution — #51 layer 2 asks on exec, not on $", () => {
-      // `$1` inside the awk script is still not a command substitution; the
-      // ask comes from the capability gate (awk is an interpreter verb).
+    it("awk '{print $1}' file is a verified read (not command substitution)", () => {
+      // `$1` inside the awk script is still not a command substitution. Since
+      // #86 the program text is checked statically: a plain `print` reads, so
+      // the segment is a read (not the old exec-capability ask).
       const verdict = evaluateBashAccess(scope(), "awk '{print $1}' file");
-      expect(verdict.decision).toBe('ask');
-      expect(verdict.matchedRule).toBe('exec-capability');
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('no-path');
+      expect(verdict.access).toBe('read');
     });
 
     it('a write into the workspace via redirection allows (#51 layer 2)', () => {
@@ -558,7 +564,9 @@ describe('evaluateBashAccess', () => {
     });
 
     it('a non-read-only inner command asks', () => {
-      for (const command of ['echo $(rm -rf /)', 'echo $(python -V)', 'echo $(cat a.txt | tee b.txt)']) {
+      // `python -V` is a pure version probe since #86, so it is no longer a
+      // non-read example; an actual interpreter script still asks.
+      for (const command of ['echo $(rm -rf /)', 'echo $(python -c "print(1)")', 'echo $(cat a.txt | tee b.txt)']) {
         const verdict = evaluateBashAccess(scope(), command);
         expect(verdict.decision).toBe('ask');
         expect(verdict.matchedRule).toBe('dynamic-shell');
@@ -753,7 +761,9 @@ describe('evaluateBashAccess', () => {
       ['sudo -u root cat ~/notes.md', 'dangerous-bash'],
       ['env FOO=1 cat ~/notes.md', 'read-within-home'],
       ['env -i FOO=bar cat ~/notes.md', 'read-within-home'],
-      ['nohup cat ~/notes.md', 'read-within-home'],
+      // `nohup` is no longer transparent: it detaches the process from the
+      // task lifecycle, so it asks on `background-capability` instead (see
+      // review-099-regressions).
       ['time cat ~/notes.md', 'read-within-home'],
       ['nice -n 5 cat ~/notes.md', 'read-within-home'],
       ['FOO=1 cat ~/notes.md', 'read-within-home'],
@@ -961,10 +971,13 @@ describe('evaluateBashAccess', () => {
       // check, so it is never "unverified". With a candidate the direction is
       // a write, exactly as before.
       expect(evaluateBashAccess(scope(), "sed -i 's/a/b/' ~/f").access).toBe('write');
-      // Without a candidate the historic no-candidate shape is unchanged.
+      // Without a candidate the historic no-candidate ALLOW is gone: `sed -i`
+      // is a destructive-tier spelling now (0.9.9 walkthrough fix — it
+      // deletes/rewrites what it names, so it asks inside the workspace too,
+      // exactly like `rm -rf build`).
       const verdict = evaluateBashAccess(scope(), "sed -i 's/a/b/' package.json");
-      expect(verdict.decision).toBe('allow');
-      expect(verdict.matchedRule).toBe('no-path');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dangerous-bash');
       expect(verdict.access).toBe('unknown');
     });
 
@@ -1030,7 +1043,6 @@ describe('evaluateBashAccess', () => {
   describe('#51 fail-closed fallback for unanalyzed inner commands', () => {
     describe('every shape asks and names the shape in the reason', () => {
       it.each([
-        ['xargs rm -rf build', 'xargs'],
         ['echo hi | xargs -n1 echo', 'xargs'],
         ['find . -exec rm {} +', 'find -exec'],
         ['find . -execdir sh -c "id" {} +', 'find -execdir'],
@@ -1042,7 +1054,6 @@ describe('evaluateBashAccess', () => {
         ['popd && ls', 'popd <dir>'],
         ['bash script.sh', 'script file'],
         ['sh deploy.sh', 'script file'],
-        ['for f in a b; do cat "$f"; done', 'compound keyword'],
         ['if true; then echo yes; fi', 'compound keyword'],
       ])('%s → ask (reason names %s)', (command, shape) => {
         const verdict = evaluateBashAccess(scope(), command);
@@ -1055,7 +1066,36 @@ describe('evaluateBashAccess', () => {
     });
 
     it('the escalation is not a one-path decision (no askPaths)', () => {
-      expect(evaluateBashAccess(scope(), 'xargs rm').askPaths).toBeUndefined();
+      // #86: `xargs rm` is a destructive verb with operands from stdin — the
+      // whole command asks as `dangerous-bash`, not just "askPaths is empty".
+      const verdict = evaluateBashAccess(scope(), 'xargs rm');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dangerous-bash');
+      expect(verdict.askPaths).toBeUndefined();
+    });
+
+    it('#86: an xargs inner command is judged, not merely labelled unanalyzed', () => {
+      // `xargs rm -rf build` now unfolds to `rm -rf build`: the destructive
+      // tier names the real verb instead of the generic "xargs" ask.
+      const verdict = evaluateBashAccess(scope(), 'xargs rm -rf build');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dangerous-bash');
+      // A literal operand keeps the ordinary gate; a read verb whose operands
+      // come from stdin asks (#86).
+      expect(evaluateBashAccess(scope(), 'find . | xargs cat package.json').decision).toBe('allow');
+      const stdinRead = evaluateBashAccess(scope(), 'find . | xargs grep x');
+      expect(stdinRead.decision).toBe('ask');
+      expect(stdinRead.matchedRule).toBe('unknown-capability');
+    });
+
+    it('#86: a literal for loop is expanded and its body judged per iteration', () => {
+      expect(evaluateBashAccess(scope(), 'for f in a b; do cat $f; done').decision).toBe('allow');
+      // A non-allow iteration keeps the whole loop out of the silent path.
+      expect(evaluateBashAccess(scope(), 'for f in a b; do rm $f; done').decision).toBe('ask');
+      // A non-literal word list is not expanded — fail closed.
+      const glob = evaluateBashAccess(scope(), 'for f in *.md; do cat $f; done');
+      expect(glob.decision).toBe('ask');
+      expect(glob.reason).toContain('for loop');
     });
 
     it('a sensitive hit keeps priority over the fallback', () => {
@@ -1161,10 +1201,13 @@ describe('evaluateBashAccess', () => {
       expect(verdict.reason).toContain('issue #51');
     });
 
-    it('(g) `cd a; cd b && ls` asks: a `;` chain is never crossed', () => {
+    it('(g) `cd a; cd b && ls` runs: since #86 a `;` chain is walked too', () => {
+      // The shell keeps the new cwd after a `;`, exactly as after `&&`, so the
+      // same literal cd slice resolves both separators. Both targets are inside
+      // the workspace, so the line is confined and may run.
       const verdict = evaluateBashAccess(scope(), 'cd a; cd b && ls');
-      expect(verdict.decision).toBe('ask');
-      expect(verdict.matchedRule).toBe('unknown-capability');
+      expect(verdict.decision).toBe('allow');
+      expect(verdict.matchedRule).toBe('no-path');
     });
 
     it('(h) `(cd <workspace> && ls)` asks: a subshell restores the old cwd', () => {

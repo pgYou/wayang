@@ -17,7 +17,7 @@ import { ControllerAgent } from '@/services/agents/controller-agent';
 import { ControllerAgentState } from '@/services/agents/controller-state';
 import { SkillRegistry } from '@/services/skills/registry';
 import { SystemContext } from '@/infra/system-context';
-import { mockProvider } from '@/__tests__/helpers';
+import { mockModel } from '@/__tests__/helpers';
 import type { WayangConfig } from '@/types/index';
 
 // Mock model-factory / streamText to avoid real LLM calls.
@@ -72,7 +72,7 @@ function inputSignal(id: string, text: string): ControllerSignal {
 async function runTurn(sessionDir: string, logLevel: string, promptText: string): Promise<string> {
   const ctx = new SystemContext(config, 's', sessionDir, sessionDir, logLevel);
   const state = new ControllerAgentState(ctx);
-  const agent = new ControllerAgent(ctx, state, mockProvider, {}, new SkillRegistry([]));
+  const agent = new ControllerAgent(ctx, state, mockModel, {}, new SkillRegistry([]));
   mockStreamResponse('mock answer');
   await agent.run([inputSignal('sig-log-1', promptText)]);
   await ctx.closeLogger();
@@ -131,7 +131,7 @@ describe('controller LLM call logging (issue #52)', () => {
     const sessionDir = join(topDir, 's4');
     const ctx = new SystemContext(config, 's', sessionDir, sessionDir, 'debug');
     const state = new ControllerAgentState(ctx);
-    const agent = new ControllerAgent(ctx, state, mockProvider, {}, new SkillRegistry([]));
+    const agent = new ControllerAgent(ctx, state, mockModel, {}, new SkillRegistry([]));
     for (let i = 0; i < 4; i++) {
       mockStreamResponse(`answer ${i}`);
       await agent.run([inputSignal(`sig-log-multi-${i}`, `${PROMPT_MARKER} round ${i}`)]);

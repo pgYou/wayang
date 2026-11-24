@@ -1,5 +1,6 @@
 import { BaseAgent } from './base-agent';
 import { ContextManager } from './context-manager';
+import { compactContext, truncateHistoryHalf, MAX_COMPACTIONS_PER_RUN } from './context/compaction';
 import { WorkerState, type InboxMessage } from '@/services/agents/worker-state';
 import { buildAssistantEntry } from '@/services/agents/utils/build-assistant-entry';
 import { applyTurnEnvelope, syncStepTimestamps, type TurnEnvelope } from '@/services/agents/utils/entry-envelope';
@@ -7,11 +8,13 @@ import { ToolCallRecorder, recordToolCalls } from '@/services/agents/utils/tool-
 import { controllerMessageContent, createInboxInjection } from '@/services/agents/utils/inbox-injection';
 import { generateId } from '@/utils/id';
 import { nowISO } from '@/utils/time';
-import type { WorkerResult, TaskDetail, ProviderConfig, ToolChoice, IWorkerInstance, WorkerLiveStatus } from '@/types/index';
+import type { WorkerResult, TaskDetail, ToolChoice, IWorkerInstance, WorkerLiveStatus, ContextUsage, ContextLastUsage } from '@/types/index';
+import type { ResolvedModel } from '@/services/config/model-resolution';
 import type { ConversationEntry } from '@/types/conversation';
 import { EEntryType } from '@/types/index';
 import type { Logger } from '@/infra/logger';
 import type { StateEvent } from '@/infra/state/base-state';
+import type { ModelMessage, PrepareStepFunction, ToolSet } from 'ai';
 import { resolveMaxTurns } from './max-turns';
 import { checkControllerMessagesTool } from '@/services/tools/check-messages';
 
@@ -22,6 +25,22 @@ import { wayangDirForSessionDir } from '@/infra/session-helpers';
 import { resolveWorkspaceRef } from '@/infra/workspace-registry';
 import type { WorkspaceRef } from '@/infra/workspace-registry';
 
+/**
+ * Request-only turn seeded after a compaction leaves nothing verbatim: the
+ * provider rejects an empty messages array, and the model still needs a turn
+ * to answer. It is never written to the conversation. The wording names the
+ * summary's location and tells the model to re-inspect state instead of
+ * re-running finished work from memory — the verbatim zone may be empty, so
+ * "don't repeat" alone would leave the model guessing what is already done.
+ *
+ * Kept identical to COMPACTION_CONTINUATION in conversation-to-sdk-messages.ts;
+ * change both together.
+ */
+const COMPACTION_CONTINUATION =
+  '[Conversation compacted] The context has just been compacted: the summary of completed work is the user message that begins with [Conversation Summary]. '
+  + 'If that summary is not enough to continue safely, re-inspect the necessary state first — '
+  + 'do not re-run an operation that already succeeded just because you do not remember its result.';
+
 export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   private readonly state: WorkerState;
   private readonly logger: Logger;
@@ -29,7 +48,6 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
   /** Workspace this worker executes in — fixed at construction (IWorkerInstance). */
   readonly workspaceDir: string;
   private readonly toolChoice: ToolChoice | undefined;
-  private readonly provider: ProviderConfig;
   private contextManager: ContextManager;
   private readonly ctx: SystemContext;
   /** Live tool execution records — merged into entries at step finish. */
@@ -41,9 +59,35 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
    * workspace stamp.
    */
   private readonly workspaceRef?: WorkspaceRef;
+  /**
+   * Summarizing compactions performed in the current run (issue #90). Capped
+   * at MAX_COMPACTIONS_PER_RUN: past the limit a full context degrades to
+   * truncation only, so a context that refills after every compaction cannot
+   * keep the worker in a summarize loop.
+   */
+  private compactionsThisRun = 0;
+  /**
+   * True once THIS run compacted or truncated its context. From that point on
+   * every later step sends the messages rebuilt from the conversation — the
+   * SDK's own message list still holds the pre-compaction history and would
+   * silently undo the compaction. Reset per run; a compaction carried over
+   * from an earlier stage is already baked into the run's initial messages.
+   */
+  private contextOverriddenThisRun = false;
+  /**
+   * Description of the task the CURRENT run executes (#90). The task prompt
+   * is appended as a user entry in run(); a compaction between two steps
+   * summarizes everything before its marker, including that entry. To keep the
+   * model aware of what it is doing, the description is excluded from the
+   * summarizer input and re-injected into every rebuilt post-compaction
+   * request (see rebuiltStep()). Reset per run.
+   */
+  private currentTaskDescription?: string;
+  /** uuid of the current run's task-description entry (excluded from summaries). */
+  private currentTaskEntryUuid?: string;
 
   constructor(
-    provider: ProviderConfig,
+    model: ResolvedModel,
     ctx: SystemContext,
     skills: SkillRegistry,
     /** Tool-choice mode (worker.toolChoice in config). Falls back to 'auto' —
@@ -56,8 +100,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
      *  for callers without a task context (legacy tasks, direct construction). */
     workspaceDir?: string,
   ) {
-    super(provider);
-    this.provider = provider;
+    super(model);
     this.ctx = ctx;
     this.logger = ctx.logger;
     this.workspaceDir = workspaceDir ?? ctx.workspaceDir;
@@ -72,14 +115,15 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       ctx.logger,
       this.workspaceRef,
     );
-    // No context window budget: workers never call isFull()/compact today,
-    // so passing provider.contextWindowTokens would be a dead setting.
-    // The prompt is built for THIS worker's workspace, not the process
-    // workspace: project rules (AGENTS.md) and the Environment section must
-    // describe the directory the worker's tools actually run in.
+    // The model's context window drives worker-side compaction (issue #90):
+    // ContextManager compares it against the real per-step usage and the
+    // local estimate. The prompt is built for THIS worker's workspace, not
+    // the process workspace: project rules (AGENTS.md) and the Environment
+    // section must describe the directory the worker's tools actually run in.
     this.contextManager = new ContextManager(
       this.state,
       buildWorkerSystemPrompt(this.ctx, skills, this.workspaceDir),
+      model.contextWindowTokens,
     );
   }
 
@@ -115,6 +159,15 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
 
     // Reset terminal result for this run
     this._terminalResult = null;
+    // Per-run compaction bookkeeping: a new run starts with a fresh budget and
+    // no step override (a compaction from an earlier stage already lives in
+    // this run's initial messages).
+    this.compactionsThisRun = 0;
+    this.contextOverriddenThisRun = false;
+    // The current task description is re-injected after a compaction, so it
+    // must be tracked per run (a multi-stage worker runs several tasks).
+    this.currentTaskDescription = task.description;
+    this.currentTaskEntryUuid = generateId('u');
 
     // --- Turn identity: one worker run = one turn ---
     // The engine passes the task's execution turn id; rootTurnId is inherited
@@ -140,7 +193,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     const promptTs = nowISO();
     this.state.append('conversation', applyTurnEnvelope({
       type: EEntryType.User,
-      uuid: generateId('u'),
+      uuid: this.currentTaskEntryUuid,
       parentUuid: null,
       sessionId: this.ctx.sessionId,
       timestamp: promptTs,
@@ -156,6 +209,10 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     for (const m of this.drainInbox()) {
       this.appendControllerMessageEntry(m.content, turnEnv);
     }
+
+    // Publish the opening context snapshot (estimate) so the usage state is
+    // never null while the task runs; every step refreshes it with real usage.
+    this.updateContextUsage();
 
     // Controller-message injection (see utils/inbox-injection): before each
     // LLM step, newly arrived inbox messages become `[Controller message]`
@@ -190,7 +247,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       toolChoice: this.toolChoice ?? 'auto',
       maxSteps: maxTurns === Infinity ? undefined : maxTurns,
       stopTools: ['done', 'fail'],
-      prepareStep: injection.prepareStep,
+      prepareStep: (step) => this.prepareStep(step, injection),
       onStreamError: (err) => {
         this.logger.error({ workerId: this.id, err }, 'LLM stream error');
       },
@@ -198,13 +255,18 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
         const entry = buildAssistantEntry(event, this.ctx.sessionId, undefined, {
           startedAt: meta?.startedAt,
           firstTokenAt: meta?.firstTokenAt,
-          temperature: this.provider.temperature,
-          maxOutputTokens: this.provider.maxOutputTokens,
+          temperature: this.resolvedModel.temperature,
+          maxOutputTokens: this.resolvedModel.maxOutputTokens,
           recordedToolCalls: (toolCallId) => this.recorder.lookup(toolCallId),
         });
         applyTurnEnvelope(entry, turnEnv);
         syncStepTimestamps(entry);
         this.state.append('conversation', entry);
+
+        // Feed this step's real prompt size to the context manager and refresh
+        // the usage snapshot. The next prepareStep reads it and compacts when
+        // the context is full (issue #90).
+        this.updateContextUsage(event.usage);
 
         // Log step details for debugging
         const toolNames = entry.toolCalls?.map(tc => tc.toolName) ?? [];
@@ -253,6 +315,177 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
       error: capped
         ? `Reached step limit ${maxTurns} without done/fail (finishReason=${finish})`
         : `Worker loop ended without done/fail (steps=${stepCount}, finishReason=${finish})`,
+    };
+  }
+
+  /**
+   * prepareStep hook (issue #90): the point between two steps of the SDK's
+   * step loop — it runs right after the previous step's onStepFinish (which
+   * reported that step's usage) and before the next request goes out.
+   *
+   * A full context is compacted here; from then on every later step must send
+   * the messages rebuilt from the conversation, because the SDK re-derives
+   * each step's base from its own append-only response list and would silently
+   * resurrect the pre-compaction history.
+   *
+   * Stays synchronous (and byte-identical to the injection hook) unless a
+   * compaction is actually needed, so runs that never fill up pay nothing.
+   */
+  private prepareStep(
+    step: Parameters<PrepareStepFunction<ToolSet>>[0],
+    injection: ReturnType<typeof createInboxInjection>,
+  ): ReturnType<PrepareStepFunction<ToolSet>> {
+    // Inbox first: a message injected now is part of the context the compaction
+    // decision is made on.
+    const injected = injection.prepareStep(step);
+    if (this.contextManager.isFull()) {
+      return this.compactForNextStep();
+    }
+    if (this.contextOverriddenThisRun) {
+      return this.rebuiltStep();
+    }
+    return injected;
+  }
+
+  /** Messages + system prompt for a step served from the compacted context. */
+  private rebuiltStep(): { messages: ModelMessage[]; system: string } {
+    const messages = this.contextManager.getMessages();
+    // A compaction between two steps leaves the verbatim zone empty (the
+    // summary lives in the system prompt) — providers reject an empty messages
+    // array, and a truncated window may start mid-turn. Seed a request-only
+    // continuation turn in that case; it is not persisted, so the next rebuild
+    // is driven by the reply alone.
+    const needsSeed = messages.length === 0 || messages[0]?.role !== 'user';
+    if (needsSeed) {
+      return {
+        messages: [{ role: 'user', content: this.seedContent() }, ...messages],
+        system: this.contextManager.getSystemPrompt(),
+      };
+    }
+    // The verbatim zone starts with a user turn (e.g. after a truncation that
+    // kept the task prompt). If the CURRENT task description was still cut,
+    // re-inject it ahead of the surviving history so the model always knows
+    // what it is working on.
+    if (this.currentTaskDescription !== undefined && !this.messagesContainTask(messages)) {
+      return {
+        messages: [{ role: 'user', content: `[Current task]\n${this.currentTaskDescription}` }, ...messages],
+        system: this.contextManager.getSystemPrompt(),
+      };
+    }
+    return { messages, system: this.contextManager.getSystemPrompt() };
+  }
+
+  /** The seed's text: the compaction notice plus the current task description. */
+  private seedContent(): string {
+    return this.currentTaskDescription === undefined
+      ? COMPACTION_CONTINUATION
+      : `${COMPACTION_CONTINUATION}\n\n[Current task]\n${this.currentTaskDescription}`;
+  }
+
+  /** Is the current task description already in the verbatim messages? */
+  private messagesContainTask(messages: ModelMessage[]): boolean {
+    const task = this.currentTaskDescription;
+    if (task === undefined) return true;
+    return messages.some((message) => message.role === 'user' && message.content === task);
+  }
+
+  /**
+   * Compact (or, past the per-run limit, truncate) before the next step and
+   * hand back the rebuilt request. Summarizing uses a separate generateText
+   * call, so it never counts against the run's maxTurns step budget.
+   */
+  private async compactForNextStep(): Promise<{ messages: ModelMessage[]; system: string }> {
+    if (this.compactionsThisRun >= MAX_COMPACTIONS_PER_RUN) {
+      this.logger.warn(
+        { workerId: this.id, compactions: this.compactionsThisRun, limit: MAX_COMPACTIONS_PER_RUN },
+        'Compaction limit reached — truncating history instead of summarizing',
+      );
+      truncateHistoryHalf({
+        state: this.state,
+        contextManager: this.contextManager,
+        logger: this.logger,
+      });
+    } else {
+      const result = await compactContext({
+        state: this.state,
+        contextManager: this.contextManager,
+        model: this.model,
+        modelName: this.resolvedModel.modelName,
+        logger: this.logger,
+        // The current task description is re-injected into the rebuilt request
+        // (see rebuiltStep), so it is left out of the summarizer input: a
+        // summary could otherwise paraphrase it away while the verbatim zone is
+        // empty, leaving the model unable to say what its task is.
+        excludeEntryUuids: this.currentTaskEntryUuid !== undefined ? [this.currentTaskEntryUuid] : [],
+      });
+      // A no-op (too few entries) must not burn the per-run budget.
+      if (result.outcome === 'skipped') return this.rebuiltStep();
+      this.compactionsThisRun++;
+    }
+    this.contextOverriddenThisRun = true;
+    this.updateContextUsage();
+    return this.rebuiltStep();
+  }
+
+  /**
+   * Refresh dynamicState.contextUsage (same shape as the controller's).
+   *
+   * Prefers the real prompt size reported by the provider (inputTokens of the
+   * step that just finished); falls back to the local estimate when usage is
+   * unavailable. The real value also feeds the context manager so compaction
+   * triggers on real usage, not the (under)estimator.
+   */
+  private updateContextUsage(stepUsage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  }): void {
+    const contextWindowTokens = this.contextManager.getContextWindowTokens();
+    const reported = stepUsage?.inputTokens;
+    const hasReported = typeof reported === 'number' && Number.isFinite(reported) && reported > 0;
+    if (hasReported) {
+      this.contextManager.reportRealUsage(reported);
+    }
+    const usedTokens = hasReported ? reported : this.contextManager.getEstimatedTokens();
+    const lastUsage = this.findLastStepUsage() ?? this.toLastUsage(stepUsage);
+    const usage: ContextUsage = {
+      usedTokens,
+      contextWindowTokens,
+      ratio: contextWindowTokens > 0 ? usedTokens / contextWindowTokens : 0,
+      source: hasReported ? 'usage' : 'estimate',
+      breakdown: this.contextManager.getContextBreakdown(),
+      ...(lastUsage && { lastUsage }),
+    };
+    this.state.set('dynamicState.contextUsage', usage);
+  }
+
+  /** Newest provider-reported usage in the conversation, if any. */
+  private findLastStepUsage(): ContextLastUsage | undefined {
+    const conversation = this.state.get<ConversationEntry[]>('conversation') ?? [];
+    for (let i = conversation.length - 1; i >= 0; i--) {
+      const entry = conversation[i]!;
+      if (entry.type !== EEntryType.Assistant) continue;
+      const usage = this.toLastUsage(entry.message.usage);
+      if (usage) return usage;
+    }
+    return undefined;
+  }
+
+  /** Normalize a step usage payload, or undefined when the provider gave none. */
+  private toLastUsage(usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  }): ContextLastUsage | undefined {
+    if (!usage) return undefined;
+    const { inputTokens, outputTokens, cachedInputTokens } = usage;
+    if (inputTokens === undefined && outputTokens === undefined && cachedInputTokens === undefined) {
+      return undefined;
+    }
+    return {
+      inputTokens: inputTokens ?? 0,
+      outputTokens: outputTokens ?? 0,
+      cachedInputTokens: cachedInputTokens ?? 0,
     };
   }
 

@@ -15,6 +15,48 @@ const USER_INTERRUPT_REPLAY =
   + 'partial — treat it as incomplete context, not as a finished answer or instructions.';
 
 /**
+ * Request-only seed for a request whose first message is not a `user` turn
+ * (issue #95).
+ *
+ * The summary is a normal `user` entry in the message flow, but a compacted
+ * replay can still OPEN with a retained assistant/system entry — and some
+ * OpenAI-compatible gateways (notably the GLM MaaS endpoint) validate the
+ * message sequence strictly and reject a request whose first message is not
+ * `user`. This mirrors the worker's own continuation seed (WorkerAgent
+ * rebuiltStep / COMPACTION_CONTINUATION); keep the two paths in sync.
+ *
+ * The seed is request-only — it is never appended to the conversation and
+ * therefore never persisted or re-summarized.
+ */
+export const COMPACTION_CONTINUATION =
+  '[Conversation compacted] The context has just been compacted: the summary of completed work is the user message that begins with [Conversation Summary]. '
+  + 'If that summary is not enough to continue safely, re-inspect the necessary state first — '
+  + 'do not re-run an operation that already succeeded just because you do not remember its result.';
+
+/**
+ * Guarantee the replayed message list OPENS with a `user` turn.
+ *
+ * Pure: returns `messages` unchanged when the first message already has the
+ * `user` role; otherwise (empty list, or a leading assistant/tool/system
+ * message — e.g. a compacted replay of retained originals) returns a new
+ * array with the seed prepended. The seed is request-only — it is never
+ * appended to the conversation and therefore never persisted or
+ * re-summarized.
+ *
+ * Same contract as the worker's rebuiltStep seeding (messages[0] must be
+ * user), so the two agent paths cannot drift apart on gateway validation.
+ */
+export function ensureUserTurn(
+  messages: ModelMessage[],
+  seed: string = COMPACTION_CONTINUATION,
+): ModelMessage[] {
+  if (messages.length > 0 && messages[0]?.role === 'user') {
+    return messages;
+  }
+  return [{ role: 'user' as const, content: seed }, ...messages];
+}
+
+/**
  * Convert ConversationEntry[] to Vercel AI SDK ModelMessage[].
  *
  * Each AssistantEntry maps directly to 1-2 ModelMessages — no merging needed.
@@ -112,12 +154,21 @@ export function conversationToSdkMessages(entries: ConversationEntry[]): ModelMe
         break;
       }
       case EEntryType.System:
-        // Interrupt markers are the one system entry the LLM must see: the
-        // turn was cut by the user, and the next turn must not mistake the
-        // partial before it for a finished answer. All other system entries
-        // (compact markers, error records) stay skipped.
+        // Interrupt markers are one system entry the LLM must see: the turn
+        // was cut by the user, and the next turn must not mistake the partial
+        // before it for a finished answer. Compact markers of the current
+        // format are replayed too — the summary is a user entry right after
+        // them, and the marker tells the model that the entries above are the
+        // retained recent history. Legacy markers (no summaryEntryUuid) carry
+        // the whole summary in `content` and are injected via the system
+        // prompt on restore, so replaying them here would duplicate it.
         if (entry.subtype === ESystemSubtype.Interrupted) {
           messages.push({ role: 'system' as const, content: USER_INTERRUPT_REPLAY });
+        } else if (
+          entry.subtype === ESystemSubtype.Compact
+          && entry.compactMeta?.summaryEntryUuid !== undefined
+        ) {
+          messages.push({ role: 'system' as const, content: entry.content });
         }
         break;
 

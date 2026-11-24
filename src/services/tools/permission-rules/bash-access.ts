@@ -1,8 +1,15 @@
 // The bash gate proper: candidate sweep + destructive tier + `-c` / substitution recursion.
 
-import { classifyRedirections, tokenizeShellLite } from '@/services/tools/shell-lexer';
+import { classifyRedirections, tokenizeShellLite, unquotedHeredocOperator, type ShellSegment } from '@/services/tools/shell-lexer';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
-import { evaluateCapabilityGate, redirectWriteScopeAsk } from './bash-capability';
+import { evaluateCapabilityGate, redirectWriteScopeAsk, detachedExecutionAsk } from './bash-capability';
+import {
+  applyAssignmentPrefix,
+  evaluateForLoop,
+  evaluateProcessSubstitutions,
+  unfoldLaunchers,
+  unfoldXargs,
+} from './bash-compound';
 import { segmentAccess, unanalyzedInnerCommand, unverifiedReadOnlyCommand } from './bash-classification';
 import { isDangerousCommandLine } from './bash-head';
 import { commandAccess, extractPathCandidates, type BashCandidate } from './bash-paths';
@@ -10,6 +17,7 @@ import { applyCdChain } from './cd-chain';
 import { expandHome, expandHomeVars } from './home-expansion';
 import { evaluateShellScripts, unanalyzedScriptFile } from './shell-script';
 import { evaluateSubstitutions } from './substitutions';
+import { sensitiveWordsIn } from './sensitive-scan';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
 /**
@@ -27,15 +35,42 @@ function fallbackSensitiveHit(
   scope: WorkerAccessScope,
   expandedCommand: string,
 ): ToolAccessDecision | undefined {
-  for (const raw of expandedCommand.split(/[\s=]+/)) {
-    const word = raw.replace(/^['"]+/, '').replace(/['"]+$/, '');
-    if (!word.startsWith('/') && !word.startsWith('~')) continue;
-    const expanded = expandHome(word);
+  return sensitiveWordsIn(scope, expandedCommand);
+}
+
+/**
+ * The deny + sensitive-hit parts of the candidate sweep, for the unquoted-
+ * heredoc branch: that branch returns before the main sweep below runs, so
+ * without this pre-sweep a sensitive argv word (`cat ~/.ssh/id_rsa <<EOF`)
+ * would be downgraded from a hard refusal (`sensitiveMode: 'deny'`) to the
+ * heredoc ask — and lose its matched entry in ask mode.
+ *
+ * Same extraction, same per-candidate access, same policy as the main sweep:
+ * a candidate the policy refuses returns as the line's DENY (which therefore
+ * outranks the heredoc ask), and the first ask-mode sensitive candidate is
+ * handed back as the `hit` for the caller's ask to carry (like the
+ * destructive and detached tiers do). Non-sensitive candidates are not
+ * reported — the heredoc ask carries no `askPaths` either way, exactly as
+ * before.
+ */
+function heredocSensitiveOutcome(
+  scope: WorkerAccessScope,
+  segments: ShellSegment[],
+): { deny?: ToolAccessDecision; hit?: ToolAccessDecision } {
+  let hit: ToolAccessDecision | undefined;
+  for (const candidate of extractPathCandidates(segments)) {
+    const expanded = expandHome(candidate.path);
     if (expanded.unresolvable) continue;
-    const verdict = decidePath(scope, expanded.path, 'write');
-    if (verdict.sensitive) return toToolDecision(verdict, 'write');
+    const verdict = decidePath(scope, expanded.path, candidate.access);
+    if (verdict.decision === 'deny') return { deny: toToolDecision(verdict, candidate.access) };
+    if (verdict.sensitive && hit === undefined) {
+      hit = {
+        ...toToolDecision(verdict, candidate.access),
+        ...(candidate.reason !== undefined && { reason: candidate.reason }),
+      };
+    }
   }
-  return undefined;
+  return hit === undefined ? {} : { hit };
 }
 
 /**
@@ -57,8 +92,13 @@ function fallbackSensitiveHit(
  * `unknown` (which could not even reach that rule) to a named `read`.
  *
  * Ordering: a hard refusal (only reachable under `sensitiveMode: 'deny'`, from
- * the candidate sweep or the `cd` slice) → destructive-command tier → a shell
- * `-c` script judged by these same rules (see `evaluateShellScripts`) → dynamic
+ * the candidate sweep or the `cd` slice) → the unquoted-heredoc branch, which
+ * runs the sweep's deny/hit part BEFORE its own fail-closed ask so a
+ * sensitive line can never be downgraded (see `heredocSensitiveOutcome`) →
+ * destructive-command tier → the
+ * background / detached tier (`cmd &`, `nohup`, `setsid`, `disown` — a process
+ * outside the task lifecycle, see `detachedExecutionAsk`) → a shell `-c`
+ * script judged by these same rules (see `evaluateShellScripts`) → dynamic
  * constructs (a command substitution that is not read-only, an output
  * redirection into a real file, a command the lexer cannot parse) → the
  * read-only-unverified escalation (a table command that failed its deferred
@@ -122,16 +162,68 @@ export function evaluateBashCommand(
     };
   }
 
-  // The `cd` slice: a leading run of literal `cd <dir>` segments chained ONLY by
-  // `&&` is walked with a local cwd CURSOR (see `applyCdChain`), and each target
-  // is judged as a read against the scope it lands in. Consumed segments drop
-  // out of the analysis below, so the rest of the line is judged exactly as
+  // #86 — an unquoted here-doc body is EXPANDED by the real shell (a
+  // `$(rm -rf x)` inside it runs), while the lexer skips the whole body as
+  // data. The gate cannot judge a command whose body it never sees: ask for the
+  // whole line. A quoted delimiter (`<<'EOF'`) keeps the body literal and stays
+  // on the ordinary path below.
+  //
+  // A sensitive hit must not be swallowed by that ask: the main candidate
+  // sweep never runs for a heredoc line, so its deny/hit part runs HERE first
+  // — under `sensitiveMode: 'deny'` the refusal wins (the ask never
+  // downgrades a hard deny), and in ask mode the heredoc ask carries the hit
+  // (matchedEntry / source / resolvedPath) like the destructive tier does,
+  // so the approval names the credential location it touches.
+  const heredoc = unquotedHeredocOperator(tokenized.segments);
+  if (heredoc !== undefined) {
+    const { deny, hit } = heredocSensitiveOutcome(scope, tokenized.segments);
+    if (deny !== undefined) return deny;
+    return {
+      decision: 'ask',
+      matchedRule: 'dynamic-shell',
+      reason:
+        `heredoc ${heredoc} body may contain command substitutions — the bash capability gate ` +
+        'does not analyze heredoc bodies, controller approval is required (fail-closed)',
+      ...(hit !== undefined && {
+        matchedEntry: hit.matchedEntry,
+        matchedSource: hit.matchedSource,
+        resolvedPath: hit.resolvedPath,
+        sensitive: true,
+      }),
+    };
+  }
+
+  // #86 — a literal `for` loop is expanded and every iteration judged before
+  // the per-segment gate runs (see `evaluateForLoop`).
+  const loop = evaluateForLoop(scope, expandedCommand, depth);
+  if (loop !== undefined) return loop;
+
+  // #86 — a literal assignment prefix runs nothing: drop it, remember its
+  // value and substitute `$VAR` in the rest of the line. `X=$(cmd)` is judged
+  // recursively here; `export` / array shapes ask explicitly.
+  const assignment = applyAssignmentPrefix(scope, tokenized.segments, depth);
+  if (assignment.decision !== undefined) return assignment.decision;
+
+  // #86 — `timeout <dur> cmd` / `watch -n <n> cmd` are unfolded so the inner
+  // command meets the ordinary tiers (destructive, `-c`, substitutions,
+  // capability); an unknown launcher option leaves the shape untouched (ask).
+  const unfolded = unfoldLaunchers(assignment.segments);
+
+  // #86 — `xargs <cmd>` is replaced by its inner command. A placeholder or
+  // `-I` / `-n` / `-L` / `-a` operand is not knowable statically and asks.
+  const xargs = unfoldXargs(unfolded);
+  if (xargs.decision !== undefined) return xargs.decision;
+
+  // The `cd` slice: a leading run of literal `cd <dir>` segments chained by
+  // `&&` or `;` is walked with a local cwd CURSOR (see `applyCdChain`), and each
+  // target is judged as a read against the scope it lands in. Consumed segments
+  // drop out of the analysis below, so the rest of the line is judged exactly as
   // before — against the directory the shell will actually be in. The verdict
   // for a target that lands elsewhere is an ASK carrying its own reason (or, in
   // `sensitiveMode: 'deny'`, the policy's refusal). Nothing here can loosen a
   // judgement: shapes the slice does not recognize (`cd -`, `cd $X`, `(cd …`,
-  // `cd a; cd b`, pushd/popd) are left untouched for the #51 fallback.
-  const cdChain = applyCdChain(scope, tokenized.segments);
+  // pushd/popd) are left untouched for the #51 fallback.
+  const cdChain = applyCdChain(scope, xargs.segments);
   if (cdChain.decision?.decision === 'deny') return cdChain.decision;
   const cdAsk = cdChain.decision?.decision === 'ask' ? cdChain.decision : undefined;
 
@@ -196,7 +288,14 @@ export function evaluateBashCommand(
   // The asking paths are attached only to the path-candidate asks. The
   // escalations below (`dangerous-bash`, `dynamic-shell`, `home-other-user`)
   // are NOT "one path, once" decisions and therefore carry none — the approval
-  // memory must not reuse a grant for them.
+  // memory must not reuse a grant for them. ONE exception (review round 3,
+  // C5): the destructive tier attaches the collected askPaths when the line's
+  // access is NOT a pure read, so the approval names the concrete targets
+  // (`find /etc … -delete` asks about /etc). A read-access destructive line
+  // (`sudo cat <path>`) still carries none: `reusableGrantKeys` reuses read
+  // grants, so attaching them there would let an old read grant cover the
+  // escalated run silently. Write / unknown lines never reuse grants, so the
+  // extra field is disclosure-only there.
   if (sensitiveAsk) {
     sensitiveAsk = { ...sensitiveAsk, access: lineAccess, ...(askPaths.length > 0 && { askPaths }) };
   }
@@ -220,11 +319,43 @@ export function evaluateBashCommand(
     // stays in `matchedRule` (`dangerous-bash`). Consumers (approval
     // description, signal payload, TUI) key the hit block off `sensitive`, and
     // a dangerous command that hits `.ssh` must show that block too.
+    //
+    // C5: carry the asking paths whenever the line is not a pure read — the
+    // approval then shows WHAT the destructive spelling would act on. See the
+    // comment above the `sensitiveAsk` merge for why read lines are excluded
+    // (grant reuse) and why write / unknown lines are safe.
     const hit = sensitiveAsk ?? (firstAsk?.matchedEntry !== undefined ? firstAsk : undefined);
     return {
       decision: 'ask',
       matchedRule: 'dangerous-bash',
       access: lineAccess,
+      ...(lineAccess !== 'read' && askPaths.length > 0 && { askPaths }),
+      ...(hit !== undefined && {
+        matchedEntry: hit.matchedEntry,
+        matchedSource: hit.matchedSource,
+        resolvedPath: hit.resolvedPath,
+        sensitive: true,
+      }),
+    };
+  }
+
+  // #86 — background / detached execution (`cmd &`, `nohup`, `setsid`,
+  // `disown`): the process escapes the task lifecycle (the worker cannot
+  // observe its exit, abort / abortAll cannot clean it up), so it may never
+  // ride a read-only or write-in-scope verdict — even an inner command this
+  // gate fully judged. Runs BEFORE the `-c` script tier, which would otherwise
+  // allow `nohup bash -c '<judged read>'` through the inner verdict, and
+  // carries the sensitive hit the candidate sweep found, exactly like the
+  // destructive tier (#42). The ask carries no `askPaths`: an approval-memory
+  // grant for the inner command must not cover a detached run.
+  const detachedReason = detachedExecutionAsk(segments);
+  if (detachedReason !== undefined) {
+    const hit = sensitiveAsk ?? (firstAsk?.matchedEntry !== undefined ? firstAsk : undefined);
+    return {
+      decision: 'ask',
+      matchedRule: 'background-capability',
+      access: lineAccess,
+      reason: detachedReason,
       ...(hit !== undefined && {
         matchedEntry: hit.matchedEntry,
         matchedSource: hit.matchedSource,
@@ -352,6 +483,13 @@ export function evaluateBashCommand(
   // unanalyzed-inner-command shapes were checked above).
   const capabilityAsk = evaluateCapabilityGate(scope, segments, cdChain.cwd ?? scope.workspace);
   if (capabilityAsk) return { ...capabilityAsk, access: lineAccess };
+
+  // #86 — process substitutions (`<(cmd)` / `>(cmd)`) are judged after the
+  // capability gate: the outer verb keeps its own class (`bash <(true)` stays
+  // exec-capability), while a read outer verb reaches this tier with the inner
+  // command as the only thing left to judge. Inner deny refuses, inner ask asks.
+  const processAsk = evaluateProcessSubstitutions(scope, segments, depth);
+  if (processAsk) return { ...processAsk, access: lineAccess };
 
   if (firstAllow) return firstAllow;
   // No candidate to judge: the line is a verified read or a write whose

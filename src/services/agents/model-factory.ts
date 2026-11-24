@@ -1,5 +1,5 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import type { ProviderConfig } from '@/types/index';
+import type { ResolvedModel } from '@/services/config/model-resolution';
 
 /**
  * Create a language model using the OpenAI-compatible chat completions endpoint.
@@ -9,11 +9,11 @@ import type { ProviderConfig } from '@/types/index';
  * them back on replay — DeepSeek/GLM-style thinking APIs reject requests whose
  * assistant tool-call messages lack `reasoning_content`.
  */
-export function createModel(provider: ProviderConfig) {
+export function createModel(model: ResolvedModel) {
   const compatible = createOpenAICompatible({
     name: 'wayang',
-    baseURL: provider.endpoint,
-    apiKey: provider.apiKey,
+    baseURL: model.baseURL,
+    apiKey: model.apiKey,
   });
-  return compatible.chatModel(provider.modelName);
+  return compatible.chatModel(model.modelName);
 }

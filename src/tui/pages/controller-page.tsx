@@ -56,6 +56,12 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
     supervisor.controllerAgent, 'dynamicState.busy',
   );
 
+  // Compaction runs outside a turn, so `busy` stays false while it lasts —
+  // subscribe separately for the "compacting…" status and the ESC no-op.
+  const compacting = useWayangState<boolean>(
+    supervisor.controllerAgent, 'dynamicState.compacting',
+  );
+
   // Pending inquiry from controller
   const pendingInquiry = useWayangState<InquireQuestion | null>(
     supervisor.controllerAgent, 'runtimeState.pendingInquiry',
@@ -89,7 +95,7 @@ export function ControllerPage({ onExit }: ControllerPageProps) {
   // otherwise abort the controller's current thinking/streaming. Never
   // touches worker tasks.
   const handleEscape = useMemoizedFn(() => {
-    switch (resolveEscapeAction({ overlayOpen: overlay !== null, busy })) {
+    switch (resolveEscapeAction({ overlayOpen: overlay !== null, busy, compacting })) {
       case 'dismiss-overlay':
         dismissOverlay();
         break;

@@ -5,11 +5,15 @@ import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { expandHome } from './home-expansion';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
-/** File tools gated by the permission middleware for path access. */
-export const FILE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'search_files', 'search_content'] as const;
+/**
+ * File tools gated by the permission middleware for path access.
+ * `inspect_json` is a read_file-shaped read (same path verdicts via
+ * `evaluateFileAccess` — it just parses and projects what it read).
+ */
+export const FILE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'search_files', 'search_content', 'inspect_json'] as const;
 
 /** File tools that only read. Every other file tool counts as a write. */
-const READ_ONLY_FILE_TOOLS: ReadonlySet<string> = new Set(['read_file', 'search_files', 'search_content']);
+const READ_ONLY_FILE_TOOLS: ReadonlySet<string> = new Set(['read_file', 'search_files', 'search_content', 'inspect_json']);
 
 /**
  * Decide a file tool call. `read_file` / `search_files` / `search_content` are

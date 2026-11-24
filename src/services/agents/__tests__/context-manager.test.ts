@@ -1,7 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ContextManager, RECENT_TOKEN_BUDGET } from '@/services/agents/context-manager';
+import {
+  ContextManager,
+  recentTokenBudget,
+  retainedMinTokens,
+  retainedMaxTokens,
+  COMPACT_MARKER_TEXT,
+} from '@/services/agents/context-manager';
 import { EEntryType, ESystemSubtype } from '@/types/index';
-import { estimateTokens, extractContentText } from '@/services/agents/utils/estimate-tokens';
+import { estimateTokens, estimateEntryTokens, extractContentText } from '@/services/agents/utils/estimate-tokens';
 
 /** Minimal state stub — ContextManager only needs get/append. */
 function createMockState(conversation: any[] = []) {
@@ -25,9 +31,49 @@ const makeUser = (uuid: string, content: string) => ({
   message: { role: 'user' as const, content },
 });
 
+/**
+ * A user entry of roughly `tokens` estimated tokens (the estimator uses ~4
+ * chars per ASCII token). Used to drive the retained-zone budget
+ * deterministically.
+ */
+const makeBigUser = (uuid: string, tokens: number) => {
+  const size = Math.max(4, tokens * 4);
+  return makeUser(uuid, `${uuid} ${'x'.repeat(size)}`);
+};
+
 describe('ContextManager', () => {
-  it('should export RECENT_TOKEN_BUDGET', () => {
-    expect(RECENT_TOKEN_BUDGET).toBe(20_000);
+  it('scales the restore budget with the context window', () => {
+    // ≥80k windows keep the historical 20k; smaller windows shrink to 25%,
+    // floored at 4k, so the restored window alone cannot exceed the 60%
+    // compaction threshold.
+    expect(recentTokenBudget(256_000)).toBe(20_000);
+    expect(recentTokenBudget(80_000)).toBe(20_000);
+    expect(recentTokenBudget(32_000)).toBe(8_000);
+    expect(recentTokenBudget(16_000)).toBe(4_000);
+    expect(recentTokenBudget(2_000)).toBe(4_000);
+  });
+
+  describe('retained budget scales with the context window', () => {
+    it('64k window keeps the historical 8k/16k bounds', () => {
+      expect(retainedMaxTokens(64_000)).toBe(16_000);
+      expect(retainedMinTokens(64_000)).toBe(8_000);
+    });
+
+    it('32k window scales to 8k max / 4k min', () => {
+      expect(retainedMaxTokens(32_000)).toBe(8_000);
+      expect(retainedMinTokens(32_000)).toBe(4_000);
+    });
+
+    it('8k window clamps up to 4k max / 2k min', () => {
+      expect(retainedMaxTokens(8_000)).toBe(4_000);
+      expect(retainedMinTokens(8_000)).toBe(2_000);
+    });
+
+    it('huge windows clamp at 16k; the 256k default fallback yields 16k/8k', () => {
+      expect(retainedMaxTokens(1_000_000)).toBe(16_000);
+      expect(retainedMaxTokens(256_000)).toBe(16_000);
+      expect(retainedMinTokens(256_000)).toBe(8_000);
+    });
   });
 
   describe('restoreCompact', () => {
@@ -78,33 +124,42 @@ describe('ContextManager', () => {
   });
 
   describe('compact', () => {
-    it('should append a compact marker entry carrying compactMeta', async () => {
+    it('should append a compact marker followed by a summary user entry', async () => {
       const state = createMockState([
-        makeUser('u1', 'hello'),
-        makeUser('u2', 'world'),
-        makeUser('u3', 'foo'),
-        makeUser('u4', 'bar'),
+        makeBigUser('u1', 5_000),
+        makeBigUser('u2', 5_000),
+        makeBigUser('u3', 5_000),
+        makeBigUser('u4', 5_000),
       ]);
       const cm = new ContextManager(state, 'STATIC PROMPT');
 
       await cm.compact(async () => 'fresh summary');
 
-      expect(state.append).toHaveBeenCalledTimes(1);
+      expect(state.append).toHaveBeenCalledTimes(2);
       const marker = state.append.mock.calls[0][1];
       expect(marker.type).toBe(EEntryType.System);
       expect(marker.subtype).toBe(ESystemSubtype.Compact);
-      expect(marker.content).toBe('fresh summary');
+      expect(marker.content).toBe(COMPACT_MARKER_TEXT);
       expect(marker.compactMeta).toBeDefined();
       expect(marker.compactMeta.summarizedTokenCount).toBeGreaterThan(0);
-      expect(cm.getCompactSummary()).toBe('fresh summary');
+      expect(marker.compactMeta.summaryEntryUuid).toEqual(expect.any(String));
+
+      // The summary is a user entry right after the marker — never in the
+      // system prompt (that path is legacy-restore only).
+      const summaryEntry = state.append.mock.calls[1][1];
+      expect(summaryEntry.type).toBe(EEntryType.User);
+      expect(summaryEntry.uuid).toBe(marker.compactMeta.summaryEntryUuid);
+      expect(summaryEntry.message.content).toBe('[Conversation Summary]\nfresh summary');
+      expect(cm.getCompactSummary()).toBeNull();
+      expect(cm.getSystemPrompt()).not.toContain('fresh summary');
     });
 
     it('should stamp startedAt/endedAt and pass model into the marker compactMeta', async () => {
       const state = createMockState([
-        makeUser('u1', 'hello'),
-        makeUser('u2', 'world'),
-        makeUser('u3', 'foo'),
-        makeUser('u4', 'bar'),
+        makeBigUser('u1', 5_000),
+        makeBigUser('u2', 5_000),
+        makeBigUser('u3', 5_000),
+        makeBigUser('u4', 5_000),
       ]);
       const cm = new ContextManager(state, 'STATIC PROMPT');
 
@@ -121,10 +176,10 @@ describe('ContextManager', () => {
 
     it('should omit compactMeta.model when no model is provided', async () => {
       const state = createMockState([
-        makeUser('u1', 'hello'),
-        makeUser('u2', 'world'),
-        makeUser('u3', 'foo'),
-        makeUser('u4', 'bar'),
+        makeBigUser('u1', 5_000),
+        makeBigUser('u2', 5_000),
+        makeBigUser('u3', 5_000),
+        makeBigUser('u4', 5_000),
       ]);
       const cm = new ContextManager(state, 'STATIC PROMPT');
 
@@ -134,28 +189,172 @@ describe('ContextManager', () => {
       expect(marker.compactMeta.model).toBeUndefined();
     });
 
-    it('should set the verbatim zone start to the pre-compaction length', async () => {
+    it('should replay [retained entries][marker][summary user] after a compaction', async () => {
       const conversation = [
-        makeUser('u1', 'hello'),
-        makeUser('u2', 'world'),
-        makeUser('u3', 'foo'),
-        makeUser('u4', 'bar'),
+        makeBigUser('u1', 5_000),
+        makeBigUser('u2', 5_000),
+        makeBigUser('u3', 5_000),
+        makeBigUser('u4', 5_000),
       ];
       const state = createMockState(conversation);
       const cm = new ContextManager(state, 'STATIC PROMPT');
 
       await cm.compact(async () => 'fresh summary');
 
-      // Marker appended at index 4 — entries before it must NOT be re-sent,
-      // and the marker itself is skipped in conversion.
-      expect(cm.getMessages()).toHaveLength(0);
-      expect(cm.getSystemPrompt()).toContain('[Conversation Summary]\nfresh summary');
+      const messages = cm.getMessages();
+      const contents = JSON.stringify(messages.map((m: any) => m.content));
+      // 4 x 5k: the budget keeps the newest two (10k tokens), drops the rest.
+      expect(contents).toContain('u3');
+      expect(contents).toContain('u4');
+      expect(contents).not.toContain('u1 ');
+      expect(contents).not.toContain('u2 ');
+      // Marker first, then the summary as a user message.
+      expect(messages[messages.length - 2]).toEqual({ role: 'system', content: COMPACT_MARKER_TEXT });
+      const summaryMessage = messages[messages.length - 1] as any;
+      expect(summaryMessage.role).toBe('user');
+      expect(summaryMessage.content).toContain('[Conversation Summary]\nfresh summary');
+      // Nothing reaches the system prompt.
+      expect(cm.getSystemPrompt()).not.toContain('fresh summary');
 
-      // A new entry appended after compaction IS sent verbatim
+      // A new entry appended after compaction is still sent verbatim.
       state.append('conversation', makeUser('u5', 'after compaction'));
-      const messagesAfter = cm.getMessages();
-      expect(messagesAfter).toHaveLength(1);
-      expect(messagesAfter[0]).toMatchObject({ role: 'user', content: 'after compaction' });
+      expect(JSON.stringify(cm.getMessages().map((m: any) => m.content))).toContain('after compaction');
+    });
+
+    it('should keep the retained zone inside the 8k-16k token budget (64k window)', async () => {
+      const state = createMockState([
+        makeBigUser('u1', 3_000),
+        makeBigUser('u2', 3_000),
+        makeBigUser('u3', 3_000),
+        makeBigUser('u4', 3_000),
+        makeBigUser('u5', 3_000),
+      ]);
+      const cm = new ContextManager(state, 'STATIC PROMPT', 64_000);
+
+      await cm.compact(async () => 'summary');
+
+      const messages = cm.getMessages();
+      const retained = messages.slice(0, messages.length - 2);
+      const retainedTokens = retained.reduce((sum, message) => sum + estimateEntryTokens(message), 0);
+      expect(retainedTokens).toBeGreaterThanOrEqual(retainedMinTokens(64_000));
+      expect(retainedTokens).toBeLessThanOrEqual(retainedMaxTokens(64_000));
+      // Three 3k entries = 9k; a fourth would still fit, so the walk stopped
+      // on the lower bound and dropped the oldest two.
+      expect(JSON.stringify(retained.map((m: any) => m.content))).not.toContain('u1 ');
+    });
+
+    it('should stop before the upper bound when one more entry would exceed 16k (64k window)', async () => {
+      // 7k + 10k = 17k > 16k, so the 10k entry is dropped even though the
+      // retained zone is still under the 8k lower bound.
+      const state = createMockState([
+        makeBigUser('u1', 10_000),
+        makeBigUser('u2', 7_000),
+        makeUser('u3', 'small three'),
+        makeUser('u4', 'small four'),
+      ]);
+      const cm = new ContextManager(state, 'STATIC PROMPT', 64_000);
+
+      await cm.compact(async () => 'summary');
+
+      const messages = cm.getMessages();
+      const retained = messages.slice(0, messages.length - 2);
+      const retainedTokens = retained.reduce((sum, message) => sum + estimateEntryTokens(message), 0);
+      expect(retainedTokens).toBeLessThanOrEqual(retainedMaxTokens(64_000));
+      expect(JSON.stringify(retained.map((m: any) => m.content))).not.toContain('u1 ');
+      expect(JSON.stringify(retained.map((m: any) => m.content))).toContain('u2 ');
+    });
+
+    it('should shrink the retained zone on a small window so the compacted context fits', async () => {
+      // 8k window: the zone budget clamps to 4k/2k. Twelve 1k entries — the
+      // zone keeps the newest two (~2k) and the summary covers the rest, so
+      // the compacted context no longer exceeds the window (a fixed 16k zone
+      // could never fit).
+      const conversation = Array.from({ length: 12 }, (_, i) => makeBigUser(`u${i + 1}`, 1_000));
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT', 8_000);
+
+      await cm.compact(async () => 'compressed');
+
+      const messages = cm.getMessages();
+      const retained = messages.slice(0, messages.length - 2);
+      const retainedTokens = retained.reduce((sum, message) => sum + estimateEntryTokens(message), 0);
+      expect(retainedTokens).toBeLessThanOrEqual(retainedMaxTokens(8_000));
+      // The whole post-compaction prompt (static + zone + marker + summary)
+      // fits the window.
+      expect(cm.getEstimatedTokens()).toBeLessThanOrEqual(8_000);
+    });
+
+    it('should keep an assistant step and its tool results together in the retained zone', async () => {
+      // An AssistantEntry is atomic (toolCalls + toolResults live on it), so
+      // the retained zone can never cut a call away from its result.
+      const state = createMockState([
+        makeBigUser('u1', 5_000),
+        makeBigUser('u2', 5_000),
+        makeBigUser('u3', 5_000),
+        {
+          type: EEntryType.Assistant,
+          uuid: 'a-tools',
+          parentUuid: null,
+          sessionId: 's-cm',
+          timestamp: new Date().toISOString(),
+          message: { role: 'assistant' as const, content: '' },
+          toolCalls: [{ toolCallId: 'c1', toolName: 'bash', arguments: JSON.stringify({ command: 'ls' }) }],
+          toolResults: [{ toolCallId: 'c1', toolName: 'bash', output: { type: 'text', value: 'file' } }],
+        },
+      ]);
+      const cm = new ContextManager(state, 'STATIC PROMPT');
+
+      await cm.compact(async () => 'summary');
+
+      const messages = cm.getMessages();
+      const callIds = new Set<string>();
+      const resultIds = new Set<string>();
+      for (const message of messages) {
+        if (message.role === 'assistant' && Array.isArray(message.content)) {
+          for (const part of message.content) {
+            if (part.type === 'tool-call') callIds.add(part.toolCallId);
+          }
+        }
+        if (message.role === 'tool') {
+          for (const part of message.content) {
+            if (part.type === 'tool-result') resultIds.add(part.toolCallId);
+          }
+        }
+      }
+      expect(callIds.has('c1')).toBe(true);
+      expect(resultIds.has('c1')).toBe(true);
+      expect([...callIds].every((id) => resultIds.has(id))).toBe(true);
+    });
+
+    it('should skip the compaction when the retained zone would cover every entry', async () => {
+      const state = createMockState([
+        makeBigUser('u1', 500),
+        makeBigUser('u2', 500),
+        makeBigUser('u3', 500),
+        makeBigUser('u4', 500),
+      ]);
+      const summarizer = vi.fn(async () => 'unused summary');
+      const cm = new ContextManager(state, 'STATIC PROMPT');
+
+      const result = await cm.compact(summarizer);
+
+      expect(result).toEqual({ skipped: true, keptEntries: 4 });
+      expect(summarizer).not.toHaveBeenCalled();
+      expect(state.append).not.toHaveBeenCalled();
+      expect(cm.getMessages()).toHaveLength(4);
+      expect(cm.getSystemPrompt()).not.toContain('unused summary');
+    });
+
+    it('should skip the compaction below four entries', async () => {
+      const state = createMockState([makeBigUser('u1', 500), makeBigUser('u2', 500)]);
+      const summarizer = vi.fn(async () => 'unused summary');
+      const cm = new ContextManager(state, 'STATIC PROMPT');
+
+      const result = await cm.compact(summarizer);
+
+      expect(result).toEqual({ skipped: true, keptEntries: 2 });
+      expect(summarizer).not.toHaveBeenCalled();
+      expect(state.append).not.toHaveBeenCalled();
     });
   });
 
@@ -457,16 +656,18 @@ describe('ContextManager', () => {
 
   describe('truncateHistory (compaction fallback)', () => {
     it('shifts the verbatim zone so recent entries after the summary are still sent', async () => {
-      const conversation = Array.from({ length: 6 }, (_, i) => makeUser(`u${i}`, `old ${i}`));
+      const conversation = Array.from({ length: 6 }, (_, i) => makeBigUser(`u${i}`, 5_000));
       const state = createMockState(conversation);
       const cm = new ContextManager(state, 'STATIC PROMPT');
-      await cm.compact(async () => 'summary'); // startIdx = 6, marker appended at 6
+      // 6 x 5k → the retained zone keeps the newest two, marker appended at 6.
+      await cm.compact(async () => 'summary');
       state.append('conversation', makeUser('u-new-1', 'new one'));
       state.append('conversation', makeUser('u-new-2', 'new two'));
 
-      // 6 old + marker + 2 new = 9 entries; keep the newest 4 (old5, marker, new1, new2).
+      // 6 old + marker + summary + 2 new = 10 entries; keep the newest 4
+      // (marker, summary, new1, new2).
       const removed = cm.truncateHistory(4);
-      expect(removed).toBe(5);
+      expect(removed).toBe(6);
 
       const sent = cm.getMessages().map((m: any) => m.content);
       expect(sent).toContain('new one');
@@ -532,8 +733,8 @@ describe('ContextManager', () => {
 
     it('should clear the real usage after a compaction', async () => {
       const conversation = [
-        makeUser('u1', 'one'), makeUser('u2', 'two'),
-        makeUser('u3', 'three'), makeUser('u4', 'four'),
+        makeBigUser('u1', 5_000), makeBigUser('u2', 5_000),
+        makeBigUser('u3', 5_000), makeBigUser('u4', 5_000),
       ];
       const state = createMockState(conversation);
       const cm = new ContextManager(state, 'STATIC PROMPT', 42_000);

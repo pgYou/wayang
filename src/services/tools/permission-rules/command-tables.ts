@@ -45,8 +45,23 @@ export interface CommandTableEntry {
    * (`isWriteSegment` / `isWriteCommandHead`).
    */
   readonly writeFlags?: readonly string[];
+  /**
+   * Flags that put the verb in the DESTRUCTIVE tier (`sed -i`, `find
+   * -delete`): the flag deletes or rewrites what the command names, so the
+   * line asks like `rm -rf` WHATEVER its targets are — inside the workspace
+   * too. `writeFlags` only fixes the direction of a write that the scope
+   * rules then judge; `dangerFlags` is stricter on purpose: these spellings
+   * never run on a scope verdict alone.
+   */
+  readonly dangerFlags?: readonly string[];
   /** The destructive tier asks for this verb whatever its targets are. */
   readonly danger?: boolean;
+  /**
+   * The verb is a pure version probe (`node --version`, `npm -v`): read — but
+   * ONLY when the whole segment is exactly the flag and nothing else. Any other
+   * argument keeps the verb's own capability (exec / unknown).
+   */
+  readonly versionOnly?: boolean;
   /** The wrapper tier strips this prefix to find the command position. */
   readonly wrapper?: boolean;
   /**
@@ -84,6 +99,11 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
   ['uniq', { capability: 'read' }],
   ['tr', { capability: 'read' }],
   ['diff', { capability: 'read' }],
+  // Checksum / digest probes: they only read the files they name.
+  ['sha256sum', { capability: 'read' }],
+  ['md5sum', { capability: 'read' }],
+  ['shasum', { capability: 'read' }],
+  ['cksum', { capability: 'read' }],
   // The read/inert duplicates resolved to the conservative `read` (see the
   // module doc): bare shapes still allow silently — their operands resolve
   // against the in-workspace cursor — but a relative operand now goes through
@@ -96,8 +116,10 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
   ['pwd', { capability: 'read' }],
   // Conditional reads: the write flags are part of the write-direction split
   // (`sed -i`, `find -delete`), the script/subcommand conditions live with
-  // `classifySegment` / `isReadOnlyGitCommand`.
-  ['sed', { capability: 'read', writeFlags: ['-i', '--in-place'] }],
+  // `classifySegment` / `isReadOnlyGitCommand`. `sed -i` / `find -delete`
+  // additionally carry dangerFlags: they destroy what they name, so they ask
+  // inside the workspace too, exactly like `rm -rf`.
+  ['sed', { capability: 'read', writeFlags: ['-i', '--in-place'], dangerFlags: ['-i', '--in-place'] }],
   [
     'find',
     {
@@ -105,15 +127,22 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
       writeFlags: [
         '-delete', '-fprint', '-fprint0', '-fls', '-fprintf', '-exec', '-execdir', '-ok', '-okdir',
       ],
+      dangerFlags: ['-delete'],
     },
   ],
   [
     'git',
     {
       capability: 'read',
-      readFlags: ['status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'blame', 'grep', 'describe', 'shortlog'],
+      readFlags: [
+        'status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'blame', 'grep',
+        'describe', 'shortlog', 'ls-tree', 'merge-base', 'cherry', 'rev-list',
+      ],
     },
   ],
+  // `gh` is a conditional read like `git`: only its list/view/status subcommands
+  // read (`isReadOnlyGhCommand`); create/merge/close/edit/api stay unknown.
+  ['gh', { capability: 'read', readFlags: ['run', 'issue', 'pr', 'auth'] }],
 
   // --- inert: side-effect-free verbs in a bare segment ---
   ['sleep', { capability: 'inert' }],
@@ -157,9 +186,9 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
   ['zsh', { capability: 'exec' }],
   ['ksh', { capability: 'exec' }],
   ['busybox', { capability: 'exec' }],
-  ['python', { capability: 'exec' }],
-  ['python3', { capability: 'exec' }],
-  ['node', { capability: 'exec' }],
+  ['python', { capability: 'exec', versionOnly: true }],
+  ['python3', { capability: 'exec', versionOnly: true }],
+  ['node', { capability: 'exec', versionOnly: true }],
   // `perl` / `ruby` interpret a script (exec) but write with `-i`; the write
   // flag wins because the write-direction split runs first.
   ['perl', { capability: 'exec', writeFlags: ['-i'] }],
@@ -167,6 +196,9 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
   ['awk', { capability: 'exec' }],
   ['php', { capability: 'exec' }],
   ['lua', { capability: 'exec' }],
+  // `npm` itself is off the read table (its scripts run arbitrary code); only
+  // the bare `--version` / `-v` probe is a read (`versionOnly`).
+  ['npm', { capability: 'unknown', versionOnly: true }],
 
   // --- network: commands whose primary effect is reaching the network ---
   ['curl', { capability: 'network' }],
@@ -213,10 +245,35 @@ export function isWriteCommand(verb: string): boolean {
 /**
  * The write flags of `verb` (`sed` → `['-i', '--in-place']`), or `undefined`
  * when it has none. A verb AND one of its flags in the same segment is a
- * write — see `isFlagWord` in bash-classification for the matching spellings.
+ * write — see `isFlagWord` for the matching spellings.
  */
 export function writeFlagsOf(verb: string): readonly string[] | undefined {
   return COMMAND_TABLE.get(verb)?.writeFlags;
+}
+
+/**
+ * The destructive-tier flags of `verb` (`sed` → `['-i', '--in-place']`,
+ * `find` → `['-delete']`), or `undefined` when it has none. The verb AND one
+ * of these flags in the same segment land in the destructive ask tier (see
+ * `isDangerousHead` in bash-head.ts) — inside the workspace too.
+ */
+export function dangerFlagsOf(verb: string): readonly string[] | undefined {
+  return COMMAND_TABLE.get(verb)?.dangerFlags;
+}
+
+/**
+ * Does `word` spell the option `flag`? Three spellings count: the flag itself,
+ * `flag=value`, and a SHORT flag with a glued value (`sed -i.bak`, `sed -i''`).
+ * The glued form is only accepted for two-character flags and only when the next
+ * character is not a letter, so `-include` is not read as `-i`.
+ *
+ * Shared by the write-direction split (`isWriteSegment` /
+ * `isWriteCommandHead` in bash-classification.ts) and the destructive tier
+ * (`isDangerousHead` in bash-head.ts), so both read flag spellings the same way.
+ */
+export function isFlagWord(word: string, flag: string): boolean {
+  if (word === flag || word.startsWith(`${flag}=`)) return true;
+  return flag.length === 2 && word.startsWith(flag) && !/[A-Za-z]/.test(word.charAt(flag.length));
 }
 
 /** Does the destructive tier ask for this verb as soon as it is the head? */
@@ -227,6 +284,11 @@ export function isDangerousCommand(verb: string): boolean {
 /** Is this verb a wrapper prefix the command-position search strips? */
 export function isWrapperCommand(verb: string): boolean {
   return COMMAND_TABLE.get(verb)?.wrapper === true;
+}
+
+/** Is this verb a pure version probe (`node --version`, `npm -v`)? */
+export function isVersionOnlyCommand(verb: string): boolean {
+  return COMMAND_TABLE.get(verb)?.versionOnly === true;
 }
 
 /**

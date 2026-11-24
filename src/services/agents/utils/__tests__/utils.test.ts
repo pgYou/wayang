@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { conversationToSdkMessages } from '@/services/agents/utils/conversation-to-sdk-messages';
+import type { ModelMessage } from 'ai';
+import { conversationToSdkMessages, ensureUserTurn, COMPACTION_CONTINUATION } from '@/services/agents/utils/conversation-to-sdk-messages';
 import { buildAssistantEntry } from '@/services/agents/utils/build-assistant-entry';
 import { generateId } from '@/utils/id';
 import { EEntryType, ESignalSubtype } from '@/types/index';
@@ -434,6 +435,109 @@ describe('conversationToSdkMessages', () => {
 
     const msgs = conversationToSdkMessages(entries as any);
     expect(msgs[0]).toEqual({ role: 'assistant', content: 'Hi there' });
+  });
+});
+
+// --- ensureUserTurn ---
+
+describe('ensureUserTurn', () => {
+  it('prepends the seed when the message list is empty', () => {
+    const messages = ensureUserTurn([]);
+    expect(messages).toEqual([{ role: 'user', content: COMPACTION_CONTINUATION }]);
+  });
+
+  it('prepends the seed when only assistant and tool messages remain (issue #95)', () => {
+    const messages = ensureUserTurn([
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'tc1', toolName: 'skip_reply', input: {} }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'tc1', toolName: 'skip_reply', output: { type: 'text', value: '(skipped)' } }] },
+    ]);
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toEqual({ role: 'user', content: COMPACTION_CONTINUATION });
+  });
+
+  it('prepends the seed when only a system signal remains', () => {
+    const messages = ensureUserTurn([{ role: 'system', content: '[WORKER PROGRESS SIGNAL: PROGRESS] tick' }]);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ role: 'user' });
+  });
+
+  it('returns the same array untouched when a user message already leads the list', () => {
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi' },
+    ];
+    expect(ensureUserTurn(messages)).toBe(messages);
+  });
+
+  it('prepends the seed when the first message is a system marker, even though a user turn exists later', () => {
+    // The compacted flow is [retained history][compact marker system][summary
+    // user]: the list legitimately carries a user turn at the end. Gateways
+    // that validate the message sequence (issue #95) still require the FIRST
+    // message to be user, so the seed must lead the request.
+    const messages: ModelMessage[] = [
+      { role: 'system', content: '[Context compacted] ...' },
+      { role: 'user', content: '[Conversation Summary]\n...' },
+    ];
+    const seeded = ensureUserTurn(messages);
+    expect(seeded[0]).toEqual({ role: 'user', content: COMPACTION_CONTINUATION });
+    expect(seeded.slice(1)).toEqual(messages);
+  });
+
+  it('opens with the seed when a compaction leaves raw roles [assistant, tool, system, user]', () => {
+    const messages: ModelMessage[] = [
+      { role: 'assistant', content: 'working' },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'tc1', toolName: 'bash', output: { type: 'text', value: 'out' } }] },
+      { role: 'system', content: '[Context compacted] ...' },
+      { role: 'user', content: '[Conversation Summary]\n...' },
+    ];
+    const seeded = ensureUserTurn(messages);
+    expect(seeded[0]!.role).toBe('user');
+    expect(seeded.slice(1)).toEqual(messages);
+  });
+
+  it('a compacted conversation replays with a user message first', () => {
+    // Entry-level view of the compacted flow: retained assistant step
+    // (orphan tool call), current-format compact marker, summary user entry.
+    const ts = new Date().toISOString();
+    const entries = [
+      {
+        type: EEntryType.Assistant,
+        uuid: 'a-kept',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        message: { role: 'assistant', content: 'working' },
+        toolCalls: [{ toolCallId: 'tc-kept', toolName: 'bash', arguments: '{"command":"ls"}' }],
+      },
+      {
+        type: EEntryType.System,
+        uuid: 'sys-compact',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        subtype: 'compact',
+        content: '[Context compacted] ...',
+        compactMeta: { summarizedTokenCount: 100, summaryEntryUuid: 'sum-1' },
+      },
+      {
+        type: EEntryType.User,
+        uuid: 'sum-1',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        message: { role: 'user', content: '[Conversation Summary]\nolder work' },
+      },
+    ];
+    const messages = ensureUserTurn(conversationToSdkMessages(entries as any));
+    expect(messages[0]!.role).toBe('user');
+    expect(messages[0]!.content).toBe(COMPACTION_CONTINUATION);
+  });
+
+  it('uses the supplied seed text and never mutates the input', () => {
+    const input: ModelMessage[] = [{ role: 'assistant', content: 'partial' }];
+    const messages = ensureUserTurn(input, 'custom seed');
+    expect(messages[0]).toEqual({ role: 'user', content: 'custom seed' });
+    expect(input).toHaveLength(1);
   });
 });
 

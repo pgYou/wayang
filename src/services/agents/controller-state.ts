@@ -6,7 +6,7 @@ import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
 import { ConversationIndexBuilder } from '@/services/conversation/conversation-index';
-import { RECENT_TOKEN_BUDGET } from './context-manager';
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, recentTokenBudget } from './context-manager';
 import type { TurnEnvelope } from './utils/entry-envelope';
 import { estimateEntryTokens } from './utils/estimate-tokens';
 import type { SystemContext } from '@/infra/system-context';
@@ -31,6 +31,13 @@ interface DynamicState {
    * Ephemeral, never persisted.
    */
   currentTurn: TurnEnvelope | null;
+  /**
+   * True while the controller is compacting its context (a summarizer call that
+   * runs outside a turn). Ephemeral, never persisted. The TUI shows
+   * "compacting…" and refuses ESC for the duration: the compaction is not
+   * cancellable, and aborting it would leave the loop re-triggering it.
+   */
+  compacting: boolean;
 }
 
 interface ControllerStateData {
@@ -62,7 +69,7 @@ export class ControllerAgentState extends BaseWayangState {
       },
       conversation: [],
       compactSummary: null,
-      dynamicState: { streamingEntries: [], busy: false, currentTurn: null },
+      dynamicState: { streamingEntries: [], busy: false, currentTurn: null, compacting: false },
     };
 
     super(initialData, [
@@ -103,7 +110,14 @@ export class ControllerAgentState extends BaseWayangState {
     return this.convIndex?.getTurn(turnId);
   }
 
-  async restore(): Promise<void> {
+  /**
+   * Restore runtime state + conversation from disk. `windowTokens` scales the
+   * recent-entry budget kept before the last compact marker (see
+   * recentTokenBudget); omitted, the default 256k window keeps the historical
+   * 20k budget. The controller agent passes its ContextManager's window so
+   * the restore budget and the compaction threshold agree.
+   */
+  async restore(windowTokens?: number): Promise<void> {
     // Restore runtime state from JSON
     const runtimeState = this.jsonFile.read() as ControllerRuntimeState | null;
     if (runtimeState) {
@@ -125,7 +139,7 @@ export class ControllerAgentState extends BaseWayangState {
       // Walk backwards from the marker to fill the token budget.
       // estimateEntryTokens counts tool call arguments and tool result outputs
       // too, so heavy tool entries push the window start forward.
-      let budget = RECENT_TOKEN_BUDGET;
+      let budget = recentTokenBudget(windowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS);
       let cutIdx = 0;
       for (let i = compactIdx - 1; i >= 0; i--) {
         budget -= estimateEntryTokens(allEntries[i]);
@@ -135,12 +149,17 @@ export class ControllerAgentState extends BaseWayangState {
         }
       }
       this.data.conversation = allEntries.slice(cutIdx);
-      // Expose the summary for the upper layer (ControllerAgent.restore wires
-      // it into ContextManager.restoreCompact). Memory-only: 'compactSummary'
-      // is not a persisted path, so this never touches disk.
+      // Expose a legacy summary for the upper layer (ControllerAgent.restore
+      // wires it into ContextManager.restoreCompact). Current-format markers
+      // carry a summaryEntryUuid instead: their summary is a `user` entry that
+      // is already inside the windowed conversation, so there is nothing to
+      // inject into the system prompt. Memory-only: 'compactSummary' is not a
+      // persisted path, so this never touches disk.
       // (findLastIndex's guard does not narrow the indexed element — assert it.)
       const marker = allEntries[compactIdx] as SystemEntry;
-      this.data.compactSummary = marker.content;
+      this.data.compactSummary = marker.compactMeta?.summaryEntryUuid === undefined
+        ? marker.content
+        : null;
     }
 
     this.logger.info({

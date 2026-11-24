@@ -31,5 +31,5 @@ export type {
   ShellTokenizeResult,
 } from './shell-lexer/types';
 export { tokenizeShellLite } from './shell-lexer/tokenize';
-export { isDiscardRedirectTarget, classifyRedirections } from './shell-lexer/classify';
+export { isDiscardRedirectTarget, classifyRedirections, unquotedHeredocOperator } from './shell-lexer/classify';
 export type { RedirectionClassification } from './shell-lexer/classify';

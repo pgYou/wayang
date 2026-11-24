@@ -134,6 +134,61 @@ function scanSubstitutionAt(
   };
 }
 
+/**
+ * Scan a process substitution `<(` / `>(` starting at its operator. The inner
+ * command is kept raw for the recursive evaluation; quotes, escapes and nested
+ * parentheses are honoured so `<(echo "a)b")` is not cut short.
+ */
+export function scanProcessSubstitution(
+  command: string,
+  start: number,
+): { substitution: ShellSubstitution; next: number } | { error: string } {
+  const n = command.length;
+  let i = start + 2; // past "<(" / ">("
+  let depth = 1;
+  let inner = '';
+  while (i < n) {
+    const ch = command[i] as string;
+    if (ch === '\\') {
+      inner += command.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      const end = command.indexOf("'", i + 1);
+      if (end === -1) return { error: 'unterminated single quote inside process substitution' };
+      inner += command.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '"') {
+      const end = findClosingDoubleQuote(command, i);
+      if (end === -1) return { error: 'unterminated double quote inside process substitution' };
+      inner += command.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '(') {
+      depth += 1;
+      inner += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        return { substitution: { inner, raw: command.slice(start, i + 1) }, next: i + 1 };
+      }
+      inner += ch;
+      i += 1;
+      continue;
+    }
+    inner += ch;
+    i += 1;
+  }
+  return { error: 'unbalanced process substitution — no closing ")"' };
+}
+
 /** Scan one shell word (quotes removed, substitutions collapsed) starting at `start`. */
 export function scanWordLite(
   command: string,

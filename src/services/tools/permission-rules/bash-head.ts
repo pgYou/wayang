@@ -1,7 +1,7 @@
 // The command POSITION of a shell segment: wrapper prefixes and assignments skipped, plus the destructive-command tier.
 
 import { CMDSUBST_PLACEHOLDER, type ShellSegment } from '@/services/tools/shell-lexer';
-import { isDangerousCommand, isWrapperCommand } from './command-tables';
+import { dangerFlagsOf, isDangerousCommand, isFlagWord, isWrapperCommand } from './command-tables';
 
 /**
  * Command words that always require controller approval, whatever their targets
@@ -100,11 +100,29 @@ function headIndex(words: readonly string[]): number {
  * place — returns `undefined`, and the caller keeps the verdict `unknown`.
  */
 export function headCommand(segment: ShellSegment): { command: string; words: string[] } | undefined {
-  const words = segmentWords(segment);
+  return headOfWords(segmentWords(segment));
+}
+
+/**
+ * The command position of a bare word list — the same computation
+ * `headCommand` applies to a segment. Used by the xargs unfold, which judges an
+ * inner command it holds as plain words.
+ */
+export function headOfWords(words: readonly string[]): { command: string; words: string[] } | undefined {
   const i = headIndex(words);
   const command = words[i];
   if (command === undefined || command === CMDSUBST_PLACEHOLDER) return undefined;
   return { command, words: words.slice(i) };
+}
+
+/**
+ * The wrapper-prefix run `headCommand` skips (sudo / env / nohup / time / …
+ * plus their option arguments) — the words BEFORE the command position. The
+ * background / detached tier reads it to see a `nohup` hidden behind other
+ * wrappers (`time nohup x`), which the command position alone cannot name.
+ */
+export function wrapperPrefixWords(words: readonly string[]): string[] {
+  return words.slice(0, headIndex(words));
 }
 
 /**
@@ -116,7 +134,39 @@ function isDangerousHead(command: string, words: readonly string[]): boolean {
   if (isDangerousCommand(command) || command.startsWith('mkfs.')) return true;
   if (command === 'rm' || command === 'dd') return words.length > 1;
   if (command === 'kill') return words.includes('-9');
-  return false;
+  // A destructive WRITE flag (`sed -i`, `find -delete`) puts the verb in this
+  // tier too: the spelling deletes or rewrites what the command names, so it
+  // asks like `rm` WHATEVER its targets are — inside the workspace included.
+  // Judged at the command position, so a wrapper prefix cannot launder the
+  // flag (`sudo sed -i …` asks through its own `sudo` anyway).
+  const dangerFlags = dangerFlagsOf(command);
+  return (
+    dangerFlags !== undefined &&
+    dangerFlags.some((flag) => words.some((word) => isFlagWord(word, flag)))
+  );
+}
+
+/**
+ * The destructive tier on a bare word list that starts at the command word,
+ * with the arity conditions IGNORED. An xargs-expanded `rm` gets its operands
+ * from stdin, so the "rm needs an operand" condition would never fire even
+ * though the command deletes whatever stdin names. `sudo` before the head
+ * counts exactly like the segment tier.
+ */
+export function isDestructiveTierHead(words: readonly string[]): boolean {
+  const index = headIndex(words);
+  const head = words[index];
+  if (head === undefined || head === CMDSUBST_PLACEHOLDER) {
+    return words.some((word) => isDangerousCommand(word) || word.startsWith('mkfs.'));
+  }
+  if (words.slice(0, index).includes('sudo')) return true;
+  return (
+    isDangerousCommand(head) ||
+    head.startsWith('mkfs.') ||
+    head === 'rm' ||
+    head === 'dd' ||
+    head === 'kill'
+  );
 }
 
 /**

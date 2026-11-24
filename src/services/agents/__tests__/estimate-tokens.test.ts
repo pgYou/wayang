@@ -7,10 +7,22 @@ describe('estimateTokens', () => {
     expect(estimateTokens('')).toBe(0);
   });
 
-  it('should estimate ~1 token per 4 chars', () => {
+  it('should estimate ~1 token per 4 ASCII chars', () => {
     expect(estimateTokens('hello')).toBe(2); // 5/4 rounded up
     expect(estimateTokens('a'.repeat(100))).toBe(25);
     expect(estimateTokens('a'.repeat(8))).toBe(2);
+  });
+
+  it('should count non-ASCII (CJK) at ~1 token per char, not chars/4', () => {
+    const cjk = '中'.repeat(1000);
+    expect(estimateTokens(cjk)).toBe(1000); // was 250 under plain chars/4
+    // Full-width punctuation counts as non-ASCII too.
+    expect(estimateTokens('！？')).toBe(2);
+  });
+
+  it('should mix the two ratios and round up', () => {
+    expect(estimateTokens('abcd中')).toBe(2); // ceil(4/4 + 1)
+    expect(estimateTokens('ab中')).toBe(2); // ceil(2/4 + 1) = ceil(1.5)
   });
 });
 

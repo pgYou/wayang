@@ -158,6 +158,8 @@ export interface StatusSegmentsInput {
   contextUsage?: ContextUsage | null;
   /** Terminal width in columns. */
   terminalCols?: number;
+  /** True while the controller is compacting its context. */
+  compacting?: boolean;
 }
 
 export interface StatusSegments {
@@ -237,9 +239,12 @@ function fitWorkerRows(rows: WorkerRow[], budget: number): string[] {
  * the overflow.
  */
 export function buildStatusSegments(input: StatusSegmentsInput): StatusSegments {
-  const { pendingCount, activeCount, workerRows, contextUsage, terminalCols = 80 } = input;
+  const { pendingCount, activeCount, workerRows, contextUsage, terminalCols = 80, compacting = false } = input;
 
   const parts: string[] = [];
+  // The compaction runs outside a turn, so it leads the line: it is the only
+  // sign that the controller is doing something while `busy` is false.
+  if (compacting) parts.push('compacting…');
   if (pendingCount > 0) parts.push(`pending tasks:${pendingCount}`);
   if (activeCount > 0) parts.push(`active workers:${activeCount}`);
   // Always non-empty — the status bar never disappears when idle.
@@ -283,6 +288,11 @@ export function StatusBar({
     controllerAgent, CONTEXT_USAGE_STATE_PATH,
   );
 
+  // Compaction state (not persisted) — the controller is busy without a turn.
+  const compacting = useWayangState<boolean>(
+    controllerAgent, 'dynamicState.compacting',
+  );
+
   // Refresh every 5s to update elapsed time
   useEffect(() => {
     if (activeWorkers.length === 0) return;
@@ -303,7 +313,8 @@ export function StatusBar({
     workerRows,
     contextUsage,
     terminalCols: stdout?.columns ?? 80,
-  }), [pendingTasks.length, activeWorkers.length, workerRows, contextUsage, stdout?.columns]);
+    compacting: compacting ?? false,
+  }), [pendingTasks.length, activeWorkers.length, workerRows, contextUsage, stdout?.columns, compacting]);
 
   // The row is always rendered — even with no tasks it shows "idle" plus the
   // persistent context segment, so the layout never collapses. The context

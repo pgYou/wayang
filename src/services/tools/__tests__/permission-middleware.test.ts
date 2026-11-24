@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { wrapWithPermissionMiddleware } from '@/services/tools/permission-middleware';
+import { decideToolAccess, FILE_TOOL_NAMES, type WorkerAccessScope } from '@/services/tools/permission-rules';
 import type { SignalQueue } from '@/services/signal/signal-queue';
 import { createMockLogger } from '@/__tests__/helpers';
 
@@ -723,6 +727,150 @@ describe('wrapWithPermissionMiddleware', () => {
       await pending;
 
       expect(auditCalls(logger).map((record) => record.decision)).toEqual(['allowed', 'denied']);
+    });
+  });
+
+  /**
+   * 0.9.9: inspect_json rides the SAME file-tool gate as read_file —
+   * `decideToolAccess` → `evaluateFileAccess`, so an out-of-workspace read
+   * asks with the read-within-home rule and a workspace-internal read runs
+   * silently. Wired with the real policy, mirroring `wireWorker`.
+   */
+  describe('inspect_json shares the read_file path verdicts', () => {
+    let ws: string;
+    let home: string;
+
+    beforeEach(() => {
+      ws = mkdtempSync(join(tmpdir(), 'wayang-mw-ws-'));
+      home = mkdtempSync(join(tmpdir(), 'wayang-mw-home-'));
+    });
+
+    afterEach(() => {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    function gateWithRealPolicy(): { result: ReturnType<typeof wrapWithPermissionMiddleware>; execute: ReturnType<typeof vi.fn> } {
+      const tools = mockTool('inspect_json', 'ran:inspect_json');
+      const scope: WorkerAccessScope = { userHome: home, workspace: ws };
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: [...FILE_TOOL_NAMES],
+        decide: (toolName, args) => decideToolAccess(scope, toolName, args),
+        describeCall: (name, args) => `${name}: ${args.path}`,
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+      });
+      return { result, execute: tools.inspect_json.execute };
+    }
+
+    it('a read outside the workspace asks with the read-within-home rule, like read_file', async () => {
+      const outside = join(home, 'shared', 'conf.json');
+      mkdirSync(join(home, 'shared'), { recursive: true });
+      writeFileSync(outside, '{}', 'utf-8');
+      const { result, execute } = gateWithRealPolicy();
+
+      const pending = result.wrappedTools.inspect_json.execute({ path: outside, pointers: ['/a'] });
+      const payload = queue.enqueue.mock.calls[0][0].payload;
+      expect(queue.enqueue.mock.calls[0][0].type).toBe('permission_request');
+      expect(payload.toolName).toBe('inspect_json');
+      expect(payload.operation).toBe('read');
+      expect(payload.matchedRule).toBe('read-within-home');
+      // Canonical (realpath) spelling of the temp file — segment check stays
+      // portable across symlinked temp roots.
+      expect(payload.resolvedPath).toContain('conf.json');
+
+      result.resolvePermission(payload.requestId, false, 'no');
+      await pending;
+      // The real execute never ran — the call was refused.
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('a workspace-internal read is allowed without any prompt', async () => {
+      writeFileSync(join(ws, 'local.json'), '{}', 'utf-8');
+      const { result } = gateWithRealPolicy();
+
+      const output = await result.wrappedTools.inspect_json.execute({ path: 'local.json' });
+      expect(output).toBe('ran:inspect_json');
+      expect(queue.enqueue).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * 0.9.9: run_process spawns arbitrary code, so `decideToolAccess` asks for
+   * EVERY call — no cwd, argv or workspace location can make it silent, and
+   * the verdict carries no askPaths, so an approval is never remembered as a
+   * standing grant.
+   */
+  describe('run_process always asks, even inside the workspace', () => {
+    let ws: string;
+    let home: string;
+
+    beforeEach(() => {
+      ws = mkdtempSync(join(tmpdir(), 'wayang-mw-rp-ws-'));
+      home = mkdtempSync(join(tmpdir(), 'wayang-mw-rp-home-'));
+    });
+
+    afterEach(() => {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    function gateRunProcess() {
+      const tools = mockTool('run_process', 'ran:run_process');
+      const scope: WorkerAccessScope = { userHome: home, workspace: ws };
+      const result = wrapWithPermissionMiddleware(tools, {
+        gatedTools: ['bash', 'run_process'],
+        decide: (toolName, args) => decideToolAccess(scope, toolName, args),
+        describeCall: (name, args) =>
+          `Run process: ${Array.isArray(args.command) ? args.command.join(' ') : String(args.command)}`,
+      }, {
+        workerId: 'w1',
+        taskId: 't1',
+        taskTitle: 'Test',
+        signalQueue: queue as unknown as SignalQueue,
+      });
+      return { result, execute: tools.run_process.execute };
+    }
+
+    it('asks with exec-capability, the argv verbatim in the reason, operation exec', async () => {
+      const { result } = gateRunProcess();
+      const argv = [process.execPath, '--version'];
+
+      const pending = result.wrappedTools.run_process.execute({ command: argv });
+      const signal = queue.enqueue.mock.calls[0][0];
+      const payload = signal.payload;
+      expect(signal.type).toBe('permission_request');
+      expect(payload.toolName).toBe('run_process');
+      expect(payload.matchedRule).toBe('exec-capability');
+      expect(payload.operation).toBe('exec');
+      // The argv rides in the reason, verbatim (JSON array: boundaries visible).
+      expect(payload.description).toContain('spawns a process directly');
+      expect(payload.description).toContain(JSON.stringify(argv));
+
+      result.resolvePermission(payload.requestId, true);
+      expect(await pending).toBe('ran:run_process');
+    });
+
+    it('a cwd INSIDE the workspace still asks; an approval is never remembered', async () => {
+      const { result, execute } = gateRunProcess();
+      const call = { command: ['node', 'dist/cli.js', '--help'], cwd: ws };
+
+      const first = result.wrappedTools.run_process.execute(call);
+      const firstPayload = queue.enqueue.mock.calls[0][0].payload;
+      result.resolvePermission(firstPayload.requestId, true);
+      await first;
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      // No askPaths → no grant → the identical second call asks again.
+      const second = result.wrappedTools.run_process.execute(call);
+      expect(queue.enqueue).toHaveBeenCalledTimes(2);
+      const secondPayload = queue.enqueue.mock.calls[1][0].payload;
+      result.resolvePermission(secondPayload.requestId, false, 'no');
+      await second;
+      expect(execute).toHaveBeenCalledTimes(1);
     });
   });
 });

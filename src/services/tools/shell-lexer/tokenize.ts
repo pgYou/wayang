@@ -1,8 +1,8 @@
 // The segment lexer itself: a command line into words, redirections and segments.
 
 import { consumeHeredocBodies, scanRedirect } from './redirects';
-import { scanWordLite } from './scanners';
-import type { PendingHeredoc, ShellSegment, ShellToken, ShellTokenizeResult } from './types';
+import { scanProcessSubstitution, scanWordLite } from './scanners';
+import { CMDSUBST_PLACEHOLDER, type PendingHeredoc, type ShellSegment, type ShellToken, type ShellTokenizeResult } from './types';
 
 /**
  * Lex a command line into segments (pipeline stages, `&&` / `;` branches) of
@@ -82,6 +82,26 @@ export function tokenizeShellLite(command: string): ShellTokenizeResult {
     const fdMatch = /^(\d+)(?=>>|>|<>|<)/.exec(command.slice(i, i + 24));
     const fd = fdMatch ? Number(fdMatch[1]) : undefined;
     const redirectStart = i + (fdMatch ? fdMatch[1].length : 0);
+    // A process substitution `<(` / `>(` is a WORD (the shell hands the command
+    // a /dev/fd/N path), not a redirection. Its inner command is judged by the
+    // bash gate's process-substitution tier.
+    if (
+      (command[redirectStart] === '<' || command[redirectStart] === '>') &&
+      command[redirectStart + 1] === '('
+    ) {
+      const scanned = scanProcessSubstitution(command, redirectStart);
+      if ('error' in scanned) return { ok: false, error: scanned.error };
+      tokens.push({
+        kind: 'word',
+        word: {
+          text: CMDSUBST_PLACEHOLDER,
+          substitutions: [],
+          processSubstitutions: [scanned.substitution],
+        },
+      });
+      i = scanned.next;
+      continue;
+    }
     const redirectChar = command[redirectStart];
     if (redirectChar === '<' || redirectChar === '>') {
       const failed = takeRedirect(redirectStart, fd);

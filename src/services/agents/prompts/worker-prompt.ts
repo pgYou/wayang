@@ -49,6 +49,10 @@ Always prefer dedicated tools over bash for file operations:
 - **write_file** / **edit_file** over \`echo >\`, \`tee\`, \`sed -i\`, \`cp\`
 - **search_files** over \`find\`, \`ls\`
 - **search_content** over \`grep\`
+- Reading JSON/JSONL files (configs, package.json, logs): use read_file — never write a node or python script to read them.
+- Extracting a field or parsing structure: read_file the content, then parse it yourself. Do NOT use \`node -e\` / \`python -c\` for field extraction — those calls always trigger approval and can pull secret values into the transcript.
+- Structured JSON reads (pick fields, inspect a config's shape): prefer inspect_json with JSON Pointers — it masks secret values by default.
+- Starting a long-lived or background process (e.g. driving a built server for smoke tests): use run_process — never build bash background commands (\`&\`, \`nohup\`).
 
 Only use bash when no dedicated tool fits the task (e.g. running builds, installing packages, executing scripts, git operations).
 
@@ -77,6 +81,7 @@ Only use bash when no dedicated tool fits the task (e.g. running builds, install
 ## Shell commands
 
 - Prefer simple, well-known commands. Avoid complex pipelines when individual commands suffice.
+- Do not prefix commands with \`cd X && ...\` — use absolute paths or tool parameters to express the target location; a cd prefix turns one action into a compound command that needs approval.
 - Always check command output for errors before proceeding.
 - If a command fails, analyze stderr and try an alternative approach.
 - Long-running commands (builds, installs) may hit the 30s timeout — break them into smaller steps if needed.

@@ -4,11 +4,14 @@ import type { AccessMode } from '@/infra/permission/policy';
 import { isDiscardRedirectTarget, type ShellSegment } from '@/services/tools/shell-lexer';
 import {
   GIT_READ_SUBCOMMANDS,
+  isFlagWord,
   isReadCommand,
+  isVersionOnlyCommand,
   isWriteCommand,
   writeFlagsOf,
 } from './command-tables';
 import { headCommand } from './bash-head';
+import { awkScriptsOf, isReadOnlyAwkScript } from './awk-analysis';
 import { isReadOnlySedScript, sedScriptsOf } from './sed-analysis';
 
 /**
@@ -68,17 +71,6 @@ import { isReadOnlySedScript, sedScriptsOf } from './sed-analysis';
  */
 
 /**
- * Does `word` spell the option `flag`? Three spellings count: the flag itself,
- * `flag=value`, and a SHORT flag with a glued value (`sed -i.bak`, `sed -i''`).
- * The glued form is only accepted for two-character flags and only when the next
- * character is not a letter, so `-include` is not read as `-i`.
- */
-function isFlagWord(word: string, flag: string): boolean {
-  if (word === flag || word.startsWith(`${flag}=`)) return true;
-  return flag.length === 2 && word.startsWith(flag) && !/[A-Za-z]/.test(word.charAt(flag.length));
-}
-
-/**
  * Does this segment certainly write — a write verb, a write flag, or an output
  * redirection into a real file? Read from the lexer's tokens, so a discard
  * (`> /dev/null`) and an fd copy (`2>&1`) are not mistaken for a file write,
@@ -125,16 +117,55 @@ export function isWriteCommandHead(command: string, words: readonly string[]): b
 /**
  * Subcommands whose BARE form reads but whose flags mutate (`git branch -D`,
  * `git remote add`). They are read-only only with an explicit list flag.
+ * `positional` says whether a non-flag argument is still a read (a tag pattern,
+ * a config key) or turns the shape into a write (`git branch -a foo`).
  */
-const GIT_LIST_ONLY_FLAGS: ReadonlyMap<string, readonly string[]> = new Map([
-  ['branch', ['-a', '--all', '--list', '-l']],
-  ['remote', ['-v', '--verbose']],
+const GIT_LIST_ONLY_FLAGS: ReadonlyMap<
+  string,
+  { flags: readonly string[]; positional: boolean }
+> = new Map([
+  [
+    'branch',
+    {
+      flags: ['-a', '--all', '--list', '-l', '-vv', '--verbose', '--show-current', '--merged', '--no-merged'],
+      positional: false,
+    },
+  ],
+  ['remote', { flags: ['-v', '--verbose'], positional: false }],
+  ['tag', { flags: ['-l', '--list'], positional: true }],
+  ['cat-file', { flags: ['-e', '-p', '-t'], positional: true }],
+  [
+    'config',
+    { flags: ['--get', '--get-all', '--list', '--get-regexp'], positional: true },
+  ],
+]);
+
+/**
+ * git subcommands that read only as `git <subcommand> <verb>` — `git worktree
+ * list`, `git reflog` / `git reflog show`. `git worktree add` / `remove` and
+ * `git reflog delete` stay unknown.
+ */
+const GIT_READ_VERBS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['worktree', ['list']],
+  ['reflog', ['show']],
 ]);
 
 /** git global options that consume the NEXT word (`git -C /repo status`). */
 const GIT_GLOBAL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
   '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix',
 ]);
+
+/**
+ * A `git -c` config word: the split `-c <name>=<value>` or the glued
+ * `-c<name>=<value>` spelling (review round 3, C3). git today rejects the
+ * glued form, but the two spellings must judge identically anyway — if git
+ * ever accepts it, a split-only check would turn into a real bypass. Anything
+ * starting `-c` beyond `-c` itself counts (fail-closed: `-C`, the path option,
+ * is uppercase and never matches).
+ */
+export function isGitConfigOptionWord(word: string): boolean {
+  return word === '-c' || (word.startsWith('-c') && word.length > 2);
+}
 
 /**
  * Is this `git …` segment a read? `words` starts at the `git` word, so global
@@ -145,16 +176,66 @@ const GIT_GLOBAL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
 function isReadOnlyGitCommand(words: readonly string[]): boolean {
   const args = words.slice(1);
   let i = 0;
-  while (i < args.length && args[i].startsWith('-')) {
+  while (i < args.length && args[i] !== undefined && args[i].startsWith('-')) {
+    // `git -c <name>=<value>` (split or glued) pulls in external configuration
+    // before the subcommand runs — the read classification does not cover that
+    // shape.
+    if (isGitConfigOptionWord(args[i])) return false;
     i += GIT_GLOBAL_OPTIONS_WITH_VALUE.has(args[i]) ? 2 : 1;
   }
   const subcommand = args[i];
   if (subcommand === undefined) return false;
   if (GIT_READ_SUBCOMMANDS.has(subcommand)) return true;
-  const listFlags = GIT_LIST_ONLY_FLAGS.get(subcommand);
-  if (listFlags === undefined) return false;
-  const flags = args.slice(i + 1).filter((word) => word.startsWith('-'));
-  return flags.length > 0 && flags.every((flag) => listFlags.includes(flag));
+  const rest = args.slice(i + 1);
+  const verbs = GIT_READ_VERBS.get(subcommand);
+  if (verbs !== undefined) {
+    // `git reflog` (no verb) reads too; `git worktree` alone does not.
+    if (rest.length === 0) return subcommand === 'reflog';
+    return rest.length === 1 && verbs.includes(rest[0] as string);
+  }
+  const rule = GIT_LIST_ONLY_FLAGS.get(subcommand);
+  if (rule === undefined) return false;
+  const flags = rest.filter((word) => word.startsWith('-'));
+  if (flags.length === 0) return false;
+  if (!flags.every((flag) => rule.flags.includes(flag))) return false;
+  const positionals = rest.filter((word) => !word.startsWith('-'));
+  return rule.positional || positionals.length === 0;
+}
+
+/**
+ * Is this `gh …` segment a read? Only `run|issue|pr list|view` and
+ * `auth status` — `gh issue create`, `gh pr merge`, `gh api …` stay unknown.
+ */
+const GH_READ_VERBS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['run', ['list', 'view']],
+  ['issue', ['list', 'view']],
+  ['pr', ['list', 'view']],
+  ['auth', ['status']],
+]);
+
+function isReadOnlyGhCommand(words: readonly string[]): boolean {
+  const args = words.slice(1);
+  let i = 0;
+  while (i < args.length && args[i].startsWith('-')) {
+    // `-R owner/repo` / `--repo owner/repo` consume the next word.
+    i += args[i] === '-R' || args[i] === '--repo' ? 2 : 1;
+  }
+  const subcommand = args[i];
+  if (subcommand === undefined) return false;
+  const verbs = GH_READ_VERBS.get(subcommand);
+  if (verbs === undefined) return false;
+  const verb = args[i + 1];
+  return verb !== undefined && verbs.includes(verb);
+}
+
+/**
+ * Is this a pure version probe — exactly `--version` / `-v` / `-V` and nothing
+ * else? `node --version` is a read; `node --version script.js` is not.
+ */
+function isVersionOnlySegment(head: { command: string; words: string[] }): boolean {
+  if (!isVersionOnlyCommand(head.command)) return false;
+  const args = head.words.slice(1);
+  return args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V');
 }
 
 /**
@@ -203,6 +284,22 @@ function classifySegment(segment: ShellSegment): SegmentClassification {
   if (isWriteSegment(segment)) return { mode: 'write' };
   const head = headCommand(segment);
   if (head === undefined) return { mode: 'unknown' };
+  // A bare version probe (`node --version`, `npm -v`) is a read; the verb's
+  // own exec / unknown capability applies to every other shape.
+  if (isVersionOnlySegment(head)) return { mode: 'read' };
+  if (head.command === 'gh') {
+    // `gh` is a conditional read exactly like `git`: a non-read subcommand is
+    // determined not to be a read and keeps the capability gate's ask.
+    return { mode: isReadOnlyGhCommand(head.words) ? 'read' : 'unknown' };
+  }
+  // `awk` is an interpreter, but a program that only prints fields reads. A
+  // program that executes / writes / cannot be located stays `unknown`, so the
+  // capability gate still asks on `exec-capability` (never a silent allow).
+  if (head.command === 'awk') {
+    const scripts = awkScriptsOf(head.words);
+    if (scripts === undefined) return { mode: 'unknown' };
+    return { mode: scripts.every(isReadOnlyAwkScript) ? 'read' : 'unknown' };
+  }
   if (!isReadCommand(head.command)) return { mode: 'unknown' };
   if (head.command === 'git') {
     // `git`'s subcommand check is a classifier, not a deferred condition: a

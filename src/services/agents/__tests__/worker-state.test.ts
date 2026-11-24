@@ -125,6 +125,36 @@ describe('WorkerState', () => {
     expect(uuids).toEqual(['old-light', 'm-1', 'new-1']);
   });
 
+  it('scales the restore budget to the model window (same as the controller state)', async () => {
+    // Entries of ~5k tokens: the default 20k budget keeps ~20k of them; a 32k
+    // window scales the budget to 8k, so only the newest pre-marker entries
+    // survive the restore. (The entry that blows the budget falls out —
+    // cutIdx lands after it.)
+    const big = (uuid: string) => makeUser(uuid, `${uuid} ${'x'.repeat(20_000)}`);
+    writeConversationJsonl(tempDir, workerId, [
+      big('old-1'),
+      big('old-2'),
+      big('old-3'),
+      big('old-4'),
+      big('old-5'),
+      big('old-6'),
+      big('old-7'),
+      big('old-8'),
+      makeCompactMarker('m-1', 'SUMMARY: worker history before the marker'),
+      makeUser('new-1', 'new message'),
+    ]);
+
+    const defaultWindow = new WorkerState(tempDir, workerId, logger);
+    await defaultWindow.restore();
+    expect((defaultWindow.get('conversation') as any[]).map((e) => e.uuid))
+      .toEqual(['old-6', 'old-7', 'old-8', 'm-1', 'new-1']);
+
+    const scaled = new WorkerState(tempDir, workerId, logger);
+    await scaled.restore(32_000);
+    expect((scaled.get('conversation') as any[]).map((e) => e.uuid))
+      .toEqual(['old-8', 'm-1', 'new-1']);
+  });
+
   describe('workspace identity', () => {
     const workspace = { path: '/repo/my-project', slug: 'my-project' };
     const runtimeStatePath = () => join(tempDir, 'workers', workerId, 'runtime-state.json');
@@ -180,6 +210,21 @@ describe('WorkerState', () => {
       const onDisk = JSON.parse(readFileSync(runtimeStatePath(), 'utf-8'));
       expect('workspace' in onDisk).toBe(false);
     });
+  });
+
+  it('starts with a null contextUsage snapshot and never persists it', async () => {
+    expect(state.get('dynamicState.contextUsage')).toBeNull();
+    state.set('dynamicState.contextUsage', {
+      usedTokens: 120,
+      contextWindowTokens: 1000,
+      ratio: 0.12,
+      source: 'estimate',
+    });
+    // dynamicState is ephemeral: a fresh state over the same directory has
+    // no snapshot until the agent publishes one.
+    const state2 = new WorkerState(tempDir, workerId, logger);
+    await state2.restore();
+    expect(state2.get('dynamicState.contextUsage')).toBeNull();
   });
 
   it('should not misjudge ClaudeCodeWorker-style records as compact markers', async () => {

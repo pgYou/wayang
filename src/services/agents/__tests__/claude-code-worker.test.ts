@@ -552,6 +552,39 @@ describe('ClaudeCodeWorker', () => {
     expect(String(vi.mocked(invalid.ctx.logger.warn).mock.calls[0][1])).toContain('Invalid maxTurns');
   });
 
+  it('passes workers.<id>.model to the SDK options.model when the engine resolved one (issue #88)', async () => {
+    let capturedOptions: Record<string, any> | undefined;
+    mockQuery.mockImplementation(((args: any) => {
+      capturedOptions = args.options;
+      return asyncYield([makeSuccessResult('ok')]);
+    }) as any);
+
+    const ctx = createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any);
+    const worker = new ClaudeCodeWorker(config, tempDir, tempDir, ctx, skills, {
+      providerKey: 'openai',
+      modelName: 'claude-sonnet-4-6',
+      baseURL: 'https://api.openai.com/v1',
+      apiKey: 'sk-x',
+      source: 'models',
+    });
+    await worker.run(makeTask(), {});
+
+    expect(capturedOptions?.model).toBe('claude-sonnet-4-6');
+  });
+
+  it('leaves SDK options.model unset when the worker row has no model (CLI default)', async () => {
+    let capturedOptions: Record<string, any> | undefined;
+    mockQuery.mockImplementation(((args: any) => {
+      capturedOptions = args.options;
+      return asyncYield([makeSuccessResult('ok')]);
+    }) as any);
+
+    const ctx = createMockCtx({ sessionDir: tempDir, workspaceDir: tempDir } as any);
+    await new ClaudeCodeWorker(config, tempDir, tempDir, ctx, skills).run(makeTask(), {});
+
+    expect(capturedOptions?.model).toBeUndefined();
+  });
+
   // --- tool call / result recording into the worker conversation ---
 
   describe('tool call and result recording', () => {

@@ -2,6 +2,7 @@ import type { WayangConfig } from '@/types/index';
 import type { Logger } from './logger';
 import { createFileLogger, type FileLogger } from './logger';
 import { LifecycleHooks } from '@/services/lifecycle-hooks';
+import { resolveModelRef, type EnvModelFallback, type ResolvedModel } from '@/services/config/model-resolution';
 
 export class SystemContext {
   readonly sessionId: string;
@@ -53,13 +54,50 @@ export class SystemContext {
     return this.closeLoggerPromise;
   }
 
-  get controllerProvider() {
-    return this.config.providers[this.config.controller.provider];
+  /**
+   * Model the controller runs on (issue #88): `controller.model` (a `models`
+   * key, `"provider/name"` composite or inline entry) first, then the legacy
+   * `controller.provider` binding as an implicit model, then the `WAYANG_*`
+   * environment fallback.
+   */
+  get controllerModel(): ResolvedModel {
+    return resolveModelRef(
+      this.config,
+      this.config.controller.model,
+      this.config.controller.provider,
+      envModelFallback(),
+    );
   }
-  get workerProvider() {
-    return this.config.providers[this.config.worker.provider];
+  /** Same resolution for the default puppet worker model (`worker.model` / legacy `worker.provider`). */
+  get workerModel(): ResolvedModel {
+    return resolveModelRef(
+      this.config,
+      this.config.worker.model,
+      this.config.worker.provider,
+      envModelFallback(),
+    );
   }
   get maxConcurrency() {
     return this.config.worker.maxConcurrency;
   }
+}
+
+/**
+ * Implicit `default` model built from the `WAYANG_*` environment variables
+ * (the same values onboard writes into `providers.default`). Only complete
+ * triplets qualify — the resolution layer ignores a partial fallback.
+ */
+function envModelFallback(): EnvModelFallback | undefined {
+  const apiKey = process.env.WAYANG_LLM_API_KEY;
+  const baseURL = process.env.WAYANG_ENDPOINT;
+  const modelName = process.env.WAYANG_MODEL;
+  if (!apiKey || !baseURL || !modelName) return undefined;
+  const rawWindow = process.env.WAYANG_CONTEXT_WINDOW_TOKENS;
+  const contextWindowTokens = rawWindow ? Number(rawWindow) : NaN;
+  return {
+    apiKey,
+    baseURL,
+    modelName,
+    ...(Number.isFinite(contextWindowTokens) && contextWindowTokens > 0 && { contextWindowTokens }),
+  };
 }

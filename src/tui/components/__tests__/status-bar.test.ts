@@ -234,6 +234,28 @@ describe('buildStatusSegments', () => {
     expect(seg.contextText).toBe('');
   });
 
+  it('should lead with compacting… while the controller compacts (issue #95)', () => {
+    const seg = buildStatusSegments({
+      pendingCount: 0,
+      activeCount: 0,
+      workerRows: [],
+      contextUsage: null,
+      compacting: true,
+    });
+    expect(seg.countsText).toBe('compacting…');
+  });
+
+  it('should put compacting… ahead of the task counters', () => {
+    const seg = buildStatusSegments({
+      pendingCount: 2,
+      activeCount: 1,
+      workerRows: [],
+      contextUsage: null,
+      compacting: true,
+    });
+    expect(seg.countsText).toBe('compacting… │ pending tasks:2 │ active workers:1');
+  });
+
   it('should keep the pending/active labels when tasks exist', () => {
     const seg = buildStatusSegments({
       pendingCount: 2,

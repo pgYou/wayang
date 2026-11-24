@@ -1,14 +1,17 @@
 import { vi } from 'vitest';
-import type { ProviderConfig, TaskDetail } from '@/types/index';
+import type { TaskDetail } from '@/types/index';
+import type { ResolvedModel } from '@/services/config/model-resolution';
 import type { Logger } from '@/infra/logger';
 import type { SystemContext } from '@/infra/system-context';
 import { LifecycleHooks } from '@/services/lifecycle-hooks';
 
-/** Shared ProviderConfig fixture for tests. */
-export const mockProvider: ProviderConfig = {
-  endpoint: 'http://localhost:1234',
-  apiKey: 'test-key',
+/** Shared ResolvedModel fixture for tests (issue #88). */
+export const mockModel: ResolvedModel = {
+  providerKey: 'default',
   modelName: 'test-model',
+  baseURL: 'http://localhost:1234',
+  apiKey: 'test-key',
+  source: 'legacy-provider',
 };
 
 /** Create a mock Logger with all methods as vi.fn(). */
@@ -36,8 +39,8 @@ export function createMockCtx(overrides?: Partial<SystemContext>): SystemContext
     abortController: new AbortController(),
     hooks: new LifecycleHooks(),
     config: { providers: {}, controller: {}, worker: {} },
-    controllerProvider: mockProvider,
-    workerProvider: mockProvider,
+    controllerModel: mockModel,
+    workerModel: mockModel,
     maxConcurrency: 1,
     ...overrides,
   } as any;

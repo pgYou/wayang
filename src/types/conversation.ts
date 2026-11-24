@@ -215,8 +215,8 @@ export interface AssistantEntry extends ConversationEntryEnvelope {
   stepIndex?: number;
   /**
    * Model that produced this step. provider/model are best effort from the
-   * SDK event; temperature/maxOutputTokens are backfilled from ProviderConfig
-   * (the values the run was configured with), never fabricated.
+   * SDK event; temperature/maxOutputTokens are backfilled from the resolved
+   * model (the values the run was configured with), never fabricated.
    */
   model?: {
     provider?: string;
@@ -321,6 +321,13 @@ export interface SystemEntry extends ConversationEntryEnvelope {
     model?: string;
     /** ISO timestamp of when the summary was created. */
     createdAt?: string;
+    /**
+     * Uuid of the summary entry appended right after this marker. Present only
+     * in the current format, where the summary is a `user` entry in the
+     * message flow. Absent on legacy markers, whose `content` field IS the
+     * summary and is replayed through the system prompt on restore.
+     */
+    summaryEntryUuid?: string;
   };
 }
 

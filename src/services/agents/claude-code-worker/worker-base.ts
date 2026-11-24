@@ -25,6 +25,7 @@ import type { ApprovalMemoryMode } from '@/types/config';
 import { DEFAULT_APPROVAL_MEMORY } from '@/infra/permission/permission-config';
 import type { SkillRegistry } from '@/services/skills/registry';
 import type { SignalTurnLineage } from '@/types/index';
+import type { ResolvedModel } from '@/services/config/model-resolution';
 
 export class ClaudeWorkerBase {
   readonly id: string;
@@ -138,6 +139,11 @@ export class ClaudeWorkerBase {
   protected readonly ctx: SystemContext;
   protected readonly skills: SkillRegistry;
   /**
+   * Resolved `workers.<id>.model` (issue #88), when the row declares one.
+   * Handed to the SDK's `model` option; undefined keeps the CLI default.
+   */
+  protected readonly resolvedModel?: ResolvedModel;
+  /**
    * Registry identity of the workspace this worker executes in, resolved once
    * at construction. Feeds the `workspaceSlug` on turn envelopes (and the
    * runtime-state stamp) so entries stay attributable to a directory.
@@ -169,6 +175,7 @@ export class ClaudeWorkerBase {
     workspaceDir: string,
     ctx: SystemContext,
     skills: SkillRegistry,
+    model?: ResolvedModel,
   ) {
     this.id = generateId('cw');
     this.ctx = ctx;
@@ -177,6 +184,7 @@ export class ClaudeWorkerBase {
     this.sessionDir = sessionDir;
     this.logger = ctx.logger;
     this.skills = skills;
+    this.resolvedModel = model;
     // Workspace identity is stamped into runtime-state (see WorkerState) and
     // reused for the turn envelope's `workspaceSlug`.
     this.workspaceRef = resolveWorkspaceRef(wayangDirForSessionDir(sessionDir), workspaceDir);

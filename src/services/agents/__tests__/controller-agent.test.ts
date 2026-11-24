@@ -5,8 +5,9 @@ import type { ControllerAgentState } from '@/services/agents/controller-state';
 import type { ControllerSignal } from '@/types/index';
 import { SkillRegistry } from '@/services/skills/registry';
 import { ToolCallRecorder } from '../utils/tool-call-recorder';
+import { COMPACTION_CONTINUATION } from '../utils/conversation-to-sdk-messages';
 import { ConversationIndexBuilder } from '@/services/conversation/conversation-index';
-import { mockProvider, createMockCtx, createMockLogger } from '@/__tests__/helpers';
+import { mockModel, createMockCtx, createMockLogger } from '@/__tests__/helpers';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -66,11 +67,29 @@ describe('ControllerAgent', () => {
     agent = new ControllerAgent(
       createMockCtx(),
       state as ControllerAgentState,
-      mockProvider,
+      mockModel,
       {}, // tools
       skills,
     );
   });
+
+  /**
+   * Append n user entries of ~5k estimated tokens each. The retained-zone
+   * budget (8k-16k) must have something to discard, otherwise compact() skips
+   * the compaction entirely.
+   */
+  function appendLargeUsers(n: number, prefix: string): void {
+    for (let i = 0; i < n; i++) {
+      state.append('conversation', {
+        type: EEntryType.User,
+        uuid: `${prefix}-${i}`,
+        parentUuid: null,
+        sessionId: 'test-session',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: `${prefix} ${i} `.padEnd(20_000, 'x') },
+      });
+    }
+  }
 
   it('should run messages and append to conversation', async () => {
     mockStreamResponse('mock response');
@@ -328,7 +347,7 @@ describe('ControllerAgent', () => {
       const localAgent = new ControllerAgent(
         createMockCtx({ workspaceDir: wsDir, sessionDir: sessDir }),
         localState as ControllerAgentState,
-        mockProvider,
+        mockModel,
         {},
         skills,
       );
@@ -432,21 +451,142 @@ describe('ControllerAgent', () => {
     expect(JSON.stringify(call.messages)).not.toContain('restored summary text');
   });
 
+  // --- issue #95: a compacted verbatim zone can hold no user entry ---
+
+  /** A post-compaction verbatim zone: skip_reply placeholder + tool result + worker signal. */
+  function appendCompactedZoneWithoutUser(): void {
+    state.append('conversation', {
+      type: EEntryType.Assistant,
+      uuid: 'a-skip',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: 'skipped', reasoning: ' ' },
+      toolCalls: [{ toolCallId: 'tc-skip', toolName: 'skip_reply', arguments: '{}' }],
+      toolResults: [{
+        toolCallId: 'tc-skip',
+        toolName: 'skip_reply',
+        output: { type: 'text', value: '(skipped)' },
+      }],
+    });
+    state.append('conversation', {
+      type: EEntryType.Signal,
+      uuid: 'sig-progress',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      subtype: 'worker_progress',
+      content: 'still working',
+    });
+  }
+
+  const workerDoneSignal: ControllerSignal = {
+    id: 'sig-95',
+    source: 'worker',
+    type: 'completed',
+    payload: { summary: 'task done', taskId: 't-95', workerId: 'w-95', taskTitle: 'Test task' },
+    timestamp: Date.now(),
+    status: 'unread',
+  };
+
+  it('seeds a user turn when the replayed messages contain no user entry (issue #95)', async () => {
+    mockStreamResponse('ok');
+    appendCompactedZoneWithoutUser();
+
+    await agent.run([workerDoneSignal]);
+
+    const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
+    expect(call.messages[0]).toEqual({ role: 'user', content: COMPACTION_CONTINUATION });
+    expect(call.messages.some((message: any) => message.role === 'user')).toBe(true);
+    // The seed is request-only: it must never be persisted into the conversation.
+    const persisted = state.append.mock.calls
+      .filter((entry: any[]) => entry[0] === 'conversation')
+      .map((entry: any[]) => JSON.stringify(entry[1]));
+    expect(persisted.some((text: string) => text.includes('Conversation compacted'))).toBe(false);
+  });
+
+  it('does not add a second user turn when the conversation already has one', async () => {
+    mockStreamResponse('ok');
+    state.append('conversation', {
+      type: EEntryType.User,
+      uuid: 'u-1',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      message: { role: 'user', content: 'original question' },
+    });
+    state.append('conversation', {
+      type: EEntryType.Assistant,
+      uuid: 'a-1',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: 'answer' },
+    });
+
+    await agent.run([{
+      id: 'sig-95b',
+      source: 'user',
+      type: 'input',
+      payload: { text: 'follow-up' },
+      timestamp: Date.now(),
+      status: 'unread',
+    }]);
+
+    const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
+    const userMessages = call.messages.filter((message: any) => message.role === 'user');
+    // The original question plus the new input — no synthetic third turn.
+    expect(userMessages).toHaveLength(2);
+    expect(userMessages.some((message: any) => message.content === COMPACTION_CONTINUATION)).toBe(false);
+    expect(call.messages[0]).toMatchObject({ role: 'user', content: 'original question' });
+  });
+
+  it('seeds a user turn on the first post-restore turn when the restore window has none', async () => {
+    mockStreamResponse('ok');
+    state.set('compactSummary', 'restored summary text');
+    appendCompactedZoneWithoutUser();
+    await agent.restore();
+
+    await agent.run([workerDoneSignal]);
+
+    const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
+    expect(call.system).toContain('[Conversation Summary]');
+    expect(call.messages[0]).toEqual({ role: 'user', content: COMPACTION_CONTINUATION });
+  });
+
+  // --- issue #95: compaction UI state ---
+
+  it('flags dynamicState.compacting while compaction runs and clears it afterwards', async () => {
+    appendLargeUsers(4, 'u-c');
+    const seen: boolean[] = [];
+    vi.mocked(generateText).mockImplementation(async () => {
+      seen.push(state.get('dynamicState.compacting'));
+      return { text: 'summary' } as any;
+    });
+
+    await agent.performCompaction();
+
+    expect(seen).toEqual([true]);
+    expect(state.get('dynamicState.compacting')).toBe(false);
+  });
+
+  it('clears dynamicState.compacting even when the summarizer fails', async () => {
+    appendLargeUsers(4, 'u-f');
+    vi.mocked(generateText).mockRejectedValue(new Error('summarizer down'));
+
+    await agent.performCompaction();
+
+    // The truncation fallback keeps the run alive; the flag must not stay on.
+    expect(state.get('dynamicState.compacting')).toBe(false);
+  });
+
   it('should fold the previous summary into the summarizer input on compaction', async () => {
     state.set('compactSummary', 'old summary to carry forward');
     await agent.restore();
 
-    // compact() requires at least 4 conversation entries
-    for (let i = 0; i < 4; i++) {
-      state.append('conversation', {
-        type: 'user',
-        uuid: `u-comp-${i}`,
-        parentUuid: null,
-        sessionId: 'test-session',
-        timestamp: new Date().toISOString(),
-        message: { role: 'user', content: `entry ${i}` },
-      });
-    }
+    // compact() requires at least 4 conversation entries, and the retained
+    // zone must leave something to discard.
+    appendLargeUsers(4, 'u-comp');
     vi.mocked(generateText).mockResolvedValue({ text: 'new summary' } as any);
 
     await agent.performCompaction();
@@ -459,16 +599,7 @@ describe('ControllerAgent', () => {
 
   it('should not add [Previous Summary] when no previous summary exists', async () => {
     // Fresh agent — no restore, no prior compaction
-    for (let i = 0; i < 4; i++) {
-      state.append('conversation', {
-        type: 'user',
-        uuid: `u-noprev-${i}`,
-        parentUuid: null,
-        sessionId: 'test-session',
-        timestamp: new Date().toISOString(),
-        message: { role: 'user', content: `entry ${i}` },
-      });
-    }
+    appendLargeUsers(4, 'u-noprev');
     vi.mocked(generateText).mockResolvedValue({ text: 'brand new summary' } as any);
 
     await agent.performCompaction();
@@ -479,16 +610,7 @@ describe('ControllerAgent', () => {
   });
 
   it('should pass tool calls and their results to the summarizer', async () => {
-    for (let i = 0; i < 3; i++) {
-      state.append('conversation', {
-        type: 'user',
-        uuid: `u-tools-${i}`,
-        parentUuid: null,
-        sessionId: 'test-session',
-        timestamp: new Date().toISOString(),
-        message: { role: 'user', content: `entry ${i}` },
-      });
-    }
+    appendLargeUsers(3, 'u-tools');
     // A tool-only step: empty text, one call with its result.
     state.append('conversation', {
       type: 'assistant',
@@ -510,17 +632,8 @@ describe('ControllerAgent', () => {
     expect(prompt).toContain('Task t-1-abcd added');
   });
 
-  it('should stamp compactMeta.model from the current provider config', async () => {
-    for (let i = 0; i < 4; i++) {
-      state.append('conversation', {
-        type: 'user',
-        uuid: `u-model-${i}`,
-        parentUuid: null,
-        sessionId: 'test-session',
-        timestamp: new Date().toISOString(),
-        message: { role: 'user', content: `entry ${i}` },
-      });
-    }
+  it('should stamp compactMeta.model from the resolved model', async () => {
+    appendLargeUsers(4, 'u-model');
     vi.mocked(generateText).mockResolvedValue({ text: 'summary with model' } as any);
 
     await agent.performCompaction();
@@ -529,28 +642,19 @@ describe('ControllerAgent', () => {
       .map((call: any[]) => call[1])
       .find((e: any) => e?.type === 'system' && e?.subtype === 'compact');
     expect(marker).toBeDefined();
-    expect(marker.compactMeta.model).toBe(mockProvider.modelName);
+    expect(marker.compactMeta.model).toBe(mockModel.modelName);
   });
 
-  it('should omit compactMeta.model when the provider config carries no model name', async () => {
-    const noModelProvider = { ...mockProvider, modelName: undefined } as any;
+  it('should omit compactMeta.model when the resolved model carries no model name', async () => {
+    const noNameModel = { ...mockModel, modelName: undefined } as any;
     const agentNoModel = new ControllerAgent(
       createMockCtx(),
       state as ControllerAgentState,
-      noModelProvider,
+      noNameModel,
       {},
       skills,
     );
-    for (let i = 0; i < 4; i++) {
-      state.append('conversation', {
-        type: 'user',
-        uuid: `u-nomodel-${i}`,
-        parentUuid: null,
-        sessionId: 'test-session',
-        timestamp: new Date().toISOString(),
-        message: { role: 'user', content: `entry ${i}` },
-      });
-    }
+    appendLargeUsers(4, 'u-nomodel');
     vi.mocked(generateText).mockResolvedValue({ text: 'summary no model' } as any);
 
     await agentNoModel.performCompaction();
@@ -706,7 +810,7 @@ describe('ControllerAgent', () => {
     parentUuid: null,
     sessionId: 's',
     timestamp: new Date().toISOString(),
-    message: { role: 'assistant', content: 'x', usage: { inputTokens, outputTokens: 1 } },
+    message: { role: 'assistant', content: 'x'.repeat(20_000), usage: { inputTokens, outputTokens: 1 } },
   });
 
   it('should seed the compaction check with the last real usage on restore', async () => {
@@ -752,6 +856,79 @@ describe('ControllerAgent', () => {
     expect(state.get('conversation')).toHaveLength(5);
     // Stale high-water mark cleared — the next loop must not truncate again.
     expect(agent.needsCompaction()).toBe(false);
+  });
+
+  // --- controller compaction guards (B5/B6/B7) ---
+
+  it('passes the context window to the state-layer restore so the budgets agree (B6 wiring)', async () => {
+    await agent.restore();
+    // mockModel declares no contextWindowTokens → ContextManager's 256k default.
+    expect(state.restore).toHaveBeenCalledWith(256_000);
+  });
+
+  it('warns with the estimate and the window when compaction cannot clear the threshold (B7)', async () => {
+    const ctx = createMockCtx();
+    const smallWindowAgent = new ControllerAgent(
+      ctx,
+      state as ControllerAgentState,
+      { ...mockModel, contextWindowTokens: 20_000 } as any,
+      {},
+      skills,
+    );
+    // ~5k-token entries on a 20k window: the retained zone plus a huge
+    // "successful" summary stay above the 12k threshold.
+    appendLargeUsers(4, 'u-b7');
+    vi.mocked(generateText).mockResolvedValue({ text: 's'.repeat(48_000) } as any);
+
+    await smallWindowAgent.performCompaction();
+
+    expect(smallWindowAgent.needsCompaction()).toBe(true);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        estimatedTokens: expect.any(Number),
+        contextWindowTokens: 20_000,
+      }),
+      expect.stringContaining('still exceeds the compaction threshold'),
+    );
+  });
+
+  it('stops calling the summarizer past MAX_COMPACTIONS_PER_RUN and truncates instead (B5)', async () => {
+    const ctx = createMockCtx();
+    const smallWindowAgent = new ControllerAgent(
+      ctx,
+      state as ControllerAgentState,
+      { ...mockModel, contextWindowTokens: 20_000 } as any,
+      {},
+      skills,
+    );
+    // A context that never comes down: every "successful" summarizer returns
+    // a summary so large the window stays full, so each loop wake wants
+    // another compaction. Six refills after the first — the shared limit is
+    // five summarizing compactions, then the guard degrades to truncation.
+    appendLargeUsers(2, 'u-b5-seed');
+    vi.mocked(generateText).mockResolvedValue({ text: 's'.repeat(48_000) } as any);
+
+    for (let round = 0; round < 6; round++) {
+      appendLargeUsers(2, `u-b5-r${round}`);
+      await smallWindowAgent.performCompaction();
+    }
+
+    expect(generateText).toHaveBeenCalledTimes(5);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 5 }),
+      'Compaction limit reached — truncating history instead of summarizing',
+    );
+  });
+
+  it('skipped compactions never burn the session budget', async () => {
+    // Below the entry-count guard every compaction is a no-op; the summarizer
+    // is never called and the budget stays untouched.
+    appendLargeUsers(2, 'u-skip-budget');
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary' } as any);
+
+    for (let i = 0; i < 6; i++) await agent.performCompaction();
+
+    expect(generateText).not.toHaveBeenCalled();
   });
 
   it('should seed contextUsage from the estimate after restore', async () => {
@@ -845,7 +1022,7 @@ describe('ControllerAgent: user abort (ESC)', () => {
     agent = new ControllerAgent(
       createMockCtx(),
       state as ControllerAgentState,
-      mockProvider,
+      mockModel,
       {}, // tools
       skills,
     );
@@ -1017,7 +1194,7 @@ describe('ControllerAgent: user abort (ESC)', () => {
     const taskAgent = new ControllerAgent(
       createMockCtx(),
       state as ControllerAgentState,
-      mockProvider,
+      mockModel,
       {}, // tools
       skills,
       recorder,
@@ -1073,7 +1250,7 @@ describe('ControllerAgent: user abort (ESC)', () => {
     const logAgent = new ControllerAgent(
       createMockCtx({ logger }),
       state as ControllerAgentState,
-      mockProvider,
+      mockModel,
       {}, // tools
       skills,
     );

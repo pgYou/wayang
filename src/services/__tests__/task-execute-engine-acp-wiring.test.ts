@@ -87,6 +87,74 @@ describe('createWorker: *-acp dispatch (freeze §7 ①)', () => {
   });
 });
 
+describe('workers.<id>.model wiring (issue #88)', () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'wayang-worker-model-'));
+  });
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function makeModelEngine(worker: WorkerConfig) {
+    const ctx = createMockCtx({
+      sessionDir: tempDir,
+      workspaceDir: tempDir,
+      config: {
+        providers: { openai: { baseURL: 'https://api.openai.com/v1', apiKey: 'sk-x' } },
+        models: { coder: { provider: 'openai', name: 'gpt-4o' } },
+        controller: {},
+        worker: {},
+        workers: { coder: worker },
+      } as any,
+    });
+    const engine = new TaskExecuteEngine(ctx, new SignalQueue(ctx), new SkillRegistry([]));
+    return { engine, ctx };
+  }
+
+  it('resolves workers.<id>.model and hands the ResolvedModel to the claude-code worker', () => {
+    const { engine } = makeModelEngine({
+      type: 'claude-code',
+      description: 'coding worker',
+      model: 'coder',
+    });
+
+    const worker = (engine as any).createWorker('coder', makeTask('t-model'));
+
+    expect((worker as any).resolvedModel).toMatchObject({
+      providerKey: 'openai',
+      modelName: 'gpt-4o',
+      source: 'models',
+    });
+  });
+
+  it('reports an unused model on an ACP row instead of pretending it was consumed', () => {
+    const { engine, ctx } = makeModelEngine({
+      type: 'codebuddy',
+      description: 'ACP worker',
+      model: 'coder',
+    });
+
+    (engine as any).createWorker('coder', makeTask('t-acp-model'));
+
+    const warn = vi.mocked(ctx.logger.warn);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0]![1]);
+    expect(message).toContain('配置的模型 gpt-4o 未被该 provider 消费');
+    expect(warn.mock.calls[0]![0]).toMatchObject({ workerType: 'coder', model: 'gpt-4o', provider: 'openai' });
+  });
+
+  it('does not warn when the ACP row declares no model', () => {
+    const { engine, ctx } = makeModelEngine({
+      type: 'codebuddy',
+      description: 'ACP worker',
+    });
+
+    (engine as any).createWorker('coder', makeTask('t-acp-nomodel'));
+
+    expect(vi.mocked(ctx.logger.warn)).not.toHaveBeenCalled();
+  });
+});
+
 describe('wireWorker: ACP capability probes (freeze §7 ②)', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'wayang-acp-wiring-'));

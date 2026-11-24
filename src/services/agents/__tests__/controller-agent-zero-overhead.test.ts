@@ -9,7 +9,7 @@ import type { ControllerSignal } from '@/types/index';
 import { ControllerAgent } from '@/services/agents/controller-agent';
 import type { ControllerAgentState } from '@/services/agents/controller-state';
 import { SkillRegistry } from '@/services/skills/registry';
-import { mockProvider, createMockCtx } from '@/__tests__/helpers';
+import { mockModel, createMockCtx } from '@/__tests__/helpers';
 
 vi.mock('../model-factory.js', () => ({
   createModel: () => ({}),
@@ -80,7 +80,7 @@ describe('beforeLLM fast path when DEBUG is off (issue #52)', () => {
     (ctx.logger as any).isLevelEnabled = vi.fn(() => false);
     (ctx.logger as any).debug = vi.fn();
 
-    const agent = new ControllerAgent(ctx, state as ControllerAgentState, mockProvider, {}, new SkillRegistry([]));
+    const agent = new ControllerAgent(ctx, state as ControllerAgentState, mockModel, {}, new SkillRegistry([]));
     await agent.run([inputSignal('sig-zero-1')]);
 
     expect(buildLlmCallStartPayload).not.toHaveBeenCalled();
@@ -92,7 +92,7 @@ describe('beforeLLM fast path when DEBUG is off (issue #52)', () => {
     (ctx.logger as any).isLevelEnabled = vi.fn(() => true);
     (ctx.logger as any).debug = vi.fn();
 
-    const agent = new ControllerAgent(ctx, state as ControllerAgentState, mockProvider, {}, new SkillRegistry([]));
+    const agent = new ControllerAgent(ctx, state as ControllerAgentState, mockModel, {}, new SkillRegistry([]));
     await agent.run([inputSignal('sig-zero-2')]);
 
     expect(buildLlmCallStartPayload).toHaveBeenCalledTimes(1);
@@ -100,7 +100,7 @@ describe('beforeLLM fast path when DEBUG is off (issue #52)', () => {
     // (messages, messageCount, model)
     expect(Array.isArray(args[0])).toBe(true);
     expect(typeof args[1]).toBe('number');
-    expect(args[2]).toBe(mockProvider.modelName);
+    expect(args[2]).toBe(mockModel.modelName);
     expect((ctx.logger as any).debug).toHaveBeenCalledTimes(1);
   });
 });

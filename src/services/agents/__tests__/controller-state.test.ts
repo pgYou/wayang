@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createMockCtx } from '@/__tests__/helpers';
 import { ControllerAgentState } from '@/services/agents/controller-state';
+import { ContextManager } from '@/services/agents/context-manager';
 import type { SystemContext } from '@/infra/system-context';
 import { EEntryType, ESystemSubtype } from '@/types/index';
 
@@ -175,6 +176,32 @@ describe('ControllerAgentState', () => {
     expect(state2.get('compactSummary')).toBe('second summary');
   });
 
+  it('should not expose a system-prompt summary for a current-format marker', async () => {
+    // New format: the summary is a user entry right after the marker, so the
+    // marker carries a summaryEntryUuid instead of the summary text. Restore
+    // must leave compactSummary null (nothing to inject into the system
+    // prompt) and keep the summary entry inside the windowed conversation.
+    const marker = {
+      ...makeCompactMarker('m-new', '[Context compacted] ...'),
+      compactMeta: { summarizedTokenCount: 100, summaryEntryUuid: 'sum-1' },
+    };
+    writeConversationJsonl(tempDir, [
+      makeUser('u-1', 'old message'),
+      marker,
+      makeUser('sum-1', '[Conversation Summary]\neverything before the marker'),
+      makeUser('new-1', 'new message'),
+    ]);
+
+    const state2 = new ControllerAgentState(ctx);
+    await state2.restore();
+
+    expect(state2.get('compactSummary')).toBeNull();
+    const conversation = state2.get('conversation') as any[];
+    expect(conversation.map((e) => e.uuid)).toContain('sum-1');
+    expect(conversation.find((e) => e.uuid === 'sum-1').message.content)
+      .toBe('[Conversation Summary]\neverything before the marker');
+  });
+
   it('should count toolCalls/toolResults toward the budget so the window start moves forward', async () => {
     // Entry with huge tool output (> RECENT_TOKEN_BUDGET alone) followed by a
     // small entry, then the marker. The heavy entry must fall out of the window.
@@ -194,5 +221,46 @@ describe('ControllerAgentState', () => {
     expect(uuids).not.toContain('heavy-1');
     expect(uuids).toEqual(['light-1', 'm-1', 'new-1']);
     expect(state2.get('compactSummary')).toBe('SUMMARY: heavy context dropped');
+  });
+
+  it('scales the restore budget to the model window: a 32k window restores below the threshold', async () => {
+    // 8 pre-marker entries × ~5k tokens plus ~8k tokens accumulated AFTER the
+    // marker (post-marker entries are always kept — only the pre-marker
+    // retained zone is budgeted). With the old fixed 20k budget the restore
+    // keeps ~15k of the pre-marker entries, so the total lands above the 60%
+    // threshold of a 32k window (19.2k) and the first request after resume
+    // triggers a pointless compaction; the scaled 8k budget stays below it.
+    const big = (uuid: string) => makeUser(uuid, `${uuid} ${'x'.repeat(20_000)}`);
+    writeConversationJsonl(tempDir, [
+      big('old-1'),
+      big('old-2'),
+      big('old-3'),
+      big('old-4'),
+      big('old-5'),
+      big('old-6'),
+      big('old-7'),
+      big('old-8'),
+      makeCompactMarker('m-1', 'SUMMARY: everything before the marker'),
+      makeUser('post-1', 'p'.repeat(32_008)),
+    ]);
+
+    // Scaled restore (32k → 8k budget): one pre-marker entry survives; a 32k
+    // ContextManager judges the restored context NOT full.
+    const scaled = new ControllerAgentState(ctx);
+    await scaled.restore(32_000);
+    const scaledConversation = (scaled.get('conversation') as any[]).map((e) => e.uuid);
+    expect(scaledConversation).toEqual(['old-8', 'm-1', 'post-1']);
+    const cm = new ContextManager(scaled as any, 'STATIC PROMPT', 32_000);
+    expect(cm.isFull()).toBe(false);
+
+    // Control — the default (256k window) budget keeps ~15k pre-marker
+    // tokens; judged against the same 32k window that context IS full: the
+    // mismatch B6 fixes.
+    const fixedBudget = new ControllerAgentState(ctx);
+    await fixedBudget.restore();
+    expect((fixedBudget.get('conversation') as any[]).map((e) => e.uuid))
+      .toEqual(['old-6', 'old-7', 'old-8', 'm-1', 'post-1']);
+    const cmFixed = new ContextManager(fixedBudget as any, 'STATIC PROMPT', 32_000);
+    expect(cmFixed.isFull()).toBe(true);
   });
 });

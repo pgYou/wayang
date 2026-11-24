@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BaseAgent } from '@/services/agents/base-agent';
-import type { ProviderConfig } from '@/types/index';
-import { mockProvider } from '@/__tests__/helpers';
+import type { ResolvedModel } from '@/services/config/model-resolution';
+import { mockModel } from '@/__tests__/helpers';
 
 // Mock streamText and model-factory
 vi.mock('ai', () => {
@@ -31,8 +31,8 @@ import type { StepMeta, StreamLoopOptions } from '@/services/agents/base-agent';
 // Concrete subclass for testing
 class TestAgent extends BaseAgent {
   readonly state: any;
-  constructor(provider: ProviderConfig, state?: any) {
-    super(provider);
+  constructor(model: ResolvedModel, state?: any) {
+    super(model);
     this.state = state ?? { append: vi.fn(), get: vi.fn(() => []) };
   }
   /** Expose the protected streaming loop for direct testing. */
@@ -47,27 +47,27 @@ class TestAgent extends BaseAgent {
 
 describe('BaseAgent', () => {
   it('should generate unique id', () => {
-    const agent1 = new TestAgent(mockProvider);
-    const agent2 = new TestAgent(mockProvider);
+    const agent1 = new TestAgent(mockModel);
+    const agent2 = new TestAgent(mockModel);
     expect(agent1.id).not.toBe(agent2.id);
   });
 
   it('should abort via abortController', () => {
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     agent.abort();
     expect(agent.abortController.signal.aborted).toBe(true);
   });
 
   it('should clear aborted state on resetAbortController (controller per-run aborts)', () => {
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     agent.abort();
     expect(agent.abortController.signal.aborted).toBe(true);
     agent.reset();
     expect(agent.abortController.signal.aborted).toBe(false);
   });
 
-  it('should create model from provider', () => {
-    const agent = new TestAgent(mockProvider);
+  it('should create model from the resolved model', () => {
+    const agent = new TestAgent(mockModel);
     expect(agent).toBeDefined();
   });
 });
@@ -86,6 +86,42 @@ function fakeStream(text: string) {
     steps: Promise.resolve([]),
   };
 }
+
+describe('BaseAgent.streamLoop: per-model request settings (issue #88)', () => {
+  beforeEach(() => {
+    vi.mocked(streamText).mockReset();
+  });
+
+  /** Drain a streamLoop generator so its streamText call is made and awaited. */
+  async function drain(gen: AsyncGenerator<string, unknown>): Promise<void> {
+    while (true) {
+      const { done } = await gen.next();
+      if (done) break;
+    }
+  }
+
+  it('forwards temperature and maxOutputTokens to streamText when the model declares them', async () => {
+    vi.mocked(streamText).mockReturnValue(fakeStream('ok') as any);
+
+    const agent = new TestAgent({ ...mockModel, temperature: 0.3, maxOutputTokens: 4096 });
+    await drain(agent.runLoop({ system: 'sys', messages: [], tools: {} }));
+
+    const opts = vi.mocked(streamText).mock.calls[0]![0] as Record<string, unknown>;
+    expect(opts.temperature).toBe(0.3);
+    expect(opts.maxOutputTokens).toBe(4096);
+  });
+
+  it('omits temperature and maxOutputTokens from streamText when the model leaves them undeclared', async () => {
+    vi.mocked(streamText).mockReturnValue(fakeStream('ok') as any);
+
+    const agent = new TestAgent(mockModel);
+    await drain(agent.runLoop({ system: 'sys', messages: [], tools: {} }));
+
+    const opts = vi.mocked(streamText).mock.calls[0]![0] as Record<string, unknown>;
+    expect('temperature' in opts).toBe(false);
+    expect('maxOutputTokens' in opts).toBe(false);
+  });
+});
 
 describe('BaseAgent.streamLoop: per-step StepMeta timing', () => {
   beforeEach(() => {
@@ -106,7 +142,7 @@ describe('BaseAgent.streamLoop: per-step StepMeta timing', () => {
       return { ...fakeStream('hello end'), textStream };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     const gen = agent.runLoop({
       system: 'sys',
       messages: [],
@@ -145,7 +181,7 @@ describe('BaseAgent.streamLoop: per-step StepMeta timing', () => {
       return { ...fakeStream(''), textStream };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     const gen = agent.runLoop({
       system: 'sys',
       messages: [],
@@ -192,7 +228,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
       return { ...fakeStream(''), textStream };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     await expect(
       drain(agent.runLoop({ system: 'sys', messages: [], tools: {}, llmIdleTimeoutMs: 20 })),
     ).rejects.toThrow(/idle timeout/);
@@ -216,7 +252,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
       return { ...fakeStream('all chunks'), textStream };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     const result = await drain(agent.runLoop({
       system: 'sys',
       messages: [],
@@ -240,7 +276,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
       return { ...fakeStream('after tools'), textStream };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     const result = await drain(agent.runLoop({
       system: 'sys',
       messages: [],
@@ -261,7 +297,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
     }) as any);
 
     const slow = { execute: () => new Promise((r) => setTimeout(() => r('ok'), 150)) };
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     const result = await drain(agent.runLoop({
       system: 'sys', messages: [], tools: { slow } as any, llmIdleTimeoutMs: 50,
     }));
@@ -282,7 +318,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
     }) as any);
 
     const quick = { execute: async () => 'ok' };
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     await expect(
       drain(agent.runLoop({ system: 'sys', messages: [], tools: { quick } as any, llmIdleTimeoutMs: 30 })),
     ).rejects.toThrow(/idle timeout/);
@@ -303,7 +339,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
 
     const short = { execute: async () => 'a' };
     const long = { execute: () => new Promise((r) => setTimeout(() => r('b'), 150)) };
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     const result = await drain(agent.runLoop({
       system: 'sys', messages: [], tools: { short, long } as any, llmIdleTimeoutMs: 50,
     }));
@@ -323,7 +359,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
 
     const echo = { execute: async (args: any) => args };
     const boom = { execute: async () => { throw new Error('kaboom'); } };
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     await drain(agent.runLoop({ system: 'sys', messages: [], tools: { echo, boom } as any, llmIdleTimeoutMs: 100 }));
     expect(seen).toEqual([{ v: 1 }, 'kaboom']);
   });
@@ -339,7 +375,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
       return { ...fakeStream('slow but fine'), textStream };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     const result = await drain(agent.runLoop({
       system: 'sys',
       messages: [],
@@ -360,7 +396,7 @@ describe('BaseAgent.streamLoop: idle watchdog', () => {
       return { ...fakeStream(''), textStream };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     const gen = agent.runLoop({ system: 'sys', messages: [], tools: {}, llmIdleTimeoutMs: 20_000 });
     const pending = drain(gen);
     agent.abort(); // external abort (done/fail tool or Ctrl+C)
@@ -419,7 +455,7 @@ describe('BaseAgent.streamLoop: provider-error surfacing', () => {
       };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     let caught: unknown;
     try {
       await drain(agent.runLoop({ system: 'sys', messages: [], tools: {} }));
@@ -446,7 +482,7 @@ describe('BaseAgent.streamLoop: provider-error surfacing', () => {
       };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     await expect(
       drain(agent.runLoop({ system: 'sys', messages: [], tools: {} })),
     ).rejects.toBe(generic);
@@ -471,7 +507,7 @@ describe('BaseAgent.streamLoop: provider-error surfacing', () => {
       };
     }) as any);
 
-    const agent = new TestAgent(mockProvider);
+    const agent = new TestAgent(mockModel);
     await expect(
       drain(agent.runLoop({ system: 'sys', messages: [], tools: {} })),
     ).rejects.toBe(other);

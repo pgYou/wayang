@@ -17,6 +17,12 @@ export interface ShellWord {
   text: string;
   /** Command substitutions inside this word, in source order. */
   substitutions: ShellSubstitution[];
+  /**
+   * Process substitutions (`<(cmd)` / `>(cmd)`) inside this word. Kept apart
+   * from `substitutions` so the command-substitution tier does not double-judge
+   * them; the bash gate judges them in `evaluateProcessSubstitutions`.
+   */
+  processSubstitutions?: ShellSubstitution[];
 }
 
 /** What a redirection does with its target. */
@@ -30,6 +36,14 @@ export interface ShellRedirect {
   fd?: number;
   /** The target word; absent for file-descriptor duplication. */
   target?: ShellWord;
+  /**
+   * For a here-doc only: was the DELIMITER quoted? A quoted delimiter
+   * (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) makes the body literal — the shell does
+   * not expand it. An unquoted one is expanded like a double-quoted string, so
+   * a `$(…)` in the body runs. `undefined` means the lexer could not tell
+   * (a dynamically built delimiter); consumers must treat that as unquoted.
+   */
+  delimiterQuoted?: boolean;
 }
 
 export type ShellToken =
