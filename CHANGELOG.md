@@ -4,7 +4,7 @@
 
 ### 修复
 
-- controller compact 后消息序列无 user 角色、MaaS 网关 400（#95）：compaction 改为「全量摘要 + 保留区」——summarizer 仍压缩全部条目，但摘要不再拼进 system prompt，而是以 user 条目（`[Conversation Summary]` 开头）追加在会话末尾；保留区按 token 预算回退（预算随窗口缩放：max=clamp(窗口×25%, 4k, 16k)、min=max/2，默认/回退窗口即 16k/8k 与旧行为一致；累计到 ≥min，或再加一条会超 max 时停，step/turn 边界优先于预算），近期消息在摘要与保留区各存一份原文；compact 标记以 System 条目（`compactMeta.summaryEntryUuid` 指向摘要条目）插在保留区与摘要之间，转换器只回放新格式标记，旧格式标记（`content` 即摘要）不重复进消息流；保留区覆盖全部条目时跳过本次 compaction；旧会话恢复仍走 system prompt 注入摘要（`compactSummary` 只服务 legacy 恢复），新 compaction 不再写该字段。summarizer 失败降级半截断等「无摘要」路径由 `ensureUserTurn` 兜底注入 user 种子。
+- controller compact 后消息序列无 user 角色、MaaS 网关 400（#95）：compaction 改为「全量摘要 + 保留区」——summarizer 仍压缩全部条目，但摘要不再拼进 system prompt，而是以 user 条目（`[Conversation Summary]` 开头）追加在会话末尾；保留区按 token 预算回退（预算随窗口缩放：max=clamp(窗口×25%, 4k, 16k)、min=max/2，窗口 ≥64k 时才与旧行为 16k/8k 一致，更小的窗口按比例缩小——8k 窗口下 4k 地板已等于窗口一半；累计到 ≥min，或再加一条会超 max 时停，entry 边界优先于预算——只在条目之间停、工具调用与其结果同条目不拆开，没有更大的 turn 对齐边界），近期消息在摘要与保留区各存一份原文；compact 标记以 System 条目（`compactMeta.summaryEntryUuid` 指向摘要条目）插在保留区与摘要之间，转换器只回放新格式标记，旧格式标记（`content` 即摘要）不重复进消息流；保留区覆盖全部条目时跳过本次 compaction；旧会话恢复仍走 system prompt 注入摘要（`compactSummary` 只服务 legacy 恢复），新 compaction 不再写该字段。「无摘要」路径（summarizer 失败降级半截断等）的首条 user 角色由两套并列逻辑保证：worker 重建请求时前置自己的 `seedContent`（压缩续跑说明 + 当前任务），controller 侧由 `ensureUserTurn` 注入，两边以注释约定保持同步。
 - compaction 期间 ESC 误判（#95）：`dynamicState.compacting` 在 `performCompaction` 期间置位（finally 复位），状态栏显示 `compacting…`；`resolveEscapeAction` 在 compacting 时返回 `none`（不触发 abort）——compaction 不可取消，避免「按了 ESC 但 compact 仍完成」的界面与实际状态不一致。
 
 ### 变更
