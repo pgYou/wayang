@@ -47,6 +47,23 @@ describe('read_file output caps', () => {
   });
 });
 
+describe('read_file maxChars schema cap', () => {
+  it('rejects maxChars above the transport-layer cap as a parameter error', () => {
+    const tool = readFileTool({ cwd }) as any;
+    const result = tool.inputSchema.safeParse({ path: 'bulk.txt', maxChars: 9000 });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(JSON.stringify(result.error.issues)).toContain('8000');
+    }
+  });
+
+  it('accepts maxChars at the cap', () => {
+    const tool = readFileTool({ cwd }) as any;
+    const result = tool.inputSchema.safeParse({ path: 'bulk.txt', maxChars: 8000 });
+    expect(result.success).toBe(true);
+  });
+});
+
 describe('read_file redact', () => {
   it('redact=true masks apiKey/token/secret/password values in JSON double-quote form', async () => {
     const content = [
@@ -102,6 +119,57 @@ describe('read_file redact', () => {
     const json = await exec(readFileTool({ cwd }), { path: 'headers.json', redact: true });
     expect(json).toContain('"Cookie": "***"');
     expect(json).not.toContain('a=b');
+  });
+
+  it('redact=true masks privateKey/accessKey/accessKeyId/passwd/credentials values in JSON quoted form', async () => {
+    const content = [
+      '{',
+      '  "privateKey": "LEAK-PRIVATEKEY",',
+      '  "accessKey": "LEAK-ACCESSKEY",',
+      '  "accessKeyId": "LEAK-ACCESSKEYID",',
+      '  "passwd": "LEAK-PASSWD",',
+      '  "credentials": "LEAK-CREDENTIALS",',
+      '  "keyName": "plain-keyname",',
+      '  "keys": "plain-keys",',
+      '  "monkey": "plain-monkey",',
+      '}',
+    ].join('\n');
+    writeFileSync(join(cwd, 'families.json'), content, 'utf-8');
+    const out = await exec(readFileTool({ cwd }), { path: 'families.json', redact: true });
+    expect(out).toContain('"privateKey": "***"');
+    expect(out).toContain('"accessKey": "***"');
+    expect(out).toContain('"accessKeyId": "***"');
+    expect(out).toContain('"passwd": "***"');
+    expect(out).toContain('"credentials": "***"');
+    for (const secret of ['LEAK-PRIVATEKEY', 'LEAK-ACCESSKEY', 'LEAK-ACCESSKEYID', 'LEAK-PASSWD', 'LEAK-CREDENTIALS']) {
+      expect(out).not.toContain(secret);
+    }
+    // Controls: a bare "key" shape must not be masked.
+    expect(out).toContain('"keyName": "plain-keyname"');
+    expect(out).toContain('"keys": "plain-keys"');
+    expect(out).toContain('"monkey": "plain-monkey"');
+  });
+
+  it('redact=true masks the new families in YAML colon form too', async () => {
+    const content = [
+      'privateKey: LEAK-PRIVATEKEY',
+      'accessKey: LEAK-ACCESSKEY',
+      'passwd: LEAK-PASSWD',
+      'credentials: LEAK-CREDENTIALS',
+      'keyName: plain-keyname',
+      'monkey: plain-monkey',
+    ].join('\n');
+    writeFileSync(join(cwd, 'families.yaml'), content, 'utf-8');
+    const out = await exec(readFileTool({ cwd }), { path: 'families.yaml', redact: true });
+    expect(out).toContain('privateKey: ***');
+    expect(out).toContain('accessKey: ***');
+    expect(out).toContain('passwd: ***');
+    expect(out).toContain('credentials: ***');
+    for (const secret of ['LEAK-PRIVATEKEY', 'LEAK-ACCESSKEY', 'LEAK-PASSWD', 'LEAK-CREDENTIALS']) {
+      expect(out).not.toContain(secret);
+    }
+    expect(out).toContain('keyName: plain-keyname');
+    expect(out).toContain('monkey: plain-monkey');
   });
 
   it('redact defaults to false — omitted and explicit false leave values intact', async () => {

@@ -1,6 +1,12 @@
 import { tool } from 'ai';
 
-const MAX_RESULT_CHARS = 8000;
+/**
+ * Hard cap on any single tool result the transport layer will actually
+ * deliver (safeExecute truncates past it). Exported so tool schemas can
+ * reject larger maxChars values up front with a parameter error instead of
+ * silently clamping them after the tool already ran.
+ */
+export const MAX_RESULT_CHARS = 8000;
 
 // NOTE: there is deliberately no `isInsideWorkspace` helper here any more. Path
 // containment is decided by the shared policy (`@/infra/permission/policy`:

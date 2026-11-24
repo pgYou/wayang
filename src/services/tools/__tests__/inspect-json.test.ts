@@ -74,9 +74,12 @@ describe('inspect_json redact', () => {
     expect(out).toContain('"***"');
   });
 
-  it('a pointer that merely CONTAINS the word "token" does not mask an unrelated value', async () => {
+  it('an intermediate segment that is itself a sensitive key masks the picked subtree, consistent with the whole-tree view', async () => {
+    // "tokens" matches the sensitive-key list, so the whole-document output
+    // masks the array — a pointer selection under it must not give the plain
+    // items back while the full tree keeps them masked.
     const out = await exec(inspectJsonTool({ cwd }), { path: 'config.json', pointers: ['/tokens/1'] });
-    expect(out).toBe(JSON.stringify({ '/tokens/1': 'tok-b' }, null, 2));
+    expect(out).toBe(JSON.stringify({ '/tokens/1': '***' }, null, 2));
   });
 
   it('redact=false returns values as they are', async () => {
@@ -114,6 +117,83 @@ describe('inspect_json redact', () => {
     expect(out).toContain('Bearer x');
     expect(out).toContain('a=b');
     expect(out).not.toContain('***');
+  });
+});
+
+describe('inspect_json sensitive-key families (privateKey/accessKey/passwd/credentials)', () => {
+  const FAMILIES = {
+    model: { name: 'glm-5.3' },
+    my_secret_store: { value: 'LEAK-OBJVAL' },
+    a: { privateKey: { x: 'LEAK-PRIVATEKEY' } },
+    creds: {
+      accessKey: 'LEAK-ACCESSKEY',
+      accessKeyId: 'LEAK-ACCESSKEYID',
+      passwd: 'LEAK-PASSWD',
+      credentials: 'LEAK-CREDENTIALS',
+    },
+    keyName: 'plain-keyname',
+    keys: 'plain-keys',
+    monkey: 'plain-monkey',
+  };
+
+  beforeEach(() => {
+    writeFileSync(join(cwd, 'families.json'), JSON.stringify(FAMILIES), 'utf-8');
+  });
+
+  it('default output masks the five new key families anywhere in the tree', async () => {
+    const out = await exec(inspectJsonTool({ cwd }), { path: 'families.json' });
+    expect(out).toContain('"privateKey": "***"');
+    expect(out).toContain('"accessKey": "***"');
+    expect(out).toContain('"accessKeyId": "***"');
+    expect(out).toContain('"passwd": "***"');
+    expect(out).toContain('"credentials": "***"');
+    for (const secret of ['LEAK-PRIVATEKEY', 'LEAK-ACCESSKEY', 'LEAK-ACCESSKEYID', 'LEAK-PASSWD', 'LEAK-CREDENTIALS']) {
+      expect(out).not.toContain(secret);
+    }
+  });
+
+  it('controls with a bare "key" shape stay untouched (keys / keyName / monkey)', async () => {
+    const out = await exec(inspectJsonTool({ cwd }), { path: 'families.json' });
+    expect(out).toContain('"keyName": "plain-keyname"');
+    expect(out).toContain('"keys": "plain-keys"');
+    expect(out).toContain('"monkey": "plain-monkey"');
+    expect(out).toContain('"name": "glm-5.3"');
+  });
+
+  it('a pointer path whose ANCESTOR segment is a sensitive key masks the whole subtree', async () => {
+    const out = await exec(inspectJsonTool({ cwd }), {
+      path: 'families.json',
+      pointers: ['/my_secret_store/value', '/a/privateKey/x'],
+    });
+    expect(JSON.parse(out)).toEqual({
+      '/my_secret_store/value': '***',
+      '/a/privateKey/x': '***',
+    });
+    for (const secret of ['LEAK-OBJVAL', 'LEAK-PRIVATEKEY']) {
+      expect(out).not.toContain(secret);
+    }
+  });
+
+  it('a pointer path with no sensitive segment still returns the plain value', async () => {
+    const out = await exec(inspectJsonTool({ cwd }), { path: 'families.json', pointers: ['/model/name'] });
+    expect(out).toBe(JSON.stringify({ '/model/name': 'glm-5.3' }, null, 2));
+  });
+});
+
+describe('inspect_json maxChars schema cap', () => {
+  it('rejects maxChars above the transport-layer cap as a parameter error', () => {
+    const tool = inspectJsonTool({ cwd }) as any;
+    const result = tool.inputSchema.safeParse({ path: 'config.json', maxChars: 9000 });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(JSON.stringify(result.error.issues)).toContain('8000');
+    }
+  });
+
+  it('accepts maxChars at the cap', () => {
+    const tool = inspectJsonTool({ cwd }) as any;
+    const result = tool.inputSchema.safeParse({ path: 'config.json', maxChars: 8000 });
+    expect(result.success).toBe(true);
   });
 });
 

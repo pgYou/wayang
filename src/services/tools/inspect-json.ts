@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { defineTool, safeExecute } from './common';
+import { defineTool, safeExecute, MAX_RESULT_CHARS } from './common';
 import { expandHome } from './permission-rules';
 import { isSensitiveKey } from './sensitive-keys';
 
@@ -63,11 +63,12 @@ function rootSummary(doc: unknown): string {
 
 /**
  * Mask credential-like values as `***`, recursively. Applied to EXTRACTED
- * values, never to the pointer→value map's keys — a pointer like `/tokens/1`
- * contains the word "token" but addresses an array item, and must not get its
- * value masked by accident. A pointer whose LAST segment addresses a
- * sensitive key (`/a/b/apiKey`) masks its picked value too, so selecting the
- * secret directly cannot leak it.
+ * values, never to the pointer→value map's keys. A pointer whose ANY segment
+ * (ancestor or last) addresses a sensitive key (`/a/privateKey/x`,
+ * `/a/b/apiKey`) masks its picked value too, so selecting into a sensitive
+ * subtree — not just the leaf key — cannot leak it. This keeps pointer picks
+ * consistent with the whole-document view, where the sensitive key's entire
+ * subtree is masked.
  */
 function redactValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactValue);
@@ -81,23 +82,28 @@ function redactValue(value: unknown): unknown {
   return value;
 }
 
-/** Last segment of a JSON Pointer (`/a/b/apiKey` → `apiKey`), unescaped. */
-function lastTokenOf(pointer: string): string | undefined {
+/**
+ * Segments of a JSON Pointer (`/a/b/apiKey` → ['a', 'b', 'apiKey']), each
+ * unescaped (`~1`/`~0` → `/`/`~`). Undefined for the whole-document pointer
+ * `""` and for malformed pointers that do not start with `/` — those never
+ * reach the sensitivity check anyway (malformed ones fail resolvePointer
+ * first).
+ */
+function pointerTokens(pointer: string): string[] | undefined {
   if (pointer === '' || !pointer.startsWith('/')) return undefined;
-  const tokens = pointer.slice(1).split('/');
-  return tokens[tokens.length - 1].replace(/~1/g, '/').replace(/~0/g, '~');
+  return pointer.slice(1).split('/').map((token) => token.replace(/~1/g, '/').replace(/~0/g, '~'));
 }
 
 export function inspectJsonTool(deps: { cwd?: string } = {}) {
   const workspace = deps.cwd ?? process.cwd();
 
   return defineTool({
-    description: `Read a JSON file structurally: pick subtrees by RFC 6901 JSON Pointer (e.g. /workers/codebuddy/model), with secret values (apiKey/token/secret/password/authorization/cookie) masked by default and a total output cap. Prefer this over read_file when you only need fields of a JSON config, and over node -e one-liners entirely. Does NOT support JSONL (one JSON value per line) — use read_file for JSONL.`,
+    description: `Read a JSON file structurally: pick subtrees by RFC 6901 JSON Pointer (e.g. /workers/codebuddy/model), with secret values (apiKey/token/secret/password/authorization/cookie/privateKey/accessKey/passwd/credentials) masked by default — including whole subtrees under any sensitive key on the pointer path — and a total output cap. Prefer this over read_file when you only need fields of a JSON config, and over node -e one-liners entirely. Does NOT support JSONL (one JSON value per line) — use read_file for JSONL.`,
     parameters: z.object({
       path: z.string().describe('JSON file path (relative to workspace or absolute)'),
       pointers: z.array(z.string()).optional().describe('RFC 6901 JSON Pointers selecting subtrees; omit to return the whole document'),
-      redact: z.boolean().optional().describe('Mask values of credential-like keys (apiKey/token/secret/password/authorization/cookie) as ***; default true'),
-      maxChars: z.number().int().min(1).optional().describe('Total output character cap (truncation markers excluded); default 4000'),
+      redact: z.boolean().optional().describe('Mask values of credential-like keys (apiKey/token/secret/password/authorization/cookie/privateKey/accessKey/passwd/credentials) as ***; default true'),
+      maxChars: z.number().int().min(1).max(MAX_RESULT_CHARS).optional().describe(`Total output character cap (truncation markers excluded); ${MAX_RESULT_CHARS} is the transport layer's real cap — larger values are a parameter error; default 4000`),
     }),
     execute: safeExecute('inspect_json', async ({ path, pointers, redact, maxChars }) => {
       // Same `~` / `$HOME` expansion anchor read_file and the permission gate
@@ -132,9 +138,9 @@ export function inspectJsonTool(deps: { cwd?: string } = {}) {
           if (!resolvedPointer.ok) {
             throw new Error(`${resolvedPointer.error}. ${rootSummary(doc)}`);
           }
-          const lastToken = lastTokenOf(pointer);
+          const tokens = pointerTokens(pointer);
           picked[pointer] =
-            shouldRedact && lastToken !== undefined && isSensitiveKey(lastToken)
+            shouldRedact && tokens !== undefined && tokens.some(isSensitiveKey)
               ? '***'
               : shouldRedact
                 ? redactValue(resolvedPointer.value)

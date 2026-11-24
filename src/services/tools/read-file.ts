@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { defineTool, safeExecute } from './common';
+import { defineTool, safeExecute, MAX_RESULT_CHARS } from './common';
 import { expandHome } from './permission-rules';
 import { isSensitiveKey } from './sensitive-keys';
 
@@ -42,14 +42,14 @@ export function readFileTool(deps: { cwd?: string } = {}) {
   const workspace = deps.cwd ?? process.cwd();
 
   return defineTool({
-    description: `Read file content (with line numbers). Returns at most ${DEFAULT_MAX_LINES} lines by default. Use offset (1-based start line number) and limit to read specific sections of large files. Use maxLineChars to cap over-long single lines (e.g. JSONL records) and maxChars to cap total output; both cuts carry an explicit truncation marker. Set redact=true to mask values of credential-like keys (apiKey/token/secret/password/authorization/cookie) before any truncation.`,
+    description: `Read file content (with line numbers). Returns at most ${DEFAULT_MAX_LINES} lines by default. Use offset (1-based start line number) and limit to read specific sections of large files. Use maxLineChars to cap over-long single lines (e.g. JSONL records) and maxChars to cap total output; both cuts carry an explicit truncation marker. Set redact=true to mask values of credential-like keys (apiKey/token/secret/password/authorization/cookie/privateKey/accessKey/passwd/credentials) before any truncation. Limitation: that redaction is text-level — it only masks scalar values on the SAME line as a sensitive key (JSON/JS quoted pairs, YAML/ini key: value lines); values under a sensitive key in nested multi-line structures are not guaranteed to be covered. inspect_json applies structural masking and is the safer pick for JSON.`,
     parameters: z.object({
       path: z.string().describe('File path (relative to workspace or absolute)'),
       offset: z.number().int().min(1).optional().describe('Start line number (1-based)'),
       limit: z.number().int().min(1).optional().describe('Number of lines to read'),
-      maxChars: z.number().int().min(1).optional().describe('Total output character cap (truncation markers excluded); excess is cut with a [Truncated] marker'),
+      maxChars: z.number().int().min(1).max(MAX_RESULT_CHARS).optional().describe(`Total output character cap (truncation markers excluded); ${MAX_RESULT_CHARS} is the transport layer's real cap — larger values are a parameter error; excess is cut with a [Truncated] marker`),
       maxLineChars: z.number().int().min(1).optional().describe('Per-line character cap; an over-long line is cut with a [line truncated] marker'),
-      redact: z.boolean().optional().describe('Mask values of credential-like keys (apiKey/token/secret/password/authorization/cookie) as *** before any truncation; default false'),
+      redact: z.boolean().optional().describe('Mask values of credential-like keys (apiKey/token/secret/password/authorization/cookie/privateKey/accessKey/passwd/credentials) as *** before any truncation; default false'),
     }),
     execute: safeExecute('read_file', async ({ path, offset, limit, maxChars, maxLineChars, redact }) => {
       // A leading `~` / `$HOME` expands against the PROCESS home — the same
