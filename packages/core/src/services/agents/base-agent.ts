@@ -98,9 +98,18 @@ export abstract class BaseAgent {
    * run; one-shot agents (workers) never reset, so abort means dispose.
    */
   abortController: AbortController;
-  protected readonly model: ReturnType<typeof createModel>;
+  /**
+   * The language model of the CURRENT run boundary. Mutable on purpose
+   * (monorepo-design 4.1 声明值与生效值分离): `refreshModel()` swaps it at a
+   * consumption boundary (the controller does so every turn), so a hot
+   * config update takes effect on the next call — while a stream already
+   * created keeps the instance it captured (in-flight runs keep their old
+   * snapshot). One-shot agents (workers) never refresh: their snapshot spans
+   * their whole run, which is exactly the "next spawn" boundary.
+   */
+  protected model: ReturnType<typeof createModel>;
   /** The resolved model config behind `model` — per-model request settings live here (issue #88). */
-  protected readonly resolvedModel: ResolvedModel;
+  protected resolvedModel: ResolvedModel;
 
   protected hooks: AgentHooks = {};
 
@@ -109,6 +118,16 @@ export abstract class BaseAgent {
     this.abortController = new AbortController();
     this.resolvedModel = model;
     this.model = createModel(model);
+  }
+
+  /**
+   * Swap the resolved model at a run boundary (design 4.1 热更生效点): the
+   * next streamText call builds on the new instance; already-running streams
+   * are unaffected. Only refresh-resilient agents (the controller) call this.
+   */
+  protected refreshModel(next: ResolvedModel): void {
+    this.resolvedModel = next;
+    this.model = createModel(next);
   }
 
   /**

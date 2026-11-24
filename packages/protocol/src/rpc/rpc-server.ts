@@ -46,7 +46,10 @@ export class RpcServer {
     } catch (err) {
       const code = err instanceof RpcError ? err.code : RPC_ERROR.INTERNAL;
       const message = err instanceof Error ? err.message : String(err);
-      response = { id: req.id, error: { code, message } };
+      response = {
+        id: req.id,
+        error: { code, message, ...(err instanceof RpcError && err.data !== undefined && { data: err.data }) },
+      };
     }
     this.transport.send(response);
   }

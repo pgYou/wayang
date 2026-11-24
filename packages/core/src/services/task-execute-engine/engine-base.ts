@@ -38,8 +38,25 @@ export class TaskEngineBase implements Subscribable {
   protected workerState: RuntimeState;
 
   protected readonly logger: Logger;
-  protected readonly maxConcurrency: number;
-  protected readonly workerModel: ResolvedModel;
+  /**
+   * Live declared worker concurrency — read at each dispatch decision, so
+   * `updateWorkerSettings` takes effect without any re-wiring (design 4.1
+   * 声明值与生效值分离: the declared value changes, the schedule follows at
+   * its next consumption point). Read through the context's own getter,
+   * which re-resolves from the declared config on every call.
+   */
+  protected get maxConcurrency(): number {
+    return this.ctx.maxConcurrency;
+  }
+  /**
+   * Default puppet worker model, resolved fresh on each read — i.e. at every
+   * spawn (`createWorker`), which is the worker's hot-update boundary
+   * (design 4.1: "worker 于下一次 spawn"). A worker already running keeps
+   * the snapshot it was constructed with.
+   */
+  protected get workerModel(): ResolvedModel {
+    return this.ctx.workerModel;
+  }
   protected readonly workerConfigs?: Record<string, WorkerConfig>;
   protected readonly skills: SkillRegistry;
 
@@ -98,8 +115,6 @@ export class TaskEngineBase implements Subscribable {
     this.userHome = options.userHome ?? homedir();
     this.permission = options.permission ?? ctx.config.permission;
     this.onTaskWorkspace = options.onTaskWorkspace;
-    this.maxConcurrency = ctx.maxConcurrency;
-    this.workerModel = ctx.workerModel;
     this.workerConfigs = ctx.config.workers;
     this.skills = skills;
     this.idleTimeoutMs = ctx.config.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;

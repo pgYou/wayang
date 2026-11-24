@@ -11,9 +11,22 @@
  */
 
 import type { RpcTransport, TransportErrorEvent } from './transport';
-import { isRpcResponse, METHOD, NOTIFY, type RpcMessage, type RpcNotification } from './protocol';
+import { isRpcResponse, METHOD, NOTIFY, type RpcMessage, type RpcNotification, type RpcFailure } from './protocol';
 import type { Subscribable } from '../types/subscribable';
 import type { StateEvent } from '../types/state';
+
+/**
+ * A failed RPC request, surfaced to the caller with the wire error intact:
+ * `code` and (when present) the structured `data` payload — e.g. the
+ * reference list that blocks a config removal (design 4.1). The message
+ * string matches the pre-structured-error format.
+ */
+export class RpcRequestError extends Error {
+  constructor(readonly error: RpcFailure['error']) {
+    super(`RPC ${error.code}: ${error.message}`);
+    this.name = 'RpcRequestError';
+  }
+}
 
 export interface RpcClientOptions {
   /** Invoked when the underlying channel fails or the peer goes away. */
@@ -85,7 +98,7 @@ export class RpcClient {
       const entry = this.pending.get(msg.id);
       if (!entry) return;
       this.pending.delete(msg.id);
-      if ('error' in msg) entry.reject(new Error(`RPC ${msg.error.code}: ${msg.error.message}`));
+      if ('error' in msg) entry.reject(new RpcRequestError(msg.error));
       else entry.resolve(msg.result);
       return;
     }

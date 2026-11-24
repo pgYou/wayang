@@ -11,7 +11,9 @@ import { getSession } from '../infra/session-helpers';
 import { RpcServer } from '@wayang-ai/protocol/rpc/rpc-server';
 import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
 import { METHOD, NOTIFY, RpcError, RPC_ERROR, type RpcTarget } from '@wayang-ai/protocol/rpc/protocol';
+import { parseConfigUpdateRequest } from '@wayang-ai/protocol';
 import { serializeTurnView, summarizeTurn, DEFAULT_TURN_TEXT_LIMIT } from '../services/conversation/turn-serialize';
+import { ConfigUpdateService, applyConfigUpdate } from '../services/config/config-update';
 import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 import type { TaskDetail, WayangConfig } from '@wayang-ai/protocol';
 
@@ -222,6 +224,30 @@ export async function runWayangServer(
     });
     return {};
   });
+
+  // --- Runtime config hot-update (monorepo-design 4.1 运行时热更) ---
+  // The service mutates the supervisor's live declared config in place; the
+  // per-turn (controller) / per-spawn (worker) resolution boundaries pick
+  // the new values up lazily. Failures reject with a structured payload
+  // (duplicate names, removal blockers, validator errors).
+
+  const configUpdates = new ConfigUpdateService(config);
+  const updateRoutes: ReadonlyArray<[string, Parameters<typeof parseConfigUpdateRequest>[0]]> = [
+    [METHOD.UPDATE_PROVIDER, 'update_provider'],
+    [METHOD.UPDATE_MODEL, 'update_model'],
+    [METHOD.ADD_PROVIDER, 'add_provider'],
+    [METHOD.ADD_MODEL, 'add_model'],
+    [METHOD.REMOVE_PROVIDER, 'remove_provider'],
+    [METHOD.REMOVE_MODEL, 'remove_model'],
+    [METHOD.UPDATE_CONTROLLER_MODEL, 'update_controller_model'],
+    [METHOD.UPDATE_WORKER_SETTINGS, 'update_worker_settings'],
+  ];
+  for (const [wireMethod, requestMethod] of updateRoutes) {
+    rpc.register(wireMethod, (params) => {
+      const request = parseConfigUpdateRequest(requestMethod, params);
+      return applyConfigUpdate(configUpdates, request);
+    });
+  }
 
   rpc.notify(NOTIFY.READY, {
     sessionId: supervisor.ctx.sessionId,

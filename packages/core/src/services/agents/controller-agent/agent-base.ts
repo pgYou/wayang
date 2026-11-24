@@ -27,7 +27,6 @@ export class ControllerAgentBase extends BaseAgent {
   protected readonly tools: ToolSet;
   protected readonly logger: Logger;
   protected readonly ctx: SystemContext;
-  protected readonly resolvedModel: ResolvedModel;
   /** Live tool execution records — merged into entries at step finish. */
   protected readonly recorder: ToolCallRecorder;
   /** Turn id of the most recent run — used to stamp late error entries. */
@@ -79,7 +78,6 @@ export class ControllerAgentBase extends BaseAgent {
     super(model);
     this.ctx = ctx;
     this.state = state;
-    this.resolvedModel = model;
     this.recorder = recorder;
     this.tools = recordToolCalls(tools, recorder);
     this.logger = ctx.logger;

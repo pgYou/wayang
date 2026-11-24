@@ -3,6 +3,23 @@
 export type { ProviderConfig, ModelConfig, ModelRef, WayangConfig, WorkerConfig, WorkerType, AcpProtocolConfig, ToolChoice, PermissionConfig, SensitiveMode, LoggingConfig } from './config';
 export { validateConfig, collectWorkerWarnings, collectProviderWarnings, normalizeWorkerTypes, WORKER_TYPES } from './config';
 
+// --- Config hot-update (monorepo-design 4.1 运行时热更) ---
+export type {
+  ProviderPatch,
+  ModelPatch,
+  ProviderDefinition,
+  ModelDefinition,
+  WorkerSettingsPatch,
+  ConfigUpdateRequest,
+  ConfigUpdateMethod,
+  ConfigUpdateAffected,
+  ConfigUpdateResult,
+  ConfigUpdateBlocker,
+  ConfigUpdateRejection,
+  BindingSite,
+} from './config-update';
+export { parseConfigUpdateRequest, isConfigUpdateMethod, bindingSites, modelRefProvider, modelRefKey } from './config-update';
+
 export type {
   ConversationEntry,
   UserEntry,

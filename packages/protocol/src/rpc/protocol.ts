@@ -21,7 +21,8 @@ export interface RpcSuccess {
 
 export interface RpcFailure {
   id: number;
-  error: { code: number; message: string };
+  /** JSON-RPC error envelope; `data` is an optional structured payload (design 4.1 热更引用清单). */
+  error: { code: number; message: string; data?: unknown };
 }
 
 export type RpcResponse = RpcSuccess | RpcFailure;
@@ -39,9 +40,19 @@ export const RPC_ERROR = {
   INTERNAL: -32000,
 } as const;
 
-/** Error carrying an RPC error code — thrown by handlers to surface structured errors. */
+/**
+ * Error carrying an RPC error code — thrown by handlers to surface structured
+ * errors. `data` rides along in the failure envelope's `error.data` (the
+ * JSON-RPC standard slot), e.g. the reference list that blocks a config
+ * removal; older clients simply ignore it.
+ */
 export class RpcError extends Error {
-  constructor(readonly code: number, message: string) {
+  constructor(
+    readonly code: number,
+    message: string,
+    /** Optional structured payload surfaced as `error.data` on the wire. */
+    readonly data?: unknown,
+  ) {
     super(message);
   }
 }
@@ -77,6 +88,23 @@ export const METHOD = {
   CONVERSATION_LIST_TURNS: 'conversation_list_turns',
   /** Read-only: one turn of the controller conversation by turnId. */
   CONVERSATION_GET_TURN: 'conversation_get_turn',
+  // --- Runtime config hot-update (monorepo-design 4.1 运行时热更) ---
+  /** updateProvider(name, patch) — declared-value only, effective next turn/spawn. */
+  UPDATE_PROVIDER: 'update_provider',
+  /** updateModel(name, patch) — declared-value only, effective next turn/spawn. */
+  UPDATE_MODEL: 'update_model',
+  /** addProvider(name, def) — strict duplicate-name rejection. */
+  ADD_PROVIDER: 'add_provider',
+  /** addModel(name, def) — strict duplicate-name rejection. */
+  ADD_MODEL: 'add_model',
+  /** removeProvider(name) — rejected with a reference list when still referenced. */
+  REMOVE_PROVIDER: 'remove_provider',
+  /** removeModel(name) — rejected with a reference list when still bound. */
+  REMOVE_MODEL: 'remove_model',
+  /** updateControllerModel(model) — rebinds the controller binding (next turn). */
+  UPDATE_CONTROLLER_MODEL: 'update_controller_model',
+  /** updateWorkerSettings(patch) — default worker binding + settings (next spawn). */
+  UPDATE_WORKER_SETTINGS: 'update_worker_settings',
 } as const;
 
 // --- Notifications (server → client) ---

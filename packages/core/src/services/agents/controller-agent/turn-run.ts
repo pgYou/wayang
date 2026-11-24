@@ -21,6 +21,14 @@ export class ControllerTurnRun extends ControllerAgentBase {
     // THIS run only. Without the reset, the agent-lifetime controller stays
     // aborted forever and every later turn would silently return empty.
     this.resetAbortController();
+    // Per-turn model resolution (monorepo-design 4.1 改造一/C): re-resolve
+    // from the CURRENT declared config at every turn boundary, so a hot
+    // update (updateProvider / updateModel / updateControllerModel) takes
+    // effect on the next turn — while a turn already running keeps the
+    // snapshot its streams were created with. The compaction window in the
+    // ContextManager intentionally stays the session-start value: it is a
+    // budgeting parameter, not a request parameter.
+    this.refreshModel(this.ctx.controllerModel);
     this.state.set('dynamicState.busy', true);
     try {
       return await this._run(signals);
