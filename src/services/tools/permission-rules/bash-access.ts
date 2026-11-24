@@ -17,6 +17,7 @@ import { applyCdChain } from './cd-chain';
 import { expandHome, expandHomeVars } from './home-expansion';
 import { evaluateShellScripts, unanalyzedScriptFile } from './shell-script';
 import { evaluateSubstitutions } from './substitutions';
+import { sensitiveWordsIn } from './sensitive-scan';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
 /**
@@ -34,15 +35,7 @@ function fallbackSensitiveHit(
   scope: WorkerAccessScope,
   expandedCommand: string,
 ): ToolAccessDecision | undefined {
-  for (const raw of expandedCommand.split(/[\s=]+/)) {
-    const word = raw.replace(/^['"]+/, '').replace(/['"]+$/, '');
-    if (!word.startsWith('/') && !word.startsWith('~')) continue;
-    const expanded = expandHome(word);
-    if (expanded.unresolvable) continue;
-    const verdict = decidePath(scope, expanded.path, 'write');
-    if (verdict.sensitive) return toToolDecision(verdict, 'write');
-  }
-  return undefined;
+  return sensitiveWordsIn(scope, expandedCommand);
 }
 
 /**

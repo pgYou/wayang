@@ -47,7 +47,7 @@ export function runProcessTool(deps: { cwd?: string } = {}) {
   }
 
   return defineTool({
-    description: `Run a process from a structured argv array — no shell is involved, so shell metacharacters ($, backticks, ;, &&) are passed to the program literally. Use it instead of bash when driving a built CLI, a dev server or a smoke-test target. Foreground waits for exit and returns exitCode/signal/stdout/stderr/durationMs (timeout: SIGTERM, then SIGKILL after 3s); background=true starts it, logs to .agents/tmp/run-process-<ts>.log and returns pid + logFile immediately. Requires controller approval for every call.`,
+    description: `Run a process from a structured argv array — no shell is involved, so shell metacharacters ($, backticks, ;, &&) are passed to the program literally. Use it instead of bash when driving a built CLI, a dev server or a smoke-test target. Foreground waits for exit and returns exitCode/signal/stdout/stderr/durationMs (timeout: SIGTERM, then SIGKILL after 3s); background=true starts it, logs to .agents/tmp/run-process-<ts>.log and returns pid + logFile immediately. Requires controller approval for every call. Approval limits: the static gate scans only the argv words and cwd (sensitive list + workspace/allowedDirs scope) — runtime side effects of the program itself (writes or network beyond argv) cannot be covered statically, which is why every call still asks.`,
     parameters: z.object({
       command: z.array(z.string()).min(1).describe('Argv to spawn: command[0] is the executable, the rest are its arguments (never shell-interpreted)'),
       cwd: z.string().optional().describe('Working directory (relative to workspace or absolute); defaults to the task workspace'),

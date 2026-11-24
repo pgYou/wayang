@@ -34,7 +34,11 @@
  *   - escalation to `ask` when a target cannot be determined statically:
  *     `~user` (another user's home), command substitution, output redirection,
  *     and a read-only-table command that FAILED its own deferred condition
- *     (`sed -f`, a script that executes or writes — `read-only-unverified`).
+ *     (`sed -f`, a script that executes or writes — `read-only-unverified`),
+ *   - the run_process gate: a per-call approval baseline (arbitrary code, no
+ *     askPaths), with two hard refusals in front — a sensitive-list hit in
+ *     argv text or cwd (the same scan bash uses), and a cwd outside the
+ *     workspace / allowedDirs.
  *
  * Verdicts: `allow` → run immediately, `ask` → controller approval,
  * `deny` → refuse without asking (`sensitiveMode: 'deny'` on a sensitive hit).
