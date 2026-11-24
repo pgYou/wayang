@@ -3,11 +3,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineTool, safeExecute } from './common';
 import { expandHome } from './permission-rules';
+import { isSensitiveKey } from './sensitive-keys';
 
 const DEFAULT_MAX_CHARS = 4000;
-
-/** Key names whose values get masked when redact=true (same shape as read_file). */
-const SENSITIVE_KEY_RE = /api[_-]?key|secret|token|password/i;
 
 /**
  * Resolve one RFC 6901 JSON Pointer against a parsed document. `""` addresses
@@ -76,7 +74,7 @@ function redactValue(value: unknown): unknown {
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = SENSITIVE_KEY_RE.test(key) ? '***' : redactValue(val);
+      out[key] = isSensitiveKey(key) ? '***' : redactValue(val);
     }
     return out;
   }
@@ -94,11 +92,11 @@ export function inspectJsonTool(deps: { cwd?: string } = {}) {
   const workspace = deps.cwd ?? process.cwd();
 
   return defineTool({
-    description: `Read a JSON file structurally: pick subtrees by RFC 6901 JSON Pointer (e.g. /workers/codebuddy/model), with secret values (apiKey/token/secret/password) masked by default and a total output cap. Prefer this over read_file when you only need fields of a JSON config, and over node -e one-liners entirely. Does NOT support JSONL (one JSON value per line) — use read_file for JSONL.`,
+    description: `Read a JSON file structurally: pick subtrees by RFC 6901 JSON Pointer (e.g. /workers/codebuddy/model), with secret values (apiKey/token/secret/password/authorization/cookie) masked by default and a total output cap. Prefer this over read_file when you only need fields of a JSON config, and over node -e one-liners entirely. Does NOT support JSONL (one JSON value per line) — use read_file for JSONL.`,
     parameters: z.object({
       path: z.string().describe('JSON file path (relative to workspace or absolute)'),
       pointers: z.array(z.string()).optional().describe('RFC 6901 JSON Pointers selecting subtrees; omit to return the whole document'),
-      redact: z.boolean().optional().describe('Mask values of credential-like keys (apiKey/token/secret/password) as ***; default true'),
+      redact: z.boolean().optional().describe('Mask values of credential-like keys (apiKey/token/secret/password/authorization/cookie) as ***; default true'),
       maxChars: z.number().int().min(1).optional().describe('Total output character cap (truncation markers excluded); default 4000'),
     }),
     execute: safeExecute('inspect_json', async ({ path, pointers, redact, maxChars }) => {
@@ -136,7 +134,7 @@ export function inspectJsonTool(deps: { cwd?: string } = {}) {
           }
           const lastToken = lastTokenOf(pointer);
           picked[pointer] =
-            shouldRedact && lastToken !== undefined && SENSITIVE_KEY_RE.test(lastToken)
+            shouldRedact && lastToken !== undefined && isSensitiveKey(lastToken)
               ? '***'
               : shouldRedact
                 ? redactValue(resolvedPointer.value)

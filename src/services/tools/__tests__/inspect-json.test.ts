@@ -83,6 +83,38 @@ describe('inspect_json redact', () => {
     const out = await exec(inspectJsonTool({ cwd }), { path: 'config.json', pointers: ['/workers/codebuddy/apiKey'], redact: false });
     expect(out).toContain('sk-live-111');
   });
+
+  it('masks authorization/cookie credentials — top-level and inside nested headers', async () => {
+    const doc = {
+      authorization: 'Bearer top-level',
+      headers: { Authorization: 'Bearer x', Cookie: 'a=b; c=d' },
+    };
+    writeFileSync(join(cwd, 'headers.json'), JSON.stringify(doc), 'utf-8');
+    const out = await exec(inspectJsonTool({ cwd }), { path: 'headers.json' });
+    expect(out).toContain('"authorization": "***"');
+    expect(out).toContain('"Authorization": "***"');
+    expect(out).toContain('"Cookie": "***"');
+    for (const secret of ['Bearer top-level', 'Bearer x', 'a=b; c=d']) {
+      expect(out).not.toContain(secret);
+    }
+  });
+
+  it('a pointer directly at a sensitive header (/headers/Authorization) masks the picked value', async () => {
+    const doc = { headers: { Authorization: 'Bearer x', Cookie: 'a=b' } };
+    writeFileSync(join(cwd, 'headers.json'), JSON.stringify(doc), 'utf-8');
+    const out = await exec(inspectJsonTool({ cwd }), { path: 'headers.json', pointers: ['/headers/Authorization'] });
+    expect(out).not.toContain('Bearer x');
+    expect(out).toContain('"***"');
+  });
+
+  it('redact=false leaves authorization/cookie header values in clear (regression)', async () => {
+    const doc = { headers: { Authorization: 'Bearer x', Cookie: 'a=b' } };
+    writeFileSync(join(cwd, 'headers.json'), JSON.stringify(doc), 'utf-8');
+    const out = await exec(inspectJsonTool({ cwd }), { path: 'headers.json', redact: false });
+    expect(out).toContain('Bearer x');
+    expect(out).toContain('a=b');
+    expect(out).not.toContain('***');
+  });
 });
 
 describe('inspect_json errors', () => {

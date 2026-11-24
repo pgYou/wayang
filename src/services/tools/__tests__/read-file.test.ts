@@ -90,6 +90,20 @@ describe('read_file redact', () => {
     }
   });
 
+  it('redact=true masks Authorization (YAML colon form) and Cookie (JSON quoted form) — credentials routinely live in headers', async () => {
+    writeFileSync(join(cwd, 'headers.yaml'), 'Authorization: Bearer x\nCookie: session=abc', 'utf-8');
+    const yaml = await exec(readFileTool({ cwd }), { path: 'headers.yaml', redact: true });
+    expect(yaml).toContain('Authorization: ***');
+    expect(yaml).toContain('Cookie: ***');
+    expect(yaml).not.toContain('Bearer x');
+    expect(yaml).not.toContain('session=abc');
+
+    writeFileSync(join(cwd, 'headers.json'), '{\n  "Cookie": "a=b"\n}', 'utf-8');
+    const json = await exec(readFileTool({ cwd }), { path: 'headers.json', redact: true });
+    expect(json).toContain('"Cookie": "***"');
+    expect(json).not.toContain('a=b');
+  });
+
   it('redact defaults to false — omitted and explicit false leave values intact', async () => {
     writeFileSync(join(cwd, 'plain.json'), '{"apiKey": "sk-plain"}', 'utf-8');
     const omitted = await exec(readFileTool({ cwd }), { path: 'plain.json' });
