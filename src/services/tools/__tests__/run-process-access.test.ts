@@ -93,6 +93,27 @@ describe('run_process — a sensitive hit is refused, not downgraded to ask', ()
     expect(verdict.message).toContain(join(home, '.ssh', 'id_rsa'));
   });
 
+  it('the deny text claims no direction the gate does not know (review round 3, C4)', () => {
+    // argv is `cat` — a READ. The sensitive scan judges every absolute word
+    // with the strictest direction (write) on purpose, but the REFUSAL TEXT
+    // must not assert that artifact as the operation's real direction: a read
+    // scenario keeps the neutral "refusing access to" wording, so the message
+    // never contradicts what the call actually does.
+    const read = run(strictScope(), { command: ['cat', join(home, '.ssh', 'id_rsa')] });
+    expect(read.decision).toBe('deny');
+    expect(read.message).toContain('refusing access to');
+    expect(read.message).not.toContain('refusing to write');
+
+    // A write-shaped tool keeps its directional wording (write_file really
+    // writes), so the denyMessage access split itself is unchanged.
+    const writeTool = decideToolAccess(strictScope(), 'write_file', {
+      path: join(home, '.ssh', 'id_rsa'),
+    });
+    expect(writeTool.decision).toBe('deny');
+    expect(writeTool.message).toContain('refusing to write');
+    expect(writeTool.message).not.toContain('refusing access to');
+  });
+
   it('argv naming a credential file: `~` spelling (deny mode)', () => {
     const verdict = run(strictScope(), { command: ['cat', '~/.ssh/id_rsa'] });
     expect(verdict.decision).toBe('deny');

@@ -86,17 +86,69 @@ const XARGS_DYNAMIC_OPTIONS: ReadonlySet<string> = new Set([
 const XARGS_NON_PATH_FIRST_OPERAND: ReadonlySet<string> = new Set(['grep', 'rg', 'sed']);
 
 /**
+ * Options of those read verbs whose NEXT word is the option's VALUE (review
+ * round 3, C1): without this the value eats the pattern slot, the pattern
+ * slides into the operand position and the no-literal-operand ask never fires
+ * (`xargs grep -A 3 pat` allowed while `xargs grep pat` asked).
+ *
+ * HEURISTIC, kept minimal on purpose — it covers only the gate's read-verb
+ * family and their common value-taking options, not full getopt semantics: an
+ * option outside this table still lets its value be read as the pattern /
+ * operand, and a glued short value (`-A3`, `-epat`) or a long `--opt=value`
+ * form is already a single word the plain option skip handles. A missing
+ * entry can only mis-shape the operand list, which the ordinary gate still
+ * judges per path — fail-closed on the ask side.
+ */
+const XARGS_READ_VERB_VALUE_OPTIONS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  [
+    'grep',
+    new Set([
+      '-A', '-B', '-C', '-m', '-e', '-f',
+      '--after-context', '--before-context', '--context', '--max-count', '--regexp', '--file',
+      '--include', '--exclude', '--exclude-dir',
+    ]),
+  ],
+  [
+    'rg',
+    new Set([
+      '-A', '-B', '-C', '-m', '-e', '-f',
+      '--after-context', '--before-context', '--context', '--max-count', '--regexp', '--file',
+      '--glob',
+    ]),
+  ],
+  ['sed', new Set(['-e', '-f', '--expression', '--file'])],
+]);
+
+/**
+ * Value options that SUPPLY the pattern / script themselves (`grep -e <pat>`):
+ * after one of these the positional pattern slot is already taken, so the next
+ * non-option word is a file operand, not the pattern.
+ */
+const XARGS_READ_VERB_PATTERN_OPTIONS: ReadonlySet<string> = new Set(['-e', '--regexp', '--expression']);
+
+/**
  * The literal words of an xargs-expanded inner command that could name a path.
- * Options are skipped; for the verbs above the first non-option word is the
- * pattern / script, not a path, and is skipped too.
+ * Value options and their values are skipped first, then (for the verbs above)
+ * the positional pattern / script word; whatever remains is an operand.
  */
 function xargsLiteralPathOperands(words: readonly string[]): string[] {
   const head = headOfWords(words);
   const operands: string[] = [];
   let patternSeen = false;
-  for (const word of (head?.words ?? words).slice(1)) {
-    if (word.startsWith('-')) continue;
-    if (!patternSeen && XARGS_NON_PATH_FIRST_OPERAND.has(head?.command ?? '')) {
+  const verb = head?.command ?? '';
+  const valueOptions = XARGS_READ_VERB_VALUE_OPTIONS.get(verb);
+  const list = head?.words ?? words;
+  for (let i = 1; i < list.length; i += 1) {
+    const word = list[i] as string;
+    if (word.startsWith('-')) {
+      // A known value option consumes the NEXT word too (its value).
+      if (valueOptions !== undefined && valueOptions.has(word) && i + 1 < list.length) {
+        i += 1;
+        if (XARGS_READ_VERB_PATTERN_OPTIONS.has(word)) patternSeen = true;
+      }
+      continue;
+    }
+    if (!patternSeen && XARGS_NON_PATH_FIRST_OPERAND.has(verb)) {
       patternSeen = true;
       continue;
     }

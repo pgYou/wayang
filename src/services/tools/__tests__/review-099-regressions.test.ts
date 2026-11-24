@@ -187,6 +187,77 @@ describe('0.9.9 review regression matrix', () => {
     });
   });
 
+  // Round 3 (C1/C3/C5) — `.agents/tmp/review-result.md`, section 五.C.
+  describe('review round 3 — permission gate', () => {
+    describe('C1: xargs value options no longer shift the pattern slot', () => {
+      it.each([
+        // -A takes a value: without the value-option table '3' ate the pattern
+        // slot and 'pat' posed as a file operand, so this ALLOWED while the
+        // bare form asked — the ask direction was inverted.
+        ['xargs grep -A 3 pat'],
+        ['xargs grep pat'],
+        ['find . | xargs grep -A 3 pat'],
+        ['xargs rg -C 2 pat'],
+        ['xargs grep --context 3 pat'],
+      ])('%s → ask (no literal operand, like the bare form)', (command) => {
+        const result = verdict(command);
+        expect(result.decision).toBe('ask');
+        expect(result.matchedRule).toBe('unknown-capability');
+        expect(result.reason).toContain('no literal operand');
+      });
+
+      it('control: a valueless flag keeps the real operand — the ordinary gate judges it', () => {
+        // -n takes NO value, so 'pat' stays the pattern and 'file' stays a
+        // literal operand: the no-literal-operand ask must not fire (it fired
+        // only if -n were misread as value-taking, which would swallow 'pat'
+        // and turn 'file' into the pattern).
+        const result = verdict('xargs grep -n pat file');
+        expect(result.decision).toBe('allow');
+      });
+
+      it('a pattern supplied via -e consumes the pattern slot, later words stay operands', () => {
+        // 'foo' is -e's VALUE (the pattern itself): 'file' must not be demoted
+        // to the pattern slot and dropped from the operand list.
+        expect(verdict('xargs grep -e foo file').decision).toBe('allow');
+        expect(verdict('xargs grep -e foo').decision).toBe('ask');
+      });
+    });
+
+    describe('C3: glued `git -c` judges like the split form', () => {
+      it.each([
+        ['git -ccore.pager=cat log'],
+        ['git -c core.pager=cat log'],
+      ])('%s → ask (both spellings identical)', (command) => {
+        const result = verdict(command);
+        expect(result.decision).toBe('ask');
+        expect(result.matchedRule).toBe('unknown-capability');
+        expect(result.reason).toContain('git -c');
+        expect(result.reason).toContain('external configuration');
+      });
+    });
+
+    describe('C5: the destructive tier carries the asking paths', () => {
+      it('find -delete asks and names the path it would act on', () => {
+        const result = verdict('find /etc -name "*.conf" -delete');
+        expect(result.decision).toBe('ask');
+        expect(result.matchedRule).toBe('dangerous-bash');
+        expect(result.access).toBe('write');
+        expect(result.askPaths).toContain('/etc');
+      });
+
+      it('a read-access dangerous line still carries no askPaths (no grant reuse)', () => {
+        // `sudo cat <path>` is a destructive WRAPPER over a read: attaching
+        // askPaths here would let a pre-granted read of the path silently
+        // cover the escalated run (reusableGrantKeys reuses read grants).
+        const result = verdict('sudo cat /etc/passwd');
+        expect(result.decision).toBe('ask');
+        expect(result.matchedRule).toBe('dangerous-bash');
+        expect(result.access).toBe('read');
+        expect(result.askPaths).toBeUndefined();
+      });
+    });
+  });
+
   describe('P0-4 background / detached execution escapes the task lifecycle', () => {
     // From `.agents/tmp/builtin-tools-gap-analysis.md` §四: `nohup node
     // drive-server.mjs … &` ran twice (19:15:52 / 19:17:33) with no

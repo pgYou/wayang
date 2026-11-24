@@ -10,8 +10,10 @@
  *     `<dir>` (askPaths empty, or the verdict is the unknown-capability ask);
  *  b) a `bash -c "<inner>"` wrapper asks too — the merged verdict keeps the
  *     inner ask, which carries no askPaths;
- *  c) a `cd <dir> && <inner>` chain drops the cd slice's askPaths (the slice
- *     judged only the cd target, never the commands after it);
+ *  c) a `cd <dir> && <inner>` chain never reuses the cd target's read grant
+ *     (the slice judged only the cd target, never the commands after it; since
+ *     review round 3 / C5 the destructive tier may show that target as a
+ *     display path, so the assertion is on the reuse keys, not on emptiness);
  *  d) control: a pure read-only `find` still reuses the grant — the fix must
  *     not over-block the intended #46 behaviour.
  */
@@ -138,14 +140,18 @@ describe('askPaths reuse across fail-closed shapes (0.9.7 regression)', () => {
     expect(output).toContain('[ERROR] Permission denied');
   });
 
-  it('cd <dir> && <inner> drops the cd slice askPaths — still asks after a pre-grant', async () => {
+  it('cd <dir> && <inner> never reuses the pre-granted read — still asks (C5 display paths allowed)', async () => {
     const command = `cd ${out} && rm -f a.log`;
 
     const verdict = evaluateBashAccess(scope(), command);
     expect(verdict.decision).toBe('ask');
-    // The cd slice judged only the TARGET; the unjudged rest of the line must
-    // not ride its askPaths into the approval memory.
-    expect(verdict.askPaths ?? []).toEqual([]);
+    // The destructive tier owns this verdict (`rm`), and since the line's
+    // access is not a pure read it may now carry the asking path for DISPLAY
+    // (review round 3, C5: the approval names the cd target the rm acts
+    // under). The property this regression guards is the REUSE one: the
+    // unjudged rest of the line must not ride into the approval memory —
+    // no grant keys, and a pre-granted read of the cd target still asks.
+    expect(verdict.access).not.toBe('read');
     expect(reusableGrantKeys(verdict)).toEqual([]);
 
     const harness = preGrantedOutRead();

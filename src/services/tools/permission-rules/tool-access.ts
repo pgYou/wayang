@@ -104,7 +104,14 @@ function evaluateRunProcessAccess(
       const hit = sensitiveWordsIn(scope, element);
       if (hit === undefined) continue;
       if (hit.decision === 'deny') {
-        return { ...hit, message: denyMessage('run_process', element, hit.access) };
+        // The scan judges every absolute / `~` word with the STRICTEST
+        // direction (write) on purpose — that direction is a scan artifact,
+        // not the operation's real one (`cat` READS the credential). The
+        // refusal therefore claims no direction (denyMessage's neutral
+        // phrasing): the verdict's `access` field keeps the strict audit
+        // value, the text stays consistent with it by not asserting the
+        // opposite direction (review round 3, C4).
+        return { ...hit, message: denyMessage('run_process', element) };
       }
       // ask mode: the baseline ask enriched with the hit (matchedEntry).
       return hit;

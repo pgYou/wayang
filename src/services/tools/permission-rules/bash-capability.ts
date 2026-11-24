@@ -14,7 +14,7 @@ import {
 } from '@/services/tools/shell-lexer';
 import { commandEntry, isInertCommand } from './command-tables';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
-import { isDateSetFlag, isReadOnlySegment, isWriteCommandHead } from './bash-classification';
+import { isDateSetFlag, isGitConfigOptionWord, isReadOnlySegment, isWriteCommandHead } from './bash-classification';
 import { headCommand, wrapperPrefixWords } from './bash-head';
 import { SHELL_COMMANDS } from './shell-script';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
@@ -184,9 +184,12 @@ function launcherCapability(command: string, words: readonly string[]): SegmentC
 function capabilityOfHead(command: string, words: readonly string[]): SegmentCapability {
   if (DYNAMIC_WORD_PATTERN.test(command) || command.includes(CMDSUBST_PLACEHOLDER)) return 'dynamic';
   if (DYNAMIC_COMMANDS.has(command)) return 'dynamic';
-  // `git -c <name>=<value>` pulls in external configuration before the
-  // subcommand runs — the read classification does not cover that shape.
-  if (command === 'git' && words.slice(1).includes('-c')) return 'unknown-git-config';
+  // `git -c <name>=<value>` — split or glued (see `isGitConfigOptionWord`) —
+  // pulls in external configuration before the subcommand runs: the read
+  // classification does not cover that shape.
+  if (command === 'git' && words.slice(1).some((word) => isGitConfigOptionWord(word))) {
+    return 'unknown-git-config';
+  }
   // `env -S <string>` builds a command line from the string: a shell shape.
   if (command === 'env' && words.includes('-S')) return 'exec';
   if (LAUNCHER_COMMANDS.has(command)) return launcherCapability(command, words);

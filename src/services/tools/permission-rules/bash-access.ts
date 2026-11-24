@@ -288,7 +288,14 @@ export function evaluateBashCommand(
   // The asking paths are attached only to the path-candidate asks. The
   // escalations below (`dangerous-bash`, `dynamic-shell`, `home-other-user`)
   // are NOT "one path, once" decisions and therefore carry none — the approval
-  // memory must not reuse a grant for them.
+  // memory must not reuse a grant for them. ONE exception (review round 3,
+  // C5): the destructive tier attaches the collected askPaths when the line's
+  // access is NOT a pure read, so the approval names the concrete targets
+  // (`find /etc … -delete` asks about /etc). A read-access destructive line
+  // (`sudo cat <path>`) still carries none: `reusableGrantKeys` reuses read
+  // grants, so attaching them there would let an old read grant cover the
+  // escalated run silently. Write / unknown lines never reuse grants, so the
+  // extra field is disclosure-only there.
   if (sensitiveAsk) {
     sensitiveAsk = { ...sensitiveAsk, access: lineAccess, ...(askPaths.length > 0 && { askPaths }) };
   }
@@ -312,11 +319,17 @@ export function evaluateBashCommand(
     // stays in `matchedRule` (`dangerous-bash`). Consumers (approval
     // description, signal payload, TUI) key the hit block off `sensitive`, and
     // a dangerous command that hits `.ssh` must show that block too.
+    //
+    // C5: carry the asking paths whenever the line is not a pure read — the
+    // approval then shows WHAT the destructive spelling would act on. See the
+    // comment above the `sensitiveAsk` merge for why read lines are excluded
+    // (grant reuse) and why write / unknown lines are safe.
     const hit = sensitiveAsk ?? (firstAsk?.matchedEntry !== undefined ? firstAsk : undefined);
     return {
       decision: 'ask',
       matchedRule: 'dangerous-bash',
       access: lineAccess,
+      ...(lineAccess !== 'read' && askPaths.length > 0 && { askPaths }),
       ...(hit !== undefined && {
         matchedEntry: hit.matchedEntry,
         matchedSource: hit.matchedSource,

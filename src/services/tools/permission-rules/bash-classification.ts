@@ -156,6 +156,18 @@ const GIT_GLOBAL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * A `git -c` config word: the split `-c <name>=<value>` or the glued
+ * `-c<name>=<value>` spelling (review round 3, C3). git today rejects the
+ * glued form, but the two spellings must judge identically anyway — if git
+ * ever accepts it, a split-only check would turn into a real bypass. Anything
+ * starting `-c` beyond `-c` itself counts (fail-closed: `-C`, the path option,
+ * is uppercase and never matches).
+ */
+export function isGitConfigOptionWord(word: string): boolean {
+  return word === '-c' || (word.startsWith('-c') && word.length > 2);
+}
+
+/**
  * Is this `git …` segment a read? `words` starts at the `git` word, so global
  * options are skipped first (`git --no-pager log`, `git -C /repo diff`) and the
  * subcommand is the first word that is neither an option nor an option's value.
@@ -164,10 +176,11 @@ const GIT_GLOBAL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
 function isReadOnlyGitCommand(words: readonly string[]): boolean {
   const args = words.slice(1);
   let i = 0;
-  while (i < args.length && args[i].startsWith('-')) {
-    // `git -c <name>=<value>` pulls in external configuration before the
-    // subcommand runs — the read classification does not cover that shape.
-    if (args[i] === '-c') return false;
+  while (i < args.length && args[i] !== undefined && args[i].startsWith('-')) {
+    // `git -c <name>=<value>` (split or glued) pulls in external configuration
+    // before the subcommand runs — the read classification does not cover that
+    // shape.
+    if (isGitConfigOptionWord(args[i])) return false;
     i += GIT_GLOBAL_OPTIONS_WITH_VALUE.has(args[i]) ? 2 : 1;
   }
   const subcommand = args[i];
