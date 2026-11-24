@@ -265,7 +265,15 @@ describe('#86 B — wrapper / compound decomposition', () => {
   });
 
   describe('awk static script check', () => {
-    it.each(["awk '{print $1}' src/index.ts", "awk -F: '{print $1}' src/index.ts", "awk -v x=1 '{print x}'"])(
+    it.each([
+      "awk '{print $1}' src/index.ts",
+      "awk -F: '{print $1}' src/index.ts",
+      "awk -v x=1 '{print x}'",
+      // 0.9.9 walkthrough fix: a comparison `>` (no print in the statement)
+      // is awk syntax, not a redirection — verified reads.
+      "awk '$3 > 100' src/index.ts",
+      "awk 'NR>1' src/index.ts",
+    ])(
       '%s → allow (read)',
       (command) => {
         allow(command);

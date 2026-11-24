@@ -62,13 +62,41 @@ export function awkScriptsOf(words: readonly string[]): string[] | undefined {
 
 /**
  * Does the awk program text contain a redirection (`>`) or a pipe (`|`)
- * OUTSIDE a string literal? Coarse on purpose (#86): awk's `>` is also
- * "greater than" and `|` is also "or", so a comparison asks too. A false
- * positive only asks; missing a real `print … > file` / `print … | cmd` would
- * run arbitrary code. An unterminated or unparseable quote also asks.
+ * OUTSIDE a string literal — something `isReadOnlyAwkScript` must not pass
+ * as a read?
+ *
+ * The scan walks the text once, tracking quotes and backslash escapes. It
+ * works on PROGRAM text, not on the raw command: the shell lexer already
+ * stripped the shell quoting that carried the program (a quoted word), so a
+ * `>` inside it is awk SYNTAX, never a shell redirection — a real shell
+ * redirect on the line (`awk '{print}' f > out`) is a redirect token the
+ * redirect tiers of the bash gate judge instead. The unquoted text is cut
+ * into statement chunks at `;`, newline and brace boundaries, and each chunk
+ * is judged on awk's own grammar:
+ *
+ *   - `|` anywhere unquoted is the coarse pipe risk (`print | cmd`,
+ *     `cmd | getline`). awk also spells logical-or `||`, so a comparison-only
+ *     program containing it still asks — coarse on purpose (fail closed: a
+ *     false positive only asks).
+ *   - `>` is the GREATER-THAN operator in a general expression (`$3 > 100`,
+ *     `NR>1`); it is a print REDIRECTION only in a statement that also
+ *     contains `print` / `printf` (`print "y" > f` writes a file). A chunk
+ *     with `>` and no print keyword is a comparison — fine.
+ *
+ * An unterminated string literal also asks: the program text cannot be read
+ * confidently. A false positive only asks; missing a real
+ * `print … > file` / `print … | cmd` would run arbitrary code.
  */
 function hasAwkRedirectOrPipe(script: string): boolean {
   let quote: '"' | "'" | null = null;
+  // Unquoted text of the current statement chunk. Quoted spans collapse to
+  // spaces so a keyword or operator cannot bleed across a literal boundary.
+  let chunk = '';
+
+  const judge = (statement: string): boolean =>
+    statement.includes('|') ||
+    (statement.includes('>') && /\b(?:print|printf)\b/.test(statement));
+
   for (let i = 0; i < script.length; i += 1) {
     const char = script[i];
     if (char === undefined) break;
@@ -79,6 +107,7 @@ function hasAwkRedirectOrPipe(script: string): boolean {
         continue;
       }
       if (char === quote) quote = null;
+      else chunk += ' ';
       continue;
     }
     if (char === '"' || char === "'") {
@@ -90,10 +119,19 @@ function hasAwkRedirectOrPipe(script: string): boolean {
       i += 1;
       continue;
     }
-    if (char === '>' || char === '|') return true;
+    // Statement / block boundaries cut the chunk: a print redirection and a
+    // comparison in the same braces stay together, a pattern and its action
+    // do not (`$3 > 100 {print $1}` is a comparison pattern plus a reader).
+    if (char === ';' || char === '\n' || char === '{' || char === '}') {
+      if (judge(chunk)) return true;
+      chunk = '';
+      continue;
+    }
+    chunk += char;
   }
   // Unterminated string: the program text cannot be read confidently — ask.
-  return quote !== null;
+  if (quote !== null) return true;
+  return judge(chunk);
 }
 
 /**
@@ -103,10 +141,12 @@ function hasAwkRedirectOrPipe(script: string): boolean {
  * A false negative only asks; a false positive would run arbitrary code.
  */
 export function isReadOnlyAwkScript(script: string): boolean {
-  // Program-level `>` / `|` first: the literal-target regexes below only see
-  // a quoted target, so `print "y" > f` (target held in a variable) and
-  // `print "x" | c` used to pass. Any redirection or pipe outside a string
-  // literal makes the whole command ask.
+  // Program-level redirection / pipe first: the literal-target regexes below
+  // only see a quoted target, so `print "y" > f` (target held in a variable)
+  // and `print "x" | c` used to pass. A print-level redirection or pipe
+  // outside a string literal makes the whole command ask — while a `>` with
+  // no print in its statement is a comparison, not a write (see
+  // `hasAwkRedirectOrPipe`).
   if (hasAwkRedirectOrPipe(script)) return false;
   if (/\bsystem\s*\(/.test(script)) return false;
   // `cmd | getline` runs a command; `getline < "file"` reads a file.

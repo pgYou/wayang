@@ -79,12 +79,17 @@ describe('0.9.9 review regression matrix', () => {
       ["awk 'BEGIN{f=\"/etc/x\"; print \"y\" > f}'", 'exec-capability'],
       // A pipe into a command held in a variable.
       ["awk 'BEGIN{c=\"sh -c id\"; print \"x\" | c}'", 'exec-capability'],
-      // `>` / `|` outside a string literal ask even when awk reads them as
-      // "greater than" / "or" — coarse on purpose (fail closed).
+      // A `>` in the SAME statement as a print asks: awk's grammar reads
+      // `print … > target` as a redirection, and the statement-level split
+      // cannot prove the `>` is the comparison inside the condition.
+      // `||` is still coarse (logical-or and pipe share the character).
       ["awk 'BEGIN{if (1 > 0) print \"y\"}'", 'exec-capability'],
       ["awk 'BEGIN{print (1 || 0)}'", 'exec-capability'],
       // An unterminated string literal cannot be parsed confidently.
       ["awk 'BEGIN{print \"unterminated'", 'exec-capability'],
+      // A REAL shell redirect on the awk line is a redirect token the redirect
+      // tiers judge: a target escaping the workspace asks (write-scope).
+      ["awk '{print}' f > ../escape.txt", 'write-scope'],
     ])('%s → ask (%s)', (command, rule) => {
       const result = verdict(command);
       expect(result.decision).toBe('ask');
@@ -97,6 +102,28 @@ describe('0.9.9 review regression matrix', () => {
       expect(verdict("awk -F: '{print $1}' src/index.ts").decision).toBe('allow');
       // A `>` / `|` INSIDE a string literal is just text, not a redirection.
       expect(verdict("awk 'BEGIN{print \"a>b|c\"}'").decision).toBe('allow');
+    });
+
+    it('a comparison `>` is awk syntax, not a redirection (0.9.9 walkthrough fix)', () => {
+      // No print in the statement: the `>` is greater-than, so the program is
+      // a verified read — these used to ask on the coarse "program text
+      // contains >" scan.
+      expect(verdict("awk '$3 > 100' f").decision).toBe('allow');
+      expect(verdict("awk 'NR>1' f").decision).toBe('allow');
+      // Pattern-action: the comparison lives in the pattern chunk, the print
+      // in its own action chunk — both clean.
+      expect(verdict("awk '$3 > 100 {print $1}' f").decision).toBe('allow');
+    });
+
+    it('an in-workspace shell redirect keeps the #51 layer 2 write allow (not awk-specific)', () => {
+      // `out` resolves inside the workspace, so the redirect write is allowed
+      // EXACTLY like `echo hi > out` — awk is not special-cased here. The
+      // walkthrough note expected an ask for this shape; the gate's contract
+      // is (and was): a RELATIVE redirect target that escapes the workspace
+      // asks (write-scope, pinned above), one inside it is a designed silent
+      // write. Pinned so the boundary is explicit.
+      const result = verdict("awk '{print}' f > out");
+      expect(result.decision).toBe('allow');
     });
   });
 

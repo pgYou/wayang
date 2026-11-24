@@ -531,6 +531,14 @@ export function unfoldXargs(segments: readonly ShellSegment[]): CompoundResult {
     // deletes whatever stdin names. A read / write verb with no literal operand
     // asks too — everything it touches arrives from stdin, so the gate cannot
     // make the outside-all call. (A literal operand keeps the ordinary gate.)
+    //
+    // DELIBERATE (0.9.9 walkthrough note): that makes `find . | xargs wc -l`
+    // ask — `wc` is a read verb with no literal path operand of its own. This
+    // is not an oversight to "fix": the files `wc` opens are whatever the
+    // producer emits, so no static in-scope proof exists for them, and the
+    // only shapes that may run silently are the ones whose targets the gate
+    // could actually judge. An approval covers the call; the ask is the
+    // boundary.
     const innerHead = headOfWords(innerWords);
     if (isDestructiveTierHead(innerWords)) {
       return {
