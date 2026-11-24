@@ -14,6 +14,10 @@
 - server 宿主拆分：TUI 进程 spawn 瘦 server-entry.js（server 进程不再携带 ink/react）；MCP bridge 归 core 双入口构建，app 构建脚本机械复制、缺失即构建失败
 - macOS 本地存在 1 个既有环境性测试失败（permission-askpaths-reuse，BSD find 差异，main 上同样失败，ubuntu CI 通过），与拆包无关
 
+### 阶段工作流（临时记录）
+
+- desktop 第一版迭代确认还需改 core/cli：先完成一批改造作为阶段成果——① 配置解析上移（终端交互迁 apps/cli、App 层全权装载产出 WayangConfig 对象、protocol 新增 UPDATE_CONFIG 运行时热更新）② rootDir(dataDir) 与 controller-workspace 解耦（StoragePaths + WorkspacePolicy 双轨显式注入）；执行计划见 docs/develop/monorepo-design.md 第 4 节（待评审）。该批改造经 feat/core-app-decouple 分支实施、合回 release/1.0.0 并合入 main 后，发布 1.0.0-alpha.1；feat/desktop-m3 随后 rebase 到新基线推进 desktop 重构。
+
 ### 待办
 
 - 桌面端（M3）：@wayang-ai/desktop Electron 壳 —— UtilityProcess 宿主、protocol 的 MessagePort transport、GUI PATH 修复、崩溃 resume；electron-builder 安装包分发（不走 npm）
