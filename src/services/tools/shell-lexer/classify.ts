@@ -40,7 +40,8 @@ export interface RedirectionClassification {
  *                even when it lands inside the workspace, because the shell
  *                would create/replace a file there).
  */
-export function classifyRedirections(segments: ShellSegment[]): RedirectionClassification {  const result: RedirectionClassification = {
+export function classifyRedirections(segments: ShellSegment[]): RedirectionClassification {
+  const result: RedirectionClassification = {
     writeTargets: [],
     readTargets: [],
     duplicates: [],
