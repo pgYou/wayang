@@ -23,9 +23,11 @@ export interface ResolvedModel {
   /** Undefined when undeclared — ContextManager applies the 256k default. */
   contextWindowTokens?: number;
   /**
-   * Request parameters. Filled only by the `models` / `composite` / `inline`
-   * sources (and env): a `legacy-provider` resolution deliberately leaves them
-   * undefined so pre-#88 configs keep their recorded-only behaviour.
+   * Request parameters. Filled only by the `models` / `inline` sources (and
+   * env) when the entry declares them: a `legacy-provider` resolution
+   * deliberately leaves them undefined so pre-#88 configs keep their
+   * recorded-only behaviour, and a `composite` reference has no declaration
+   * surface — the provider's deprecated values are never inherited.
    */
   maxOutputTokens?: number;
   temperature?: number;
@@ -100,12 +102,16 @@ function fromModelConfig(config: WayangConfig, model: ModelConfig, source: Resol
     modelName: model.name,
     baseURL: requireBaseURL(model.provider, provider),
     apiKey: requireApiKey(model.provider, provider),
-    // Per-model values win; the provider's deprecated fields are its default
-    // model settings and fill whatever the entry left undeclared. Undeclared
-    // stays undefined — ContextManager owns the 256k default.
+    // The window budget is a compaction budget, not a request parameter, and
+    // was effective before #88 — the provider's value stays the entry's
+    // default. The deprecated REQUEST parameters are model-level ONLY: an
+    // entry that does not declare temperature/maxOutputTokens resolves them
+    // undefined; inheriting the provider's would silently change sampling for
+    // mixed configs. Undeclared stays undefined — ContextManager owns the
+    // 256k default for the window.
     contextWindowTokens: model.contextWindowTokens ?? provider.contextWindowTokens,
-    maxOutputTokens: model.maxOutputTokens ?? provider.maxOutputTokens,
-    temperature: model.temperature ?? provider.temperature,
+    maxOutputTokens: model.maxOutputTokens,
+    temperature: model.temperature,
     source,
   };
 }
@@ -148,9 +154,11 @@ export function resolveModelRef(
           modelName,
           baseURL: requireBaseURL(providerKey, provider),
           apiKey: requireApiKey(providerKey, provider),
+          // A composite reference has no per-model declaration surface, so the
+          // provider's deprecated request parameters never apply here — only
+          // the window budget (a compaction budget, effective pre-#88) is
+          // inherited from the provider.
           contextWindowTokens: provider.contextWindowTokens,
-          maxOutputTokens: provider.maxOutputTokens,
-          temperature: provider.temperature,
           source: 'composite',
         };
       }

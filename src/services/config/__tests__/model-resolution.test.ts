@@ -246,29 +246,43 @@ describe('resolveModelRef: env fallback', () => {
 });
 
 describe('resolveModelRef: request parameters (#88 legacy vs new writings)', () => {
-  it('the legacy provider binding stays recorded-only while every new writing passes them through', () => {
-    const config = legacyConfig({
-      models: { 'gpt-4o': { provider: 'default', name: 'gpt-4o' } },
-      controller: { provider: 'default', model: 'gpt-4o' },
-    });
+  // Mixed config: the provider still carries the deprecated request
+  // parameters while a `models` entry references it without declaring them.
+  const config = legacyConfig({
+    models: { 'gpt-4o': { provider: 'default', name: 'gpt-4o' } },
+    controller: { provider: 'default', model: 'gpt-4o' },
+  });
 
-    // Legacy: the deprecated request parameters are NOT sent.
+  it('the legacy provider binding stays recorded-only (pre-#88 behaviour unchanged)', () => {
     const legacy = resolveModelRef(config, undefined, config.controller.provider);
     expect(legacy.contextWindowTokens).toBe(128_000);
     expect(legacy.temperature).toBeUndefined();
     expect(legacy.maxOutputTokens).toBeUndefined();
+  });
 
-    // Named `models` entry: provider fields fill what the entry left undeclared.
+  it('a models entry does NOT inherit the provider deprecated temperature/maxOutputTokens', () => {
     const named = resolveModelRef(config, 'gpt-4o');
-    expect(named.temperature).toBe(0.2);
-    expect(named.maxOutputTokens).toBe(4096);
+    expect(named.temperature).toBeUndefined();
+    expect(named.maxOutputTokens).toBeUndefined();
+    // The window budget is a provider-level default, not a request parameter —
+    // inheritance stays.
+    expect(named.contextWindowTokens).toBe(128_000);
+  });
 
-    // Composite `"provider/model"`.
+  it('a "provider/model" composite does NOT inherit them either (no declaration surface)', () => {
     const composite = resolveModelRef(config, 'default/gpt-4o');
-    expect(composite.temperature).toBe(0.2);
-    expect(composite.maxOutputTokens).toBe(4096);
+    expect(composite.temperature).toBeUndefined();
+    expect(composite.maxOutputTokens).toBeUndefined();
+    expect(composite.contextWindowTokens).toBe(128_000);
+  });
 
-    // Inline object: its own values win over the provider defaults.
+  it('model-level explicit declarations still apply (named entry and inline)', () => {
+    const withExplicit = legacyConfig({
+      models: { tuned: { provider: 'default', name: 'gpt-4o', temperature: 0.7, maxOutputTokens: 99 } },
+      controller: { provider: 'default', model: 'tuned' },
+    });
+    expect(resolveModelRef(withExplicit, 'tuned')).toMatchObject({ temperature: 0.7, maxOutputTokens: 99 });
+
     const inline = resolveModelRef(config, {
       provider: 'default',
       name: 'gpt-4o',
