@@ -1,7 +1,7 @@
 # Wayang Monorepo 分包架构设计
 
-> 状态：第 2–3 节（拆包结构、职责分层）为定案，按 release/1.0.0 实际落地校准；第 4 节改造执行计划为待评审稿。
-> 本文取代旧版 `v1.0-monorepo-design.md`：蓝本目标已落地为现状，旧文退役；core/cli 改造计划为本次新增。
+> 状态：第 2–3 节（拆包结构、职责分层）为定案，按 release/1.0.0 实际落地校准；第 4 节 core/cli 改造设计按评审决议定稿，作为实施规范。
+> 本文取代旧版 `v1.0-monorepo-design.md`：蓝本目标已落地为现状，旧文退役；core/cli 改造设计为本次新增。
 > 关联：`CHANGELOG.md` 的 v1.0.0 段；desktop 侧设计草稿见 `feat/desktop-m3` 分支 `docs/develop/desktop-app-design.md`。
 
 ## 1. 目标与原则
@@ -117,86 +117,82 @@ protocol ◀── core ◀──┬── cli（apps）
   `import type { TaskDetail } from '@wayang-ai/protocol';`
 - 渲染层纪律：desktop renderer 只 import protocol 的类型与自身 IPC 胶水，禁止 core（Node 内建依赖进浏览器环境必炸）。
 
-## 4. core/cli 改造执行计划（待评审）
+## 4. core/cli 改造设计（定稿）
 
 ### 4.0 背景与工作流
 
-- 改造目标（源自《Wayang Desktop 与 Core 解耦宏观架构方案》Part 1，本文只做执行计划化，不新增架构决策）：让 core 退化为「**零路径假设、零终端交互、纯配置对象驱动**」的无头逻辑内核；
+- 改造目标：让 core 退化为「**零路径假设、零终端交互、纯配置对象驱动**」的无头逻辑内核；
 - 背景：desktop 第一版迭代确认还需改 core/cli 逻辑；先完成本节两项改造作为阶段成果，合入 main 后发布 `1.0.0-alpha.1`；
 - 分支工作流：从 `release/1.0.0` 切 `feat/core-app-decouple` → 完成改造 + 全量单测 / E2E → 合回 `release/1.0.0` → `feat/desktop-m3` rebase 到新基线后再推进 Part 2。
 
 ### 4.1 改造一：配置解析上移
 
-**动机**
+**职责与纯函数归属**
 
-1. `packages/core/src/onboard.ts` 混杂两个职责：① 交互式 CLI 引导（依赖 `prompts` 终端库，不应留在无头 core）；② 文件读取 + 环境变量注入 + Schema 校验（`loadConfig`）；
-2. 同一配置在一次启动中被解析两次：客户端 `bootstrap.ts` 调一次 `loadConfig(configPath)`，服务端 `runWayangServer` 又拿 `configPath` 读盘解析一次；
-3. desktop 主进程无法按自身目录规范（`app.getPath('userData')`）接管配置装载，设置页也没有运行时热更新通道。
+- 配置的纯函数归 `packages/protocol`（零 Node 依赖，cli / desktop / core 三方共享）：`validateConfig`、`collectWorkerWarnings`、`collectProviderWarnings`、`normalizeWorkerTypes`、`resolveModelRef`；
+- 文件读取、env 兜底、onboard 交互 prompts 归 `apps/cli`：宿主全权负责定位配置文件、读写 JSON、合并环境变量，产出合法的 `WayangConfig` 对象；
+- core 只以配置对象形式经 `SupervisorOptions` / `ServerOptions` 注入，不感知配置来源——不读盘、不读 env、不做交互引导。
 
-**方案要点**
+**运行时热更（粒度化 update 方法）**
 
-- 剥离终端交互：`onboard.ts` 中的 `prompts` 交互式引导迁入 `apps/cli`；core 对终端交互库的依赖清零；
-- 纯配置对象注入：App 层（CLI 或 desktop main 进程）全权负责定位配置文件路径、读写 JSON、合并环境变量，产出合法的 `WayangConfig` 对象；`SupervisorOptions` 直接接收 `config: WayangConfig`；`WayangServerOptions` 支持宿主直传（或经初始化握手传入），不再强制 server 自己读 `--config` 文件；
-- core（或 protocol）仅保留纯函数式的配置归一化与校验能力；
-- 新增配置热更新 RPC：protocol 新增 `METHOD.UPDATE_CONFIG`，宿主在运行期把更新后的 `WayangConfig` 推给 Supervisor 动态替换（Provider、Model、`maxConcurrency`、权限配置等），无需重启会话进程。
+热更不做单一 `UPDATE_CONFIG` 大方法，每个方法的 schema 即字段白名单：
 
-**影响面**
+| 方法 | 负载（字段白名单） |
+|---|---|
+| `updateProvider(name, patch)` | `{baseURL?, apiKey?, type?}` |
+| `updateModel(name, patch)` | `{provider?, contextWindowTokens?, temperature?, maxOutputTokens?}` |
+| `addProvider(name, def)` | `{type, baseURL, apiKey}` |
+| `addModel(name, def)` | `{provider, contextWindowTokens, temperature?, maxOutputTokens?}` |
+| `removeProvider(name)` | — |
+| `removeModel(name)` | — |
+| `updateControllerModel(model)` | — |
+| `updateWorkerSettings(patch)` | `{model?, maxConcurrency?, toolChoice?}` |
 
-- `packages/core`：`onboard.ts`（拆分）、`server/wayang-server.ts`、`services/supervisor.ts`（SupervisorOptions）；
-- `packages/protocol`：新增 `UPDATE_CONFIG` 方法定义与负载类型；
-- `apps/cli`：`bootstrap.ts`（配置装载收口）、新增交互式 onboard 模块；
-- `apps/desktop`（后续阶段消费）：main 进程配置装载与设置页热更新。
+第三方 agent 定义（workers 节点）不纳入 alpha 热更范围，记为后续扩展。
+
+**语义**
+
+1. **声明值与生效值分离**：所有方法只改声明值，生效发生在消费点惰性解析——worker 于下一次 spawn、controller 于每一 turn。进行中的 turn / spawn 继续使用旧的 `ResolvedModel` 快照，连接与参数切换永远发生在边界上。controller 的模型解析从「启动时一次定型」改为逐 turn 解析（或等价的更新时缓存失效）。
+2. **依赖是引用不是拷贝**：provider / model / 绑定构成三层引用链，update 不回写、不触发任何下游重写。update / add / remove 的返回值带影响面清单（从引用图派生，供宿主 UI 展示「哪些绑定受影响、下一轮生效」）。
+3. **引用完整性**：add 严格拒绝重名；`removeProvider` 被任何 model 条目引用、`removeModel` 被任何绑定引用时拒绝并返回引用清单——不级联、无 force；新增 / 修改条目一律通过同一套 protocol 校验器。
 
 **验收标准**
 
-- core 产物不再依赖 `prompts`（构建与运行时依赖均移除）；
-- server 启动不再自行读盘解析配置；同一配置在一次启动中只解析一次；
-- CLI 现有行为 100% 兼容（`--config`、环境变量合并、onboard 引导体验一致），全量单测 / E2E 通过；
-- `UPDATE_CONFIG` 生效后不重启即可变更 Provider / Model / `maxConcurrency`。
-
-**待讨论**
-
-- `UPDATE_CONFIG` 可热更字段的白名单，与不可热更字段（存储路径类）的拒绝语义；
-- 归一化 / 校验纯函数最终归属 core 还是 protocol；
-- `--config` 文件路径参数在 server 侧的兼容过渡期长度（一次性切换还是双轨保留）。
+- CLI 行为与 0.9.9 逐项一致；
+- core 零 prompts 依赖、零配置来源感知；
+- desktop 可用 protocol 纯函数在发起更新前本地预校验；
+- 新增 provider + model 并改绑 worker 后，下一次 spawn 即使用新链，全程无重启；进行中任务不受影响。
 
 ### 4.2 改造二：rootDir（dataDir）与 controller-workspace 解耦
 
-**动机**
+**双轨注入**
 
-1. 耦合点一（默认工作区硬编码反推）：`packages/core/src/infra/general-workspace.ts` 将无代码库任务的默认工作区硬编码反推为 `<dataDir>/workspace`；当 desktop 按 macOS 规范把应用数据放到 `~/Library/Application Support/Wayang` 后，worker 默认会去 Application Support 下写文件，违背系统规范；
-2. 耦合点二（派发边界与自身起点混用）：`packages/core/src/services/tools/add-task.ts` 的 `validateDeclaredWorkspace` 锚定 `userHome`（`~`）+ `permission.extraWorkspaceRoots`，而默认任务工作区取自 `ctx.workspaceDir`——存储位置与工作区策略没有分轨。
+- 废除单一模糊的 `dataDir` + `workspaceDir` 二元组，拆分为两组显式契约：`StoragePaths {dataDir, logDir, cacheDir}` 与 `WorkspacePolicy {controllerWorkspace, defaultWorkerWorkspace}`；
+- 类型定义在 `packages/protocol`；值由宿主层（cli bootstrap / desktop main）构造后经 `SupervisorOptions` / `SystemContext` 注入。二者不进入 `WayangConfig` 配置 schema——部署事实与用户配置分离，亦不参与热更。
 
-**方案要点**
+**controllerWorkspace 双锚点与 cwd 禁令**
 
-- 废除单一模糊的 `dataDir` + `workspaceDir` 二元组，拆分为两组显式参数注入 `Supervisor` / `SystemContext`：
+- `controllerWorkspace` 统一承担两个锚点：controller 的任务工作区基准 + controller 执行工具的起点（cwd 语义）；
+- core 禁止依赖进程启动目录：check-boundaries 新增「core 源码禁止 `process.cwd()`」规则；执行改造时做一次 cwd 审计（grep `process.cwd` 与相对路径解析锚点），确需「启动目录」语义的消费点改用 `controllerWorkspace` 或显式参数承接。
 
-| 契约分组 | 字段 | 职责 | CLI 注入值 | Desktop 注入值（macOS） |
-|---|---|---|---|---|
-| StoragePaths | `dataDir` | 会话持久化、`workspaces.json`、全局 skills | `~/.wayang`（或 `--wayang-root`） | `~/Library/Application Support/Wayang` |
-| | `logDir` | 会话日志输出目录 | `<sessionDir>` | `~/Library/Logs/Wayang/sessions/<id>` |
-| | `cacheDir` | 临时文件、MCP socket、缓存 | `<sessionDir>/.mcp` | `~/Library/Caches/<BundleId>` |
-| WorkspacePolicy | `controllerCwd` | Controller 读 `AGENTS.md` 与 `search_files` 的起点 | 启动时 `process.cwd()` | `~`（`os.homedir()`） |
-| | `controllerWorkspace` | Controller 受控根边界（只能在此树下派发 worker 子目录与 `allowedDirs`） | `userHome`（`~`） | `~` 或配置的受控根 |
-| | `defaultWorkerWorkspace` | 未显式指定项目目录时的默认 worker 工作区（原 `generalWorkspaceDir`） | `<dataDir>/workspace` | `~/.agents/wayang-workspace` |
+**取值**
 
-- core 内部消费点改造：`general-workspace.ts` 不再从 `sessionDir` 向上反推，改读 `workspacePolicy.defaultWorkerWorkspace`；`add-task.ts` 的边界校验基准改为 `workspacePolicy.controllerWorkspace`；`system-context.ts` 日志路径改 `${storagePaths.logDir}/wayang.log`；`mcp-transport.ts` 的 MCP bridge socket 目录改用 `storagePaths.cacheDir`。
+- `dataDir` 由既有 `--wayang-root` 派生，`logDir` / `cacheDir` 为其子目录（物理布局不变）；
+- `controllerWorkspace` 与 `defaultWorkerWorkspace` 默认值均为 `<dataDir>/workspace`（CLI 行为与 0.9.9 逐项一致）；
+- alpha 不新增任何 CLI flag：desktop 场景经程序化注入不同值；`--workspace-dir` 记为后续候选。
 
-**影响面**
+**消费点改造（四个）**
 
-- `packages/core`：`infra/general-workspace.ts`、`services/tools/add-task.ts`、`system-context.ts`、MCP transport、`SupervisorOptions` / `SystemContext` 契约；
-- `apps/cli`：bootstrap 处按现状值注入（见上表 CLI 列）；
-- `apps/desktop`（后续阶段）：按 macOS 规范注入。
+| 消费点 | 改造 |
+|---|---|
+| `general-workspace` | 删除 `<dataDir>/workspace` 反推，改读注入的 `defaultWorkerWorkspace` |
+| `add-task` | 派发边界统一以 `controllerWorkspace` 为基准 |
+| `system-context` | 日志路径改用注入的 `logDir`，注入替代推导 |
+| `mcp-transport` | MCP bridge socket 目录改用注入的 `cacheDir` |
 
 **验收标准**
 
-- core 内不再存在从 `sessionDir` / `dataDir` 反推 workspace 的路径假设（可 grep 验证）；
-- 任务派发边界校验统一以 `controllerWorkspace` 为基准，默认行为与现状一致（home 内放行）；
-- CLI 按现状值注入后，全部默认路径与现状逐项一致，全量单测 / E2E 通过；
-- 注入自定义 `StoragePaths`（如 Application Support）不改变 worker 默认工作区——有单测覆盖该正交性。
-
-**待讨论**
-
-- `StoragePaths` / `WorkspacePolicy` 的最终字段命名与放置层级（SupervisorOptions 顶层 vs SystemContext 内分组的细节）；
-- `controllerCwd` 与 `controllerWorkspace` 在 CLI 侧的取值是否需要暴露为命令行参数；
-- 现有 `--workspace-dir` / `WAYANG_DESKTOP_WORKSPACE` 类环境变量的去留与映射。
+- core 零路径反推、零 `process.cwd`（可 grep 验证）；
+- CLI 默认路径逐项一致、无新增参数；
+- 注入自定义 `StoragePaths` 后 worker 默认工作区不受影响（正交性单测）；
+- cwd 审计结论入改造报告。
