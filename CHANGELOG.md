@@ -2,7 +2,7 @@
 
 ## v1.0.0 (规划中，未发布)
 
-> 架构定案见 docs/develop/v1.0-monorepo-design.md；「100」为 1.0.0 版本简称，非 issue 引用。
+> 架构定案见 docs/develop/monorepo-design.md（原 v1.0-monorepo-design.md 按落地现状重写并更名）；「100」为 1.0.0 版本简称，非 issue 引用。
 
 ### 已交付（feat/100-monorepo）
 
