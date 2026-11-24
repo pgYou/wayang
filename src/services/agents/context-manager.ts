@@ -15,16 +15,23 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000;
 const COMPACT_THRESHOLD_RATIO = 0.6;
 
 /**
- * Token budget for the retained verbatim zone (issue #95 redesign).
+ * Token budget for the retained verbatim zone (issue #95 redesign), scaled to
+ * the model's context window.
  *
- * Compaction summarizes everything and then keeps the newest whole entries
- * alongside the summary. The zone grows backwards until it reaches the lower
- * bound, and stops early when one more entry would cross the upper bound.
- * Turn integrity wins over the budget: a step is never split, so the zone can
- * end up below the lower bound when the newest entry alone is huge.
+ * retainedMax = clamp(windowTokens × 25%, 4k, 16k), retainedMin = half of it.
+ * The window comes from the model config's contextWindowTokens (injected via
+ * the ContextManager deps); the default fallback window (256k, or any window
+ * ≥ 64k) clamps to the historical 16k/8k pair, so existing configs keep their
+ * behaviour, while smaller windows shrink the zone so the retained history
+ * plus the summary can actually fit the window.
  */
-export const RETAINED_MIN_TOKENS = 8_000;
-export const RETAINED_MAX_TOKENS = 16_000;
+export function retainedMaxTokens(windowTokens: number): number {
+  return Math.round(Math.min(16_000, Math.max(4_000, windowTokens * 0.25)));
+}
+
+export function retainedMinTokens(windowTokens: number): number {
+  return retainedMaxTokens(windowTokens) / 2;
+}
 
 /**
  * Replay text for the compact marker. It sits between the retained history
@@ -38,7 +45,7 @@ export const COMPACT_MARKER_TEXT =
 
 /**
  * Start index of the retained verbatim zone: the newest whole entries whose
- * estimated size lands in [RETAINED_MIN_TOKENS, RETAINED_MAX_TOKENS].
+ * estimated size lands in [retainedMin, retainedMax] for the manager's window.
  *
  * Turn integrity wins over the budget. An AssistantEntry is atomic — its
  * toolCalls and toolResults live on the same entry — so an entry boundary can
@@ -49,13 +56,13 @@ export const COMPACT_MARKER_TEXT =
  * Returns 0 when nothing can be discarded (the whole conversation fits), which
  * the caller turns into a skipped compaction.
  */
-function retainedStartIdx(conversation: ConversationEntry[]): number {
+function retainedStartIdx(conversation: ConversationEntry[], minTokens: number, maxTokens: number): number {
   let total = 0;
   let start = conversation.length;
   for (let i = conversation.length - 1; i >= 0; i--) {
     const tokens = estimateEntryTokens(conversation[i]);
     const newest = i === conversation.length - 1;
-    if (!newest && (total >= RETAINED_MIN_TOKENS || total + tokens > RETAINED_MAX_TOKENS)) break;
+    if (!newest && (total >= minTokens || total + tokens > maxTokens)) break;
     total += tokens;
     start = i;
   }
@@ -351,7 +358,11 @@ export class ContextManager {
     const conversation = this.state.get<ConversationEntry[]>('conversation');
     if (conversation.length < 4) return { skipped: true, keptEntries: conversation.length };
 
-    const keepStartIdx = retainedStartIdx(conversation);
+    const keepStartIdx = retainedStartIdx(
+      conversation,
+      retainedMinTokens(this.contextWindowTokens),
+      retainedMaxTokens(this.contextWindowTokens),
+    );
     // The whole conversation fits the retained budget — a summary would only
     // repeat what is already sent verbatim, so leave everything untouched.
     if (keepStartIdx === 0) return { skipped: true, keptEntries: conversation.length };

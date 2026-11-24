@@ -1,12 +1,20 @@
 /**
  * Rough token estimator for conversation entries.
- * Uses a conservative ratio of ~4 chars per token (English/mixed content).
+ *
+ * ASCII text uses a conservative ratio of ~4 chars per token. Non-ASCII chars
+ * (CJK, full-width punctuation, …) count ~1 token EACH: a plain chars/4
+ * ratio undercounted CJK content roughly 4x, letting the context grow past
+ * the model window without ever triggering compaction.
  */
 
-/** Estimate token count for a string. */
+/** Estimate token count for a string: ceil(asciiChars/4 + nonAsciiChars). */
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  return Math.ceil(text.length / 4);
+  let ascii = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) <= 0x7f) ascii++;
+  }
+  return Math.ceil(ascii / 4 + (text.length - ascii));
 }
 
 /**

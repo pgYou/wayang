@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   ContextManager,
   RECENT_TOKEN_BUDGET,
-  RETAINED_MIN_TOKENS,
-  RETAINED_MAX_TOKENS,
+  retainedMinTokens,
+  retainedMaxTokens,
   COMPACT_MARKER_TEXT,
 } from '@/services/agents/context-manager';
 import { EEntryType, ESystemSubtype } from '@/types/index';
@@ -33,7 +33,8 @@ const makeUser = (uuid: string, content: string) => ({
 
 /**
  * A user entry of roughly `tokens` estimated tokens (the estimator uses ~4
- * chars per token). Used to drive the retained-zone budget deterministically.
+ * chars per ASCII token). Used to drive the retained-zone budget
+ * deterministically.
  */
 const makeBigUser = (uuid: string, tokens: number) => {
   const size = Math.max(4, tokens * 4);
@@ -43,6 +44,29 @@ const makeBigUser = (uuid: string, tokens: number) => {
 describe('ContextManager', () => {
   it('should export RECENT_TOKEN_BUDGET', () => {
     expect(RECENT_TOKEN_BUDGET).toBe(20_000);
+  });
+
+  describe('retained budget scales with the context window', () => {
+    it('64k window keeps the historical 8k/16k bounds', () => {
+      expect(retainedMaxTokens(64_000)).toBe(16_000);
+      expect(retainedMinTokens(64_000)).toBe(8_000);
+    });
+
+    it('32k window scales to 8k max / 4k min', () => {
+      expect(retainedMaxTokens(32_000)).toBe(8_000);
+      expect(retainedMinTokens(32_000)).toBe(4_000);
+    });
+
+    it('8k window clamps up to 4k max / 2k min', () => {
+      expect(retainedMaxTokens(8_000)).toBe(4_000);
+      expect(retainedMinTokens(8_000)).toBe(2_000);
+    });
+
+    it('huge windows clamp at 16k; the 256k default fallback yields 16k/8k', () => {
+      expect(retainedMaxTokens(1_000_000)).toBe(16_000);
+      expect(retainedMaxTokens(256_000)).toBe(16_000);
+      expect(retainedMinTokens(256_000)).toBe(8_000);
+    });
   });
 
   describe('restoreCompact', () => {
@@ -190,7 +214,7 @@ describe('ContextManager', () => {
       expect(JSON.stringify(cm.getMessages().map((m: any) => m.content))).toContain('after compaction');
     });
 
-    it('should keep the retained zone inside the 8k-16k token budget', async () => {
+    it('should keep the retained zone inside the 8k-16k token budget (64k window)', async () => {
       const state = createMockState([
         makeBigUser('u1', 3_000),
         makeBigUser('u2', 3_000),
@@ -198,21 +222,21 @@ describe('ContextManager', () => {
         makeBigUser('u4', 3_000),
         makeBigUser('u5', 3_000),
       ]);
-      const cm = new ContextManager(state, 'STATIC PROMPT');
+      const cm = new ContextManager(state, 'STATIC PROMPT', 64_000);
 
       await cm.compact(async () => 'summary');
 
       const messages = cm.getMessages();
       const retained = messages.slice(0, messages.length - 2);
       const retainedTokens = retained.reduce((sum, message) => sum + estimateEntryTokens(message), 0);
-      expect(retainedTokens).toBeGreaterThanOrEqual(RETAINED_MIN_TOKENS);
-      expect(retainedTokens).toBeLessThanOrEqual(RETAINED_MAX_TOKENS);
+      expect(retainedTokens).toBeGreaterThanOrEqual(retainedMinTokens(64_000));
+      expect(retainedTokens).toBeLessThanOrEqual(retainedMaxTokens(64_000));
       // Three 3k entries = 9k; a fourth would still fit, so the walk stopped
       // on the lower bound and dropped the oldest two.
       expect(JSON.stringify(retained.map((m: any) => m.content))).not.toContain('u1 ');
     });
 
-    it('should stop before the upper bound when one more entry would exceed 16k', async () => {
+    it('should stop before the upper bound when one more entry would exceed 16k (64k window)', async () => {
       // 7k + 10k = 17k > 16k, so the 10k entry is dropped even though the
       // retained zone is still under the 8k lower bound.
       const state = createMockState([
@@ -221,16 +245,36 @@ describe('ContextManager', () => {
         makeUser('u3', 'small three'),
         makeUser('u4', 'small four'),
       ]);
-      const cm = new ContextManager(state, 'STATIC PROMPT');
+      const cm = new ContextManager(state, 'STATIC PROMPT', 64_000);
 
       await cm.compact(async () => 'summary');
 
       const messages = cm.getMessages();
       const retained = messages.slice(0, messages.length - 2);
       const retainedTokens = retained.reduce((sum, message) => sum + estimateEntryTokens(message), 0);
-      expect(retainedTokens).toBeLessThanOrEqual(RETAINED_MAX_TOKENS);
+      expect(retainedTokens).toBeLessThanOrEqual(retainedMaxTokens(64_000));
       expect(JSON.stringify(retained.map((m: any) => m.content))).not.toContain('u1 ');
       expect(JSON.stringify(retained.map((m: any) => m.content))).toContain('u2 ');
+    });
+
+    it('should shrink the retained zone on a small window so the compacted context fits', async () => {
+      // 8k window: the zone budget clamps to 4k/2k. Twelve 1k entries — the
+      // zone keeps the newest two (~2k) and the summary covers the rest, so
+      // the compacted context no longer exceeds the window (a fixed 16k zone
+      // could never fit).
+      const conversation = Array.from({ length: 12 }, (_, i) => makeBigUser(`u${i + 1}`, 1_000));
+      const state = createMockState(conversation);
+      const cm = new ContextManager(state, 'STATIC PROMPT', 8_000);
+
+      await cm.compact(async () => 'compressed');
+
+      const messages = cm.getMessages();
+      const retained = messages.slice(0, messages.length - 2);
+      const retainedTokens = retained.reduce((sum, message) => sum + estimateEntryTokens(message), 0);
+      expect(retainedTokens).toBeLessThanOrEqual(retainedMaxTokens(8_000));
+      // The whole post-compaction prompt (static + zone + marker + summary)
+      // fits the window.
+      expect(cm.getEstimatedTokens()).toBeLessThanOrEqual(8_000);
     });
 
     it('should keep an assistant step and its tool results together in the retained zone', async () => {
