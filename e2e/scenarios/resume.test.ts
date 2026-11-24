@@ -65,7 +65,7 @@ describe('e2e: resume across server restarts', () => {
 });
 
 describe('e2e: turn index across server restarts', () => {
-  it('conversation RPCs expose pre-resume turns with lineage, status, and no compact leakage', async () => {
+  it('conversation RPCs expose pre-resume turns with lineage; short-session compaction is skipped', async () => {
     // --- Server #1: one full task chain — user → add_task → worker done → reply.
     const s1 = await setupE2E([
       {
@@ -99,14 +99,13 @@ describe('e2e: turn index across server restarts', () => {
     await s1.dispose({ root: true, provider: true });
 
     // --- Server #2: same root, resume. setupE2E ignores the script arg when
-    // reusing a provider, so re-script it explicitly afterwards — the
-    // compaction below is the only LLM call after restore.
+    // reusing a provider, so it starts with an empty queue. No summarizer
+    // entry is scripted: this session has only two turns, so the retained
+    // verbatim zone covers the whole conversation and PERFORM_COMPACTION
+    // below must be SKIPPED — the summarizer LLM is never called.
     const s2 = await setupE2E([], { session: `resume:${sessionId}`, root, provider });
     setups.push(s2);
     expect(s2.sessionId).toBe(sessionId);
-    provider.reset([
-      { match: isSummarizerRequest, text: 'E2E COMPACT SUMMARY MARKER 8347 text' },
-    ]);
 
     // Conversation restored from disk before any assertions.
     await s2.waitFor('conversation restored', (s) =>
@@ -181,33 +180,119 @@ describe('e2e: turn index across server restarts', () => {
     expect(reply.signals.every(s => s.taskId === addTaskCall?.taskId)).toBe(true);
     expect(reply.steps.some(st => st.content.includes('Task finished successfully.'))).toBe(true);
 
-    // --- Compact after resume: the marker must never surface as turn content ---
+    // --- Compact after resume: SKIPPED by design. The session has only two
+    // turns, so the whole conversation fits the retained verbatim zone
+    // (context-manager keepStartIdx === 0 → skip): no marker, no summary
+    // user entry, no summarizer call, nothing appended or truncated. ---
+    const convBeforeCompact = s2.state.conversation.length;
     await s2.client.request(METHOD.PERFORM_COMPACTION);
-    await s2.waitFor('compact marker appended', (s) =>
-      JSON.stringify(s.conversation).includes('E2E COMPACT SUMMARY MARKER 8347 text'));
+
+    // Entry count is exactly unchanged — a real compaction would have
+    // appended marker + summary (and a fallback truncation would shrink it).
+    expect(s2.state.conversation).toHaveLength(convBeforeCompact);
+    const convJson = JSON.stringify(s2.state.conversation);
+    expect(convJson).not.toContain('[Context compacted]'); // no marker entry
+    expect(convJson).not.toContain('[Conversation Summary]'); // no summary user entry
+    // The skip path must not even reach the summarizer LLM.
+    expect(provider.requests.some(isSummarizerRequest)).toBe(false);
 
     const listAfterCompact = await s2.client.request<{
       total: number;
       turns: Array<{ turnId: string; status: string; userPreview?: string }>;
     }>(METHOD.CONVERSATION_LIST_TURNS, {});
-    // Same turns, same order — the marker attaches to the last turn without
-    // creating a new one.
+    // Same turns, same order — a skipped compaction leaves the index untouched.
     expect(listAfterCompact.total).toBe(list.total);
     expect(listAfterCompact.turns.map(t => t.turnId)).toEqual(list.turns.map(t => t.turnId));
     expect(listAfterCompact.turns.every(t => t.status === 'completed')).toBe(true);
-    // The compaction summary is marker content, not turn content.
-    expect(JSON.stringify(listAfterCompact.turns)).not.toContain('E2E COMPACT SUMMARY MARKER 8347 text');
 
-    const turnAfterCompact = await s2.client.request<{
-      steps: Array<{ content: string }>;
-      userEntry?: { content: string };
-      signals: Array<{ content: string }>;
-      entryIds: string[];
-    }>(METHOD.CONVERSATION_GET_TURN, { turnId: replyTurn.turnId });
-    expect(JSON.stringify(turnAfterCompact.steps)).not.toContain('E2E COMPACT SUMMARY MARKER 8347 text');
-    expect(turnAfterCompact.userEntry?.content ?? '').not.toContain('E2E COMPACT SUMMARY MARKER 8347 text');
-    expect(turnAfterCompact.signals.every(s => !s.content.includes('E2E COMPACT SUMMARY MARKER 8347 text'))).toBe(true);
+    // --- The skipped compaction leaves the resumed session fully operational:
+    // a new user turn still runs through the restored controller. ---
+    provider.reset([
+      { match: isControllerRequest, text: 'Still operational after the skipped compaction.' },
+    ]);
+    await s2.submit('ping after the skipped compaction');
+    await s2.waitFor('post-skip controller reply', (s) =>
+      JSON.stringify(s.conversation).includes('Still operational after the skipped compaction.'));
+
+    const listAfterFollowUp = await s2.client.request<{
+      total: number;
+      turns: Array<{ turnId: string; status: string; userPreview?: string }>;
+    }>(METHOD.CONVERSATION_LIST_TURNS, {});
+    expect(listAfterFollowUp.total).toBe(list.total + 1);
+    const followUpTurn = listAfterFollowUp.turns.at(-1);
+    expect(followUpTurn?.status).toBe('completed');
+    expect(followUpTurn?.userPreview).toContain('ping after the skipped compaction');
 
     leftoverRoot = undefined; // s2.dispose() (afterAll) removes the root
+  }, 120_000);
+});
+
+describe('e2e: compaction on a long session', () => {
+  it('PERFORM_COMPACTION on a long conversation appends the marker and the summary user entry', async () => {
+    // The default 256k window gives the retained verbatim zone an 8k-16k
+    // token budget. Two ~20k-token assistant entries (one riding the
+    // add_task step, one as the final reply) push the conversation far past
+    // that budget, so the retained zone covers only the last entry and the
+    // compaction really runs — the opposite of the skipped path above.
+    const bigText = 'E2E long-history filler payload. '.repeat(3_200); // 80k chars ≈ 20k tokens
+    const summaryText = 'E2E COMPACT SUMMARY 9042 for the long session';
+
+    const s = await setupE2E([
+      {
+        match: isControllerRequest,
+        text: bigText,
+        toolCalls: [{
+          name: 'add_task',
+          args: { title: 'Long history task', description: 'Do the thing, then report done.', priority: 'normal' },
+        }],
+      },
+      { match: isControllerRequest, text: 'Dispatched the long-history task.' },
+      { match: isWorkerRequest, toolCalls: [{ name: 'done', args: { summary: 'Long task finished' } }] },
+      { match: isControllerRequest, text: `Task finished with a long report.\n${bigText}` },
+      { match: isSummarizerRequest, text: summaryText },
+    ]);
+    setups.push(s);
+
+    await s.submit('run the long-history task');
+    await s.waitFor('controller final reply', (snapshot) =>
+      JSON.stringify(snapshot.conversation).includes('Task finished with a long report.'));
+    await s.waitFor('task completed in history', (snapshot) =>
+      snapshot.history.length === 1 && snapshot.history[0].status === 'completed');
+
+    // Long enough for the compaction guard (< 4 entries is skipped outright).
+    expect(s.state.conversation.length).toBeGreaterThanOrEqual(4);
+
+    await s.client.request(METHOD.PERFORM_COMPACTION);
+    await s.waitFor('compact marker and summary appended', (snapshot) =>
+      JSON.stringify(snapshot.conversation).includes('[Context compacted]')
+      && JSON.stringify(snapshot.conversation).includes(summaryText));
+
+    // The summarizer really ran (the skip path in the sibling test asserts
+    // the exact opposite).
+    expect(s.provider.requests.some(isSummarizerRequest)).toBe(true);
+
+    const entries = s.state.conversation as Array<{
+      type: string;
+      uuid: string;
+      subtype?: string;
+      content?: string;
+      compactMeta?: { summaryEntryUuid?: string; summarizedTokenCount?: number };
+      message?: { role: string; content: string };
+    }>;
+    const markerIdx = entries.findIndex(e => e.type === 'system' && e.subtype === 'compact');
+    const summaryIdx = entries.findIndex(e =>
+      e.type === 'user' && e.message?.role === 'user'
+      && e.message.content.startsWith('[Conversation Summary]'));
+    expect(markerIdx).toBeGreaterThanOrEqual(0);
+    // New format: marker first, the summary user entry right after it.
+    expect(summaryIdx).toBe(markerIdx + 1);
+
+    const marker = entries[markerIdx]!;
+    const summaryEntry = entries[summaryIdx]!;
+    expect(marker.content).toContain('[Context compacted]');
+    // compactMeta.summaryEntryUuid points at the summary entry that follows.
+    expect(marker.compactMeta?.summaryEntryUuid).toBe(summaryEntry.uuid);
+    expect(marker.compactMeta?.summarizedTokenCount).toBeGreaterThan(0);
+    expect(summaryEntry.message?.content).toBe(`[Conversation Summary]\n${summaryText}`);
   }, 120_000);
 });
