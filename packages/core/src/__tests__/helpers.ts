@@ -29,11 +29,24 @@ export function createMockLogger(): Logger {
 /** Create a mock SystemContext. */
 export function createMockCtx(overrides?: Partial<SystemContext>): SystemContext {
   const logger = createMockLogger();
+  // Deployment contracts (design 4.2): mock storage/workspace anchors. The
+  // workspacePolicy follows an overridden workspaceDir so the two never drift.
+  const workspaceDir = overrides?.workspaceDir ?? '/tmp/workspace';
+  const dataDir = overrides?.storagePaths?.dataDir ?? '/tmp/wayang-mock-data';
   return {
     logger,
     sessionId: 'test-session',
     sessionDir: '/tmp/test-session',
-    workspaceDir: '/tmp/workspace',
+    workspaceDir,
+    storagePaths: {
+      dataDir,
+      logDir: overrides?.storagePaths?.logDir ?? '/tmp/test-session',
+      cacheDir: overrides?.storagePaths?.cacheDir ?? '/tmp/test-session',
+    },
+    workspacePolicy: {
+      controllerWorkspace: overrides?.workspacePolicy?.controllerWorkspace ?? workspaceDir,
+      defaultWorkerWorkspace: overrides?.workspacePolicy?.defaultWorkerWorkspace ?? `${dataDir}/workspace`,
+    },
     startedAt: Date.now(),
     logLevel: 'info',
     abortController: new AbortController(),

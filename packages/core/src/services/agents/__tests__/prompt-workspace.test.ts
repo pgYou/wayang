@@ -33,10 +33,18 @@ afterEach(() => {
 
 const generalWorkspace = () => path.join(homeDir, '.wayang', 'workspace');
 
+/** Mock ctx with the CLI-default deployment contracts (design 4.2). */
+const mockCtx = () =>
+  createMockCtx({
+    sessionDir,
+    workspaceDir: homeDir,
+    storagePaths: { dataDir: path.join(homeDir, '.wayang'), logDir: sessionDir, cacheDir: sessionDir },
+  });
+
 describe('controller prompt — workspace rules', () => {
   it('carries the resolved general workspace path inside the working principles', () => {
     const prompt = buildControllerSystemPrompt(
-      createMockCtx({ sessionDir, workspaceDir: homeDir }),
+      mockCtx(),
       new SkillRegistry([]),
     );
 
@@ -49,7 +57,7 @@ describe('controller prompt — workspace rules', () => {
 
   it('tells the controller to route scratch files to .agents/tmp', () => {
     const prompt = buildControllerSystemPrompt(
-      createMockCtx({ sessionDir, workspaceDir: homeDir }),
+      mockCtx(),
       new SkillRegistry([]),
     );
 
@@ -58,14 +66,14 @@ describe('controller prompt — workspace rules', () => {
   });
 
   it('builds the prompt without creating the general workspace', () => {
-    buildControllerSystemPrompt(createMockCtx({ sessionDir, workspaceDir: homeDir }), new SkillRegistry([]));
+    buildControllerSystemPrompt(mockCtx(), new SkillRegistry([]));
     expect(fs.existsSync(generalWorkspace())).toBe(false);
   });
 });
 
 describe('controller prompt — dispatch decision (worker, workspace, allowedDirs)', () => {
   const buildPrompt = () => buildControllerSystemPrompt(
-    createMockCtx({ sessionDir, workspaceDir: homeDir }),
+    mockCtx(),
     new SkillRegistry([]),
   );
   // The dispatch rules live inside the 【工作区】 block, next to the workspace
@@ -108,7 +116,7 @@ describe('controller prompt — dispatch decision (worker, workspace, allowedDir
 describe('worker prompt — scratch file convention', () => {
   it('puts the .agents/tmp rule in the file-operations section', () => {
     const prompt = buildWorkerSystemPrompt(
-      createMockCtx({ sessionDir, workspaceDir: homeDir }),
+      mockCtx(),
       new SkillRegistry([]),
       homeDir,
     );
@@ -120,7 +128,7 @@ describe('worker prompt — scratch file convention', () => {
   });
 
   it('separates durable output from one-off intermediates', () => {
-    const prompt = buildWorkerSystemPrompt(createMockCtx({ workspaceDir: homeDir }), new SkillRegistry([]), homeDir);
+    const prompt = buildWorkerSystemPrompt(mockCtx(), new SkillRegistry([]), homeDir);
 
     expect(prompt).toContain('Anything worth keeping goes to a normal path in the workspace');
     expect(prompt).toContain('one-off intermediates stay in `.agents/tmp/`');
@@ -128,7 +136,7 @@ describe('worker prompt — scratch file convention', () => {
 
   it('makes the task-declared workspace outrank the worker\'s own assumptions', () => {
     const prompt = buildWorkerSystemPrompt(
-      createMockCtx({ sessionDir, workspaceDir: homeDir }),
+      mockCtx(),
       new SkillRegistry([]),
       homeDir,
     );
@@ -140,7 +148,7 @@ describe('worker prompt — scratch file convention', () => {
 
   it('tells the worker to state out-of-workspace needs up front instead of probing', () => {
     const prompt = buildWorkerSystemPrompt(
-      createMockCtx({ sessionDir, workspaceDir: homeDir }),
+      mockCtx(),
       new SkillRegistry([]),
       homeDir,
     );

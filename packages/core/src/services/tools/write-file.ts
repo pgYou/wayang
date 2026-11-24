@@ -4,8 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { defineTool, safeExecute } from './common';
 import { expandHome } from './permission-rules';
 
-export function writeFileTool(deps: { cwd?: string } = {}) {
-  const workspace = deps.cwd ?? process.cwd();
+export function writeFileTool(deps: { cwd: string }) {
+  const workspace = deps.cwd;
 
   return defineTool({
     description: 'Create a new file with the given content. Creates parent directories as needed. Use edit_file to modify existing files.',

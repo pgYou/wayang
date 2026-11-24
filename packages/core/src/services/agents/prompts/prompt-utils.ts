@@ -67,7 +67,7 @@ export function buildEnvironment(ctx: SystemContext, opts?: EnvironmentExtra): s
     'OS': `${os.platform()} (${os.arch()})`,
     'Shell': `${shellName} (${shell})`,
     'Home': os.homedir(),
-    'WorkspaceDir': opts?.workspaceDir ?? ctx.workspaceDir ?? process.cwd(),
+    'WorkspaceDir': opts?.workspaceDir ?? ctx.workspaceDir,
     ...opts?.extras,
   };
 

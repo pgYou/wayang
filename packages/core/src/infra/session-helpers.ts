@@ -47,21 +47,12 @@ export function sessionDisplayTitle(meta: SessionMeta): string | null {
   return meta.firstInput;
 }
 
-/** Name of the directory that holds all sessions inside the Wayang home dir. */
-const SESSIONS_DIRNAME = 'sessions';
-
-/**
- * Wayang home dir (the parent of `sessions/`) for a session directory.
- *
- * Returns null when `sessionDir` does not follow the documented
- * `<wayangDir>/sessions/<sessionId>` layout — e.g. a hand-built temp dir in a
- * test. Callers use null to mean "no registry to consult", which keeps ad-hoc
- * directories from creating a stray registry file one level up.
+/*
+ * Reverse path derivation (child -> parent, e.g. session dir -> data dir) was
+ * removed in monorepo-design 4.2 改造二: `wayangDirForSessionDir` is gone —
+ * every consumer now reads the INJECTED `StoragePaths.dataDir` (or an
+ * explicit parameter) instead of guessing a parent from the session layout.
  */
-export function wayangDirForSessionDir(sessionDir: string): string | null {
-  const sessionsDir = path.dirname(path.resolve(sessionDir));
-  return path.basename(sessionsDir) === SESSIONS_DIRNAME ? path.dirname(sessionsDir) : null;
-}
 
 /** List all sessions under dataDir, sorted by creation date (newest first). */
 export function listSessions(dataDir: string, query: ListSessionsQuery = {}): SessionMeta[] {

@@ -181,7 +181,9 @@ export abstract class AcpWorkerRun extends BaseAcpWorker implements IWorkerInsta
       this._mcpHost = new AcpMcpHost({
         workerId: this.id,
         provider: this.config.type,
-        sessionDir: this.sessionDir,
+        // Socket base is the INJECTED cacheDir (design 4.2) — CLI default:
+        // the session directory, so the 0.9.9 layout is unchanged.
+        cacheDir: this.ctx.storagePaths.cacheDir,
         logger: this.logger,
         enabled: () => this.acpUserConfig().mcp?.enabled !== false,
         spawnTransport: (opts) => this.createMcpTransport(opts),

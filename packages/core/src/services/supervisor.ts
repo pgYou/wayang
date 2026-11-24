@@ -1,4 +1,4 @@
-import { SystemContext } from '../infra/system-context';
+import { SystemContext, type SystemContextPaths } from '../infra/system-context';
 import { SignalQueue } from './signal/signal-queue';
 import { TaskExecuteEngine } from './task-execute-engine';
 import { ControllerLoop } from './controller-loop';
@@ -8,9 +8,8 @@ import { SkillRegistry } from './skills/registry';
 import { resolveSkillDirs } from './skills/skill-dir';
 import { readSessionUnfinishedTasks } from '../infra/session-helpers';
 import { SessionLock } from '../infra/session-lock';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ConversationIndex, TurnView, WayangConfig } from '@wayang-ai/protocol';
+import type { ConversationIndex, TurnView, StoragePaths, WayangConfig, WorkspacePolicy } from '@wayang-ai/protocol';
 
 /** Parameters for Supervisor initialization. */
 export interface SupervisorOptions {
@@ -22,7 +21,8 @@ export interface SupervisorOptions {
   /**
    * Wayang data directory (`<wayangRootDir>/.wayang`) — sessions live under
    * `<dataDir>/sessions`. Required for new sessions. NOT the OS user home the
-   * permission policy anchors on.
+   * permission policy anchors on. May instead arrive via
+   * `storagePaths.dataDir`.
    */
   dataDir?: string;
   /**
@@ -33,6 +33,58 @@ export interface SupervisorOptions {
    * without re-surfacing stale tasks.
    */
   injectPreviousTasks?: boolean;
+  /**
+   * Injected storage paths (monorepo-design 4.2 改造二): data root, session
+   * log dir, session cache dir. Hosts (desktop) that want different locations
+   * pass them here. When omitted, the CLI defaults apply: `dataDir` from the
+   * option above, `logDir`/`cacheDir` = the session directory (the 0.9.9
+   * physical layout, unchanged — a host cannot know a NEW session's dir
+   * before this assembly point, so the default assigns the already-resolved
+   * session dir; a plain assignment, never a reverse derivation).
+   */
+  storagePaths?: StoragePaths;
+  /**
+   * Injected workspace anchors (monorepo-design 4.2 改造二): the controller
+   * dispatch baseline / controller tool cwd, and the default worker
+   * workspace. When omitted, the CLI defaults apply: `controllerWorkspace`
+   * = the `workspaceDir` option above (the launch workspace), and
+   * `defaultWorkerWorkspace` = `<dataDir>/workspace`.
+   */
+  workspacePolicy?: WorkspacePolicy;
+}
+
+/**
+ * Resolve the effective StoragePaths for a session (monorepo-design 4.2).
+ *
+ * Pure: host-injected values win verbatim; otherwise the CLI defaults assign
+ * the session directory as log/cache dir. Exported so hosts and tests share
+ * the exact default semantics.
+ */
+export function resolveSessionStoragePaths(
+  dataDir: string,
+  sessionDir: string,
+  injected?: StoragePaths,
+): StoragePaths {
+  return injected ?? { dataDir, logDir: sessionDir, cacheDir: sessionDir };
+}
+
+/**
+ * Resolve the effective WorkspacePolicy (monorepo-design 4.2).
+ *
+ * Pure: host-injected values win verbatim; otherwise the CLI defaults map the
+ * controller workspace to the launch workspace and the default worker
+ * workspace to `<dataDir>/workspace` (0.9.9 behavior). Exported so hosts and
+ * tests share the exact default semantics.
+ */
+export function resolveSessionWorkspacePolicy(
+  dataDir: string,
+  launchWorkspace: string,
+  injected?: WorkspacePolicy,
+): WorkspacePolicy {
+  return injected ?? {
+    controllerWorkspace: launchWorkspace,
+    defaultWorkerWorkspace: join(dataDir, 'workspace'),
+  };
 }
 
 export class Supervisor {
@@ -54,16 +106,21 @@ export class Supervisor {
     this.resumeSessionDir = options.resume?.sessionDir;
     this.injectPreviousTasks = options.injectPreviousTasks ?? false;
 
+    // Effective data dir: the injected StoragePaths win over the plain option
+    // (both are host-provided; StoragePaths is the 4.2 contract, `dataDir` the
+    // pre-4.2 field kept for direct/test construction).
+    const dataDir = options.storagePaths?.dataDir ?? options.dataDir;
+
     // Create session manager
     if (options.resume) {
       this.sessionManager = SessionManager.resume(
         options.resume.sessionId,
         options.resume.sessionDir,
-        options.dataDir,
+        dataDir ?? null,
       );
     } else {
-      if (!options.dataDir) throw new Error('dataDir is required for new sessions');
-      this.sessionManager = SessionManager.create(options.dataDir, workspaceDir);
+      if (!dataDir) throw new Error('dataDir is required for new sessions');
+      this.sessionManager = SessionManager.create(dataDir, workspaceDir);
     }
 
     // Take ownership of the session directory BEFORE anything writes into it.
@@ -71,18 +128,27 @@ export class Supervisor {
     // a second process would append to concurrently, and a new session must not
     // be reopened by another process either. Acquiring here (rather than in
     // restore()/start()) means a conflict aborts construction before the log
-    // sink below opens <sessionDir>/wayang.log.
+    // sink below opens its file.
     // Throws SessionLockedError carrying the holder's pid/startedAt/session dir.
     this.sessionLock = new SessionLock(this.sessionManager.sessionDir);
     const lockResult = this.sessionLock.acquire();
+
+    // Deployment facts (design 4.2): host-injected values win; the CLI
+    // defaults assign the just-resolved session dir / the launch workspace.
+    // Nothing here derives a parent from a child path — reverse derivation is
+    // banned in core.
+    const paths: SystemContextPaths = {
+      storage: resolveSessionStoragePaths(dataDir ?? '', this.sessionManager.sessionDir, options.storagePaths),
+      workspace: resolveSessionWorkspacePolicy(dataDir ?? '', workspaceDir, options.workspacePolicy),
+    };
 
     // Create system context (logger, providers, hooks, abort controller)
     this.ctx = new SystemContext(
       config,
       this.sessionManager.sessionId,
       this.sessionManager.sessionDir,
-      workspaceDir,
       logLevel,
+      paths,
     );
 
     if (lockResult.staleTakeover) {
@@ -107,7 +173,7 @@ export class Supervisor {
     // lives under the wayang DATA dir (follows `--wayang-root`), not the
     // process home.
     this.skills = new SkillRegistry(
-      resolveSkillDirs(options.dataDir ?? join(homedir(), '.wayang'), workspaceDir, config.skillsDirs),
+      resolveSkillDirs(this.ctx.storagePaths.dataDir, workspaceDir, config.skillsDirs),
       this.ctx.logger,
     );
 

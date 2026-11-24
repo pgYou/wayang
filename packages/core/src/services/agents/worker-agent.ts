@@ -22,7 +22,6 @@ import { checkControllerMessagesTool } from '../tools/check-messages';
 import { buildWorkerSystemPrompt } from './prompts/index';
 import { SystemContext } from '../../infra/system-context';
 import type { SkillRegistry } from '../skills/registry';
-import { wayangDirForSessionDir } from '../../infra/session-helpers';
 import { resolveWorkspaceRef } from '../../infra/workspace-registry';
 import type { WorkspaceRef } from '../../infra/workspace-registry';
 
@@ -109,7 +108,7 @@ export class WorkerAgent extends BaseAgent implements IWorkerInstance {
     // Workspace identity is stamped into runtime-state so a worker's records
     // stay attributable after it finished (registry slug keeps it stable). The
     // same ref feeds the turn envelope's `workspaceSlug`.
-    this.workspaceRef = resolveWorkspaceRef(wayangDirForSessionDir(ctx.sessionDir), this.workspaceDir);
+    this.workspaceRef = resolveWorkspaceRef(ctx.storagePaths.dataDir, this.workspaceDir);
     this.state = new WorkerState(
       ctx.sessionDir,
       this.id,

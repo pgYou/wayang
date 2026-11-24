@@ -113,13 +113,13 @@ describe('SessionManager', () => {
 
   it('should have isResume=true for resumed sessions', () => {
     const created = SessionManager.create(dataDir, '/workspace');
-    const resumed = SessionManager.resume(created.sessionId, created.sessionDir);
+    const resumed = SessionManager.resume(created.sessionId, created.sessionDir, dataDir);
     expect(resumed.isResume).toBe(true);
   });
 
   it('should restore from meta.json on resume', async () => {
     const created = SessionManager.create(dataDir, '/workspace');
-    const resumed = SessionManager.resume(created.sessionId, created.sessionDir);
+    const resumed = SessionManager.resume(created.sessionId, created.sessionDir, dataDir);
     await resumed.restore();
 
     expect(resumed.hasFirstInput).toBe(false);
@@ -155,7 +155,7 @@ describe('SessionManager', () => {
     const created = SessionManager.create(dataDir, '/workspace');
     created.onUserInput('persisted');
 
-    const resumed = SessionManager.resume(created.sessionId, created.sessionDir);
+    const resumed = SessionManager.resume(created.sessionId, created.sessionDir, dataDir);
     await resumed.restore();
     expect(resumed.hasFirstInput).toBe(true);
     expect(readMeta(created.sessionDir).firstInput).toBe('persisted');

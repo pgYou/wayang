@@ -10,7 +10,6 @@ import { WorkerState } from '../worker-state';
 import { type TurnEnvelope } from '../utils/entry-envelope';
 import { generateId } from '../../../utils/id';
 import { SystemContext } from '../../../infra/system-context';
-import { wayangDirForSessionDir } from '../../../infra/session-helpers';
 import { resolveWorkspaceRef } from '../../../infra/workspace-registry';
 import type { WorkspaceRef } from '../../../infra/workspace-registry';
 import type { SignalQueue } from '../../signal/signal-queue';
@@ -187,7 +186,7 @@ export class ClaudeWorkerBase {
     this.resolvedModel = model;
     // Workspace identity is stamped into runtime-state (see WorkerState) and
     // reused for the turn envelope's `workspaceSlug`.
-    this.workspaceRef = resolveWorkspaceRef(wayangDirForSessionDir(sessionDir), workspaceDir);
+    this.workspaceRef = resolveWorkspaceRef(ctx.storagePaths.dataDir, workspaceDir);
     this.state = new WorkerState(
       sessionDir,
       this.id,

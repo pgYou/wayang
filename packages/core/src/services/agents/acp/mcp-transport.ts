@@ -10,12 +10,14 @@
  * detection in the worker layer — no change to the tool registry, the tool
  * invoker, the schemas or the progress fallback timer.
  *
- * One ACP worker run owns one Unix socket inside the session directory
- * (dedicated 0700 dir, 0600 socket). The bridge — spawned by the ACP agent as
- * a stdio MCP server — connects and MUST send a `hello` first frame carrying
- * the one-shot token and its pid. Every later NDJSON frame is a JSON-RPC
- * request handled by the shared MCP dispatcher; responses go back on the same
- * socket. Logs carry metadata only (no token, question, answer or reply text).
+ * One ACP worker run owns one Unix socket inside the injected `cacheDir`
+ * (dedicated 0700 `.mcp` dir, 0600 socket — the CLI default cacheDir IS the
+ * session directory, so the 0.9.9 physical layout is unchanged; design 4.2
+ * 改造二). The bridge — spawned by the ACP agent as a stdio MCP server —
+ * connects and MUST send a `hello` first frame carrying the one-shot token
+ * and its pid. Every later NDJSON frame is a JSON-RPC request handled by the
+ * shared MCP dispatcher; responses go back on the same socket. Logs carry
+ * metadata only (no token, question, answer or reply text).
  */
 
 import { createServer, type Socket } from 'node:net';
@@ -69,7 +71,12 @@ export interface McpTransport {
 }
 
 export interface StartMcpTransportOptions {
-  sessionDir: string;
+  /**
+   * Base directory for this run's socket — the INJECTED
+   * `StoragePaths.cacheDir` (design 4.2). Sockets live under
+   * `<cacheDir>/.mcp/`.
+   */
+  cacheDir: string;
   workerId: string;
   invoker: McpToolInvoker;
   logger: Logger;
@@ -86,9 +93,13 @@ export function generateMcpToken(): string {
   return randomBytes(32).toString('hex');
 }
 
-/** Socket lives in a dedicated 0700 directory — never chmod the session dir. */
-export function mcpSocketPathFor(sessionDir: string, workerId: string, suffix: string): string {
-  return join(sessionDir, '.mcp', `acp-mcp-${workerId}-${suffix}.sock`);
+/**
+ * Socket lives in a dedicated 0700 `.mcp` directory under the injected
+ * cacheDir (the CLI default cacheDir is the session dir, so the physical
+ * layout matches 0.9.9) — never chmod the containing dir itself.
+ */
+export function mcpSocketPathFor(cacheDir: string, workerId: string, suffix: string): string {
+  return join(cacheDir, '.mcp', `acp-mcp-${workerId}-${suffix}.sock`);
 }
 
 /**
@@ -274,7 +285,7 @@ export function buildMcpServerDescriptor(opts: {
  * return type — the tool layer and the worker run need no schema/tool changes.
  */
 export async function startStdioMcpTransport(opts: StartMcpTransportOptions): Promise<McpTransport> {
-  const socketPath = mcpSocketPathFor(opts.sessionDir, opts.workerId, generateMcpToken().slice(0, 12));
+  const socketPath = mcpSocketPathFor(opts.cacheDir, opts.workerId, generateMcpToken().slice(0, 12));
   const token = generateMcpToken();
   const bridgeEntryPath = resolveMcpBridgeEntryPath(import.meta.url);
   const host = await startMcpHost({

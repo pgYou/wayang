@@ -47,6 +47,7 @@ if (input[0] !== 'server') {
 
 const { root: wayangRoot } = resolveWayangRoot(flags);
 const workspaceDir = normalizeWorkspacePath(flags.workspaceDir ?? process.cwd());
+const dataDir = path.join(wayangRoot, '.wayang');
 const configPath = flags.config
   ? path.resolve(flags.config)
   : path.join(wayangRoot, '.wayang.config.json');
@@ -67,8 +68,19 @@ resolveServerConfig()
   .then((config) =>
     serverMain({
       config,
-      dataDir: path.join(wayangRoot, '.wayang'),
+      dataDir,
       workspaceDir,
+      // Host-constructed workspace anchors (monorepo-design 4.2 改造二): the
+      // controllerWorkspace is the directory the user launched in (0.9.9
+      // behavior — resolved by the HOST, which is allowed to read
+      // process.cwd), the defaultWorkerWorkspace is the general workspace
+      // `<dataDir>/workspace`. StoragePaths stay unset: the CLI default
+      // (log/cache = session dir, 0.9.9 layout) resolves in the Supervisor
+      // because a NEW session's dir only exists once the server creates it.
+      workspacePolicy: {
+        controllerWorkspace: workspaceDir,
+        defaultWorkerWorkspace: path.join(dataDir, 'workspace'),
+      },
       session: flags.session ?? 'new',
       injectPreviousTasks: flags.injectPreviousTasks,
       logLevel: flags.logLevel ?? (flags.verbose ? 'debug' : 'info'),

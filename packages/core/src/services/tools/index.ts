@@ -61,8 +61,13 @@ export interface ControllerToolDeps {
     source?: ControllerSignal['source'];
     type?: ControllerSignal['type'];
   }) => ControllerSignal[];
-  /** Workspace directory for file search. */
-  cwd?: string;
+  /**
+   * The controller's workspace — the INJECTED `controllerWorkspace` (design
+   * 4.2): the root `search_files` searches by default and the base its
+   * relative paths resolve against. Required: core never falls back to the
+   * process startup directory.
+   */
+  cwd: string;
   /**
    * The user's home directory — the read scope for search_files, and the
    * boundary add_task's `allowedDirs` must stay inside. Only third-party
@@ -138,7 +143,12 @@ export interface ControllerToolDeps {
 export interface WorkerToolDeps {
   listTasks: (status?: TaskDetail['status']) => TaskDetail[];
   reportProgress: (message: string, percent?: number) => void;
-  cwd?: string;
+  /**
+   * The worker's workspace (its cwd and file-tool root) — REQUIRED since
+   * monorepo-design 4.2: core never falls back to the process startup
+   * directory.
+   */
+  cwd: string;
   /** Called when worker calls the done tool. */
   onComplete: (summary: string) => void;
   /** Called when worker calls the fail tool. */

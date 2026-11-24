@@ -112,7 +112,12 @@ export interface SensitiveMatch {
 export type SensitiveMode = 'ask' | 'deny';
 
 export interface NormalizePathOptions {
-  /** Base directory for relative paths. Defaults to `process.cwd()`. */
+  /**
+   * Base directory for relative paths. REQUIRED for a relative input
+   * (monorepo-design 4.2 改造二: core must never resolve against the process
+   * startup directory) — a relative path without a base is a caller bug and
+   * fails closed with an explicit error. Absolute inputs ignore it.
+   */
   base?: string;
 }
 
@@ -120,7 +125,7 @@ export interface DecideAccessInput {
   /** The path being accessed — absolute, or relative to `cwd`. */
   path: string;
   access: AccessMode;
-  /** Base for a relative `path`. Defaults to `process.cwd()`. */
+  /** Base for a relative `path` — the executing workspace, always injected. */
   cwd?: string;
   /**
    * The user's home directory — the POLICY BOUNDARY. Required: both the
@@ -288,7 +293,13 @@ const MAX_ANCESTOR_DEPTH = 32;
  * exit immediately, so the common case is a single `realpath`.
  */
 export function normalizePath(p: string, opts: NormalizePathOptions = {}): string {
-  const base = opts.base ?? process.cwd();
+  if (!isAbsolute(p) && opts.base === undefined) {
+    // Fail closed (design 4.2): the process startup directory is not a legal
+    // anchor in core, so a relative path with no explicit base is rejected
+    // instead of silently resolving somewhere nobody asked for.
+    throw new Error(`normalizePath: relative path "${p}" requires an explicit base`);
+  }
+  const base = opts.base ?? p;
   const lexical = isAbsolute(p) ? resolve(p) : resolve(base, p);
   try {
     return realpathSync(lexical);

@@ -90,3 +90,6 @@ export {
 
 export type { ContextUsage, ContextBreakdown, ContextLastUsage } from './context-usage';
 
+// --- Deployment storage & workspace contracts (monorepo-design 4.2 改造二) ---
+export type { StoragePaths, WorkspacePolicy } from './paths';
+

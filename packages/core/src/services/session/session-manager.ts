@@ -8,7 +8,7 @@
 
 import * as path from 'node:path';
 import { formatTimestamp } from '../../utils/id';
-import { sessionDisplayTitle, wayangDirForSessionDir } from '../../infra/session-helpers';
+import { sessionDisplayTitle } from '../../infra/session-helpers';
 import type { SessionMeta } from '../../infra/session-helpers';
 import { normalizeWorkspacePath, resolveWorkspaceRef } from '../../infra/workspace-registry';
 import type { WorkspaceRef } from '../../infra/workspace-registry';
@@ -54,11 +54,14 @@ export class SessionManager {
   /**
    * Resume an existing session. State is restored in restore().
    *
-   * @param wayangDir  Wayang home dir, used to resolve workspace slugs. Omitted
-   *   callers fall back to the layout-derived parent of `sessions/`.
+   * @param wayangDir  Wayang home dir, used to resolve workspace slugs.
+   *   Explicit — null means "no registry to consult" (ad-hoc session dir).
+   *   Monorepo-design 4.2 改造二: no layout-derived fallback — callers that
+   *   know the data dir pass it; a null degrades registry lookups to the
+   *   rule-based slug instead of guessing a parent.
    */
-  static resume(sessionId: string, sessionDir: string, wayangDir?: string): SessionManager {
-    return new SessionManager(sessionId, sessionDir, true, wayangDir ?? wayangDirForSessionDir(sessionDir));
+  static resume(sessionId: string, sessionDir: string, wayangDir: string | null): SessionManager {
+    return new SessionManager(sessionId, sessionDir, true, wayangDir);
   }
 
   /** Restore state from disk (resume only, no-op for new sessions). */

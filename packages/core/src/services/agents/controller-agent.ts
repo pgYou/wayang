@@ -20,7 +20,6 @@ import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
 import { loadControllerRules } from './prompts/index';
 import { createControllerTools } from '../tools/index';
 import { readWorkerTranscript, readWorkerTranscriptWindow } from '../worker-transcript';
-import { wayangDirForSessionDir } from '../../infra/session-helpers';
 import { ensureGeneralWorkspace, resolveGeneralWorkspace } from '../../infra/general-workspace';
 import { homedir } from 'node:os';
 import { SystemContext } from '../../infra/system-context';
@@ -57,15 +56,15 @@ export class ControllerAgent extends ControllerTurnRun implements Subscribable {
     // credentials only.
     const userHome = homedir();
     // The wayang DATA dir this session belongs to (workspace-registry lookups
-    // key on it). Derived from the session layout — a data-dir concern, kept
-    // separate from the user home above.
-    const wayangDir = wayangDirForSessionDir(ctx.sessionDir);
+    // key on it). INJECTED via StoragePaths (design 4.2) — never reverse-
+    // derived from the session layout.
+    const wayangDir = ctx.storagePaths.dataDir;
 
     // Where tasks with no codebase of their own (research, collecting material,
-    // drafting) run. Advertised by absolute path in add_task's description, so
-    // create it once here — `mkdir -p`, idempotent. A failure is not fatal:
-    // add_task reports it per call and the controller can pick another
-    // workspace.
+    // drafting) run: the injected default worker workspace. Advertised by
+    // absolute path in add_task's description, so create it once here —
+    // `mkdir -p`, idempotent. A failure is not fatal: add_task reports it per
+    // call and the controller can pick another workspace.
     const generalWorkspaceDir = resolveGeneralWorkspace(ctx);
     try {
       ensureGeneralWorkspace(ctx);
@@ -73,13 +72,15 @@ export class ControllerAgent extends ControllerTurnRun implements Subscribable {
       ctx.logger.warn(`could not create the general workspace at ${generalWorkspaceDir}`);
     }
 
-    // Startup rules (issue #38): the home AGENTS.md as baseline, the cwd one as
-    // supplement, read once here — the prompt is built from this string and
-    // never re-read between turns. Missing files yield an empty string, so the
-    // prompt is unchanged when neither exists.
+    // Startup rules (issue #38): the home AGENTS.md as baseline, the
+    // controller-workspace one as supplement, read once here — the prompt is
+    // built from this string and never re-read between turns. Missing files
+    // yield an empty string, so the prompt is unchanged when neither exists.
+    // The cwd anchor is the INJECTED controllerWorkspace (design 4.2), never
+    // the process startup directory.
     const controllerRules = loadControllerRules({
       userHome,
-      cwd: ctx.workspaceDir || process.cwd(),
+      cwd: ctx.workspaceDir,
     });
 
     const tools = createControllerTools({
@@ -166,7 +167,7 @@ export class ControllerAgent extends ControllerTurnRun implements Subscribable {
       sessionId: this.ctx.sessionId,
       timestamp: errTs,
       subtype: ESystemSubtype.Error,
-      content: `${message}\n详情: ${this.ctx.sessionDir}/wayang.log`,
+      content: `${message}\n详情: ${this.ctx.logFilePath}`,
       // Point-in-time event: startedAt/endedAt share the recording moment.
       startedAt: errTs,
       endedAt: errTs,

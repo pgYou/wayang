@@ -92,12 +92,21 @@ export function registryFilePath(wayangDir: string): string {
  * the same identity (one workspace, one slug). It requires the path to exist;
  * for paths that do not (yet) exist we fall back to `path.resolve`, which is
  * still absolute and normalized but does not follow symlinks.
+ *
+ * Relative inputs need an explicit `base` (monorepo-design 4.2 改造二: core
+ * must not resolve against the process startup directory). Absolute inputs —
+ * the production norm — ignore `base`.
  */
-export function normalizeWorkspacePath(rawPath: string): string {
+export function normalizeWorkspacePath(rawPath: string, base?: string): string {
+  const anchor = path.isAbsolute(rawPath)
+    ? rawPath
+    : base !== undefined
+      ? path.resolve(base, rawPath)
+      : rawPath;
   try {
-    return fs.realpathSync(rawPath);
+    return fs.realpathSync(anchor);
   } catch {
-    return path.resolve(rawPath);
+    return path.resolve(anchor);
   }
 }
 

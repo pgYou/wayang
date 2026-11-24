@@ -41,10 +41,12 @@ export interface AddTaskToolDeps {
   /** Notify the agent that this call dispatched a task (toolCall→task audit link). */
   onTaskDispatched?: (info: { toolCallId?: string; taskId: string }) => void;
   /**
-   * The workspace this process runs in (ctx.workspaceDir), used as the default
-   * when the call declares none. Undefined means "unknown context" — then no
-   * default can be derived, so a declared workspace is rejected (nothing to
-   * resolve it against) and no identity is stamped.
+   * The controller's workspace (the INJECTED `controllerWorkspace` — design
+   * 4.2), used as the dispatch baseline: the default workspace when the call
+   * declares none AND the base a relative declaration resolves against.
+   * Undefined means "unknown context" — then no default can be derived, so a
+   * declared workspace is rejected (nothing to resolve it against) and no
+   * identity is stamped.
    */
   workspaceDir?: string;
   /**
@@ -66,10 +68,10 @@ export interface AddTaskToolDeps {
    */
   permissionConfig?: PermissionConfig;
   /**
-   * Absolute path of the general workspace (`<wayangDir>/workspace`), i.e.
-   * where tasks with no codebase of their own run. Advertised in the tool
-   * description; a task that targets it creates it like any other declared
-   * workspace.
+   * Absolute path of the general workspace — the injected
+   * `WorkspacePolicy.defaultWorkerWorkspace`, i.e. where tasks with no
+   * codebase of their own run. Advertised in the tool description; a task
+   * that targets it creates it like any other declared workspace.
    */
   generalWorkspaceDir?: string;
   /**
@@ -127,6 +129,8 @@ function validateDeclaredWorkspace(
   declared: string,
   raw: string,
   deps: AddTaskToolDeps,
+  /** Base a relative declaration resolves against — the controller's workspace. */
+  base: string,
 ): { normalized: string } | { error: string } {
   const userHome = deps.userHome;
   if (!userHome) {
@@ -136,7 +140,9 @@ function validateDeclaredWorkspace(
   }
 
   const home = normalizePath(userHome);
-  const normalized = normalizePath(declared);
+  // Relative declarations resolve against the controller's workspace — the
+  // dispatch baseline (design 4.2) — never the process startup directory.
+  const normalized = normalizePath(declared, { base });
   const extraRoots = (deps.permissionConfig?.extraWorkspaceRoots ?? [])
     .filter((root) => typeof root === 'string' && root.trim() !== '')
     .map((root) => normalizePath(root, { base: home }));
@@ -239,7 +245,7 @@ function resolveTaskWorkspace(
   // `normalizePath`/`normalizeWorkspacePath`) and go through the same check
   // after resolution.
   if (declared !== undefined) {
-    const verdict = validateDeclaredWorkspace(declared, declaredRaw, deps);
+    const verdict = validateDeclaredWorkspace(declared, declaredRaw, deps, current);
     if ('error' in verdict) return { error: verdict.error };
 
     // An absolute declaration is the directory the task will really run in,
@@ -256,7 +262,10 @@ function resolveTaskWorkspace(
 
   // Normalized AFTER creation, so the stamped path is the canonical form of the
   // directory that now exists (symlinked parents resolved once, not per check).
-  const requestedPath = declared !== undefined ? normalizeWorkspacePath(declared) : undefined;
+  // A RELATIVE declaration resolves against the current workspace (the
+  // controllerWorkspace dispatch baseline — design 4.2), not the process
+  // startup directory.
+  const requestedPath = declared !== undefined ? normalizeWorkspacePath(declared, current) : undefined;
 
   // Declared workspace wins; the process workspace is only the default.
   // Canonicalization keeps `task.workspace.path` the single value the engine

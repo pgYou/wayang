@@ -186,7 +186,10 @@ describe('resume flow is unaffected by log rotation', () => {
       controller: { provider: 'default' },
       worker: { provider: 'default', maxConcurrency: 1 },
     };
-    const ctx = new SystemContext(config, 's', dir, dir);
+    const ctx = new SystemContext(config, 's', dir, undefined, {
+      storage: { dataDir: dir, logDir: dir, cacheDir: dir },
+      workspace: { controllerWorkspace: dir, defaultWorkerWorkspace: join(dir, 'workspace') },
+    });
     const state = new ControllerAgentState(ctx);
     await state.restore();
 

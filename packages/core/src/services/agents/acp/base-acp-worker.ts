@@ -26,7 +26,6 @@ import { WorkerState } from '../worker-state';
 import { type TurnEnvelope, applyTurnEnvelope } from '../utils/entry-envelope';
 import { generateId } from '../../../utils/id';
 import { SystemContext } from '../../../infra/system-context';
-import { wayangDirForSessionDir } from '../../../infra/session-helpers';
 import { resolveWorkspaceRef } from '../../../infra/workspace-registry';
 import type { WorkspaceRef } from '../../../infra/workspace-registry';
 import type { SignalQueue } from '../../signal/signal-queue';
@@ -272,7 +271,7 @@ export abstract class BaseAcpWorker {
     this.sessionDir = sessionDir;
     this.logger = ctx.logger;
     this.skills = skills;
-    this.workspaceRef = resolveWorkspaceRef(wayangDirForSessionDir(sessionDir), workspaceDir);
+    this.workspaceRef = resolveWorkspaceRef(ctx.storagePaths.dataDir, workspaceDir);
     this.state = new WorkerState(sessionDir, this.id, ctx.logger, this.workspaceRef);
     this._turnWriter = new AcpTurnWriter(
       (entry) => this.state.append('conversation', applyTurnEnvelope(entry, this._currentTurnEnv ?? undefined)),

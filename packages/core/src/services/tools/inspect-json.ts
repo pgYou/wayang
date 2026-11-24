@@ -94,8 +94,8 @@ function pointerTokens(pointer: string): string[] | undefined {
   return pointer.slice(1).split('/').map((token) => token.replace(/~1/g, '/').replace(/~0/g, '~'));
 }
 
-export function inspectJsonTool(deps: { cwd?: string } = {}) {
-  const workspace = deps.cwd ?? process.cwd();
+export function inspectJsonTool(deps: { cwd: string }) {
+  const workspace = deps.cwd;
 
   return defineTool({
     description: `Read a JSON file structurally: pick subtrees by RFC 6901 JSON Pointer (e.g. /workers/codebuddy/model), with secret values (apiKey/token/secret/password/authorization/cookie/privateKey/accessKey/passwd/credentials) masked by default — including whole subtrees under any sensitive key on the pointer path — and a total output cap. Prefer this over read_file when you only need fields of a JSON config, and over node -e one-liners entirely. Does NOT support JSONL (one JSON value per line) — use read_file for JSONL.`,

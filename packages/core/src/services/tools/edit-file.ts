@@ -4,8 +4,8 @@ import { z } from 'zod';
 import { defineTool, safeExecute } from './common';
 import { expandHome } from './permission-rules';
 
-export function editFileTool(deps: { cwd?: string }) {
-  const workspace = deps.cwd ?? process.cwd();
+export function editFileTool(deps: { cwd: string }) {
+  const workspace = deps.cwd;
 
   return defineTool({
     description:

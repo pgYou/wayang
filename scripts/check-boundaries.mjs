@@ -13,6 +13,12 @@
  *
  * Relative imports that climb out of the package root are reported for the same
  * reason. Exit code 1 on any violation, 0 otherwise. No dependencies.
+ *
+ * Fourth rule (monorepo-design 4.2 改造二, cwd 禁令):
+ *   4. `packages/core/src` source code must not call `process.cwd()` — core is
+ *      a headless kernel and must never depend on the process startup
+ *      directory. Test files (`__tests__/` trees, `*.test.ts`) are exempt:
+ *      they legitimately anchor fixtures on the vitest working directory.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -47,6 +53,13 @@ const ALLOWED_EDGES = {
 
 const SOURCE_FILE = /\.(ts|tsx)$/;
 const SPECIFIER = /(?:from\s+|import\s*\(\s*|require\(\s*)(['"])([^'"]+)\1/g;
+const PROCESS_CWD = /process\s*\.\s*cwd\s*\(/;
+
+/** Test code may anchor fixtures on the vitest working directory — exempt. */
+function isTestFile(file) {
+  const parts = file.split(sep);
+  return parts.includes('__tests__') || /\.test\.[jt]sx?$/.test(file);
+}
 
 function walk(dir, out = []) {
   let entries;
@@ -135,8 +148,24 @@ for (const pkg of PACKAGES) {
   }
 }
 
+// --- Rule 4 (monorepo-design 4.2 改造二): core source must not call process.cwd() ---
+
+const CORE_SRC = join(ROOT, 'packages', 'core', 'src');
+for (const file of walk(CORE_SRC)) {
+  if (isTestFile(file)) continue;
+  const source = readFileSync(file, 'utf8');
+  if (PROCESS_CWD.test(source)) {
+    violations.push({
+      pkg: 'core',
+      file: relative(ROOT, file),
+      specifier: 'process.cwd()',
+      rule: 'core source code must not depend on the process startup directory (design 4.2) — inject the controllerWorkspace / storage paths instead',
+    });
+  }
+}
+
 if (violations.length === 0) {
-  console.log('boundaries: ok (packages: protocol <- core; apps: cli, desktop; cross-package imports use @wayang-ai/*)');
+  console.log('boundaries: ok (packages: protocol <- core; apps: cli, desktop; cross-package imports use @wayang-ai/*; core src has no process.cwd)');
   process.exit(0);
 }
 

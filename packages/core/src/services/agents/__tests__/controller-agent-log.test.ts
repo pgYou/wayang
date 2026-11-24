@@ -70,7 +70,12 @@ function inputSignal(id: string, text: string): ControllerSignal {
 
 /** One controller turn inside a fresh real session directory. */
 async function runTurn(sessionDir: string, logLevel: string, promptText: string): Promise<string> {
-  const ctx = new SystemContext(config, 's', sessionDir, sessionDir, logLevel);
+  const ctx = new SystemContext(config, 's', sessionDir, logLevel, {
+    // CLI-default deployment contracts (design 4.2): session dir is the log
+    // dir, so the sink still writes <sessionDir>/wayang.log (0.9.9 layout).
+    storage: { dataDir: sessionDir, logDir: sessionDir, cacheDir: sessionDir },
+    workspace: { controllerWorkspace: sessionDir, defaultWorkerWorkspace: join(sessionDir, 'workspace') },
+  });
   const state = new ControllerAgentState(ctx);
   const agent = new ControllerAgent(ctx, state, mockModel, {}, new SkillRegistry([]));
   mockStreamResponse('mock answer');
@@ -129,7 +134,10 @@ describe('controller LLM call logging (issue #52)', () => {
     // Simulate a fat context by running several turns and checking that the
     // per-call debug line stays metadata-sized.
     const sessionDir = join(topDir, 's4');
-    const ctx = new SystemContext(config, 's', sessionDir, sessionDir, 'debug');
+    const ctx = new SystemContext(config, 's', sessionDir, 'debug', {
+    storage: { dataDir: sessionDir, logDir: sessionDir, cacheDir: sessionDir },
+    workspace: { controllerWorkspace: sessionDir, defaultWorkerWorkspace: join(sessionDir, 'workspace') },
+  });
     const state = new ControllerAgentState(ctx);
     const agent = new ControllerAgent(ctx, state, mockModel, {}, new SkillRegistry([]));
     for (let i = 0; i < 4; i++) {

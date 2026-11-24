@@ -9,6 +9,12 @@
  *
  *   `<wayangDir>/workspace`   (i.e. ~/.wayang/workspace by default)
  *
+ * Monorepo-design 4.2 改造二: the path is no longer reverse-derived from the
+ * session layout (the old parent walk above `sessions/` with a homedir
+ * fallback). It is the INJECTED `WorkspacePolicy.defaultWorkerWorkspace` the
+ * host (or the Supervisor's CLI-default assembly) resolved — core makes no
+ * assumption about where the data dir sits.
+ *
  * Why here and not /tmp or the home directory:
  * - It sits inside the wayang data dir (under the user's home by default), so
  *   the path policy's ordinary scope rules cover it and a task needs no extra
@@ -25,30 +31,15 @@
  */
 
 import { mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { wayangDirForSessionDir } from './session-helpers';
-
-/** Name of the general workspace directory inside the Wayang data dir. */
-const GENERAL_WORKSPACE_DIRNAME = 'workspace';
-
-/** What resolving the general workspace needs: the session it is resolved for. */
-export interface GeneralWorkspaceContext {
-  /** Session directory, normally `<wayangDir>/sessions/<sessionId>`. */
-  sessionDir: string;
-}
 
 /**
- * The Wayang data dir a session belongs to.
- *
- * Ad-hoc session dirs (hand-built temp dirs in tests) do not follow the
- * `<wayangDir>/sessions/<id>` layout, so fall back to the default location
- * rather than guessing a parent. This derivation is about WAYANG'S DATA —
- * it says nothing about the user home the permission policy anchors on
- * (always the process `$HOME`, never derived from the session layout).
+ * What resolving the general workspace needs: the injected workspace policy
+ * (monorepo-design 4.2 改造二). `SystemContext` satisfies this shape directly
+ * (`ctx.workspacePolicy`).
  */
-function wayangDirFor(ctx: GeneralWorkspaceContext): string {
-  return wayangDirForSessionDir(ctx.sessionDir) ?? join(homedir(), '.wayang');
+export interface GeneralWorkspaceContext {
+  /** Injected workspace anchors. */
+  workspacePolicy: { defaultWorkerWorkspace: string };
 }
 
 /**
@@ -59,7 +50,7 @@ function wayangDirFor(ctx: GeneralWorkspaceContext): string {
  * `ensureGeneralWorkspace` instead.
  */
 export function resolveGeneralWorkspace(ctx: GeneralWorkspaceContext): string {
-  return join(wayangDirFor(ctx), GENERAL_WORKSPACE_DIRNAME);
+  return ctx.workspacePolicy.defaultWorkerWorkspace;
 }
 
 /**

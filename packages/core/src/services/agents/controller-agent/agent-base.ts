@@ -17,7 +17,6 @@ import type { ResolvedModel } from '../../config/model-resolution';
 import { compactContext, truncateHistoryHalf, MAX_COMPACTIONS_PER_RUN } from '../context/compaction';
 
 import { buildControllerSystemPrompt } from '../prompts/index';
-import { wayangDirForSessionDir } from '../../../infra/session-helpers';
 import { resolveWorkspaceRef } from '../../../infra/workspace-registry';
 import { SystemContext } from '../../../infra/system-context';
 
@@ -85,7 +84,7 @@ export class ControllerAgentBase extends BaseAgent {
     // once (read-only once the session's startup workspace is registered) so
     // each turn envelope can carry it.
     this.workspaceSlug = ctx.workspaceDir
-      ? resolveWorkspaceRef(wayangDirForSessionDir(ctx.sessionDir), ctx.workspaceDir).slug
+      ? resolveWorkspaceRef(ctx.storagePaths.dataDir, ctx.workspaceDir).slug
       : undefined;
 
     this.contextManager = new ContextManager(

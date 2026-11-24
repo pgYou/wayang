@@ -10,8 +10,8 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-export function searchContentTool(deps: { cwd?: string }) {
-  const workspace = deps.cwd ?? process.cwd();
+export function searchContentTool(deps: { cwd: string }) {
+  const workspace = deps.cwd;
 
   return defineTool({
     description:

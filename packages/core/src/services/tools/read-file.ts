@@ -38,8 +38,8 @@ function redactSecrets(text: string): string {
   );
 }
 
-export function readFileTool(deps: { cwd?: string } = {}) {
-  const workspace = deps.cwd ?? process.cwd();
+export function readFileTool(deps: { cwd: string }) {
+  const workspace = deps.cwd;
 
   return defineTool({
     description: `Read file content (with line numbers). Returns at most ${DEFAULT_MAX_LINES} lines by default. Use offset (1-based start line number) and limit to read specific sections of large files. Use maxLineChars to cap over-long single lines (e.g. JSONL records) and maxChars to cap total output; both cuts carry an explicit truncation marker. Set redact=true to mask values of credential-like keys (apiKey/token/secret/password/authorization/cookie/privateKey/accessKey/passwd/credentials) before any truncation. Limitation: that redaction is text-level — it only masks scalar values on the SAME line as a sensitive key (JSON/JS quoted pairs, YAML/ini key: value lines); values under a sensitive key in nested multi-line structures are not guaranteed to be covered. inspect_json applies structural masking and is the safer pick for JSON.`,

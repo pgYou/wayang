@@ -26,7 +26,11 @@ import pkg from '../../../../package.json';
 export interface AcpMcpHostDeps {
   workerId: string;
   provider: string;
-  sessionDir: string;
+  /**
+   * Base directory for this run's MCP socket — the INJECTED
+   * `StoragePaths.cacheDir` (design 4.2), not the session dir.
+   */
+  cacheDir: string;
   logger: Logger;
   /** Whether injection is enabled (config `mcp.enabled`, default true). */
   enabled: () => boolean;
@@ -73,7 +77,7 @@ export class AcpMcpHost {
     });
     try {
       const transport = await this.deps.spawnTransport({
-        sessionDir: this.deps.sessionDir,
+        cacheDir: this.deps.cacheDir,
         workerId: this.deps.workerId,
         invoker,
         logger: this.deps.logger,

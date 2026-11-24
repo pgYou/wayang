@@ -182,7 +182,7 @@ describe('ACP MCP host (Unix socket)', () => {
   it('startStdioMcpTransport owns spawn/socket/token details behind McpTransport', async () => {
     const otherDir = mkdtempSync(join(tmpdir(), 'acp-mcp-facade-'));
     const transport = await startStdioMcpTransport({
-      sessionDir: otherDir,
+      cacheDir: otherDir,
       workerId: 'w2',
       invoker: createWayangMcpToolInvoker({ workerId: 'w2', logger: createMockLogger(), onProgress, ask }),
       logger: createMockLogger(),

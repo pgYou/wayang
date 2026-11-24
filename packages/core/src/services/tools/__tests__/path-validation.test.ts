@@ -61,15 +61,11 @@ describe('write_file path validation', () => {
     expect(result).not.toContain('[ERROR]');
   });
 
-  it('should fallback to process.cwd() when no cwd provided', async () => {
-    const tool = writeFileTool();
-    // Relative path resolves within process.cwd(), should succeed
-    const result = await exec(tool, { path: '__wayang_test_tmp__.txt', content: 'test' });
-    expect(result).toContain('Written');
-    // Cleanup
-    const { unlinkSync } = await import('node:fs');
-    const { resolve } = await import('node:path');
-    try { unlinkSync(resolve(process.cwd(), '__wayang_test_tmp__.txt')); } catch { /* already gone */ }
+  it('requires an injected cwd — no process startup-directory fallback (design 4.2)', async () => {
+    // writeFileTool's cwd is REQUIRED since the cwd ban: a missing workspace
+    // is a loud construction-time gap, never a silent fall back to
+    // process.cwd() (which the boundaries rule now forbids in core).
+    expect(() => writeFileTool(undefined as unknown as { cwd: string })).toThrow();
   });
 
   it('should reject writing to an existing file', async () => {

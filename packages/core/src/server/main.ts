@@ -9,7 +9,7 @@
  */
 
 import { runWayangServer } from './wayang-server';
-import type { WayangConfig } from '@wayang-ai/protocol';
+import type { StoragePaths, WayangConfig, WorkspacePolicy } from '@wayang-ai/protocol';
 
 /** Structured boot failure — machine-readable for hosts (desktop included). */
 export class ServerBootError extends Error {
@@ -29,6 +29,21 @@ export interface ServerMainOptions {
   /** Wayang home dir (the `~/.wayang` equivalent). */
   dataDir: string;
   workspaceDir: string;
+  /**
+   * Injected storage paths (monorepo-design 4.2 改造二): data root, session
+   * log dir, session cache dir. Optional — omitted, the Supervisor applies
+   * the CLI defaults (log/cache = session dir, the 0.9.9 layout). Hosts with
+   * different locations (desktop) inject them here.
+   */
+  storagePaths?: StoragePaths;
+  /**
+   * Injected workspace anchors (monorepo-design 4.2 改造二): controller
+   * dispatch baseline / controller tool cwd, and the default worker
+   * workspace. Optional — omitted, the Supervisor applies the CLI defaults
+   * (controllerWorkspace = `workspaceDir`, defaultWorkerWorkspace =
+   * `<dataDir>/workspace`).
+   */
+  workspacePolicy?: WorkspacePolicy;
   /** `'new'` or `'resume:<sessionId>'`. */
   session: string;
   injectPreviousTasks: boolean;
@@ -60,6 +75,8 @@ export async function serverMain(options: ServerMainOptions): Promise<void> {
     config: options.config,
     dataDir: options.dataDir,
     workspaceDir: options.workspaceDir,
+    storagePaths: options.storagePaths,
+    workspacePolicy: options.workspacePolicy,
     session,
     injectPreviousTasks: options.injectPreviousTasks,
     logLevel: options.logLevel,

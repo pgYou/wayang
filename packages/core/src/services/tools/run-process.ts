@@ -32,8 +32,8 @@ class CappedBuffer {
   }
 }
 
-export function runProcessTool(deps: { cwd?: string } = {}) {
-  const workspace = deps.cwd ?? process.cwd();
+export function runProcessTool(deps: { cwd: string }) {
+  const workspace = deps.cwd;
 
   /** Resolve + validate the working dir the way file tools resolve paths. */
   function workingDir(rawCwd: string | undefined): string {

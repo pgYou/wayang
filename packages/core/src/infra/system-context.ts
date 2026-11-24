@@ -1,13 +1,37 @@
-import type { WayangConfig } from '@wayang-ai/protocol';
+import { join } from 'node:path';
+import type { StoragePaths, WayangConfig, WorkspacePolicy } from '@wayang-ai/protocol';
 import type { Logger } from './logger';
 import { createFileLogger, type FileLogger } from './logger';
 import { LifecycleHooks } from '../services/lifecycle-hooks';
 import { resolveModelRef, type EnvModelFallback, type ResolvedModel } from '../services/config/model-resolution';
 
+/**
+ * The deployment facts SystemContext runs on (monorepo-design 4.2 改造二).
+ * Both groups are INJECTED — resolved by the host (or by the Supervisor's
+ * CLI-default assembly, which assigns the already-resolved session dir /
+ * launch workspace) — never derived inside this class from the session
+ * layout or the process state.
+ */
+export interface SystemContextPaths {
+  /** Storage locations: data root, session log dir, session cache dir. */
+  storage: StoragePaths;
+  /** Workspace anchors: controller dispatch baseline, default worker workspace. */
+  workspace: WorkspacePolicy;
+}
+
 export class SystemContext {
   readonly sessionId: string;
   readonly sessionDir: string;
+  /**
+   * The controller's workspace (dispatch baseline + controller tool cwd).
+   * Compatibility alias of `workspacePolicy.controllerWorkspace` — the field
+   * name predates the policy split and is read all over core.
+   */
   readonly workspaceDir: string;
+  /** Injected storage paths (monorepo-design 4.2). */
+  readonly storagePaths: StoragePaths;
+  /** Injected workspace anchors (monorepo-design 4.2). */
+  readonly workspacePolicy: WorkspacePolicy;
   readonly startedAt: number;
   readonly logLevel: string;
   readonly logger: Logger;
@@ -18,27 +42,41 @@ export class SystemContext {
   private readonly logSink: FileLogger;
   private closeLoggerPromise?: Promise<void>;
 
-  constructor(config: WayangConfig, sessionId: string, sessionDir: string, workspaceDir: string, logLevel?: string) {
+  constructor(
+    config: WayangConfig,
+    sessionId: string,
+    sessionDir: string,
+    logLevel: string | undefined,
+    paths: SystemContextPaths,
+  ) {
     this.config = config;
     this.sessionId = sessionId;
     this.sessionDir = sessionDir;
-    this.workspaceDir = workspaceDir;
+    this.workspacePolicy = paths.workspace;
+    this.workspaceDir = paths.workspace.controllerWorkspace;
+    this.storagePaths = paths.storage;
     this.startedAt = Date.now();
     this.logLevel = logLevel ?? 'info';
     this.abortController = new AbortController();
     this.hooks = new LifecycleHooks();
 
-    // The sink writes <sessionDir>/wayang.log through pino-pretty on the main
+    // The sink writes <logDir>/wayang.log through pino-pretty on the main
     // thread, rotating by size (config `logging`, defaults 10MB × 3 backups —
     // issue #52). SystemContext owns that sink so callers get an awaitable
-    // teardown — see closeLogger().
-    this.logSink = createFileLogger(this.logLevel, `${sessionDir}/wayang.log`, {
+    // teardown — see closeLogger(). The logDir is the INJECTED one (CLI
+    // default: the session directory — the 0.9.9 layout unchanged).
+    this.logSink = createFileLogger(this.logLevel, this.logFilePath, {
       maxFileSizeBytes: config.logging?.maxFileSizeBytes,
       maxFiles: config.logging?.maxFiles,
     });
     this.logger = this.logSink.logger.child({
       session: sessionId,
     });
+  }
+
+  /** Absolute path of this context's log file (`<storagePaths.logDir>/wayang.log`). */
+  get logFilePath(): string {
+    return join(this.storagePaths.logDir, 'wayang.log');
   }
 
   /**

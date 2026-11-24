@@ -15,7 +15,7 @@ import { parseConfigUpdateRequest } from '@wayang-ai/protocol';
 import { serializeTurnView, summarizeTurn, DEFAULT_TURN_TEXT_LIMIT } from '../services/conversation/turn-serialize';
 import { ConfigUpdateService, applyConfigUpdate } from '../services/config/config-update';
 import type { Subscribable } from '@wayang-ai/protocol/types/subscribable';
-import type { TaskDetail, WayangConfig } from '@wayang-ai/protocol';
+import type { StoragePaths, TaskDetail, WayangConfig, WorkspacePolicy } from '@wayang-ai/protocol';
 
 export interface WayangServerOptions {
   /**
@@ -28,6 +28,16 @@ export interface WayangServerOptions {
   /** Wayang home dir (the `~/.wayang` equivalent, parent of `sessions/`). */
   dataDir: string;
   workspaceDir: string;
+  /**
+   * Injected storage paths (monorepo-design 4.2 改造二). Optional — omitted,
+   * the Supervisor applies the CLI defaults (log/cache = session dir).
+   */
+  storagePaths?: StoragePaths;
+  /**
+   * Injected workspace anchors (monorepo-design 4.2 改造二). Optional —
+   * omitted, the Supervisor applies the CLI defaults.
+   */
+  workspacePolicy?: WorkspacePolicy;
   /** Session decision made by the client: new, or resume a specific id. */
   session: { mode: 'new' } | { mode: 'resume'; sessionId: string };
   /** Sessionless inherit: surface unfinished tasks as a signal on resume. */
@@ -54,6 +64,8 @@ export async function runWayangServer(
     logLevel: options.logLevel,
     resume,
     dataDir: options.dataDir,
+    storagePaths: options.storagePaths,
+    workspacePolicy: options.workspacePolicy,
     injectPreviousTasks: options.injectPreviousTasks,
   });
 

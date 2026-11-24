@@ -179,7 +179,7 @@ export function buildWorkerSystemPrompt(
   skills: SkillRegistry,
   workspaceDir?: string,
 ): string {
-  const workspaceRoot = workspaceDir ?? ctx.workspaceDir ?? process.cwd();
+  const workspaceRoot = workspaceDir ?? ctx.workspaceDir;
   return assemble(
     IDENTITY,
     LANGUAGE_RULES,

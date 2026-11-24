@@ -4,8 +4,8 @@ import { defineTool, safeExecute } from './common';
 import { decideAccess, normalizePath } from '../../infra/permission/policy';
 import { expandHome } from './permission-rules';
 
-export function searchFilesTool(deps: { cwd?: string; userHome?: string }) {
-  const workspace = deps.cwd ?? process.cwd();
+export function searchFilesTool(deps: { cwd: string; userHome?: string }) {
+  const workspace = deps.cwd;
   // When set, reads are gated by the shared access policy: the controller may
   // only read inside the user's home (the sensitive list wins). Left undefined
   // for the worker tool set, where the permission middleware applies the same

@@ -26,8 +26,12 @@ import { join, resolve } from 'node:path';
  * @returns Existing absolute paths, lowest priority first.
  */
 export function resolveSkillDirs(dataDir: string, workspaceDir: string, configDirs?: string[]): string[] {
+  // An empty dataDir means "unknown" (resume without an injected data root —
+  // direct/test construction): no global dir rather than a RELATIVE
+  // `<cwd>/skills` that would silently anchor on the process startup
+  // directory (design 4.2 cwd ban).
   const candidates = [
-    join(dataDir, 'skills'),
+    ...(dataDir !== '' ? [join(dataDir, 'skills')] : []),
     join(workspaceDir, '.wayang', 'skills'),
     ...(configDirs ?? []).map((d) => resolve(d)),
   ];
