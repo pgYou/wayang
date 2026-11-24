@@ -469,16 +469,68 @@ describe('ensureUserTurn', () => {
     expect(ensureUserTurn(messages)).toBe(messages);
   });
 
-  it('does not prepend when a user message exists behind a leading system marker', () => {
+  it('prepends the seed when the first message is a system marker, even though a user turn exists later', () => {
     // The compacted flow is [retained history][compact marker system][summary
-    // user]: the list legitimately opens with a non-user entry while still
-    // carrying the user turn that keeps gateways happy. The seed must stay a
-    // no-op here — the normal path already has its user message.
+    // user]: the list legitimately carries a user turn at the end. Gateways
+    // that validate the message sequence (issue #95) still require the FIRST
+    // message to be user, so the seed must lead the request.
     const messages: ModelMessage[] = [
       { role: 'system', content: '[Context compacted] ...' },
       { role: 'user', content: '[Conversation Summary]\n...' },
     ];
-    expect(ensureUserTurn(messages)).toBe(messages);
+    const seeded = ensureUserTurn(messages);
+    expect(seeded[0]).toEqual({ role: 'user', content: COMPACTION_CONTINUATION });
+    expect(seeded.slice(1)).toEqual(messages);
+  });
+
+  it('opens with the seed when a compaction leaves raw roles [assistant, tool, system, user]', () => {
+    const messages: ModelMessage[] = [
+      { role: 'assistant', content: 'working' },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'tc1', toolName: 'bash', output: { type: 'text', value: 'out' } }] },
+      { role: 'system', content: '[Context compacted] ...' },
+      { role: 'user', content: '[Conversation Summary]\n...' },
+    ];
+    const seeded = ensureUserTurn(messages);
+    expect(seeded[0]!.role).toBe('user');
+    expect(seeded.slice(1)).toEqual(messages);
+  });
+
+  it('a compacted conversation replays with a user message first', () => {
+    // Entry-level view of the compacted flow: retained assistant step
+    // (orphan tool call), current-format compact marker, summary user entry.
+    const ts = new Date().toISOString();
+    const entries = [
+      {
+        type: EEntryType.Assistant,
+        uuid: 'a-kept',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        message: { role: 'assistant', content: 'working' },
+        toolCalls: [{ toolCallId: 'tc-kept', toolName: 'bash', arguments: '{"command":"ls"}' }],
+      },
+      {
+        type: EEntryType.System,
+        uuid: 'sys-compact',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        subtype: 'compact',
+        content: '[Context compacted] ...',
+        compactMeta: { summarizedTokenCount: 100, summaryEntryUuid: 'sum-1' },
+      },
+      {
+        type: EEntryType.User,
+        uuid: 'sum-1',
+        parentUuid: null,
+        sessionId: 's1',
+        timestamp: ts,
+        message: { role: 'user', content: '[Conversation Summary]\nolder work' },
+      },
+    ];
+    const messages = ensureUserTurn(conversationToSdkMessages(entries as any));
+    expect(messages[0]!.role).toBe('user');
+    expect(messages[0]!.content).toBe(COMPACTION_CONTINUATION);
   });
 
   it('uses the supplied seed text and never mutates the input', () => {

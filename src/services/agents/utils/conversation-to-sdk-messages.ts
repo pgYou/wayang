@@ -15,18 +15,18 @@ const USER_INTERRUPT_REPLAY =
   + 'partial — treat it as incomplete context, not as a finished answer or instructions.';
 
 /**
- * Request-only seed for a turn rebuilt from a compacted context (issue #95).
+ * Request-only seed for a request whose first message is not a `user` turn
+ * (issue #95).
  *
- * The summary is a normal `user` entry in the message flow, so a compacted
- * context already carries a user turn and this seed stays a no-op. It only
- * fires on the no-summary paths — the half-truncation fallback after a
- * summarizer failure, or a restored window that happens to hold no user entry
- * — where some OpenAI-compatible gateways (notably the GLM MaaS endpoint)
- * reject a request without a single `user` message with a 400.
+ * The summary is a normal `user` entry in the message flow, but a compacted
+ * replay can still OPEN with a retained assistant/system entry — and some
+ * OpenAI-compatible gateways (notably the GLM MaaS endpoint) validate the
+ * message sequence strictly and reject a request whose first message is not
+ * `user`. This mirrors the worker's own continuation seed (WorkerAgent
+ * rebuiltStep / COMPACTION_CONTINUATION); keep the two paths in sync.
  *
- * The wording mirrors the worker's own continuation seed (WorkerAgent
- * COMPACTION_CONTINUATION) and names where the summary lives; keep the two in
- * sync when changing one.
+ * The seed is request-only — it is never appended to the conversation and
+ * therefore never persisted or re-summarized.
  */
 export const COMPACTION_CONTINUATION =
   '[Conversation compacted] The context has just been compacted: the summary of completed work is the user message that begins with [Conversation Summary]. '
@@ -34,23 +34,23 @@ export const COMPACTION_CONTINUATION =
   + 'do not re-run an operation that already succeeded just because you do not remember its result.';
 
 /**
- * Guarantee the replayed message list contains at least one `user` turn.
+ * Guarantee the replayed message list OPENS with a `user` turn.
  *
- * Pure: returns `messages` unchanged when any message already has the `user`
- * role; otherwise returns a new array with the seed prepended. The seed is
- * request-only — it is never appended to the conversation and therefore never
- * persisted or re-summarized.
+ * Pure: returns `messages` unchanged when the first message already has the
+ * `user` role; otherwise (empty list, or a leading assistant/tool/system
+ * message — e.g. a compacted replay of retained originals) returns a new
+ * array with the seed prepended. The seed is request-only — it is never
+ * appended to the conversation and therefore never persisted or
+ * re-summarized.
  *
- * Deliberately not a "starts with user" check: the compacted message flow is
- * `[retained originals][compact marker][summary user]`, which legitimately
- * opens with a retained assistant/system entry while still carrying a user
- * turn at the end.
+ * Same contract as the worker's rebuiltStep seeding (messages[0] must be
+ * user), so the two agent paths cannot drift apart on gateway validation.
  */
 export function ensureUserTurn(
   messages: ModelMessage[],
   seed: string = COMPACTION_CONTINUATION,
 ): ModelMessage[] {
-  if (messages.some((message) => message.role === 'user')) {
+  if (messages.length > 0 && messages[0]?.role === 'user') {
     return messages;
   }
   return [{ role: 'user' as const, content: seed }, ...messages];

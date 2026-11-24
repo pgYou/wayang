@@ -858,6 +858,79 @@ describe('ControllerAgent', () => {
     expect(agent.needsCompaction()).toBe(false);
   });
 
+  // --- controller compaction guards (B5/B6/B7) ---
+
+  it('passes the context window to the state-layer restore so the budgets agree (B6 wiring)', async () => {
+    await agent.restore();
+    // mockModel declares no contextWindowTokens → ContextManager's 256k default.
+    expect(state.restore).toHaveBeenCalledWith(256_000);
+  });
+
+  it('warns with the estimate and the window when compaction cannot clear the threshold (B7)', async () => {
+    const ctx = createMockCtx();
+    const smallWindowAgent = new ControllerAgent(
+      ctx,
+      state as ControllerAgentState,
+      { ...mockModel, contextWindowTokens: 20_000 } as any,
+      {},
+      skills,
+    );
+    // ~5k-token entries on a 20k window: the retained zone plus a huge
+    // "successful" summary stay above the 12k threshold.
+    appendLargeUsers(4, 'u-b7');
+    vi.mocked(generateText).mockResolvedValue({ text: 's'.repeat(48_000) } as any);
+
+    await smallWindowAgent.performCompaction();
+
+    expect(smallWindowAgent.needsCompaction()).toBe(true);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        estimatedTokens: expect.any(Number),
+        contextWindowTokens: 20_000,
+      }),
+      expect.stringContaining('still exceeds the compaction threshold'),
+    );
+  });
+
+  it('stops calling the summarizer past MAX_COMPACTIONS_PER_RUN and truncates instead (B5)', async () => {
+    const ctx = createMockCtx();
+    const smallWindowAgent = new ControllerAgent(
+      ctx,
+      state as ControllerAgentState,
+      { ...mockModel, contextWindowTokens: 20_000 } as any,
+      {},
+      skills,
+    );
+    // A context that never comes down: every "successful" summarizer returns
+    // a summary so large the window stays full, so each loop wake wants
+    // another compaction. Six refills after the first — the shared limit is
+    // five summarizing compactions, then the guard degrades to truncation.
+    appendLargeUsers(2, 'u-b5-seed');
+    vi.mocked(generateText).mockResolvedValue({ text: 's'.repeat(48_000) } as any);
+
+    for (let round = 0; round < 6; round++) {
+      appendLargeUsers(2, `u-b5-r${round}`);
+      await smallWindowAgent.performCompaction();
+    }
+
+    expect(generateText).toHaveBeenCalledTimes(5);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 5 }),
+      'Compaction limit reached — truncating history instead of summarizing',
+    );
+  });
+
+  it('skipped compactions never burn the session budget', async () => {
+    // Below the entry-count guard every compaction is a no-op; the summarizer
+    // is never called and the budget stays untouched.
+    appendLargeUsers(2, 'u-skip-budget');
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary' } as any);
+
+    for (let i = 0; i < 6; i++) await agent.performCompaction();
+
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
   it('should seed contextUsage from the estimate after restore', async () => {
     await agent.restore();
 

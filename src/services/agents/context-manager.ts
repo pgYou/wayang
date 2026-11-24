@@ -9,7 +9,7 @@ import { nowISO } from '@/utils/time';
 // --- Configuration Constants ---
 
 /** Default context window budget: 256k tokens (fits most current models). */
-const DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000;
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000;
 
 /** Trigger compaction at 60% of the context window, reserving 40% for output. */
 const COMPACT_THRESHOLD_RATIO = 0.6;
@@ -70,12 +70,19 @@ function retainedStartIdx(conversation: ConversationEntry[], minTokens: number, 
 }
 
 /**
- * Token budget for recent entries to keep alongside the summary.
+ * Token budget for recent entries to keep alongside the summary on restore.
  * Shared by the state-layer restore() windowing (controller/worker) so the
  * on-disk window and the in-memory compaction agree on how much recent
  * context survives.
+ *
+ * Scaled to the window like the retained zone: clamp(windowTokens × 25%,
+ * 4k, 20k). A fixed 20k would already exceed the 60% compaction threshold
+ * (19.2k) on a 32k window, forcing a pointless compaction on the first
+ * request after restore; ≥80k windows keep the historical 20k budget.
  */
-export const RECENT_TOKEN_BUDGET = 20_000;
+export function recentTokenBudget(windowTokens: number): number {
+  return Math.round(Math.min(20_000, Math.max(4_000, windowTokens * 0.25)));
+}
 
 /** Maximum retry attempts for the LLM summarizer call. */
 export const COMPACT_MAX_RETRIES = 2;

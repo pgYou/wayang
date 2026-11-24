@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   ContextManager,
-  RECENT_TOKEN_BUDGET,
+  recentTokenBudget,
   retainedMinTokens,
   retainedMaxTokens,
   COMPACT_MARKER_TEXT,
@@ -42,8 +42,15 @@ const makeBigUser = (uuid: string, tokens: number) => {
 };
 
 describe('ContextManager', () => {
-  it('should export RECENT_TOKEN_BUDGET', () => {
-    expect(RECENT_TOKEN_BUDGET).toBe(20_000);
+  it('scales the restore budget with the context window', () => {
+    // ≥80k windows keep the historical 20k; smaller windows shrink to 25%,
+    // floored at 4k, so the restored window alone cannot exceed the 60%
+    // compaction threshold.
+    expect(recentTokenBudget(256_000)).toBe(20_000);
+    expect(recentTokenBudget(80_000)).toBe(20_000);
+    expect(recentTokenBudget(32_000)).toBe(8_000);
+    expect(recentTokenBudget(16_000)).toBe(4_000);
+    expect(recentTokenBudget(2_000)).toBe(4_000);
   });
 
   describe('retained budget scales with the context window', () => {

@@ -6,7 +6,7 @@ import type { WorkspaceRef } from '@/infra/workspace-registry';
 import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
-import { RECENT_TOKEN_BUDGET } from './context-manager';
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, recentTokenBudget } from './context-manager';
 import { estimateEntryTokens } from './utils/estimate-tokens';
 
 interface WorkerRuntimeState {
@@ -93,7 +93,13 @@ export class WorkerState extends BaseWayangState {
     this.workspace = workspace;
   }
 
-  async restore(): Promise<void> {
+  /**
+   * Restore runtime state + conversation from disk. `windowTokens` scales the
+   * recent-entry budget kept before the last compact marker (see
+   * recentTokenBudget); omitted, the default 256k window keeps the historical
+   * 20k budget. Same windowing as ControllerAgentState.restore.
+   */
+  async restore(windowTokens?: number): Promise<void> {
     const runtimeState = this.jsonFile.read() as WorkerRuntimeState | null;
     if (runtimeState) {
       // A pre-workspace runtime-state.json has no `workspace`; keep the one
@@ -107,7 +113,8 @@ export class WorkerState extends BaseWayangState {
 
     // Same windowing as ControllerAgentState.restore: structural marker check
     // (only system entries carrying compactMeta count), then walk backwards
-    // from the marker within RECENT_TOKEN_BUDGET using estimateEntryTokens.
+    // from the marker within the window-scaled budget using
+    // estimateEntryTokens.
     const compactIdx = allEntries.findLastIndex(isCompactMarker);
 
     if (compactIdx === -1) {
@@ -115,7 +122,7 @@ export class WorkerState extends BaseWayangState {
         this.data.conversation = allEntries;
       }
     } else {
-      let budget = RECENT_TOKEN_BUDGET;
+      let budget = recentTokenBudget(windowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS);
       let cutIdx = 0;
       for (let i = compactIdx - 1; i >= 0; i--) {
         budget -= estimateEntryTokens(allEntries[i]);

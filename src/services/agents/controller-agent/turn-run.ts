@@ -74,9 +74,10 @@ export class ControllerTurnRun extends ControllerAgentBase {
 
     const gen = this.streamLoop({
       system: this.contextManager.getSystemPrompt(),
-      // A compacted verbatim zone can hold no user entry at all (the only one
-      // was summarized away) — gateways reject such requests (issue #95), so
-      // seed the request without touching the persisted conversation.
+      // A compacted verbatim zone can open with a non-user entry (retained
+      // assistant/system originals) — gateways validate the message sequence
+      // strictly (issue #95), so the request must open with a user turn.
+      // Seeding is request-only and never touches the persisted conversation.
       messages: ensureUserTurn(this.contextManager.getMessages()),
       tools: this.tools,
       maxSteps: 50,

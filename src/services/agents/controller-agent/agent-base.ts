@@ -14,7 +14,7 @@ import { EEntryType, ESystemSubtype } from '@/types/index';
 import { buildLlmCallStartPayload, debugLoggingEnabled } from '../utils/llm-call-logging';
 import { recordToolCalls, ToolCallRecorder } from '../utils/tool-call-recorder';
 import type { ResolvedModel } from '@/services/config/model-resolution';
-import { compactContext } from '../context/compaction';
+import { compactContext, truncateHistoryHalf, MAX_COMPACTIONS_PER_RUN } from '../context/compaction';
 
 import { buildControllerSystemPrompt } from '../prompts/index';
 import { wayangDirForSessionDir } from '@/infra/session-helpers';
@@ -32,6 +32,14 @@ export class ControllerAgentBase extends BaseAgent {
   protected readonly recorder: ToolCallRecorder;
   /** Turn id of the most recent run — used to stamp late error entries. */
   protected lastTurnId: string | null = null;
+  /**
+   * Summarizing compactions since restore. The worker's per-run budget is
+   * per task; the controller's analog is the session: a context that keeps
+   * refilling past every compaction must not summarize forever, so past the
+   * shared MAX_COMPACTIONS_PER_RUN limit performCompaction() degrades to
+   * half-truncation. A no-op (skipped) compaction never burns budget.
+   */
+  private compactionsSinceRestore = 0;
   /**
    * Registry slug of the workspace this controller executes in (the process
    * workspace). Stamped on every controller turn envelope so its entries are
@@ -109,7 +117,10 @@ export class ControllerAgentBase extends BaseAgent {
 
   /** Restore persisted state (conversation, runtime). Called by Supervisor. */
   async restore(): Promise<void> {
-    await this.state.restore();
+    // The restore window and the compaction threshold must agree on the
+    // window: pass the context manager's (the model's, or the 256k default).
+    await this.state.restore(this.contextManager.getContextWindowTokens());
+    this.compactionsSinceRestore = 0;
     // Backfill the restored summary into the context manager so getMessages()
     // prepends it and the verbatim zone covers the sliced window.
     const summary = this.state.get<string>('compactSummary');
@@ -219,6 +230,12 @@ export class ControllerAgentBase extends BaseAgent {
    * Falls back to truncating half of the history in memory (file preserved).
    * The flow itself lives in the shared context/compaction layer (#90) — the
    * controller only supplies its state, context manager, model and logger.
+   *
+   * Guards shared with the worker: past MAX_COMPACTIONS_PER_RUN summarizing
+   * compactions (session-lifetime here) the summarizer is not called again —
+   * the compaction degrades to half-truncation with a warn. When even a
+   * successful compaction leaves the context above the threshold (window too
+   * small for the session), a warn carries the estimate and the window.
    */
   async performCompaction(): Promise<void> {
     // Ephemeral UI state: the TUI shows "compacting…" and turns ESC into a
@@ -226,16 +243,40 @@ export class ControllerAgentBase extends BaseAgent {
     // stuck on after the truncation fallback returns.
     this.state.set('dynamicState.compacting', true);
     try {
-      await compactContext({
-        state: this.state,
-        contextManager: this.contextManager,
-        model: this.model,
-        modelName: this.resolvedModel.modelName,
-        logger: this.logger,
-      });
+      if (this.compactionsSinceRestore >= MAX_COMPACTIONS_PER_RUN) {
+        this.logger.warn(
+          { compactions: this.compactionsSinceRestore, limit: MAX_COMPACTIONS_PER_RUN },
+          'Compaction limit reached — truncating history instead of summarizing',
+        );
+        truncateHistoryHalf({
+          state: this.state,
+          contextManager: this.contextManager,
+          logger: this.logger,
+        });
+      } else {
+        const result = await compactContext({
+          state: this.state,
+          contextManager: this.contextManager,
+          model: this.model,
+          modelName: this.resolvedModel.modelName,
+          logger: this.logger,
+        });
+        // A no-op (too few entries / retained zone covers everything) must
+        // not burn the session budget — same rule as the worker's per-run one.
+        if (result.outcome !== 'skipped') this.compactionsSinceRestore++;
+      }
       // Refresh the status bar / `/context` right away instead of waiting for
       // the next LLM step to report usage.
       this.updateContextUsage();
+      if (this.contextManager.isFull()) {
+        this.logger.warn(
+          {
+            estimatedTokens: this.contextManager.getEstimatedTokens(),
+            contextWindowTokens: this.contextManager.getContextWindowTokens(),
+          },
+          'Context still exceeds the compaction threshold after compaction — the model window may be too small for this session',
+        );
+      }
     } finally {
       this.state.set('dynamicState.compacting', false);
     }

@@ -6,7 +6,7 @@ import { BaseWayangState } from '@/infra/state/base-state';
 import { JSONFileHelper } from '@/infra/state/persistence/json-file';
 import { JSONLFileHelper } from '@/infra/state/persistence/jsonl-file';
 import { ConversationIndexBuilder } from '@/services/conversation/conversation-index';
-import { RECENT_TOKEN_BUDGET } from './context-manager';
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, recentTokenBudget } from './context-manager';
 import type { TurnEnvelope } from './utils/entry-envelope';
 import { estimateEntryTokens } from './utils/estimate-tokens';
 import type { SystemContext } from '@/infra/system-context';
@@ -110,7 +110,14 @@ export class ControllerAgentState extends BaseWayangState {
     return this.convIndex?.getTurn(turnId);
   }
 
-  async restore(): Promise<void> {
+  /**
+   * Restore runtime state + conversation from disk. `windowTokens` scales the
+   * recent-entry budget kept before the last compact marker (see
+   * recentTokenBudget); omitted, the default 256k window keeps the historical
+   * 20k budget. The controller agent passes its ContextManager's window so
+   * the restore budget and the compaction threshold agree.
+   */
+  async restore(windowTokens?: number): Promise<void> {
     // Restore runtime state from JSON
     const runtimeState = this.jsonFile.read() as ControllerRuntimeState | null;
     if (runtimeState) {
@@ -132,7 +139,7 @@ export class ControllerAgentState extends BaseWayangState {
       // Walk backwards from the marker to fill the token budget.
       // estimateEntryTokens counts tool call arguments and tool result outputs
       // too, so heavy tool entries push the window start forward.
-      let budget = RECENT_TOKEN_BUDGET;
+      let budget = recentTokenBudget(windowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS);
       let cutIdx = 0;
       for (let i = compactIdx - 1; i >= 0; i--) {
         budget -= estimateEntryTokens(allEntries[i]);
