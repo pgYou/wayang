@@ -4,6 +4,7 @@ import type { AccessMode } from '@/infra/permission/policy';
 import { isDiscardRedirectTarget, type ShellSegment } from '@/services/tools/shell-lexer';
 import {
   GIT_READ_SUBCOMMANDS,
+  isFlagWord,
   isReadCommand,
   isVersionOnlyCommand,
   isWriteCommand,
@@ -68,17 +69,6 @@ import { isReadOnlySedScript, sedScriptsOf } from './sed-analysis';
  * the table's `writeFlags`. Both the verb and one of its flags must appear in
  * the same segment.
  */
-
-/**
- * Does `word` spell the option `flag`? Three spellings count: the flag itself,
- * `flag=value`, and a SHORT flag with a glued value (`sed -i.bak`, `sed -i''`).
- * The glued form is only accepted for two-character flags and only when the next
- * character is not a letter, so `-include` is not read as `-i`.
- */
-function isFlagWord(word: string, flag: string): boolean {
-  if (word === flag || word.startsWith(`${flag}=`)) return true;
-  return flag.length === 2 && word.startsWith(flag) && !/[A-Za-z]/.test(word.charAt(flag.length));
-}
 
 /**
  * Does this segment certainly write — a write verb, a write flag, or an output

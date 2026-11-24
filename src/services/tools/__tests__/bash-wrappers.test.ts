@@ -293,7 +293,10 @@ describe('#86 B — wrapper / compound decomposition', () => {
 
     it.each([
       { command: "sed -n '1e id' src/index.ts", rule: 'read-only-unverified' },
-      { command: 'sed -i s/a/b/ /etc/hosts', rule: 'outside-all' },
+      // 0.9.9 walkthrough fix: `sed -i` is a destructive-tier spelling, so it
+      // asks as dangerous-bash — the destructive ask outranks the path ask
+      // the out-of-workspace operand used to produce.
+      { command: 'sed -i s/a/b/ /etc/hosts', rule: 'dangerous-bash' },
     ])('$command → ask ($rule)', ({ command, rule }) => {
       ask(command, rule);
     });

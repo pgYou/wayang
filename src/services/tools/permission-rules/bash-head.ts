@@ -1,7 +1,7 @@
 // The command POSITION of a shell segment: wrapper prefixes and assignments skipped, plus the destructive-command tier.
 
 import { CMDSUBST_PLACEHOLDER, type ShellSegment } from '@/services/tools/shell-lexer';
-import { isDangerousCommand, isWrapperCommand } from './command-tables';
+import { dangerFlagsOf, isDangerousCommand, isFlagWord, isWrapperCommand } from './command-tables';
 
 /**
  * Command words that always require controller approval, whatever their targets
@@ -134,7 +134,16 @@ function isDangerousHead(command: string, words: readonly string[]): boolean {
   if (isDangerousCommand(command) || command.startsWith('mkfs.')) return true;
   if (command === 'rm' || command === 'dd') return words.length > 1;
   if (command === 'kill') return words.includes('-9');
-  return false;
+  // A destructive WRITE flag (`sed -i`, `find -delete`) puts the verb in this
+  // tier too: the spelling deletes or rewrites what the command names, so it
+  // asks like `rm` WHATEVER its targets are — inside the workspace included.
+  // Judged at the command position, so a wrapper prefix cannot launder the
+  // flag (`sudo sed -i …` asks through its own `sudo` anyway).
+  const dangerFlags = dangerFlagsOf(command);
+  return (
+    dangerFlags !== undefined &&
+    dangerFlags.some((flag) => words.some((word) => isFlagWord(word, flag)))
+  );
 }
 
 /**

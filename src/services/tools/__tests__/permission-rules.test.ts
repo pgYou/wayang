@@ -971,10 +971,13 @@ describe('evaluateBashAccess', () => {
       // check, so it is never "unverified". With a candidate the direction is
       // a write, exactly as before.
       expect(evaluateBashAccess(scope(), "sed -i 's/a/b/' ~/f").access).toBe('write');
-      // Without a candidate the historic no-candidate shape is unchanged.
+      // Without a candidate the historic no-candidate ALLOW is gone: `sed -i`
+      // is a destructive-tier spelling now (0.9.9 walkthrough fix — it
+      // deletes/rewrites what it names, so it asks inside the workspace too,
+      // exactly like `rm -rf build`).
       const verdict = evaluateBashAccess(scope(), "sed -i 's/a/b/' package.json");
-      expect(verdict.decision).toBe('allow');
-      expect(verdict.matchedRule).toBe('no-path');
+      expect(verdict.decision).toBe('ask');
+      expect(verdict.matchedRule).toBe('dangerous-bash');
       expect(verdict.access).toBe('unknown');
     });
 

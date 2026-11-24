@@ -45,6 +45,15 @@ export interface CommandTableEntry {
    * (`isWriteSegment` / `isWriteCommandHead`).
    */
   readonly writeFlags?: readonly string[];
+  /**
+   * Flags that put the verb in the DESTRUCTIVE tier (`sed -i`, `find
+   * -delete`): the flag deletes or rewrites what the command names, so the
+   * line asks like `rm -rf` WHATEVER its targets are — inside the workspace
+   * too. `writeFlags` only fixes the direction of a write that the scope
+   * rules then judge; `dangerFlags` is stricter on purpose: these spellings
+   * never run on a scope verdict alone.
+   */
+  readonly dangerFlags?: readonly string[];
   /** The destructive tier asks for this verb whatever its targets are. */
   readonly danger?: boolean;
   /**
@@ -107,8 +116,10 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
   ['pwd', { capability: 'read' }],
   // Conditional reads: the write flags are part of the write-direction split
   // (`sed -i`, `find -delete`), the script/subcommand conditions live with
-  // `classifySegment` / `isReadOnlyGitCommand`.
-  ['sed', { capability: 'read', writeFlags: ['-i', '--in-place'] }],
+  // `classifySegment` / `isReadOnlyGitCommand`. `sed -i` / `find -delete`
+  // additionally carry dangerFlags: they destroy what they name, so they ask
+  // inside the workspace too, exactly like `rm -rf`.
+  ['sed', { capability: 'read', writeFlags: ['-i', '--in-place'], dangerFlags: ['-i', '--in-place'] }],
   [
     'find',
     {
@@ -116,6 +127,7 @@ export const COMMAND_TABLE: ReadonlyMap<string, CommandTableEntry> = new Map<str
       writeFlags: [
         '-delete', '-fprint', '-fprint0', '-fls', '-fprintf', '-exec', '-execdir', '-ok', '-okdir',
       ],
+      dangerFlags: ['-delete'],
     },
   ],
   [
@@ -233,10 +245,35 @@ export function isWriteCommand(verb: string): boolean {
 /**
  * The write flags of `verb` (`sed` → `['-i', '--in-place']`), or `undefined`
  * when it has none. A verb AND one of its flags in the same segment is a
- * write — see `isFlagWord` in bash-classification for the matching spellings.
+ * write — see `isFlagWord` for the matching spellings.
  */
 export function writeFlagsOf(verb: string): readonly string[] | undefined {
   return COMMAND_TABLE.get(verb)?.writeFlags;
+}
+
+/**
+ * The destructive-tier flags of `verb` (`sed` → `['-i', '--in-place']`,
+ * `find` → `['-delete']`), or `undefined` when it has none. The verb AND one
+ * of these flags in the same segment land in the destructive ask tier (see
+ * `isDangerousHead` in bash-head.ts) — inside the workspace too.
+ */
+export function dangerFlagsOf(verb: string): readonly string[] | undefined {
+  return COMMAND_TABLE.get(verb)?.dangerFlags;
+}
+
+/**
+ * Does `word` spell the option `flag`? Three spellings count: the flag itself,
+ * `flag=value`, and a SHORT flag with a glued value (`sed -i.bak`, `sed -i''`).
+ * The glued form is only accepted for two-character flags and only when the next
+ * character is not a letter, so `-include` is not read as `-i`.
+ *
+ * Shared by the write-direction split (`isWriteSegment` /
+ * `isWriteCommandHead` in bash-classification.ts) and the destructive tier
+ * (`isDangerousHead` in bash-head.ts), so both read flag spellings the same way.
+ */
+export function isFlagWord(word: string, flag: string): boolean {
+  if (word === flag || word.startsWith(`${flag}=`)) return true;
+  return flag.length === 2 && word.startsWith(flag) && !/[A-Za-z]/.test(word.charAt(flag.length));
 }
 
 /** Does the destructive tier ask for this verb as soon as it is the head? */

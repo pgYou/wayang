@@ -1,6 +1,6 @@
 // The bash gate proper: candidate sweep + destructive tier + `-c` / substitution recursion.
 
-import { classifyRedirections, tokenizeShellLite, unquotedHeredocOperator } from '@/services/tools/shell-lexer';
+import { classifyRedirections, tokenizeShellLite, unquotedHeredocOperator, type ShellSegment } from '@/services/tools/shell-lexer';
 import { decidePath, toToolDecision, withAskPaths } from './access-verdict';
 import { evaluateCapabilityGate, redirectWriteScopeAsk, detachedExecutionAsk } from './bash-capability';
 import {
@@ -39,6 +39,41 @@ function fallbackSensitiveHit(
 }
 
 /**
+ * The deny + sensitive-hit parts of the candidate sweep, for the unquoted-
+ * heredoc branch: that branch returns before the main sweep below runs, so
+ * without this pre-sweep a sensitive argv word (`cat ~/.ssh/id_rsa <<EOF`)
+ * would be downgraded from a hard refusal (`sensitiveMode: 'deny'`) to the
+ * heredoc ask — and lose its matched entry in ask mode.
+ *
+ * Same extraction, same per-candidate access, same policy as the main sweep:
+ * a candidate the policy refuses returns as the line's DENY (which therefore
+ * outranks the heredoc ask), and the first ask-mode sensitive candidate is
+ * handed back as the `hit` for the caller's ask to carry (like the
+ * destructive and detached tiers do). Non-sensitive candidates are not
+ * reported — the heredoc ask carries no `askPaths` either way, exactly as
+ * before.
+ */
+function heredocSensitiveOutcome(
+  scope: WorkerAccessScope,
+  segments: ShellSegment[],
+): { deny?: ToolAccessDecision; hit?: ToolAccessDecision } {
+  let hit: ToolAccessDecision | undefined;
+  for (const candidate of extractPathCandidates(segments)) {
+    const expanded = expandHome(candidate.path);
+    if (expanded.unresolvable) continue;
+    const verdict = decidePath(scope, expanded.path, candidate.access);
+    if (verdict.decision === 'deny') return { deny: toToolDecision(verdict, candidate.access) };
+    if (verdict.sensitive && hit === undefined) {
+      hit = {
+        ...toToolDecision(verdict, candidate.access),
+        ...(candidate.reason !== undefined && { reason: candidate.reason }),
+      };
+    }
+  }
+  return hit === undefined ? {} : { hit };
+}
+
+/**
  * Decide a bash command.
  *
  * The command string is the unit of execution, so every extractable path
@@ -57,7 +92,10 @@ function fallbackSensitiveHit(
  * `unknown` (which could not even reach that rule) to a named `read`.
  *
  * Ordering: a hard refusal (only reachable under `sensitiveMode: 'deny'`, from
- * the candidate sweep or the `cd` slice) → destructive-command tier → the
+ * the candidate sweep or the `cd` slice) → the unquoted-heredoc branch, which
+ * runs the sweep's deny/hit part BEFORE its own fail-closed ask so a
+ * sensitive line can never be downgraded (see `heredocSensitiveOutcome`) →
+ * destructive-command tier → the
  * background / detached tier (`cmd &`, `nohup`, `setsid`, `disown` — a process
  * outside the task lifecycle, see `detachedExecutionAsk`) → a shell `-c`
  * script judged by these same rules (see `evaluateShellScripts`) → dynamic
@@ -129,14 +167,29 @@ export function evaluateBashCommand(
   // data. The gate cannot judge a command whose body it never sees: ask for the
   // whole line. A quoted delimiter (`<<'EOF'`) keeps the body literal and stays
   // on the ordinary path below.
+  //
+  // A sensitive hit must not be swallowed by that ask: the main candidate
+  // sweep never runs for a heredoc line, so its deny/hit part runs HERE first
+  // — under `sensitiveMode: 'deny'` the refusal wins (the ask never
+  // downgrades a hard deny), and in ask mode the heredoc ask carries the hit
+  // (matchedEntry / source / resolvedPath) like the destructive tier does,
+  // so the approval names the credential location it touches.
   const heredoc = unquotedHeredocOperator(tokenized.segments);
   if (heredoc !== undefined) {
+    const { deny, hit } = heredocSensitiveOutcome(scope, tokenized.segments);
+    if (deny !== undefined) return deny;
     return {
       decision: 'ask',
       matchedRule: 'dynamic-shell',
       reason:
         `heredoc ${heredoc} body may contain command substitutions — the bash capability gate ` +
         'does not analyze heredoc bodies, controller approval is required (fail-closed)',
+      ...(hit !== undefined && {
+        matchedEntry: hit.matchedEntry,
+        matchedSource: hit.matchedSource,
+        resolvedPath: hit.resolvedPath,
+        sensitive: true,
+      }),
     };
   }
 
