@@ -111,6 +111,11 @@ export class Application {
 
     app.whenReady().then(() => void this.start());
 
+    // Second instance launched (§2.10 single-instance lock): the loser
+    // process has already quit in index.ts; bring our single window back
+    // to the front (no-op while the window does not exist yet).
+    app.on('second-instance', () => this.windows?.focus());
+
     // macOS keeps the process alive with no windows (§2.9); dock icon
     // re-opens the single window.
     app.on('window-all-closed', () => {

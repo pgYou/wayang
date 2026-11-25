@@ -9,7 +9,7 @@
  */
 
 import { BrowserWindow } from 'electron';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { SecurityGuard } from './security-guard';
 import type { UnifiedLogger } from './unified-logger';
@@ -24,6 +24,18 @@ interface WindowState {
 const DEFAULT_STATE: WindowState = { width: 1180, height: 800 };
 const MIN_WIDTH = 720;
 const MIN_HEIGHT = 480;
+
+/**
+ * Window icon source (§2.10): the repo's single mark asset — same png that
+ * electron-builder converts into the bundle `.icns`. Resolved from the source
+ * tree only (from `<package>/src|out/main`, four segments up reach the repo
+ * root where `assets/logo` lives); the packaged mac app takes its window icon
+ * from the bundle, so no icon copy is ever scattered into the app.
+ */
+function resolveWindowIcon(): string | undefined {
+  const candidate = join(__dirname, '../../../../assets/logo/wayang-mark-icon-512.png');
+  return existsSync(candidate) ? candidate : undefined;
+}
 
 export interface WindowManagerDeps {
   security: SecurityGuard;
@@ -51,6 +63,9 @@ export class WindowManager {
       minHeight: MIN_HEIGHT,
       title: 'Wayang',
       backgroundColor: '#f7f9fc',
+      // Same-source mark asset (§2.10); absent in the packaged app, where the
+      // bundle icon applies.
+      icon: resolveWindowIcon(),
       // Hardened preferences come from the single definition (§2.9).
       webPreferences: this.deps.security.hardenedWebPreferences(join(__dirname, '../preload/index.js')),
       // Hidden until the renderer painted — no white flash on cold start.
@@ -81,6 +96,18 @@ export class WindowManager {
   /** The live single window, or null. */
   get window(): BrowserWindow | null {
     return this.win && !this.win.isDestroyed() ? this.win : null;
+  }
+
+  /**
+   * Bring the single window back to the front — the second-instance focus
+   * path (§2.10): the lock holder surfaces its window when a duplicate
+   * launch is rejected. No-op while no window exists.
+   */
+  focus(): void {
+    const win = this.win;
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.focus();
   }
 
   /** Subscribe to full renderer loads (initial + refresh). Returns unsubscribe. */
