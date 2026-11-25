@@ -85,7 +85,7 @@ export function ChatArea({ busy }: ChatAreaProps) {
         {unreadSignalItems.map(renderRow)}
         {busy && streamingItems.length === 0 && (
           <div className="flex items-center gap-2 px-5 text-xs text-primary-strong">
-            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-primary" />
+            <span className="inline-block size-2 animate-pulse rounded-full bg-primary" />
             Controller 正在思考…
           </div>
         )}

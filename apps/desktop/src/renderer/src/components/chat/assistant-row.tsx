@@ -7,14 +7,14 @@ function ToolSection({ section }: { section: DisplaySection }) {
   const [open, setOpen] = useState(false);
   const isError = section.kind === 'tool_result' && section.isError;
   return (
-    <div className="mt-1.5">
+    <div className="mt-2">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          'inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-left text-xs transition-colors',
+          'inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1 text-left text-xs transition-colors',
           isError
-            ? 'border-danger/40 bg-danger-soft text-danger'
+            ? 'border-destructive/40 bg-destructive-soft text-destructive'
             : 'border-primary-border bg-primary-soft/60 text-primary-strong hover:bg-primary-soft',
         )}
       >
@@ -24,7 +24,7 @@ function ToolSection({ section }: { section: DisplaySection }) {
         <span className="text-muted-foreground">{open ? '收起' : '展开'}</span>
       </button>
       {open && (
-        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
           {section.text}
         </pre>
       )}
@@ -41,7 +41,7 @@ export const AssistantRow = memo(function AssistantRow({ item }: { item: Display
 
   return (
     <div className="px-4">
-      <div className="max-w-[92%] rounded-2xl rounded-tl-md border border-border bg-surface px-3.5 py-2.5 shadow-[0_1px_2px_rgba(30,60,120,0.06)]">
+      <div className="max-w-[92%] rounded-xl rounded-tl-md border border-border bg-card px-4 py-2 shadow-sm">
         {reasoning && (
           <details className="group mb-2">
             <summary className="cursor-pointer select-none text-xs text-muted-foreground group-open:text-primary-strong">
@@ -57,7 +57,7 @@ export const AssistantRow = memo(function AssistantRow({ item }: { item: Display
           <ToolSection key={`${section.kind}-${section.id}`} section={section} />
         ))}
         {item.interrupted && (
-          <Badge tone="danger" className="mt-2">
+          <Badge variant="destructive" className="mt-2">
             已被中断
           </Badge>
         )}

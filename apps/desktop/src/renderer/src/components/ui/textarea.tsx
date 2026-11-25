@@ -1,16 +1,19 @@
 import * as React from 'react';
 import { cn } from '../../lib/cn';
 
-export const Textarea = React.forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(
+/** shadcn/ui Textarea (new-york, Tailwind v4 token system — §2.8 决策十一). */
+export const Textarea = React.forwardRef<HTMLTextAreaElement, React.ComponentProps<'textarea'>>(
   ({ className, ...props }, ref) => (
     <textarea
-      ref={ref}
+      data-slot="textarea"
       className={cn(
-        'w-full resize-none rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm text-foreground',
-        'placeholder:text-muted-foreground/70',
-        'focus:border-primary-border focus:outline-none focus:ring-2 focus:ring-primary/25',
+        'flex field-sizing-content min-h-16 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs transition-colors',
+        'placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:outline-none',
+        'disabled:cursor-not-allowed disabled:opacity-50',
+        'aria-invalid:border-destructive aria-invalid:ring-destructive/20',
         className,
       )}
+      ref={ref}
       {...props}
     />
   ),

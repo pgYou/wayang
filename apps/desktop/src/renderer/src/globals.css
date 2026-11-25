@@ -1,25 +1,96 @@
 @import "tailwindcss";
 
 /*
- * Wayang desktop theme — shadcn-style variables with a light-blue accent.
- * The base stays calm (near-white, soft borders); blue is reserved for the
- * user's presence: message bubbles, primary actions, focus rings, active
- * states. Not a black/gray/white app.
+ * Wayang desktop theme — the shadcn/ui initial-style token system
+ * (desktop-app-design §2.8, 决策十一).
+ *
+ * Every color is an HSL CSS variable in the shadcn vocabulary
+ * (--background / --foreground / --primary / --muted / --accent / --border /
+ * --ring / --card / --input / --radius…), mapped into Tailwind utilities via
+ * the `@theme inline` block below. The light-blue accent of the previous
+ * one-off theme is carried over as the `primary` hue — blue stays reserved
+ * for the user's presence (message bubbles, primary actions, focus rings,
+ * active states); the base stays calm (near-white, soft borders). Not a
+ * black/gray/white app.
+ *
+ * One `--radius` base with component-level derivations (§2.8 圆角: rounded-lg
+ * = --radius, md/sm shrink, xl grows); spacing follows the 4/8 scale (the
+ * Tailwind default `--spacing: 0.25rem` grid — padding/gap only ever take
+ * 4/8 multiples). No component may declare its own radius or a literal
+ * color; everything flows through these tokens.
  */
-@theme {
-  --color-background: oklch(0.977 0.008 240);
-  --color-surface: oklch(1 0 0);
-  --color-foreground: oklch(0.25 0.022 250);
-  --color-muted-foreground: oklch(0.52 0.025 245);
-  --color-border: oklch(0.912 0.012 240);
-  --color-primary: oklch(0.62 0.135 243);
-  --color-primary-strong: oklch(0.52 0.145 243);
-  --color-primary-soft: oklch(0.935 0.045 240);
-  --color-primary-border: oklch(0.83 0.07 240);
-  --color-primary-foreground: oklch(0.99 0.005 240);
-  --color-danger: oklch(0.58 0.19 25);
-  --color-danger-soft: oklch(0.955 0.03 25);
-  --color-success: oklch(0.6 0.14 155);
+
+:root {
+  --background: hsl(222 30% 97%);
+  --foreground: hsl(233 20% 24%);
+
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(233 20% 24%);
+
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(233 20% 24%);
+
+  /* The light-blue primary: user presence, actions, focus, active states. */
+  --primary: hsl(216 80% 54%);
+  --primary-foreground: hsl(0 0% 100%);
+  /* Derived steps of the same hue (hover depth / soft fills / soft borders). */
+  --primary-strong: hsl(217 85% 45%);
+  --primary-soft: hsl(217 60% 94%);
+  --primary-border: hsl(219 45% 83%);
+
+  --secondary: hsl(222 25% 94%);
+  --secondary-foreground: hsl(233 16% 32%);
+
+  --muted: hsl(222 25% 95%);
+  --muted-foreground: hsl(235 13% 48%);
+
+  --accent: hsl(217 60% 94%);
+  --accent-foreground: hsl(217 85% 35%);
+
+  --destructive: hsl(8 78% 50%);
+  --destructive-soft: hsl(8 70% 96%);
+  --destructive-foreground: hsl(0 0% 100%);
+  --success: hsl(152 55% 40%);
+
+  --border: hsl(224 14% 89%);
+  --input: hsl(224 14% 85%);
+  --ring: hsl(216 80% 54%);
+
+  /* Single radius base (§2.8): components derive sm/md/lg/xl from it. */
+  --radius: 0.75rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-strong: var(--primary-strong);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-border: var(--primary-border);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Radius derivations (§2.8): one base, component-level scale. */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
 html,
@@ -30,8 +101,8 @@ body,
 
 body {
   margin: 0;
-  background: var(--color-background);
-  color: var(--color-foreground);
+  background: var(--background);
+  color: var(--foreground);
   font-family:
     ui-sans-serif,
     system-ui,
@@ -42,18 +113,18 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Thin, quiet scrollbars that fit the blue-tinted theme. */
+/* Thin, quiet scrollbars tinted with the theme's soft border token. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-primary-border) transparent;
+  scrollbar-color: var(--primary-border) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--color-primary-border);
-  border-radius: 8px;
+  background: var(--primary-border);
+  border-radius: var(--radius-md);
 }
 *::-webkit-scrollbar-track {
   background: transparent;

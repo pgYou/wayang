@@ -34,8 +34,8 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-2 border-b border-border bg-surface/80 px-4 py-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground">
+      <header className="flex items-center gap-2 border-b border-border bg-card/80 px-4 py-2">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
           W
         </span>
         <span className="text-sm font-semibold">Wayang</span>
@@ -43,7 +43,7 @@ export function App() {
       </header>
 
       {connection.phase === 'crashed' && (
-        <div className="border-b border-danger/30 bg-danger-soft px-4 py-2 text-xs text-danger">
+        <div className="border-b border-destructive/30 bg-destructive-soft px-4 py-2 text-xs text-destructive">
           {connection.detail ?? 'server 已退出'}
         </div>
       )}

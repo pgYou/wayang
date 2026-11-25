@@ -20,15 +20,15 @@ export function StatusBar({ busy, activeWorkers, tasks, contextUsage, connection
     : null;
 
   return (
-    <footer className="flex items-center gap-3 border-t border-border bg-surface/80 px-4 py-1.5 text-xs text-muted-foreground">
-      <span className="flex items-center gap-1.5">
+    <footer className="flex items-center gap-3 border-t border-border bg-card/80 px-4 py-2 text-xs text-muted-foreground">
+      <span className="flex items-center gap-2">
         <span
           className={
             connection.phase === 'ready'
-              ? 'h-2 w-2 rounded-full bg-success'
+              ? 'size-2 rounded-full bg-success'
               : connection.phase === 'crashed'
-                ? 'h-2 w-2 rounded-full bg-danger'
-                : 'h-2 w-2 animate-pulse rounded-full bg-primary'
+                ? 'size-2 rounded-full bg-destructive'
+                : 'size-2 animate-pulse rounded-full bg-primary'
           }
         />
         {connection.phase === 'ready'
@@ -39,7 +39,7 @@ export function StatusBar({ busy, activeWorkers, tasks, contextUsage, connection
               ? 'server 已退出'
               : '连接中…'}
       </span>
-      {busy && <Badge tone="blue">思考中</Badge>}
+      {busy && <Badge>思考中</Badge>}
       <span className="ml-auto flex items-center gap-3">
         <span>
           任务 <span className="text-foreground">{tasks.pending.length}</span> 排队 ·{' '}
@@ -51,7 +51,7 @@ export function StatusBar({ busy, activeWorkers, tasks, contextUsage, connection
         </span>
         {usage !== null && (
           <span>
-            上下文 <span className={usage > 80 ? 'font-medium text-danger' : 'text-foreground'}>{usage}%</span>
+            上下文 <span className={usage > 80 ? 'font-medium text-destructive' : 'text-foreground'}>{usage}%</span>
             <span className="text-muted-foreground/70">
               {' '}
               ({formatTokens(contextUsage!.usedTokens)}/{formatTokens(contextUsage!.contextWindowTokens)})

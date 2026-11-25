@@ -4,18 +4,18 @@ import type { DisplayItem } from '../../lib/display';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
 
-function toneFor(subtype?: string): { border: string; badge: 'blue' | 'neutral' | 'success' | 'danger' } {
+function toneFor(subtype?: string): { border: string; badge: 'default' | 'outline' | 'success' | 'destructive' } {
   switch (subtype) {
     case ESignalSubtype.WorkerCompleted:
       return { border: 'border-l-success', badge: 'success' };
     case ESignalSubtype.WorkerFailed:
-      return { border: 'border-l-danger', badge: 'danger' };
+      return { border: 'border-l-destructive', badge: 'destructive' };
     case ESignalSubtype.PermissionRequest:
     case ESignalSubtype.WorkerInquiry:
     case ESignalSubtype.InquiryTimeout:
-      return { border: 'border-l-primary', badge: 'blue' };
+      return { border: 'border-l-primary', badge: 'default' };
     default:
-      return { border: 'border-l-primary-border', badge: 'neutral' };
+      return { border: 'border-l-primary-border', badge: 'outline' };
   }
 }
 
@@ -43,13 +43,13 @@ export const SignalRow = memo(function SignalRow({ item }: { item: DisplayItem }
     <div className="px-4">
       <div
         className={cn(
-          'max-w-[92%] rounded-lg border border-border border-l-[3px] bg-surface/70 px-3 py-1.5 text-sm',
+          'max-w-[92%] rounded-lg border border-border border-l-[3px] bg-card/70 px-3 py-2 text-sm',
           tone.border,
         )}
       >
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-2">
           {item.emoji && <span aria-hidden>{item.emoji}</span>}
-          <Badge tone={tone.badge}>{labelFor(item.subtype)}</Badge>
+          <Badge variant={tone.badge}>{labelFor(item.subtype)}</Badge>
           {item.taskTitle && (
             <span className="max-w-[50%] truncate text-xs font-medium text-primary-strong">{item.taskTitle}</span>
           )}

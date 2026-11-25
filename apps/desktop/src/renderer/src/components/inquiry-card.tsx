@@ -16,15 +16,15 @@ export function InquiryCard({ inquiry, onAnswer }: InquiryCardProps) {
 
   return (
     <div className="border-t border-primary-border bg-primary-soft/40 px-4 py-3">
-      <Card className="border-primary-border">
+      <Card className="gap-3 border-primary-border">
         <CardHeader>
-          <Badge tone="blue">Controller 提问</Badge>
+          <Badge>Controller 提问</Badge>
           {inquiry.type !== 'text' && (
             <span className="text-xs text-muted-foreground">{inquiry.type}</span>
           )}
         </CardHeader>
-        <CardContent>
-          <p className="mb-2 whitespace-pre-wrap text-sm">{inquiry.message}</p>
+        <CardContent className="grid gap-2">
+          <p className="whitespace-pre-wrap text-sm">{inquiry.message}</p>
 
           {inquiry.type === 'confirm' && (
             <div className="flex gap-2">

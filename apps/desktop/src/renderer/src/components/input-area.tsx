@@ -32,7 +32,7 @@ export function InputArea({ busy, onSubmit, onAbort }: InputAreaProps) {
   };
 
   return (
-    <div className="border-t border-border bg-surface/60 px-4 py-3">
+    <div className="border-t border-border bg-card/60 px-4 py-3">
       <div className="flex items-end gap-2">
         <Textarea
           ref={ref}
@@ -42,12 +42,12 @@ export function InputArea({ busy, onSubmit, onAbort }: InputAreaProps) {
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={onKeyDown}
         />
-        <div className="flex shrink-0 flex-col gap-1.5">
+        <div className="flex shrink-0 flex-col gap-2">
           <Button size="sm" onClick={send} disabled={!value.trim()}>
             发送
           </Button>
           {busy && (
-            <Button size="sm" variant="danger" onClick={onAbort}>
+            <Button size="sm" variant="destructive" onClick={onAbort}>
               中止
             </Button>
           )}
