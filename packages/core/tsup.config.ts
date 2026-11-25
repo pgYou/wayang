@@ -58,5 +58,10 @@ export default defineConfig([
     sourcemap: false,
     clean: false,
     banner: { js: '#!/usr/bin/env node' },
+    // Workspace deps are bundled here too: tsup auto-externalises the
+    // package.json dependencies (@wayang-ai/protocol), which would leave the
+    // copied bridge importing a workspace package at runtime — breaking the
+    // "self-contained, only node: builtins external" contract above.
+    noExternal: [/^@wayang-ai\//],
   },
 ]);
