@@ -9,6 +9,7 @@ import {
   selectActiveWorkers,
   selectTasks,
 } from './lib/store';
+import { wayang } from './lib/wayang-api';
 import { ChatArea } from './components/chat/chat-area';
 import { InputArea } from './components/input-area';
 import { InquiryCard } from './components/inquiry-card';
@@ -44,12 +45,12 @@ export function App() {
       <ChatArea items={items} busy={busy} streamingItems={[]} />
 
       {pendingInquiry ? (
-        <InquiryCard inquiry={pendingInquiry} onAnswer={(answer) => void window.wayang.answerInquiry(answer)} />
+        <InquiryCard inquiry={pendingInquiry} onAnswer={(answer) => void wayang.answerInquiry(answer)} />
       ) : (
         <InputArea
           busy={busy}
-          onSubmit={(text) => void window.wayang.sendInput(text)}
-          onAbort={() => void window.wayang.abort()}
+          onSubmit={(text) => void wayang.sendInput(text)}
+          onAbort={() => void wayang.abort()}
         />
       )}
 

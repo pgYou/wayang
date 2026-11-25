@@ -1,8 +1,13 @@
-import type { WayangApi } from '../../../preload/index';
+import type { WayangBridge } from '../../../preload/index';
 
+/**
+ * The renderer's view of the preload bridge — typed ONCE by the preload's
+ * exported `WayangBridge` (§2.2: global.d.ts carries zero duplicate
+ * declarations; channel shapes live in the shared IPC contract only).
+ */
 declare global {
   interface Window {
-    wayang: WayangApi;
+    wayang: WayangBridge;
   }
 }
 

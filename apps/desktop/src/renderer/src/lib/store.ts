@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import type { ConversationEntry, ControllerSignal, ActiveWorkerInfo, TaskDetail, InquireQuestion, ContextUsage } from '@wayang-ai/protocol';
 import { SLICE, type StateUpdate } from '../../../../src/shared/ipc-contract';
+import { wayang } from './wayang-api';
 import { entryToDisplayItem, signalToDisplayItem, type DisplayItem } from './display';
 
 // Single source moved to the shared IPC contract (§2.2, 域二): the slice keys
@@ -19,7 +20,7 @@ export type SliceStore = Record<string, unknown>;
 
 export function useWayangSlices(): SliceStore {
   const [slices, setSlices] = useState<SliceStore>({});
-  useEffect(() => window.wayang.onState((update: StateUpdate) => {
+  useEffect(() => wayang.onState((update: StateUpdate) => {
     setSlices((prev) => ({ ...prev, [`${update.target}:${update.path}`]: update.data }));
   }), []);
   return slices;
@@ -27,7 +28,7 @@ export function useWayangSlices(): SliceStore {
 
 export function useConnectionStatus(): { phase: string; detail?: string; sessionId?: string } {
   const [status, setStatus] = useState<{ phase: string; detail?: string; sessionId?: string }>({ phase: 'connecting' });
-  useEffect(() => window.wayang.onStatus(setStatus), []);
+  useEffect(() => wayang.onStatus(setStatus), []);
   return status;
 }
 

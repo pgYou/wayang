@@ -1,0 +1,47 @@
+/**
+ * wayang-api — the renderer's ONLY module allowed to touch `window.wayang`
+ * (desktop-app-design §2.2, 4.2 域二工作项①).
+ *
+ * A thin wrapper over the preload bridge: method-for-method delegation with
+ * lazy bridge access (so importing this module never touches `window` —
+ * node-environment tests can import the store without a DOM). Components
+ * import from here and never reach for the bridge directly; the boundary
+ * pin test scans the renderer tree for direct `window.wayang` access.
+ */
+
+import type { WayangBridge } from '../../../preload/index';
+import type { ConnectionStatus, RendererLogEntry, StateUpdate } from '../../../../src/shared/ipc-contract';
+
+function bridge(): WayangBridge {
+  if (typeof window === 'undefined' || !window.wayang) {
+    throw new Error('window.wayang is unavailable — the preload bridge did not run');
+  }
+  return window.wayang;
+}
+
+/** The full preload bridge surface, lazily resolved. */
+export const wayang = {
+  onState: (callback: (update: StateUpdate) => void): (() => void) => bridge().onState(callback),
+  onStatus: (callback: (status: ConnectionStatus) => void): (() => void) => bridge().onStatus(callback),
+  sendInput: (text: string): Promise<void> => bridge().sendInput(text),
+  abort: (): Promise<void> => bridge().abort(),
+  answerInquiry: (answer: string): Promise<void> => bridge().answerInquiry(answer),
+  respondPermission: (requestId: string, approved: boolean, reason?: string): Promise<unknown> =>
+    bridge().respondPermission(requestId, approved, reason),
+  listTasks: (status?: Parameters<WayangBridge['listTasks']>[0]): ReturnType<WayangBridge['listTasks']> =>
+    bridge().listTasks(status),
+  cancelTask: (taskId: string): Promise<void> => bridge().cancelTask(taskId),
+  getContextUsage: (): ReturnType<WayangBridge['getContextUsage']> => bridge().getContextUsage(),
+  getInitialState: (): ReturnType<WayangBridge['getInitialState']> => bridge().getInitialState(),
+  newSession: (): ReturnType<WayangBridge['newSession']> => bridge().newSession(),
+  switchSession: (sessionId: string): ReturnType<WayangBridge['switchSession']> => bridge().switchSession(sessionId),
+  listSessions: (): ReturnType<WayangBridge['listSessions']> => bridge().listSessions(),
+  rendererLog: (entry: RendererLogEntry): Promise<void> => bridge().rendererLog(entry),
+};
+
+/** Bridge surface subset the store boot needs (DI seam for tests). */
+export interface BridgeLike {
+  onState(callback: (update: StateUpdate) => void): () => void;
+  onStatus(callback: (status: ConnectionStatus) => void): () => void;
+  getInitialState(): Promise<Record<string, unknown>>;
+}
