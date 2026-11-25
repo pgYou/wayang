@@ -32,7 +32,11 @@ function ToolSection({ section }: { section: DisplaySection }) {
   );
 }
 
-/** Controller 的回复：正文 + 可展开的 reasoning / 工具调用区块（memo：见 §2.7 行级重绘纪律）。 */
+/**
+ * Controller 输出 Borderless 撑开（§4.3 工作项③）：无卡片边框/底色的通栏
+ * 文本，视觉重心让位给 user 气泡；工具区块与中断标记保持原有语义。
+ * memo：见 §2.7 行级重绘纪律。
+ */
 export const AssistantRow = memo(function AssistantRow({ item }: { item: DisplayItem }) {
   const sections = item.sections ?? [];
   const content = sections.find((s) => s.kind === 'content');
@@ -41,7 +45,7 @@ export const AssistantRow = memo(function AssistantRow({ item }: { item: Display
 
   return (
     <div className="px-4">
-      <div className="max-w-[92%] rounded-xl rounded-tl-md border border-border bg-card px-4 py-2 shadow-sm">
+      <div className="flex max-w-full flex-col py-1">
         {reasoning && (
           <details className="group mb-2">
             <summary className="cursor-pointer select-none text-xs text-muted-foreground group-open:text-primary-strong">

@@ -10,9 +10,8 @@ import {
 } from './lib/store';
 import { wayang } from './lib/wayang-api';
 import { ChatArea } from './components/chat/chat-area';
-import { InputArea } from './components/input-area';
+import { Composer } from './components/chat/composer';
 import { InquiryCard } from './components/inquiry-card';
-import { StatusBar } from './components/status-bar';
 import { OnboardFlow } from './components/onboard/onboard-flow';
 
 /**
@@ -93,20 +92,16 @@ export function App() {
       {pendingInquiry ? (
         <InquiryCard inquiry={pendingInquiry} onAnswer={(answer) => void wayang.answerInquiry(answer)} />
       ) : (
-        <InputArea
+        <Composer
           busy={busy}
+          connection={connection}
+          activeWorkers={activeWorkers}
+          tasks={tasks}
+          contextUsage={contextUsage}
           onSubmit={(text) => void wayang.sendInput(text)}
           onAbort={() => void wayang.abort()}
         />
       )}
-
-      <StatusBar
-        busy={busy}
-        activeWorkers={activeWorkers}
-        tasks={tasks}
-        contextUsage={contextUsage}
-        connection={connection}
-      />
     </div>
   );
 }
