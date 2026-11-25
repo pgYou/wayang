@@ -17,16 +17,13 @@ import type { RendererLogEntry } from '../shared/ipc-contract';
 export type CrashSource = 'render-process-gone' | 'child-process-gone';
 
 export class UnifiedLogger implements MainLogger {
-  private readonly rendererSink: UnifiedLogger;
+  /** The renderer log bridge sink, created lazily on first use. */
+  private rendererSink: UnifiedLogger | null = null;
 
   constructor(
     private readonly inner: MainLogger,
     private readonly context: Record<string, unknown> = { proc: 'main' },
-  ) {
-    // The renderer bridge gets its own child logger so renderer entries are
-    // visually and structurally separable in the unified file.
-    this.rendererSink = new UnifiedLogger(this.inner.child('renderer'), { proc: 'renderer' });
-  }
+  ) {}
 
   /** Merge the correlation context into an entry's data. */
   private entry(data?: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -55,6 +52,9 @@ export class UnifiedLogger implements MainLogger {
 
   /** The renderer log bridge sink (§2.9): entries arrive over IPC. */
   renderer(entry: RendererLogEntry): void {
+    // The renderer bridge gets its own child logger so renderer entries are
+    // visually and structurally separable in the unified file.
+    this.rendererSink ??= new UnifiedLogger(this.inner.child('renderer'), { proc: 'renderer' });
     this.rendererSink[entry.level](entry.message, entry.data);
   }
 
