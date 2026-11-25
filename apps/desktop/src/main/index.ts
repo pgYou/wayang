@@ -17,6 +17,7 @@ import { mkdirSync } from 'node:fs';
 import { connectServer, type DesktopConnection } from './connection';
 import { initMainLogger, mainLogger, type MainLogger } from './logger';
 import { getPaths, getPlatformConfig, getStoragePaths, getWorkspacePolicy } from '../shared/platform-config';
+import { IPC_SUBSCRIBE } from '../shared/ipc-contract';
 
 /** Prepend the paths a GUI-launched process misses (brew, local bin). */
 function fixGuiPath(): void {
@@ -115,7 +116,7 @@ app.whenReady().then(() => {
   const sendStatus = (phase: string, detail?: string, sessionId?: string): void => {
     if (phase === 'crashed') log.error('connection crashed', { detail: detail?.slice(0, 2000) });
     else log.info(`connection ${phase}`, sessionId !== undefined ? { sessionId } : undefined);
-    mainWindow?.webContents.send('wayang:status', { phase, detail, sessionId });
+    mainWindow?.webContents.send(IPC_SUBSCRIBE.status, { phase, detail, sessionId });
   };
   connectServer({
     getWindow: () => mainWindow,

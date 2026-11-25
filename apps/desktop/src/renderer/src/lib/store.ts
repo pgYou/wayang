@@ -7,28 +7,13 @@
 
 import { useEffect, useState } from 'react';
 import type { ConversationEntry, ControllerSignal, ActiveWorkerInfo, TaskDetail, InquireQuestion, ContextUsage } from '@wayang-ai/protocol';
+import { SLICE, type StateUpdate } from '../../../../src/shared/ipc-contract';
 import { entryToDisplayItem, signalToDisplayItem, type DisplayItem } from './display';
 
-export const SLICE = {
-  conversation: 'controllerAgent:conversation',
-  streaming: 'controllerAgent:dynamicState.streamingEntries',
-  busy: 'controllerAgent:dynamicState.busy',
-  pendingInquiry: 'controllerAgent:runtimeState.pendingInquiry',
-  contextUsage: 'controllerAgent:dynamicState.contextUsage',
-  signals: 'signalQueue:signals',
-  activeWorkers: 'engine:activeWorkers',
-  tasksPending: 'engine:tasks.pending',
-  tasksRunning: 'engine:tasks.running',
-  // Core writes the full task history (all terminal states) to tasks.history;
-  // `tasks.completed` was a dead path. Completed tasks are filtered below.
-  tasksHistory: 'engine:tasks.history',
-} as const;
-
-export interface StateUpdate {
-  target: string;
-  path: string;
-  data: unknown;
-}
+// Single source moved to the shared IPC contract (§2.2, 域二): the slice keys
+// here, the main-side subscription table and the snapshot set are one table.
+export { SLICE };
+export type { StateUpdate };
 
 export type SliceStore = Record<string, unknown>;
 

@@ -14,8 +14,9 @@ import { messagePortToStreams, type MessagePortLike } from '@wayang-ai/protocol/
 import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
 import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
 import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
-import { RemoteSupervisor, CONTEXT_USAGE_STATE_PATH } from '@wayang-ai/core/client/remote-supervisor';
+import { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
 import { CONFIG_OBJECT_ENV } from '../shared/config-env';
+import { IPC, IPC_INVOKE_CHANNELS, STATE_SLICE_PATHS } from '../shared/ipc-contract';
 import { ConfigStore } from './config-store';
 import type { MainLogger } from './logger';
 import { createLineSplitter } from './log-lines';
@@ -48,22 +49,12 @@ function asMessagePort(child: UtilityProcess): MessagePortLike {
   };
 }
 
-/** State slices forwarded to the renderer (mirrors the TUI's subscriptions). */
-export const SUBSCRIBED_PATHS: ReadonlyArray<readonly [string, string]> = [
-  ['controllerAgent', 'conversation'],
-  ['controllerAgent', 'dynamicState.streamingEntries'],
-  ['controllerAgent', 'dynamicState.busy'],
-  ['controllerAgent', 'runtimeState.pendingInquiry'],
-  ['controllerAgent', CONTEXT_USAGE_STATE_PATH],
-  ['signalQueue', 'signals'],
-  ['engine', 'activeWorkers'],
-  ['engine', 'tasks.pending'],
-  ['engine', 'tasks.running'],
-  // Core's task engine writes `tasks.history` (all terminal states); the old
-  // `tasks.completed` path never carried a value, so the completed counter
-  // was stuck at 0. The renderer filters statuses out of the history slice.
-  ['engine', 'tasks.history'],
-];
+/**
+ * State slices forwarded to the renderer (mirrors the TUI's subscriptions).
+ * Single source: the shared IPC contract (§2.2) — re-exported here for the
+ * existing pin tests until the layering lands (域二).
+ */
+export { STATE_SLICE_PATHS as SUBSCRIBED_PATHS };
 
 export interface DesktopSessionOptions {
   /** Envelope config file (`<userData>/config.json`, 决策九) — the load source. */
@@ -247,7 +238,7 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
     wiring.supervisor = supervisor;
     currentSupervisor = supervisor;
 
-    for (const [target, path] of SUBSCRIBED_PATHS) {
+    for (const [target, path] of STATE_SLICE_PATHS) {
       store.subscribe(target, path, (event) => {
         send({ target, path, data: (event as { data?: unknown }).data });
       });
@@ -260,7 +251,7 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
     // slice once more through the same wayang:state channel so the renderer
     // converges on the resumed session's state.
     if (replay) {
-      for (const [target, path] of SUBSCRIBED_PATHS) {
+      for (const [target, path] of STATE_SLICE_PATHS) {
         void rpc.request<{ data: unknown }>(METHOD.GET_SNAPSHOT, { target, path })
           .then((res) => send({ target, path, data: res.data }))
           .catch(() => { /* server gone: the exit path takes over */ });
@@ -384,32 +375,22 @@ function waitForReady(
   });
 }
 
-const IPC_CHANNEL = {
-  sendInput: 'wayang:sendInput',
-  abort: 'wayang:abort',
-  answerInquiry: 'wayang:answerInquiry',
-  respondPermission: 'wayang:respondPermission',
-  listTasks: 'wayang:listTasks',
-  cancelTask: 'wayang:cancelTask',
-  contextUsage: 'wayang:contextUsage',
-} as const;
-
 function registerIpcHandlers(supervisor: RemoteSupervisor, rpc: RpcClient): void {
   removeIpcHandlers();
-  ipcMain.handle(IPC_CHANNEL.sendInput, (_e, text: string) => {
+  ipcMain.handle(IPC.sendInput, (_e, text: string) => {
     supervisor.signalQueue.enqueue({ source: 'user', type: 'input', payload: { text } });
   });
-  ipcMain.handle(IPC_CHANNEL.abort, () => supervisor.controllerAgent.abort());
-  ipcMain.handle(IPC_CHANNEL.answerInquiry, (_e, answer: string) => supervisor.resolveInquiry(answer));
-  ipcMain.handle(IPC_CHANNEL.respondPermission, (_e, p: { requestId: string; approved: boolean; reason?: string }) =>
+  ipcMain.handle(IPC.abort, () => supervisor.controllerAgent.abort());
+  ipcMain.handle(IPC.answerInquiry, (_e, answer: string) => supervisor.resolveInquiry(answer));
+  ipcMain.handle(IPC.respondPermission, (_e, p: { requestId: string; approved: boolean; reason?: string }) =>
     rpc.request(METHOD.RESPOND_PERMISSION, p));
-  ipcMain.handle(IPC_CHANNEL.listTasks, () => supervisor.engine.list());
-  ipcMain.handle(IPC_CHANNEL.cancelTask, (_e, taskId: string) => supervisor.engine.cancel(taskId));
-  ipcMain.handle(IPC_CHANNEL.contextUsage, () => supervisor.getContextUsage());
+  ipcMain.handle(IPC.listTasks, () => supervisor.engine.list());
+  ipcMain.handle(IPC.cancelTask, (_e, taskId: string) => supervisor.engine.cancel(taskId));
+  ipcMain.handle(IPC.contextUsage, () => supervisor.getContextUsage());
 }
 
 function removeIpcHandlers(): void {
-  for (const channel of Object.values(IPC_CHANNEL)) {
+  for (const channel of IPC_INVOKE_CHANNELS) {
     ipcMain.removeHandler(channel);
   }
 }
