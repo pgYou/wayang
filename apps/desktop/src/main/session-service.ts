@@ -25,6 +25,7 @@ import {
   IPC_INVOKE_CHANNELS,
   IPC_SUBSCRIBE,
   type ConnectionStatus,
+  type InitialStateSnapshot,
   type RendererLogEntry,
   type SessionIndexEntry,
   type StateUpdate,
@@ -52,6 +53,8 @@ export class SessionService {
   private readonly log: MainLogger;
   private host: ServerProcessHost | null = null;
   private config: WayangConfig | null = null;
+  /** Last emitted connection status — the snapshot's status source (§2.7). */
+  private lastStatus: ConnectionStatus = { phase: 'connecting' };
 
   constructor(private readonly deps: SessionServiceDeps) {
     this.log = deps.log.child('session');
@@ -97,10 +100,11 @@ export class SessionService {
   }
 
   /** Full snapshot pull for the renderer's first paint / refresh (§2.7). */
-  async getInitialState(): Promise<Record<string, unknown>> {
+  async getInitialState(): Promise<InitialStateSnapshot> {
     const host = this.host;
     if (!host) throw new Error('session service has not started');
-    return host.getSnapshotSlices();
+    const slices = await host.getSnapshotSlices();
+    return { status: this.lastStatus, slices };
   }
 
   /** Refresh replay (§2.7): re-push the main-side cache to the renderer. */
@@ -175,6 +179,7 @@ export class SessionService {
   }
 
   private emitStatus(status: ConnectionStatus): void {
+    this.lastStatus = status;
     if (status.phase === 'crashed') {
       this.log.error('connection crashed', { detail: status.detail?.slice(0, 2000) });
     } else {

@@ -154,14 +154,15 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
     expect(electronState.handlers.size).toBe(0);
   });
 
-  it('getInitialState returns the full 10-slice snapshot in an ok envelope', async () => {
+  it('getInitialState returns the full snapshot (10 slices + current status) in an ok envelope', async () => {
     const service = makeService();
     await service.start();
     const result = await invoke(IPC.getInitialState, []);
     expect(result).toMatchObject({ ok: true });
-    const slices = (result as { data: Record<string, unknown> }).data;
-    expect(Object.keys(slices).sort()).toEqual([...Object.values(SLICE)].sort());
-    expect(slices[SLICE.busy]).toMatchObject({ target: 'controllerAgent', path: 'dynamicState.busy' });
+    const snapshot = (result as { data: { status: { phase: string; sessionId?: string }; slices: Record<string, unknown> } }).data;
+    expect(snapshot.status).toMatchObject({ phase: 'ready', sessionId: 'session-1' });
+    expect(Object.keys(snapshot.slices).sort()).toEqual([...Object.values(SLICE)].sort());
+    expect(snapshot.slices[SLICE.busy]).toMatchObject({ target: 'controllerAgent', path: 'dynamicState.busy' });
     await service.stop();
   });
 

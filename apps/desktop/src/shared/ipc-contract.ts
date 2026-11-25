@@ -177,11 +177,23 @@ export interface IpcInvokeContract {
   [IPC.listTasks]: { args: [status?: TaskDetail['status']]; result: TaskDetail[] };
   [IPC.cancelTask]: { args: [taskId: string]; result: void };
   [IPC.contextUsage]: { args: []; result: ContextUsage | null };
-  [IPC.getInitialState]: { args: []; result: Record<string, unknown> };
+  /**
+   * The full renderer initial state (§2.7): every subscribed slice's current
+   * value plus the current connection status — so a first paint (or a
+   * refresh) converges in ONE pull without racing the status event stream.
+   */
+  [IPC.getInitialState]: { args: []; result: InitialStateSnapshot };
   [IPC.newSession]: { args: []; result: { sessionId: string } };
   [IPC.switchSession]: { args: [sessionId: string]; result: { sessionId: string } };
   [IPC.listSessions]: { args: []; result: SessionIndexEntry[] };
   [IPC.rendererLog]: { args: [entry: RendererLogEntry]; result: void };
+}
+
+/** Snapshot payload of `wayang:getInitialState` (§2.7). */
+export interface InitialStateSnapshot {
+  status: ConnectionStatus;
+  /** Slice values keyed by `${target}:${path}` (null = not set server-side). */
+  slices: Record<string, unknown>;
 }
 
 /** Typed subscribe contract: channel → { payload }. */

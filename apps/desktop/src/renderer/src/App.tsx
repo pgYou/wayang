@@ -1,13 +1,12 @@
-import { useMemo } from 'react';
+import { useEffect } from 'react';
 import {
-  useWayangSlices,
   useConnectionStatus,
-  buildDisplayItems,
-  selectBusy,
-  selectPendingInquiry,
-  selectContextUsage,
-  selectActiveWorkers,
-  selectTasks,
+  useBusy,
+  usePendingInquiry,
+  useContextUsage,
+  useActiveWorkers,
+  useTasks,
+  wayangStore,
 } from './lib/store';
 import { wayang } from './lib/wayang-api';
 import { ChatArea } from './components/chat/chat-area';
@@ -16,15 +15,22 @@ import { InquiryCard } from './components/inquiry-card';
 import { StatusBar } from './components/status-bar';
 
 export function App() {
-  const slices = useWayangSlices();
-  const connection = useConnectionStatus();
+  // Fixed boot sequence (§2.7): snapshot first, then incremental
+  // subscription — the first-paint race (a4) dissolves here.
+  useEffect(() => {
+    void wayangStore.boot().then(() => {
+      void wayang.rendererLog({ level: 'info', message: 'renderer store hydrated' }).catch(() => undefined);
+    });
+  }, []);
 
-  const items = useMemo(() => buildDisplayItems(slices), [slices]);
-  const busy = selectBusy(slices);
-  const pendingInquiry = selectPendingInquiry(slices);
-  const contextUsage = selectContextUsage(slices);
-  const activeWorkers = selectActiveWorkers(slices);
-  const tasks = selectTasks(slices);
+  // Per-slice subscriptions: a streaming update re-renders only the
+  // streaming section inside ChatArea, never this tree.
+  const busy = useBusy();
+  const pendingInquiry = usePendingInquiry();
+  const contextUsage = useContextUsage();
+  const activeWorkers = useActiveWorkers();
+  const tasks = useTasks();
+  const connection = useConnectionStatus();
 
   return (
     <div className="flex h-full flex-col">
@@ -42,7 +48,7 @@ export function App() {
         </div>
       )}
 
-      <ChatArea items={items} busy={busy} streamingItems={[]} />
+      <ChatArea busy={busy} />
 
       {pendingInquiry ? (
         <InquiryCard inquiry={pendingInquiry} onAnswer={(answer) => void wayang.answerInquiry(answer)} />

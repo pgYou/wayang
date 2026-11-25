@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { ESignalSubtype } from '@wayang-ai/protocol/types/conversation';
 import type { DisplayItem } from '../../lib/display';
 import { Badge } from '../ui/badge';
@@ -35,8 +36,8 @@ function labelFor(subtype?: string): string {
   }
 }
 
-/** Worker / 系统事件信号行：emoji、任务标签、摘要。 */
-export function SignalRow({ item }: { item: DisplayItem }) {
+/** Worker / 系统事件信号行：emoji、任务标签、摘要（memo：见 §2.7 行级重绘纪律）。 */
+export const SignalRow = memo(function SignalRow({ item }: { item: DisplayItem }) {
   const tone = toneFor(item.subtype);
   return (
     <div className="px-4">
@@ -69,4 +70,4 @@ export function SignalRow({ item }: { item: DisplayItem }) {
       </div>
     </div>
   );
-}
+});

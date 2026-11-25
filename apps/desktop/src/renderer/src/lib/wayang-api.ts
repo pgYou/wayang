@@ -10,7 +10,7 @@
  */
 
 import type { WayangBridge } from '../../../preload/index';
-import type { ConnectionStatus, RendererLogEntry, StateUpdate } from '../../../../src/shared/ipc-contract';
+import type { ConnectionStatus, InitialStateSnapshot, RendererLogEntry, StateUpdate } from '../../../../src/shared/ipc-contract';
 
 function bridge(): WayangBridge {
   if (typeof window === 'undefined' || !window.wayang) {
@@ -43,5 +43,40 @@ export const wayang = {
 export interface BridgeLike {
   onState(callback: (update: StateUpdate) => void): () => void;
   onStatus(callback: (status: ConnectionStatus) => void): () => void;
-  getInitialState(): Promise<Record<string, unknown>>;
+  getInitialState(): Promise<InitialStateSnapshot>;
+}
+
+function formatLogArg(arg: unknown): string {
+  if (typeof arg === 'string') return arg;
+  if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
+  try {
+    return JSON.stringify(arg) ?? String(arg);
+  } catch {
+    return String(arg);
+  }
+}
+
+/**
+ * Renderer log bridge (§2.9 UnifiedLogger): console warn/error, window
+ * error events and unhandled rejections land in the main process's unified
+ * log through `wayang:rendererLog`. Fire-and-forget — logging must never
+ * break the renderer.
+ */
+export function installRendererLogBridge(): void {
+  if (typeof window === 'undefined') return;
+  for (const level of ['warn', 'error'] as const) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]): void => {
+      original(...args);
+      void wayang.rendererLog({ level, message: args.map(formatLogArg).join(' ') }).catch(() => undefined);
+    };
+  }
+  window.addEventListener('error', (event) => {
+    void wayang.rendererLog({ level: 'error', message: `window error: ${event.message} @ ${event.filename}:${event.lineno}` })
+      .catch(() => undefined);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    void wayang.rendererLog({ level: 'error', message: `unhandledrejection: ${formatLogArg(event.reason)}` })
+      .catch(() => undefined);
+  });
 }

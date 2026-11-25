@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { DisplayItem, DisplaySection } from '../../lib/display';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
@@ -32,8 +32,8 @@ function ToolSection({ section }: { section: DisplaySection }) {
   );
 }
 
-/** Controller 的回复：正文 + 可展开的 reasoning / 工具调用区块。 */
-export function AssistantRow({ item }: { item: DisplayItem }) {
+/** Controller 的回复：正文 + 可展开的 reasoning / 工具调用区块（memo：见 §2.7 行级重绘纪律）。 */
+export const AssistantRow = memo(function AssistantRow({ item }: { item: DisplayItem }) {
   const sections = item.sections ?? [];
   const content = sections.find((s) => s.kind === 'content');
   const reasoning = sections.find((s) => s.kind === 'reasoning');
@@ -64,4 +64,4 @@ export function AssistantRow({ item }: { item: DisplayItem }) {
       </div>
     </div>
   );
-}
+});
