@@ -12,3 +12,5 @@ dist/
 .xac
 .turbo/*
 out/
+apps/desktop/release/
+apps/desktop/.runtime-node-modules/
