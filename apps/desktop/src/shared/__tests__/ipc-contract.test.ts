@@ -26,7 +26,7 @@ describe('IPC channel contract', () => {
     }
   });
 
-  it('lists the 11 invoke channels and 2 subscriptions of the §2.2 table', () => {
+  it('lists the §2.2 table plus the 域三 config/onboard channels and 2 subscriptions', () => {
     expect(Object.values(IPC)).toEqual([
       'wayang:sendInput',
       'wayang:abort',
@@ -40,6 +40,12 @@ describe('IPC channel contract', () => {
       'wayang:switchSession',
       'wayang:listSessions',
       'wayang:rendererLog',
+      'wayang:getOnboardState',
+      'wayang:importCliConfig',
+      'wayang:saveConfig',
+      'wayang:readConfig',
+      'wayang:chooseDirectory',
+      'wayang:restartServer',
     ]);
     expect(Object.values(IPC_SUBSCRIBE)).toEqual(['wayang:state', 'wayang:status']);
   });
@@ -83,16 +89,19 @@ describe('IPC arg validators', () => {
 });
 
 describe('invoke timeouts', () => {
+  const WIDE = [IPC.newSession, IPC.switchSession, IPC.saveConfig, IPC.restartServer] as const;
+
   it('defaults every channel to the shared guard', () => {
     for (const channel of Object.values(IPC)) {
-      if (channel === IPC.newSession || channel === IPC.switchSession) continue;
+      if ((WIDE as readonly string[]).includes(channel)) continue;
       expect(invokeTimeoutMs(channel)).toBe(DEFAULT_INVOKE_TIMEOUT_MS);
     }
   });
 
-  it('session boots get the wider guard and only those', () => {
-    expect(invokeTimeoutMs(IPC.newSession)).toBeGreaterThan(DEFAULT_INVOKE_TIMEOUT_MS);
-    expect(invokeTimeoutMs(IPC.switchSession)).toBeGreaterThan(DEFAULT_INVOKE_TIMEOUT_MS);
-    expect(Object.keys(INVOKE_TIMEOUT_OVERRIDES_MS)).toHaveLength(2);
+  it('session boots and config saves/boots get the wider guard and only those', () => {
+    for (const channel of WIDE) {
+      expect(invokeTimeoutMs(channel)).toBeGreaterThan(DEFAULT_INVOKE_TIMEOUT_MS);
+    }
+    expect(Object.keys(INVOKE_TIMEOUT_OVERRIDES_MS)).toHaveLength(WIDE.length);
   });
 });

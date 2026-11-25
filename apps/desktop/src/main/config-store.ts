@@ -4,37 +4,22 @@
  * Single-file envelope persistence at `<userData>/config.json` (path sourced
  * from the platform config module — 决策十). The envelope keeps the core
  * config as protocol's `WayangConfig` and reserves a `desktop` section for
- * future host preferences. Writes are atomic (temp file + rename) so a crash
+ * host preferences. Writes are atomic (temp file + rename) so a crash
  * mid-write can never leave a half-written config behind.
  *
- * transitional (决策九, 域三 replaces this): while the envelope file does not
- * exist, `loadOrImport` seeds it ONCE from the CLI config
- * (`~/.wayang.config.json`, read-only — the desktop never writes it) by
- * validating and re-writing the config into the envelope. Once the welcome
- * page / explicit import UI lands, the implicit fallback is removed and
- * importing becomes an explicit action. Beyond that one-time import the
- * store never touches CLI files.
+ * No implicit CLI fallback: a missing/invalid envelope means the welcome page
+ * (域三 决策九落地) — importing the CLI config is an EXPLICIT user action
+ * (`importFrom`, read-only, never writes the CLI file). Beyond that one
+ * explicit import this store never touches CLI files.
  */
 
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { WayangConfig } from '@wayang-ai/protocol';
-import { makeEnvelope, parseConfigEnvelope, validateOrReject, type ConfigEnvelope } from '../shared/config-envelope';
+import { parseConfigEnvelope, validateOrReject, type ConfigEnvelope } from '../shared/config-envelope';
 
 export { CONFIG_SCHEMA_VERSION } from '../shared/config-envelope';
 export type { ConfigEnvelope } from '../shared/config-envelope';
-
-/** Error kinds the cold-boot path distinguishes later (welcome page, 域三). */
-export class ConfigStoreError extends Error {
-  constructor(
-    /** `import_failed` — the CLI import source was missing or invalid. */
-    readonly code: 'import_failed',
-    message: string,
-  ) {
-    super(message);
-    this.name = 'ConfigStoreError';
-  }
-}
 
 export class ConfigStore {
   /** @param configPath full path of the envelope file (`<userData>/config.json`). */
@@ -75,37 +60,26 @@ export class ConfigStore {
   }
 
   /**
-   * Effective wayang config for server boot.
-   *
-   * transitional (决策九): envelope missing → one-time implicit import from
-   * the CLI config at `legacyConfigPath` (read → validate → write envelope →
-   * use). Remove when the explicit import action (域三 welcome page) lands.
+   * Explicit CLI-config import (§2.11「导入 CLI 配置」, 决策九): read the
+   * given file (the legacy `~/.wayang.config.json`, read-only), validate it
+   * with the shared protocol validator and return the config — the caller
+   * decides whether to write it into the envelope (the confirm page). This
+   * is the ONLY touch of the CLI config domain; the file is never written.
    */
-  async loadOrImport(legacyConfigPath: string): Promise<WayangConfig> {
-    const envelope = await this.load();
-    if (envelope) return envelope.wayangConfig;
-
+  async importFrom(legacyConfigPath: string): Promise<WayangConfig> {
     let raw: string;
     try {
       raw = await readFile(legacyConfigPath, 'utf-8');
     } catch (err) {
-      throw new ConfigStoreError(
-        'import_failed',
-        `no desktop config at ${this.configPath} and no CLI config to import at ${legacyConfigPath} (${(err as Error).message})`,
-      );
+      throw new Error(`无法读取 CLI 配置 ${legacyConfigPath}（${(err as Error).message}）`);
     }
     let imported: WayangConfig;
     try {
       imported = JSON.parse(raw) as WayangConfig;
     } catch (err) {
-      throw new ConfigStoreError('import_failed', `CLI config ${legacyConfigPath} is not valid JSON: ${(err as Error).message}`);
+      throw new Error(`CLI 配置 ${legacyConfigPath} 不是有效 JSON：${(err as Error).message}`);
     }
-    try {
-      validateOrReject(imported, `CLI config ${legacyConfigPath}`);
-    } catch (err) {
-      throw new ConfigStoreError('import_failed', (err as Error).message);
-    }
-    await this.save(makeEnvelope(imported));
+    validateOrReject(imported, `CLI config ${legacyConfigPath}`);
     return imported;
   }
 }

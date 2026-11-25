@@ -14,8 +14,9 @@
  * a dead transport.
  */
 
-import type { BrowserWindow, WebContents } from 'electron';
+import { dialog, type BrowserWindow, type WebContents } from 'electron';
 import type { WayangConfig } from '@wayang-ai/protocol';
+import { parseConfigUpdateRequest, type ConfigUpdateResult } from '@wayang-ai/protocol';
 import { METHOD } from '@wayang-ai/protocol/rpc/protocol';
 import type { RpcClient } from '@wayang-ai/protocol/rpc/rpc-client';
 import type { RemoteSupervisor } from '@wayang-ai/core/client/remote-supervisor';
@@ -24,12 +25,19 @@ import {
   IPC,
   IPC_INVOKE_CHANNELS,
   IPC_SUBSCRIBE,
+  type ChooseDirectoryResult,
   type ConnectionStatus,
   type InitialStateSnapshot,
+  type OnboardState,
+  type ReadConfigResult,
   type RendererLogEntry,
+  type SaveConfigResult,
   type SessionIndexEntry,
   type StateUpdate,
 } from '../shared/ipc-contract';
+import { checkCoreCompleteness, resolveOnboardState } from '../shared/onboard';
+import { planConfigUpdates } from '../shared/config-update-plan';
+import { makeEnvelope, validateOrReject, type ConfigEnvelope } from '../shared/config-envelope';
 import { ConfigStore } from './config-store';
 import { ServerProcessHost, type HostSessionOptions } from './server-process-host';
 import { removeTypedHandler, typedHandle, type IpcRouterDeps } from './ipc/router';
@@ -53,6 +61,8 @@ export class SessionService {
   private readonly log: MainLogger;
   private host: ServerProcessHost | null = null;
   private config: WayangConfig | null = null;
+  /** The persisted desktop prefs (envelope `desktop` section). */
+  private desktopPrefs: Record<string, unknown> = {};
   /** Last emitted connection status — the snapshot's status source (§2.7). */
   private lastStatus: ConnectionStatus = { phase: 'connecting' };
 
@@ -61,36 +71,25 @@ export class SessionService {
   }
 
   /**
-   * Session startup: the initial `connecting` status goes out before config
-   * loading (the old connection sequence), then the config resolves, the
-   * host boots and takes over status reporting. A config failure lands on
-   * `crashed` here; a boot failure is reported by the host itself (§2.9).
+   * Session startup. `config` comes from the envelope the Application layer
+   * loaded (决策九): null = onboard mode — no server, the IPC surface stays
+   * registered so the welcome page can import/create a config and boot via
+   * `saveConfig`. With a config the host boots and takes over status
+   * reporting (§2.9).
    */
-  async start(): Promise<void> {
+  async start(config: WayangConfig | null): Promise<void> {
     this.emitStatus({ phase: 'connecting' });
 
-    let config: WayangConfig;
-    try {
-      config = await this.loadSessionConfig();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log.error('connect failed', { error: message });
-      this.emitStatus({ phase: 'crashed', detail: message });
+    if (config === null) {
+      this.log.info('onboard mode: no server until the welcome page saves a config');
+      this.registerIpc();
       return;
     }
     this.config = config;
-
-    const host = new ServerProcessHost({
-      options: this.hostOptions(),
-      config,
-      onStatus: (phase, detail, sessionId) => this.emitStatus({ phase, detail, sessionId }),
-      sendState: (payload) => this.sendState(payload),
-      log: this.deps.log,
-    });
-    this.host = host;
+    this.createHost(this.hostOptions(), config);
     this.registerIpc();
     try {
-      await host.start();
+      await this.host?.start();
     } catch (err) {
       // The host already settled on fatal and reported `crashed` (§2.9);
       // the shell just records the failure.
@@ -164,18 +163,142 @@ export class SessionService {
     return { configPath, dataDir, logDir, cacheDir, workspaceDir, defaultWorkerWorkspace, session, logLevel };
   }
 
+  /** Build and attach a host (first boot, post-save boot, restart). */
+  private createHost(options: HostSessionOptions, config: WayangConfig): ServerProcessHost {
+    const host = new ServerProcessHost({
+      options,
+      config,
+      onStatus: (phase, detail, sessionId) => this.emitStatus({ phase, detail, sessionId }),
+      sendState: (payload) => this.sendState(payload),
+      log: this.deps.log,
+    });
+    this.host = host;
+    this.config = config;
+    return host;
+  }
+
+  private configStore(): ConfigStore {
+    return new ConfigStore(this.deps.options.configPath);
+  }
+
   /**
-   * Host-side config load (design 2.4 / 决策九): read the desktop envelope
-   * store at `options.configPath` (`<userData>/config.json`). The store
-   * validates the embedded `wayangConfig` with protocol's `validateConfig`.
-   * A missing envelope triggers the store's transitional one-time import
-   * from the CLI config (read-only, marked for removal once the explicit
-   * import action lands); beyond that import the desktop never touches CLI
-   * files at runtime.
+   * §2.11 welcome-page state: re-read the envelope so the answer reflects
+   * the CURRENT disk state (the save path writes before this is re-asked).
    */
-  private async loadSessionConfig(): Promise<WayangConfig> {
-    const store = new ConfigStore(this.deps.options.configPath);
-    return store.loadOrImport(this.deps.options.legacyConfigPath);
+  async getOnboardState(): Promise<OnboardState> {
+    const store = this.configStore();
+    let envelope: ConfigEnvelope | null = null;
+    let loadError: string | null = null;
+    try {
+      envelope = await store.load();
+    } catch (err) {
+      loadError = err instanceof Error ? err.message : String(err);
+    }
+    return resolveOnboardState(envelope, loadError);
+  }
+
+  /** §2.11「导入 CLI 配置」: read-only import + validate, error surfaces to UI. */
+  async importCliConfig(): Promise<{ config: WayangConfig }> {
+    const store = this.configStore();
+    const config = await store.importFrom(this.deps.options.legacyConfigPath);
+    return { config };
+  }
+
+  /**
+   * §2.11 最终确认页 / §2.4 设置页 save — the shared write path (同源同校验):
+   * validate (protocol + necessary-core) → write envelope → boot when no
+   * server is live / hot-update the running one via the eight fine-grained
+   * methods. Restart-only fields are reported; they take effect on the next
+   * boot (`restartServer`).
+   */
+  async saveConfig(config: WayangConfig, desktop?: Record<string, unknown>): Promise<SaveConfigResult> {
+    validateOrReject(config, 'config from renderer');
+    const coreProblem = checkCoreCompleteness(config);
+    if (coreProblem) throw new Error(coreProblem);
+
+    const prev = this.config;
+    const store = this.configStore();
+    const nextPrefs = { ...(this.desktopPrefs ?? {}), ...(desktop ?? {}) };
+    await store.save(makeEnvelope(config, nextPrefs));
+    this.desktopPrefs = nextPrefs;
+    this.log.info('config envelope saved', { hotPath: prev !== null });
+
+    const host = this.host;
+    const running = host !== null && host.supervisor !== null;
+    if (!running) {
+      // First boot (onboard) or a dead server: boot with the new config.
+      if (host && host.currentPhase !== 'fatal' && host.currentPhase !== 'stopped') {
+        throw new Error(`server 正在自愈（phase: ${host.currentPhase}），请稍候再保存`);
+      }
+      const bootOptions = { ...this.hostOptions() };
+      if (host?.currentSessionId) bootOptions.session = `resume:${host.currentSessionId}`;
+      this.createHost(bootOptions, config);
+      try {
+        await this.host?.start();
+      } catch (err) {
+        // Host settled on fatal + crashed status; the save itself succeeded
+        // (envelope written) — surface the boot failure to the caller.
+        throw new Error(`配置已写入，但 server 启动失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+      return { applied: [], restartRequired: [], booted: true };
+    }
+
+    // Hot path: plan the diff against the RUNNING config, pre-validate every
+    // op with protocol's parser, then apply in order. The envelope is already
+    // written — ops that fail reject with the server's structured error.
+    const plan = planConfigUpdates(prev ?? config, config);
+    for (const op of plan.ops) {
+      parseConfigUpdateRequest(op.method, op.params); // throws on whitelist violations
+      await this.requireRpc().request<ConfigUpdateResult>(op.method, op.params);
+    }
+    this.config = config;
+    if (plan.ops.length > 0 || plan.restartRequired.length > 0) {
+      this.log.info('config hot-updated', { applied: plan.ops.map((op) => op.method), restartRequired: plan.restartRequired });
+    }
+    return { applied: plan.ops.map((op) => op.method), restartRequired: plan.restartRequired, booted: false };
+  }
+
+  /** Settings-page read (§4.3 工作项②): the current envelope. */
+  async readConfig(): Promise<ReadConfigResult> {
+    const envelope = await this.configStore().load();
+    if (!envelope) throw new Error('尚未保存任何配置（config.json 不存在）');
+    this.desktopPrefs = envelope.desktop;
+    return { config: envelope.wayangConfig, desktop: envelope.desktop };
+  }
+
+  /** Workspace picker (§4.3 工作项②): dialog.showOpenDialog, null on cancel. */
+  async chooseDirectory(): Promise<ChooseDirectoryResult> {
+    const window = this.deps.getWindow();
+    const options: Electron.OpenDialogOptions = { properties: ['openDirectory'] };
+    const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+    return { path: result.canceled ? null : (result.filePaths[0] ?? null) };
+  }
+
+  /**
+   * Restart the server with the envelope config (§2.4 restart-needed fields
+   * take effect here): graceful stop (session preserved) → re-read envelope →
+   * resume the CURRENT session with the new config.
+   */
+  async restartServer(): Promise<{ sessionId: string }> {
+    const host = this.requireHost();
+    const sessionId = host.currentSessionId;
+    const envelope = await this.configStore().load();
+    if (!envelope) throw new Error('config.json 不存在，无法重启');
+    validateOrReject(envelope.wayangConfig, 'envelope wayangConfig');
+    const coreProblem = checkCoreCompleteness(envelope.wayangConfig);
+    if (coreProblem) throw new Error(coreProblem);
+
+    this.log.info('restarting server with envelope config', { sessionId });
+    await host.stop();
+    this.emitStatus({ phase: 'connecting', detail: 'restarting server with saved config' });
+    const bootOptions = { ...this.hostOptions(), session: sessionId ? `resume:${sessionId}` : 'new' };
+    const nextHost = this.createHost(bootOptions, envelope.wayangConfig);
+    try {
+      await nextHost.start();
+    } catch (err) {
+      throw new Error(`重启失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    return { sessionId: this.requireSessionId() };
   }
 
   private emitStatus(status: ConnectionStatus): void {
@@ -219,6 +342,12 @@ export class SessionService {
     typedHandle(IPC.rendererLog, router, ([entry]) => {
       this.rendererLog(entry);
     });
+    typedHandle(IPC.getOnboardState, router, () => this.getOnboardState());
+    typedHandle(IPC.importCliConfig, router, () => this.importCliConfig());
+    typedHandle(IPC.saveConfig, router, ([config, desktop]) => this.saveConfig(config, desktop));
+    typedHandle(IPC.readConfig, router, () => this.readConfig());
+    typedHandle(IPC.chooseDirectory, router, () => this.chooseDirectory());
+    typedHandle(IPC.restartServer, router, () => this.restartServer());
   }
 
   private unregisterIpc(): void {

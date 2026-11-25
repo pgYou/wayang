@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WayangConfig } from '@wayang-ai/protocol';
@@ -139,7 +139,7 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
 
   it('start() emits connecting → ready to the window, registers every contract channel, forwards state', async () => {
     const service = makeService();
-    await service.start();
+    await service.start(validConfig);
     await vi.waitFor(() => {
       expect(statusEvents().map((s) => s.phase)).toEqual(['connecting', 'ready']);
     });
@@ -156,7 +156,7 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
 
   it('getInitialState returns the full snapshot (10 slices + current status) in an ok envelope', async () => {
     const service = makeService();
-    await service.start();
+    await service.start(validConfig);
     const result = await invoke(IPC.getInitialState, []);
     expect(result).toMatchObject({ ok: true });
     const snapshot = (result as { data: { status: { phase: string; sessionId?: string }; slices: Record<string, unknown> } }).data;
@@ -168,7 +168,7 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
 
   it('typed router: untrusted sender, invalid args and not-ready failures are error envelopes', async () => {
     const service = makeService();
-    await service.start();
+    await service.start(validConfig);
 
     // Untrusted sender — rejected before the arguments are even read.
     const untrusted = await invoke(IPC.sendInput, ['hello'], false);
@@ -188,7 +188,7 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
 
   it('listSessions returns the core session index (time + summary)', async () => {
     const service = makeService();
-    await service.start();
+    await service.start(validConfig);
     const result = await invoke(IPC.listSessions, []);
     expect(result).toMatchObject({ ok: true });
     const entries = (result as { data: Array<{ sessionId: string; title: string | null; createdAt: number; lastActiveAt: number }> }).data;
@@ -204,7 +204,7 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
 
   it('switchSession validates the target, then boots resume:<id> via the host', async () => {
     const service = makeService();
-    await service.start();
+    await service.start(validConfig);
     const result = await invoke(IPC.switchSession, ['target-1']);
     expect(result).toMatchObject({ ok: true, data: { sessionId: 'session-2' } });
     // The old server was gracefully stopped; the new fork boots the target.
@@ -219,7 +219,7 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
 
   it('switchSession rejects an unknown target with a precise error envelope', async () => {
     const service = makeService();
-    await service.start();
+    await service.start(validConfig);
     const result = await invoke(IPC.switchSession, ['missing-session']);
     expect(result).toMatchObject({ ok: false, error: expect.stringContaining('unknown session missing-session') });
     // No switch happened: no extra fork, no graceful stop.
@@ -228,20 +228,122 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
     await service.stop();
   });
 
-  it('a config load failure lands on crashed (no host, no IPC surface)', async () => {
+  it('start(null) is onboard mode: no server, IPC stays registered for the welcome page', async () => {
     rmSync(options.configPath, { force: true });
     const service = makeService();
-    await service.start();
-    const phases = statusEvents().map((s) => s.phase);
-    expect(phases).toEqual(['connecting', 'crashed']);
-    expect(statusEvents()[1].detail).toMatch(/no desktop config/);
-    expect(electronState.handlers.size).toBe(0);
+    await service.start(null);
+    // No fork, no crash UX (§2.11): the renderer routes to the welcome page.
     expect(servers).toHaveLength(0);
+    expect(statusEvents().map((s) => s.phase)).toEqual(['connecting']);
+    // The whole invoke surface (incl. the config/onboard channels) is live.
+    expect(new Set(electronState.handlers.keys())).toEqual(new Set(IPC_INVOKE_CHANNELS));
+    const state = await invoke(IPC.getOnboardState, []);
+    expect(state).toMatchObject({ ok: true, data: { onboarded: false, problem: expect.stringContaining('不存在') } });
+    await service.stop();
+  });
+
+  it('getOnboardState reflects a core-incomplete (but valid) envelope: not onboarded', async () => {
+    const incomplete = makeEnvelope({
+      providers: { default: { baseURL: 'http://localhost:1234/v1', apiKey: 'k' } },
+      controller: {},
+      worker: {},
+    } as unknown as WayangConfig);
+    writeFileSync(options.configPath, JSON.stringify(incomplete));
+    const service = makeService();
+    await service.start(null);
+    const state = await invoke(IPC.getOnboardState, []);
+    expect(state).toMatchObject({ ok: true, data: { onboarded: false, problem: expect.stringContaining('controller') } });
+    await service.stop();
+  });
+
+  it('importCliConfig validates read-only: a valid CLI config returns, an invalid one errors', async () => {
+    rmSync(options.configPath, { force: true });
+    writeFileSync(options.legacyConfigPath, JSON.stringify(validConfig));
+    const service = makeService();
+    await service.start(null);
+    const ok = await invoke(IPC.importCliConfig, []);
+    expect(ok).toMatchObject({ ok: true, data: { config: validConfig } });
+    // Read-only: no envelope seeded by the import itself.
+    expect(existsSync(options.configPath)).toBe(false);
+
+    writeFileSync(options.legacyConfigPath, JSON.stringify({ providers: {} }));
+    const bad = await invoke(IPC.importCliConfig, []);
+    expect(bad).toMatchObject({ ok: false, error: expect.stringContaining('invalid CLI config') });
+    await service.stop();
+  });
+
+  it('saveConfig from onboard mode validates, writes the envelope and boots the server', async () => {
+    rmSync(options.configPath, { force: true });
+    const service = makeService();
+    await service.start(null);
+    const result = await invoke(IPC.saveConfig, [validConfig, { defaultWorkerWorkspace: join(dir, 'picked-ws') }]);
+    expect(result).toMatchObject({ ok: true, data: { applied: [], restartRequired: [], booted: true } });
+    // The envelope landed with the desktop prefs preserved.
+    const saved = JSON.parse(readFileSync(options.configPath, 'utf-8')) as { wayangConfig: WayangConfig; desktop: Record<string, unknown> };
+    expect(saved.wayangConfig).toEqual(validConfig);
+    expect(saved.desktop).toEqual({ defaultWorkerWorkspace: join(dir, 'picked-ws') });
+    // The server booted and reached ready.
+    await vi.waitFor(() => expect(statusEvents().map((s) => s.phase)).toContain('ready'));
+    expect(servers).toHaveLength(1);
+
+    // An invalid config is rejected BEFORE any write or fork.
+    const before = readFileSync(options.configPath, 'utf-8');
+    const invalid = await invoke(IPC.saveConfig, [{ providers: {}, controller: { provider: 'x' }, worker: {} }]);
+    expect(invalid).toMatchObject({ ok: false, error: expect.stringContaining('invalid') });
+    expect(readFileSync(options.configPath, 'utf-8')).toBe(before);
+    await service.stop();
+  });
+
+  it('saveConfig on a running server hot-updates via the eight methods and reports restart-only fields', async () => {
+    const service = makeService();
+    await service.start(validConfig);
+    const next: WayangConfig = {
+      ...validConfig,
+      providers: { default: { ...validConfig.providers.default, apiKey: 'rotated-key' } },
+      worker: { ...validConfig.worker, maxConcurrency: 5 },
+      workers: { codex: { type: 'claude-code', description: 'third-party row', enable: true } },
+    };
+    const result = await invoke(IPC.saveConfig, [next]);
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        applied: ['update_provider', 'update_worker_settings'],
+        restartRequired: [expect.stringContaining('workers')],
+        booted: false,
+      },
+    });
+    // The ops crossed the RPC boundary in plan order with whitelist shapes.
+    const server = servers[0];
+    expect(server.updateRequests.map((r) => r.method)).toEqual(['update_provider', 'update_worker_settings']);
+    expect(server.updateRequests[0].params).toEqual({ name: 'default', patch: { apiKey: 'rotated-key' } });
+    expect(server.updateRequests[1].params).toEqual({ patch: { maxConcurrency: 5 } });
+    // The envelope kept the hot-updated config too.
+    const saved = JSON.parse(readFileSync(options.configPath, 'utf-8')) as { wayangConfig: WayangConfig };
+    expect(saved.wayangConfig.providers.default.apiKey).toBe('rotated-key');
+    await service.stop();
+  });
+
+  it('restartServer gracefully stops and re-boots the current session with the envelope config', async () => {
+    const service = makeService();
+    await service.start(validConfig);
+    const next: WayangConfig = {
+      ...validConfig,
+      workers: { codex: { type: 'claude-code', description: 'row', enable: true } },
+    };
+    await invoke(IPC.saveConfig, [next]);
+    const result = await invoke(IPC.restartServer, []);
+    expect(result).toMatchObject({ ok: true, data: { sessionId: 'session-2' } });
+    // Old server shut down gracefully; the new fork resumes the live session.
+    expect(servers[0].shutdownRequests).toBe(1);
+    const idx = servers[1].argv.indexOf('--session');
+    expect(servers[1].argv[idx + 1]).toBe('resume:session-1');
+    await vi.waitFor(() => expect(statusEvents().map((s) => s.phase)).toEqual(['connecting', 'ready', 'connecting', 'ready']));
+    await service.stop();
   });
 
   it('rendererLog entries flow into the unified logger sink', async () => {
     const service = makeService();
-    await service.start();
+    await service.start(validConfig);
     const result = await invoke(IPC.rendererLog, [{ level: 'warn', message: 'renderer bridge works' }]);
     expect(result).toMatchObject({ ok: true });
     // The unified sink received the entry (§2.9 renderer log bridge).

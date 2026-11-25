@@ -18,7 +18,11 @@ import type {
   ConversationEntry,
   InquireQuestion,
   TaskDetail,
+  WayangConfig,
 } from '@wayang-ai/protocol';
+import type { OnboardState } from './onboard';
+
+export type { OnboardState };
 
 /* ------------------------------------------------------------------ *
  * State slices (§2.2 订阅载荷 + §2.7 快照面)
@@ -98,6 +102,21 @@ export const IPC = {
   listSessions: 'wayang:listSessions',
   /** Renderer log bridge (§2.9 UnifiedLogger): renderer entries into the unified log. */
   rendererLog: 'wayang:rendererLog',
+  /** Cold-boot decision (§2.11 决策九): does the envelope satisfy the core? */
+  getOnboardState: 'wayang:getOnboardState',
+  /** Explicit CLI-config import (§2.11): read `~/.wayang.config.json` (read-only) + validate. */
+  importCliConfig: 'wayang:importCliConfig',
+  /**
+   * Save the config envelope (§2.11 最终确认页 / §2.4 设置页同源同校验):
+   * validate → write envelope → boot (not running) / hot-update (running).
+   */
+  saveConfig: 'wayang:saveConfig',
+  /** Settings page read: the current envelope's wayangConfig + desktop prefs. */
+  readConfig: 'wayang:readConfig',
+  /** Directory picker (§4.3 工作项② workspace selection, dialog.showOpenDialog). */
+  chooseDirectory: 'wayang:chooseDirectory',
+  /** Restart the server with the envelope config (§2.4 restart-needed fields). */
+  restartServer: 'wayang:restartServer',
 } as const;
 
 export const IPC_SUBSCRIBE = {
@@ -159,6 +178,27 @@ export interface RendererLogEntry {
   data?: Record<string, unknown>;
 }
 
+/** Result of saving the envelope (§2.4/§2.11): what took effect, and how. */
+export interface SaveConfigResult {
+  /** Op methods applied to the RUNNING server (hot path), in order. */
+  applied: string[];
+  /** Human-readable notes for fields that need a server restart. */
+  restartRequired: string[];
+  /** True when the save booted the server (first-boot / not-running path). */
+  booted: boolean;
+}
+
+/** `wayang:readConfig` payload: the current envelope (§4.3 工作项②). */
+export interface ReadConfigResult {
+  config: WayangConfig;
+  desktop: Record<string, unknown>;
+}
+
+/** `wayang:chooseDirectory` payload (§4.3 工作项②): picked path or null. */
+export interface ChooseDirectoryResult {
+  path: string | null;
+}
+
 /** Envelope every typed invoke resolves/rejects through (§2.2 typedHandle/typedInvoke). */
 export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -187,6 +227,15 @@ export interface IpcInvokeContract {
   [IPC.switchSession]: { args: [sessionId: string]; result: { sessionId: string } };
   [IPC.listSessions]: { args: []; result: SessionIndexEntry[] };
   [IPC.rendererLog]: { args: [entry: RendererLogEntry]; result: void };
+  [IPC.getOnboardState]: { args: []; result: OnboardState };
+  [IPC.importCliConfig]: { args: []; result: { config: WayangConfig } };
+  [IPC.saveConfig]: {
+    args: [config: WayangConfig, desktop?: Record<string, unknown>];
+    result: SaveConfigResult;
+  };
+  [IPC.readConfig]: { args: []; result: ReadConfigResult };
+  [IPC.chooseDirectory]: { args: []; result: ChooseDirectoryResult };
+  [IPC.restartServer]: { args: []; result: { sessionId: string } };
 }
 
 /** Snapshot payload of `wayang:getInitialState` (§2.7). */
@@ -268,6 +317,17 @@ export const IPC_ARG_VALIDATORS: Readonly<Record<InvokeChannel, IpcArgValidator>
     if (entry.data !== undefined && !isRecord(entry.data)) return 'rendererLog data must be an object';
     return null;
   },
+  [IPC.getOnboardState]: (args) => (args.length === 0 ? null : 'getOnboardState takes no arguments'),
+  [IPC.importCliConfig]: (args) => (args.length === 0 ? null : 'importCliConfig takes no arguments'),
+  [IPC.saveConfig]: (args) => {
+    if (args.length !== 1 && args.length !== 2) return 'saveConfig takes a config and an optional desktop prefs object';
+    if (!isRecord(args[0])) return 'saveConfig config must be an object';
+    if (args[1] !== undefined && !isRecord(args[1])) return 'saveConfig desktop prefs must be an object';
+    return null;
+  },
+  [IPC.readConfig]: (args) => (args.length === 0 ? null : 'readConfig takes no arguments'),
+  [IPC.chooseDirectory]: (args) => (args.length === 0 ? null : 'chooseDirectory takes no arguments'),
+  [IPC.restartServer]: (args) => (args.length === 0 ? null : 'restartServer takes no arguments'),
 };
 
 /* ------------------------------------------------------------------ *
@@ -285,6 +345,9 @@ export const DEFAULT_INVOKE_TIMEOUT_MS = 15_000;
 export const INVOKE_TIMEOUT_OVERRIDES_MS: Partial<Record<InvokeChannel, number>> = {
   [IPC.newSession]: 60_000,
   [IPC.switchSession]: 60_000,
+  // A save may boot the server (30s ready timeout) before resolving.
+  [IPC.saveConfig]: 60_000,
+  [IPC.restartServer]: 60_000,
 };
 
 /** Effective timeout for a channel (override when present, else the default). */
@@ -303,4 +366,5 @@ export type {
   ConversationEntry,
   InquireQuestion,
   TaskDetail,
+  WayangConfig,
 };

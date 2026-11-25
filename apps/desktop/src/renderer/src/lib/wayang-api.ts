@@ -10,7 +10,17 @@
  */
 
 import type { WayangBridge } from '../../../preload/index';
-import type { ConnectionStatus, InitialStateSnapshot, RendererLogEntry, StateUpdate } from '../../../../src/shared/ipc-contract';
+import type {
+  ChooseDirectoryResult,
+  ConnectionStatus,
+  InitialStateSnapshot,
+  OnboardState,
+  ReadConfigResult,
+  RendererLogEntry,
+  SaveConfigResult,
+  StateUpdate,
+  WayangConfig,
+} from '../../../../src/shared/ipc-contract';
 
 function bridge(): WayangBridge {
   if (typeof window === 'undefined' || !window.wayang) {
@@ -37,6 +47,13 @@ export const wayang = {
   switchSession: (sessionId: string): ReturnType<WayangBridge['switchSession']> => bridge().switchSession(sessionId),
   listSessions: (): ReturnType<WayangBridge['listSessions']> => bridge().listSessions(),
   rendererLog: (entry: RendererLogEntry): Promise<void> => bridge().rendererLog(entry),
+  getOnboardState: (): Promise<OnboardState> => bridge().getOnboardState(),
+  importCliConfig: (): Promise<{ config: WayangConfig }> => bridge().importCliConfig(),
+  saveConfig: (config: WayangConfig, desktop?: Record<string, unknown>): Promise<SaveConfigResult> =>
+    bridge().saveConfig(config, desktop),
+  readConfig: (): Promise<ReadConfigResult> => bridge().readConfig(),
+  chooseDirectory: (): Promise<ChooseDirectoryResult> => bridge().chooseDirectory(),
+  restartServer: (): Promise<{ sessionId: string }> => bridge().restartServer(),
 };
 
 /** Bridge surface subset the store boot needs (DI seam for tests). */

@@ -16,7 +16,9 @@ import { UnifiedLogger } from './unified-logger';
 import { WindowManager } from './window-manager';
 import { SecurityGuard } from './security-guard';
 import { SessionService, type DesktopSessionOptions } from './session-service';
-import { getPaths, getPlatformConfig, getStoragePaths, getWorkspacePolicy } from '../shared/platform-config';
+import { ConfigStore, type ConfigEnvelope } from './config-store';
+import { resolveOnboardState } from '../shared/onboard';
+import { getPaths, getPlatformConfig, getStoragePaths, getWorkspacePolicy, type PathSource } from '../shared/platform-config';
 
 /** Prepend the paths a GUI-launched process misses (brew, local bin). */
 function fixGuiPath(): void {
@@ -24,10 +26,13 @@ function fixGuiPath(): void {
   process.env.PATH = [...new Set([...getPlatformConfig().guiPathPrefixes, ...parts])].join(':');
 }
 
-function resolveSessionOptions(): DesktopSessionOptions {
+function resolveSessionOptions(envelope: ConfigEnvelope | null): DesktopSessionOptions {
   // All paths via the platform config module (决策十) — no hand-joined
-  // homedir paths, no direct Electron path calls outside the module.
-  const paths = getPaths();
+  // homedir paths, no direct Electron path calls outside the module. The
+  // envelope's desktop prefs ride the SAME override mechanism (§2.6): the
+  // workspace pref (§4.3 工作项② settings page) enters as a PathSource
+  // override, future prefs plug in the same way.
+  const paths = getPaths(electronPathSourceWithPrefs(envelope));
   // Storage/workspace injection values (§2.5 storage switch): produced by
   // the platform config module (single source) and injected into core via
   // the StoragePaths / WorkspacePolicy contract — the serverMain legacy
@@ -38,8 +43,6 @@ function resolveSessionOptions(): DesktopSessionOptions {
   // lands in it (§2.5: 启动自动 mkdir).
   mkdirSync(workspace.defaultWorkerWorkspace, { recursive: true });
   return {
-    // Envelope store (决策九): the config load source; the CLI config path
-    // is only the transitional one-time import source.
     configPath: paths.configPath,
     legacyConfigPath: paths.cliConfigPath,
     dataDir: storage.dataDir,
@@ -49,6 +52,23 @@ function resolveSessionOptions(): DesktopSessionOptions {
     defaultWorkerWorkspace: workspace.defaultWorkerWorkspace,
     session: process.env.WAYANG_DESKTOP_SESSION ?? 'new',
     logLevel: process.env.WAYANG_DESKTOP_LOG_LEVEL ?? 'info',
+  };
+}
+
+/**
+ * The Electron path source plus the envelope's desktop prefs (决策十/§2.6):
+ * the settings page's workspace selection persists in the envelope and
+ * enters the path resolution through the same override slot.
+ */
+function electronPathSourceWithPrefs(envelope: ConfigEnvelope | null): PathSource {
+  const prefs = envelope?.desktop ?? {};
+  const workspace = typeof prefs.defaultWorkerWorkspace === 'string' ? prefs.defaultWorkerWorkspace : undefined;
+  return {
+    userData: app.getPath('userData'),
+    logs: app.getPath('logs'),
+    home: app.getPath('home'),
+    appName: app.getName(),
+    defaultWorkerWorkspace: workspace,
   };
 }
 
@@ -111,12 +131,27 @@ export class Application {
   /** Assemble the components once Electron is ready. */
   private async start(): Promise<void> {
     const log = this.logger as UnifiedLogger;
-    const options = resolveSessionOptions();
+
+    // Cold-boot decision (§2.11 决策九): load the envelope FIRST. Missing /
+    // invalid / core-incomplete → onboard mode (welcome page); the server
+    // boots only after the renderer's confirm page saves a valid config.
+    const store = new ConfigStore(join(getPaths().configPath));
+    let envelope: ConfigEnvelope | null = null;
+    let loadError: string | null = null;
+    try {
+      envelope = await store.load();
+    } catch (err) {
+      loadError = err instanceof Error ? err.message : String(err);
+    }
+    const onboard = resolveOnboardState(envelope, loadError);
+    const options = resolveSessionOptions(envelope);
     log.info('app ready', {
       version: app.getVersion(),
       electron: process.versions.electron,
       node: process.versions.node,
       platform: `${process.platform}/${process.arch}`,
+      onboarded: onboard.onboarded,
+      problem: onboard.problem,
       ...options,
     });
 
@@ -140,7 +175,7 @@ export class Application {
     windows.onDidFinishLoad(() => session.resendSnapshot());
 
     windows.create();
-    await session.start();
+    await session.start(onboard.onboarded && envelope ? envelope.wayangConfig : null);
   }
 
   /** The Disposable exit queue: stop the server, flush the log, then quit. */

@@ -124,6 +124,19 @@ describe('core injection values (StoragePaths / WorkspacePolicy)', () => {
     });
   });
 
+  it('workspace priority: env override > envelope pref (PathSource) > default (决策十 ladder)', () => {
+    // §4.3 工作项②: the settings page persists defaultWorkerWorkspace in the
+    // envelope; it enters the SAME override mechanism one rung below the env
+    // dev override — env wins when both are set, call sites unchanged.
+    const withPref = getPaths({ ...source, defaultWorkerWorkspace: '/picked/ws' });
+    expect(withPref.defaultWorkerWorkspace).toBe('/picked/ws');
+    process.env.WAYANG_DESKTOP_WORKSPACE = '/env/ws';
+    expect(getPaths({ ...source, defaultWorkerWorkspace: '/picked/ws' }).defaultWorkerWorkspace).toBe('/env/ws');
+    // Absent pref and env → the §2.5 default.
+    delete process.env.WAYANG_DESKTOP_WORKSPACE;
+    expect(getPaths(source).defaultWorkerWorkspace).toBe(join('/base/home', '.agents', 'wayang-workspace'));
+  });
+
   it('produces the workspace contract from the module paths (single source)', () => {
     const paths = getPaths(source);
     expect(getWorkspacePolicy(paths)).toEqual({

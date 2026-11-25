@@ -87,29 +87,30 @@ describe('ConfigStore atomic write', () => {
   });
 });
 
-describe('ConfigStore.loadOrImport (transitional implicit CLI import)', () => {
-  it('seeds the envelope once from the CLI config, then reads the envelope only', async () => {
-    await writeFile(legacyPath, JSON.stringify(validConfig), 'utf-8');
+describe('ConfigStore.importFrom (explicit CLI import, 决策九 域三落地)', () => {
+  it('reads and validates the CLI config read-only — never writes the envelope or the CLI file', async () => {
+    const before = JSON.stringify(validConfig);
+    await writeFile(legacyPath, before, 'utf-8');
     const store = new ConfigStore(configPath);
-    const first = await store.loadOrImport(legacyPath);
-    expect(first).toEqual(validConfig);
-    expect(existsSync(configPath)).toBe(true);
-    // The envelope is now the only source: removing the CLI file changes
-    // nothing (runtime never touches it again).
-    rmSync(legacyPath);
-    const second = await store.loadOrImport(legacyPath);
-    expect(second).toEqual(validConfig);
+    const imported = await store.importFrom(legacyPath);
+    expect(imported).toEqual(validConfig);
+    // Import is read-only in BOTH directions: no envelope is seeded and the
+    // CLI file is untouched (the confirm page decides whether to save).
+    expect(existsSync(configPath)).toBe(false);
+    expect(readFileSync(legacyPath, 'utf-8')).toBe(before);
   });
 
-  it('fails with import_failed when neither envelope nor CLI config exists', async () => {
+  it('rejects when the CLI config file is missing (no silent fallback)', async () => {
     const store = new ConfigStore(configPath);
-    await expect(store.loadOrImport(legacyPath)).rejects.toThrow(/no CLI config to import/);
+    await expect(store.importFrom(legacyPath)).rejects.toThrow(/无法读取 CLI 配置/);
+    expect(existsSync(configPath)).toBe(false);
   });
 
-  it('fails with import_failed when the CLI config is invalid', async () => {
+  it('rejects when the CLI config is invalid JSON or fails validateConfig', async () => {
+    await writeFile(legacyPath, '{not json', 'utf-8');
+    await expect(new ConfigStore(configPath).importFrom(legacyPath)).rejects.toThrow(/不是有效 JSON/);
     await writeFile(legacyPath, JSON.stringify({ providers: {} }), 'utf-8');
-    const store = new ConfigStore(configPath);
-    await expect(store.loadOrImport(legacyPath)).rejects.toThrow(/invalid CLI config/);
+    await expect(new ConfigStore(configPath).importFrom(legacyPath)).rejects.toThrow(/invalid CLI config/);
     expect(existsSync(configPath)).toBe(false);
   });
 });

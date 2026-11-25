@@ -83,6 +83,25 @@ const api = {
   /** Renderer log bridge (§2.9): renderer entries into the unified log. */
   rendererLog: (entry: IpcInvokeContract[typeof IPC.rendererLog]['args'][number]): Promise<void> =>
     typedInvoke(IPC.rendererLog, entry),
+  /** Cold-boot decision (§2.11): welcome page trigger. */
+  getOnboardState: (): Promise<IpcInvokeContract[typeof IPC.getOnboardState]['result']> =>
+    typedInvoke(IPC.getOnboardState),
+  /** Explicit CLI-config import (§2.11): read-only + validate. */
+  importCliConfig: (): Promise<IpcInvokeContract[typeof IPC.importCliConfig]['result']> =>
+    typedInvoke(IPC.importCliConfig),
+  /** Save the envelope (§2.11 confirm page / §2.4 settings): validate → write → boot/hot-update. */
+  saveConfig: (
+    config: IpcInvokeContract[typeof IPC.saveConfig]['args'][0],
+    desktop?: IpcInvokeContract[typeof IPC.saveConfig]['args'][1],
+  ): Promise<IpcInvokeContract[typeof IPC.saveConfig]['result']> => typedInvoke(IPC.saveConfig, config, desktop),
+  /** Settings read (§4.3 工作项②): the current envelope. */
+  readConfig: (): Promise<IpcInvokeContract[typeof IPC.readConfig]['result']> => typedInvoke(IPC.readConfig),
+  /** Directory picker (§4.3 工作项②): workspace selection. */
+  chooseDirectory: (): Promise<IpcInvokeContract[typeof IPC.chooseDirectory]['result']> =>
+    typedInvoke(IPC.chooseDirectory),
+  /** Restart the server with the envelope config (§2.4 restart-needed fields). */
+  restartServer: (): Promise<IpcInvokeContract[typeof IPC.restartServer]['result']> =>
+    typedInvoke(IPC.restartServer),
 };
 
 export type WayangBridge = typeof api;

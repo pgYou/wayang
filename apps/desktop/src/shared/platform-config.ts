@@ -29,12 +29,17 @@ import type { StoragePaths, WorkspacePolicy } from '@wayang-ai/protocol';
 /**
  * The raw Electron surface this module reads. Injectable for tests; the
  * default implementation is the app's single `app.getPath` call site.
+ * `defaultWorkerWorkspace` is the settings-page override slot (§4.3 工作项②):
+ * the envelope's `desktop.defaultWorkerWorkspace` pref enters here — same
+ * mechanism as the env group, so no call site ever changes.
  */
 export interface PathSource {
   userData: string;
   logs: string;
   home: string;
   appName: string;
+  /** Settings-page workspace pref (envelope desktop section); absent = default. */
+  defaultWorkerWorkspace?: string;
 }
 
 /** Typed path set — the §2.5 directory baseline, one value set per host. */
@@ -74,9 +79,12 @@ export interface PlatformConfig {
 }
 
 /**
- * First override group (§2.4): `WAYANG_DESKTOP_*` env vars. Same mechanism
- * for every path class — future settings-page overrides and platform
- * branches extend this table, never the call sites.
+ * First override group (§2.6/决策十): `WAYANG_DESKTOP_*` env vars — the dev
+ * /debug override entries. Same mechanism for every path class; future
+ * settings-page overrides and platform branches extend this table, never the
+ * call sites. The settings-page workspace pref enters through the SAME
+ * ladder one rung below: env override → envelope `desktop` pref
+ * (`PathSource.defaultWorkerWorkspace`) → default.
  */
 const ENV_OVERRIDES = {
   userData: 'WAYANG_DESKTOP_USER_DATA',
@@ -111,9 +119,11 @@ export function getPaths(source?: PathSource): PlatformPaths {
     join(src.home, 'Library', 'Caches', src.appName),
   );
   const home = src.home;
+  // Priority (决策十 override ladder): env (dev/debug) > settings-page pref
+  // (envelope `desktop.defaultWorkerWorkspace` via PathSource) > default.
   const defaultWorkerWorkspace = override(
     process.env[ENV_OVERRIDES.workspace],
-    join(home, '.agents', 'wayang-workspace'),
+    src.defaultWorkerWorkspace ?? join(home, '.agents', 'wayang-workspace'),
   );
 
   return {

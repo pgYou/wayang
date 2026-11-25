@@ -31,6 +31,8 @@ export class LoopbackServer {
   readonly argv: string[] = [];
   readonly subscribeRequests: Array<{ target: string; path: string }> = [];
   readonly snapshotRequests: Array<{ target: string; path: string }> = [];
+  /** Config hot-update RPCs (§2.4 eight fine-grained methods) as received. */
+  readonly updateRequests: Array<{ method: string; params: Record<string, unknown> }> = [];
   shutdownRequests = 0;
   private readonly serverListeners = new Set<(event: { data: unknown }) => void>();
   private readonly childListeners = new Set<(message: unknown) => void>();
@@ -88,6 +90,22 @@ export class LoopbackServer {
       setImmediate(() => this.emitExit(0));
       return {};
     });
+    // The eight config hot-update methods (§2.4): record and succeed.
+    for (const method of [
+      METHOD.UPDATE_PROVIDER,
+      METHOD.UPDATE_MODEL,
+      METHOD.ADD_PROVIDER,
+      METHOD.ADD_MODEL,
+      METHOD.REMOVE_PROVIDER,
+      METHOD.REMOVE_MODEL,
+      METHOD.UPDATE_CONTROLLER_MODEL,
+      METHOD.UPDATE_WORKER_SETTINGS,
+    ]) {
+      this.rpc.register(method, (params) => {
+        this.updateRequests.push({ method, params: params as Record<string, unknown> });
+        return { affected: [] };
+      });
+    }
   }
 
   /** Announce readiness; a null id reproduces an id-less ready frame. */
