@@ -12,6 +12,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
+        # Node 20 已进入 actions runner 的 deprecation 警告期（Node 20 EOL 后镜像逐步退役）。
+        # 仅记录不修：升级需同步评估 engines（>=20）与 e2e 基线，另行处理。
         with:
           node-version: 20
           cache: npm
