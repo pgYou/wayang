@@ -10,4 +10,4 @@ dist/
 .agent
 .zcode
 .xac
-.turbo
+.turbo/*

@@ -1,0 +1,235 @@
+/**
+ * C2 wiring tests — the engine seam for `*-acp` workers (issue #25).
+ *
+ * Dispatch (freeze §7 ①): `createWorker`'s switch returns the provider class
+ * for both new types, constructed with the ClaudeCodeWorker signature
+ * (config, sessionDir, workspaceDir, ctx, skills). Construction must not
+ * spawn — a missing CLI fails fast in run() (C1 preflight), never here.
+ *
+ * Wiring (freeze §7 ②): ACP workers are driven by optional-member probes —
+ * `setSignalContext` receives grants/approvalMemory (04 §3), no inquiry
+ * channel is attached (02 §6 `inquiry: false`), and the worker's
+ * `permissionHandler` lands in the engine's resolvers so respond_permission
+ * reaches it unchanged.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { TaskExecuteEngine } from '@/services/task-execute-engine';
+import { SignalQueue } from '@/services/signal/signal-queue';
+import { createMockCtx, makeTask } from '@/__tests__/helpers';
+import { SkillRegistry } from '@/services/skills/registry';
+import { CodebuddyAcpWorker } from '@/services/agents/acp/codebuddy-acp-worker';
+import { OpenCodeAcpWorker } from '@/services/agents/acp/opencode-acp-worker';
+import { GenericAcpWorker } from '@/services/agents/acp/generic-acp-worker';
+import type { WorkerConfig, WayangConfig } from '@wayang-ai/protocol/types/config';
+
+let tempDir: string;
+
+/** Minimal ACP rows — provider commands omitted on purpose: defaults apply; 'acp' declares its own. */
+const acpWorkers: Record<string, WorkerConfig> = {
+  codebuddy: { type: 'codebuddy', description: 'Tencent CodeBuddy (ACP)' },
+  opencode: { type: 'opencode', description: 'OpenCode (ACP, experimental)' },
+  mycli: { type: 'acp', command: 'my-cli', description: 'Generic ACP CLI' },
+};
+
+function makeEngine(workers: Record<string, WorkerConfig> = acpWorkers, permission?: WayangConfig['permission']) {
+  const ctx = createMockCtx({
+    sessionDir: tempDir,
+    workspaceDir: tempDir,
+    config: { providers: {}, controller: {}, worker: {}, workers, permission } as any,
+  });
+  const signalQueue = new SignalQueue(ctx);
+  const engine = new TaskExecuteEngine(ctx, signalQueue, new SkillRegistry([]));
+  return { engine, ctx, signalQueue };
+}
+
+describe('createWorker: *-acp dispatch (freeze §7 ①)', () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'wayang-acp-dispatch-'));
+  });
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('constructs a CodebuddyAcpWorker for a codebuddy row (minimal config, mock ctx)', () => {
+    const { engine } = makeEngine();
+    const worker = (engine as any).createWorker('codebuddy', makeTask('t1'));
+
+    expect(worker).toBeInstanceOf(CodebuddyAcpWorker);
+    // ACP skeleton id prefix + the process workspace fallback (no task workspace).
+    expect(worker.id).toMatch(/^aw/);
+    expect(worker.workspaceDir).toBe(tempDir);
+  });
+
+  it('constructs an OpenCodeAcpWorker for an opencode row', () => {
+    const { engine } = makeEngine();
+    const worker = (engine as any).createWorker('opencode', makeTask('t2'));
+
+    expect(worker).toBeInstanceOf(OpenCodeAcpWorker);
+    expect(worker.id).toMatch(/^aw/);
+  });
+
+  it('constructs a GenericAcpWorker for an acp row', () => {
+    const { engine } = makeEngine();
+    const worker = (engine as any).createWorker('mycli', makeTask('t4'));
+
+    expect(worker).toBeInstanceOf(GenericAcpWorker);
+    expect(worker).not.toBeInstanceOf(CodebuddyAcpWorker);
+    expect(worker.id).toMatch(/^aw/);
+  });
+
+  it('still throws for an unconfigured worker id', () => {
+    const { engine } = makeEngine();
+    expect(() => (engine as any).createWorker('nope', makeTask('t3'))).toThrow('Unknown worker type');
+  });
+});
+
+describe('workers.<id>.model wiring (issue #88)', () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'wayang-worker-model-'));
+  });
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function makeModelEngine(worker: WorkerConfig) {
+    const ctx = createMockCtx({
+      sessionDir: tempDir,
+      workspaceDir: tempDir,
+      config: {
+        providers: { openai: { baseURL: 'https://api.openai.com/v1', apiKey: 'sk-x' } },
+        models: { coder: { provider: 'openai', name: 'gpt-4o' } },
+        controller: {},
+        worker: {},
+        workers: { coder: worker },
+      } as any,
+    });
+    const engine = new TaskExecuteEngine(ctx, new SignalQueue(ctx), new SkillRegistry([]));
+    return { engine, ctx };
+  }
+
+  it('resolves workers.<id>.model and hands the ResolvedModel to the claude-code worker', () => {
+    const { engine } = makeModelEngine({
+      type: 'claude-code',
+      description: 'coding worker',
+      model: 'coder',
+    });
+
+    const worker = (engine as any).createWorker('coder', makeTask('t-model'));
+
+    expect((worker as any).resolvedModel).toMatchObject({
+      providerKey: 'openai',
+      modelName: 'gpt-4o',
+      source: 'models',
+    });
+  });
+
+  it('reports an unused model on an ACP row instead of pretending it was consumed', () => {
+    const { engine, ctx } = makeModelEngine({
+      type: 'codebuddy',
+      description: 'ACP worker',
+      model: 'coder',
+    });
+
+    (engine as any).createWorker('coder', makeTask('t-acp-model'));
+
+    const warn = vi.mocked(ctx.logger.warn);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0]![1]);
+    expect(message).toContain('配置的模型 gpt-4o 未被该 provider 消费');
+    expect(warn.mock.calls[0]![0]).toMatchObject({ workerType: 'coder', model: 'gpt-4o', provider: 'openai' });
+  });
+
+  it('does not warn when the ACP row declares no model', () => {
+    const { engine, ctx } = makeModelEngine({
+      type: 'codebuddy',
+      description: 'ACP worker',
+    });
+
+    (engine as any).createWorker('coder', makeTask('t-acp-nomodel'));
+
+    expect(vi.mocked(ctx.logger.warn)).not.toHaveBeenCalled();
+  });
+});
+
+describe('wireWorker: ACP capability probes (freeze §7 ②)', () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'wayang-acp-wiring-'));
+  });
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('setSignalContext receives grants + approvalMemory; permissionHandler is registered', () => {
+    const { engine, signalQueue } = makeEngine();
+    const worker = (engine as any).createWorker('codebuddy', makeTask('w1')) as CodebuddyAcpWorker;
+    const spy = vi.spyOn(worker, 'setSignalContext');
+
+    (engine as any).wireWorker(worker, makeTask('w1'), 'eng-w1', 'codebuddy');
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const deps = spy.mock.calls[0][0];
+    expect(deps.signalQueue).toBe(signalQueue);
+    expect(deps.workerId).toBe('eng-w1');
+    expect(deps.taskId).toBe('w1');
+    // 04 §3: the engine's task-scoped approval store reaches the worker's
+    // own permission path — same instance the puppet middleware gets.
+    expect(deps.grants).toBe((engine as any).approvalGrants);
+    expect(deps.approvalMemory).toBe('task'); // resolveApprovalMemory default
+    // respond_permission reaches the worker's resolver, registered like CCW's.
+    expect((engine as any).permissionResolvers.get('eng-w1')).toBe(worker.permissionHandler);
+  });
+
+  it('honours permission.approvalMemory: "off" in the wired deps', () => {
+    const { engine } = makeEngine(acpWorkers, { approvalMemory: 'off' });
+    const worker = (engine as any).createWorker('opencode', makeTask('w2')) as OpenCodeAcpWorker;
+    const spy = vi.spyOn(worker, 'setSignalContext');
+
+    (engine as any).wireWorker(worker, makeTask('w2'), 'eng-w2', 'opencode');
+
+    expect(spy.mock.calls[0][0].approvalMemory).toBe('off');
+  });
+
+  it('attaches the inquiry channel to an ACP worker (MCP ask_controller)', () => {
+    const { engine } = makeEngine();
+    const worker = (engine as any).createWorker('codebuddy', makeTask('w3')) as CodebuddyAcpWorker;
+    const spy = vi.spyOn(worker, 'setInquirySupport');
+
+    expect(() => (engine as any).wireWorker(worker, makeTask('w3'), 'eng-w3', 'codebuddy')).not.toThrow();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(typeof spy.mock.calls[0][0]).toBe('function');
+  });
+
+  it('positive control: an inquiry-capable worker still gets both probes', () => {
+    const { engine } = makeEngine();
+    // ClaudeCodeWorker-shaped stand-in: inquiry + signal context + resolver.
+    const fake = {
+      id: 'cw-fake',
+      workspaceDir: tempDir,
+      run: vi.fn(),
+      abort: vi.fn(),
+      getConversation: () => [],
+      getState: () => null,
+      acceptMessage: vi.fn(() => true),
+      subscribe: () => () => {},
+      setInquirySupport: vi.fn(),
+      setSignalContext: vi.fn(),
+      permissionHandler: { resolvePermission: vi.fn(), cleanup: vi.fn(), wrappedTools: {} },
+    };
+
+    (engine as any).wireWorker(fake, makeTask('w4'), 'eng-w4', 'claude-code');
+
+    expect(fake.setInquirySupport).toHaveBeenCalledTimes(1);
+    expect(fake.setSignalContext).toHaveBeenCalledTimes(1);
+    expect(fake.setSignalContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        grants: (engine as any).approvalGrants,
+        approvalMemory: 'task',
+      }),
+    );
+    expect((engine as any).permissionResolvers.get('eng-w4')).toBe(fake.permissionHandler);
+  });
+});

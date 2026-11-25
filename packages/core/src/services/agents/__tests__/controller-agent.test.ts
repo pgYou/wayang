@@ -1,0 +1,1305 @@
+import { EEntryType } from '@wayang-ai/protocol';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ControllerAgent } from '@/services/agents/controller-agent';
+import type { ControllerAgentState } from '@/services/agents/controller-state';
+import type { ControllerSignal } from '@wayang-ai/protocol';
+import { SkillRegistry } from '@/services/skills/registry';
+import { ToolCallRecorder } from '../utils/tool-call-recorder';
+import { COMPACTION_CONTINUATION } from '../utils/conversation-to-sdk-messages';
+import { ConversationIndexBuilder } from '@/services/conversation/conversation-index';
+import { mockModel, createMockCtx, createMockLogger } from '@/__tests__/helpers';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { normalizeWorkspacePath, workspaceSlugFromPath } from '@/infra/workspace-registry';
+
+// Empty registry — controller needs it for prompt building.
+const skills = new SkillRegistry([]);
+
+// Mock model-factory to avoid real SDK calls
+vi.mock('../model-factory.js', () => ({
+  createModel: () => ({}),
+}));
+
+// Mock streamText to avoid real LLM calls
+vi.mock('ai', () => ({
+  streamText: vi.fn(),
+  generateText: vi.fn(),
+  stepCountIs: vi.fn((n: number) => n),
+  hasToolCall: vi.fn((name: string) => name),
+}));
+
+import { streamText, generateText } from 'ai';
+
+function createMockState(): any {
+  const data: Record<string, any> = {
+    conversation: [],
+  };
+  return {
+    get: vi.fn((path: string) => data[path] ?? null),
+    set: vi.fn((path: string, value: any) => { data[path] = value; }),
+    append: vi.fn((path: string, entry: any) => {
+      data[path] = data[path] ?? [];
+      data[path].push(entry);
+    }),
+    restore: vi.fn(async () => {}),
+  };
+}
+
+function mockStreamResponse(text: string) {
+  // streamText returns synchronously — an object with textStream, text (Promise), etc.
+  vi.mocked(streamText).mockReturnValue({
+    textStream: (async function* () { yield text; })(),
+    text: Promise.resolve(text),
+    toolResults: Promise.resolve([]),
+    usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+  } as any);
+}
+
+describe('ControllerAgent', () => {
+  let state: any;
+  let agent: ControllerAgent;
+
+  beforeEach(() => {
+    state = createMockState();
+    vi.mocked(streamText).mockReset();
+    vi.mocked(generateText).mockReset();
+    agent = new ControllerAgent(
+      createMockCtx(),
+      state as ControllerAgentState,
+      mockModel,
+      {}, // tools
+      skills,
+    );
+  });
+
+  /**
+   * Append n user entries of ~5k estimated tokens each. The retained-zone
+   * budget (8k-16k) must have something to discard, otherwise compact() skips
+   * the compaction entirely.
+   */
+  function appendLargeUsers(n: number, prefix: string): void {
+    for (let i = 0; i < n; i++) {
+      state.append('conversation', {
+        type: EEntryType.User,
+        uuid: `${prefix}-${i}`,
+        parentUuid: null,
+        sessionId: 'test-session',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: `${prefix} ${i} `.padEnd(20_000, 'x') },
+      });
+    }
+  }
+
+  it('should run messages and append to conversation', async () => {
+    mockStreamResponse('mock response');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-1',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    const result = await agent.run(signals);
+
+    expect(result.text).toBe('mock response');
+    expect(state.append).toHaveBeenCalled();
+  });
+
+  it('should extract text from payload variants', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-2',
+        source: 'worker',
+        type: 'completed',
+        payload: { summary: 'task done', taskId: 't-1', workerId: 'w-1', taskTitle: 'Test task' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find(
+      (call: any[]) => call[1]?.type === 'signal',
+    );
+    expect(sigCall[1].content).toBe('task done');
+    expect(sigCall[1].subtype).toBe('worker_completed');
+  });
+
+  it('carries worker activity in progress signal entries (issue #16)', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-p',
+        source: 'worker',
+        type: 'progress',
+        payload: {
+          workerId: 'w-1',
+          taskId: 't-1',
+          taskTitle: 'Test task',
+          message: 'working on it',
+          currentTool: 'bash',
+          lastActivityAt: Date.parse('2026-11-02T10:46:46.672Z'),
+        },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find((call: any[]) => call[1]?.type === 'signal');
+    expect(sigCall[1].content).toContain('working on it');
+    expect(sigCall[1].content).toContain('[activity: tool=bash, lastEntry=2026-11-02T10:46:46Z]');
+  });
+
+  it('carries per-worker activity in heartbeat entries (issue #16)', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-h',
+        source: 'system',
+        type: 'heartbeat',
+        payload: {
+          reason: 'workers are running',
+          idleSinceMs: 30_000,
+          pendingTaskCount: 0,
+          workers: [{
+            workerId: 'cw-1',
+            taskId: 't-1',
+            taskTitle: 'Review',
+            workerType: 'claude-code',
+            runningForMs: 571_000,
+            lastActivityAt: Date.now() - 600_000,
+            lastActivityAgoMs: 600_000,
+            currentTool: 'bash',
+          }],
+        },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find((call: any[]) => call[1]?.type === 'signal');
+    expect(sigCall[1].content).toContain('[HEARTBEAT]');
+    expect(sigCall[1].content).toContain('cw-1');
+    expect(sigCall[1].content).toContain('tool bash');
+    expect(sigCall[1].content).toContain('last activity 600s ago');
+  });
+
+  it('should pass workerType, emoji, and taskTitle in completed signal entry', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-comp',
+        source: 'worker',
+        type: 'completed',
+        payload: {
+          taskId: 't-10',
+          workerId: 'w-10',
+          workerType: 'claude-code',
+          emoji: '\u{1F9E0}',
+          taskTitle: 'Refactor module',
+          summary: 'Refactored successfully',
+        },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find(
+      (call: any[]) => call[1]?.type === 'signal',
+    );
+    const entry = sigCall[1];
+    expect(entry.workerType).toBe('claude-code');
+    expect(entry.emoji).toBe('\u{1F9E0}');
+    expect(entry.taskTitle).toBe('Refactor module');
+    expect(entry.workerId).toBe('w-10');
+    expect(entry.taskId).toBe('t-10');
+    expect(entry.subtype).toBe('worker_completed');
+  });
+
+  it('should pass workerType, emoji, and taskTitle in failed signal entry', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-fail',
+        source: 'worker',
+        type: 'failed',
+        payload: {
+          taskId: 't-11',
+          workerId: 'w-11',
+          workerType: 'puppet',
+          emoji: '\u{1F9F8}',
+          taskTitle: 'Write tests',
+          error: 'Timeout',
+        },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find(
+      (call: any[]) => call[1]?.type === 'signal',
+    );
+    const entry = sigCall[1];
+    expect(entry.workerType).toBe('puppet');
+    expect(entry.emoji).toBe('\u{1F9F8}');
+    expect(entry.taskTitle).toBe('Write tests');
+    expect(entry.subtype).toBe('worker_failed');
+    expect(entry.content).toBe('Timeout');
+  });
+
+  it('should pass workerType, emoji, and taskTitle in progress signal entry', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-prog',
+        source: 'worker',
+        type: 'progress',
+        payload: {
+          workerId: 'w-12',
+          taskId: 't-12',
+          taskTitle: 'Build project',
+          workerType: 'puppet',
+          emoji: '\u{1F9F8}',
+          message: 'Compiling...',
+        },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find(
+      (call: any[]) => call[1]?.type === 'signal',
+    );
+    const entry = sigCall[1];
+    expect(entry.workerType).toBe('puppet');
+    expect(entry.emoji).toBe('\u{1F9F8}');
+    expect(entry.taskTitle).toBe('Build project');
+    expect(entry.subtype).toBe('worker_progress');
+    expect(entry.content).toBe('Compiling...');
+  });
+
+  it('should handle input signal with text payload', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-3',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'custom data' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const userCall = state.append.mock.calls.find(
+      (call: any[]) => call[1]?.type === 'user',
+    );
+    expect(userCall[1].message.content).toBe('custom data');
+  });
+
+  it('stamps workspaceSlug (of the process workspace) on controller entries', async () => {
+    const wsDir = mkdtempSync(join(tmpdir(), 'wayang-ctrl-ws-'));
+    const sessDir = mkdtempSync(join(tmpdir(), 'wayang-ctrl-sess-'));
+    try {
+      // fire a step finish so an assistant entry is produced too.
+      vi.mocked(streamText).mockImplementation(((opts: any) => {
+        opts.onStepFinish?.({
+          text: 'reply',
+          usage: { inputTokens: 1, outputTokens: 1 },
+          finishReason: 'stop',
+        });
+        return {
+          textStream: (async function* () { yield 'reply'; })(),
+          text: Promise.resolve('reply'),
+          toolResults: Promise.resolve([]),
+          usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+        };
+      }) as any);
+
+      const localState = createMockState();
+      const localAgent = new ControllerAgent(
+        createMockCtx({ workspaceDir: wsDir, sessionDir: sessDir }),
+        localState as ControllerAgentState,
+        mockModel,
+        {},
+        skills,
+      );
+      await localAgent.run([
+        {
+          id: 'sig-ws', source: 'user', type: 'input',
+          payload: { text: 'hello' }, timestamp: Date.now(), status: 'unread',
+        } as ControllerSignal,
+      ]);
+
+      const appended = localState.append.mock.calls
+        .map((c: any[]) => c[1])
+        .filter((e: any) => e && typeof e === 'object');
+      expect(appended.length).toBeGreaterThan(0);
+      // sessionDir is an ad-hoc temp dir (no registry) → rule-based slug.
+      const expected = workspaceSlugFromPath(normalizeWorkspacePath(wsDir));
+      for (const entry of appended) {
+        expect(entry.workspaceSlug).toBe(expected);
+      }
+    } finally {
+      rmSync(wsDir, { recursive: true, force: true });
+      rmSync(sessDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should write the same sessionId on user, signal, and assistant entries', async () => {
+    // Fire onStepFinish so an assistant entry lands in the conversation
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-sid-1',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+      {
+        id: 'sig-sid-2',
+        source: 'worker',
+        type: 'completed',
+        payload: { summary: 'task done', taskId: 't-sid', workerId: 'w-sid', taskTitle: 'Sid task' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const entries = state.append.mock.calls
+      .filter((call: any[]) => call[0] === 'conversation')
+      .map((call: any[]) => call[1]);
+    expect(entries.length).toBeGreaterThanOrEqual(3);
+    const types = new Set(entries.map((e: any) => e.type));
+    expect(types.has('user')).toBe(true);
+    expect(types.has('signal')).toBe(true);
+    expect(types.has('assistant')).toBe(true);
+    // Mock ctx sessionId is 'test-session' — every entry must carry it
+    for (const entry of entries) {
+      expect(entry.sessionId).toBe('test-session');
+    }
+  });
+
+  it('should backfill the restored summary into the context manager on restore', async () => {
+    mockStreamResponse('ok');
+
+    // The state layer's restore() exposes the persisted compact summary
+    state.set('compactSummary', 'restored summary text');
+    await agent.restore();
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-restore-1',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello after restore' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
+    // System prompt carries the summary under [Conversation Summary] ...
+    expect(call.system).toContain('[Conversation Summary]');
+    expect(call.system).toContain('restored summary text');
+    // ... and the messages do not repeat it.
+    expect(JSON.stringify(call.messages)).not.toContain('restored summary text');
+  });
+
+  // --- issue #95: a compacted verbatim zone can hold no user entry ---
+
+  /** A post-compaction verbatim zone: skip_reply placeholder + tool result + worker signal. */
+  function appendCompactedZoneWithoutUser(): void {
+    state.append('conversation', {
+      type: EEntryType.Assistant,
+      uuid: 'a-skip',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: 'skipped', reasoning: ' ' },
+      toolCalls: [{ toolCallId: 'tc-skip', toolName: 'skip_reply', arguments: '{}' }],
+      toolResults: [{
+        toolCallId: 'tc-skip',
+        toolName: 'skip_reply',
+        output: { type: 'text', value: '(skipped)' },
+      }],
+    });
+    state.append('conversation', {
+      type: EEntryType.Signal,
+      uuid: 'sig-progress',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      subtype: 'worker_progress',
+      content: 'still working',
+    });
+  }
+
+  const workerDoneSignal: ControllerSignal = {
+    id: 'sig-95',
+    source: 'worker',
+    type: 'completed',
+    payload: { summary: 'task done', taskId: 't-95', workerId: 'w-95', taskTitle: 'Test task' },
+    timestamp: Date.now(),
+    status: 'unread',
+  };
+
+  it('seeds a user turn when the replayed messages contain no user entry (issue #95)', async () => {
+    mockStreamResponse('ok');
+    appendCompactedZoneWithoutUser();
+
+    await agent.run([workerDoneSignal]);
+
+    const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
+    expect(call.messages[0]).toEqual({ role: 'user', content: COMPACTION_CONTINUATION });
+    expect(call.messages.some((message: any) => message.role === 'user')).toBe(true);
+    // The seed is request-only: it must never be persisted into the conversation.
+    const persisted = state.append.mock.calls
+      .filter((entry: any[]) => entry[0] === 'conversation')
+      .map((entry: any[]) => JSON.stringify(entry[1]));
+    expect(persisted.some((text: string) => text.includes('Conversation compacted'))).toBe(false);
+  });
+
+  it('does not add a second user turn when the conversation already has one', async () => {
+    mockStreamResponse('ok');
+    state.append('conversation', {
+      type: EEntryType.User,
+      uuid: 'u-1',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      message: { role: 'user', content: 'original question' },
+    });
+    state.append('conversation', {
+      type: EEntryType.Assistant,
+      uuid: 'a-1',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: 'answer' },
+    });
+
+    await agent.run([{
+      id: 'sig-95b',
+      source: 'user',
+      type: 'input',
+      payload: { text: 'follow-up' },
+      timestamp: Date.now(),
+      status: 'unread',
+    }]);
+
+    const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
+    const userMessages = call.messages.filter((message: any) => message.role === 'user');
+    // The original question plus the new input — no synthetic third turn.
+    expect(userMessages).toHaveLength(2);
+    expect(userMessages.some((message: any) => message.content === COMPACTION_CONTINUATION)).toBe(false);
+    expect(call.messages[0]).toMatchObject({ role: 'user', content: 'original question' });
+  });
+
+  it('seeds a user turn on the first post-restore turn when the restore window has none', async () => {
+    mockStreamResponse('ok');
+    state.set('compactSummary', 'restored summary text');
+    appendCompactedZoneWithoutUser();
+    await agent.restore();
+
+    await agent.run([workerDoneSignal]);
+
+    const call = vi.mocked(streamText).mock.calls.at(-1)![0] as any;
+    expect(call.system).toContain('[Conversation Summary]');
+    expect(call.messages[0]).toEqual({ role: 'user', content: COMPACTION_CONTINUATION });
+  });
+
+  // --- issue #95: compaction UI state ---
+
+  it('flags dynamicState.compacting while compaction runs and clears it afterwards', async () => {
+    appendLargeUsers(4, 'u-c');
+    const seen: boolean[] = [];
+    vi.mocked(generateText).mockImplementation(async () => {
+      seen.push(state.get('dynamicState.compacting'));
+      return { text: 'summary' } as any;
+    });
+
+    await agent.performCompaction();
+
+    expect(seen).toEqual([true]);
+    expect(state.get('dynamicState.compacting')).toBe(false);
+  });
+
+  it('clears dynamicState.compacting even when the summarizer fails', async () => {
+    appendLargeUsers(4, 'u-f');
+    vi.mocked(generateText).mockRejectedValue(new Error('summarizer down'));
+
+    await agent.performCompaction();
+
+    // The truncation fallback keeps the run alive; the flag must not stay on.
+    expect(state.get('dynamicState.compacting')).toBe(false);
+  });
+
+  it('should fold the previous summary into the summarizer input on compaction', async () => {
+    state.set('compactSummary', 'old summary to carry forward');
+    await agent.restore();
+
+    // compact() requires at least 4 conversation entries, and the retained
+    // zone must leave something to discard.
+    appendLargeUsers(4, 'u-comp');
+    vi.mocked(generateText).mockResolvedValue({ text: 'new summary' } as any);
+
+    await agent.performCompaction();
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const prompt = (vi.mocked(generateText).mock.calls[0][0] as any).prompt as string;
+    expect(prompt).toContain('[Previous Summary]');
+    expect(prompt).toContain('old summary to carry forward');
+  });
+
+  it('should not add [Previous Summary] when no previous summary exists', async () => {
+    // Fresh agent — no restore, no prior compaction
+    appendLargeUsers(4, 'u-noprev');
+    vi.mocked(generateText).mockResolvedValue({ text: 'brand new summary' } as any);
+
+    await agent.performCompaction();
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const prompt = (vi.mocked(generateText).mock.calls[0][0] as any).prompt as string;
+    expect(prompt).not.toContain('[Previous Summary]');
+  });
+
+  it('should pass tool calls and their results to the summarizer', async () => {
+    appendLargeUsers(3, 'u-tools');
+    // A tool-only step: empty text, one call with its result.
+    state.append('conversation', {
+      type: 'assistant',
+      uuid: 'a-tools',
+      parentUuid: null,
+      sessionId: 'test-session',
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: '' },
+      toolCalls: [{ toolCallId: 'c1', toolName: 'add_task', arguments: JSON.stringify({ title: 'Fix login bug' }) }],
+      toolResults: [{ toolCallId: 'c1', toolName: 'add_task', output: { type: 'text', value: 'Task t-1-abcd added' } }],
+    });
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary' } as any);
+
+    await agent.performCompaction();
+
+    const prompt = (vi.mocked(generateText).mock.calls[0][0] as any).prompt as string;
+    expect(prompt).toContain('add_task');
+    expect(prompt).toContain('Fix login bug');
+    expect(prompt).toContain('Task t-1-abcd added');
+  });
+
+  it('should stamp compactMeta.model from the resolved model', async () => {
+    appendLargeUsers(4, 'u-model');
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary with model' } as any);
+
+    await agent.performCompaction();
+
+    const marker = state.append.mock.calls
+      .map((call: any[]) => call[1])
+      .find((e: any) => e?.type === 'system' && e?.subtype === 'compact');
+    expect(marker).toBeDefined();
+    expect(marker.compactMeta.model).toBe(mockModel.modelName);
+  });
+
+  it('should omit compactMeta.model when the resolved model carries no model name', async () => {
+    const noNameModel = { ...mockModel, modelName: undefined } as any;
+    const agentNoModel = new ControllerAgent(
+      createMockCtx(),
+      state as ControllerAgentState,
+      noNameModel,
+      {},
+      skills,
+    );
+    appendLargeUsers(4, 'u-nomodel');
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary no model' } as any);
+
+    await agentNoModel.performCompaction();
+
+    const marker = state.append.mock.calls
+      .map((call: any[]) => call[1])
+      .find((e: any) => e?.type === 'system' && e?.subtype === 'compact');
+    expect(marker).toBeDefined();
+    // Never fabricated — absent config means absent field.
+    expect(marker.compactMeta.model).toBeUndefined();
+  });
+
+  it('should write endedAt on user and signal entries at delivery time', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-end-1',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello endedAt' },
+        timestamp: Date.now() - 5_000,
+        status: 'unread',
+      },
+      {
+        id: 'sig-end-2',
+        source: 'worker',
+        type: 'completed',
+        payload: { summary: 'task done', taskId: 't-end', workerId: 'w-end', taskTitle: 'Ended task' },
+        timestamp: Date.now() - 4_000,
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const entries = state.append.mock.calls
+      .filter((call: any[]) => call[0] === 'conversation')
+      .map((call: any[]) => call[1]);
+    const userEntry = entries.find((e: any) => e?.type === 'user');
+    const signalEntry = entries.find((e: any) => e?.type === 'signal');
+    expect(userEntry.endedAt).toEqual(expect.any(String));
+    expect(signalEntry.endedAt).toEqual(expect.any(String));
+    // endedAt (delivery) must not precede startedAt (queue time).
+    expect(new Date(signalEntry.endedAt!).getTime())
+      .toBeGreaterThanOrEqual(new Date(signalEntry.startedAt!).getTime());
+    // startedAt still reflects the queue time.
+    expect(signalEntry.startedAt).toEqual(new Date(signals[1].timestamp).toISOString());
+  });
+
+  it('should convert task_cancelled signals with the dedicated subtype', async () => {
+    mockStreamResponse('ok');
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-tc-1',
+        source: 'system',
+        type: 'task_cancelled',
+        payload: { taskId: 't-cancelled', taskTitle: 'Cancelled task' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+
+    await agent.run(signals);
+
+    const sigCall = state.append.mock.calls.find(
+      (call: any[]) => call[1]?.type === 'signal',
+    );
+    const entry = sigCall[1];
+    expect(entry.subtype).toBe('task_cancelled');
+    expect(entry.taskId).toBe('t-cancelled');
+    expect(entry.taskTitle).toBe('Cancelled task');
+    expect(entry.content).toContain('[TASK CANCELLED]');
+    expect(entry.endedAt).toEqual(expect.any(String));
+  });
+
+  it('should write dynamicState.contextUsage after a step, preferring real usage over the estimate', async () => {
+    // Step reports 25k input tokens — distinct from any local estimate.
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 25_000, outputTokens: 100 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 25_000, outputTokens: 100 }),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-ctx-usage',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello context' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage).toBeDefined();
+    expect(usage.source).toBe('usage');
+    expect(usage.usedTokens).toBe(25_000);
+    expect(usage.contextWindowTokens).toBe(256_000);
+    expect(usage.ratio).toBeCloseTo(25_000 / 256_000);
+  });
+
+  it('should fall back to the estimate when the step reports no input tokens', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: undefined, outputTokens: undefined },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve(undefined),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-ctx-est',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello estimate' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage).toBeDefined();
+    expect(usage.source).toBe('estimate');
+    // System prompt alone guarantees a positive estimate
+    expect(usage.usedTokens).toBeGreaterThan(0);
+    expect(usage.contextWindowTokens).toBe(256_000);
+  });
+
+  /** Assistant entry carrying provider usage (self-contained per test). */
+  const usageEntry = (uuid: string, inputTokens: number) => ({
+    type: EEntryType.Assistant,
+    uuid,
+    parentUuid: null,
+    sessionId: 's',
+    timestamp: new Date().toISOString(),
+    message: { role: 'assistant', content: 'x'.repeat(20_000), usage: { inputTokens, outputTokens: 1 } },
+  });
+
+  it('should seed the compaction check with the last real usage on restore', async () => {
+    state.set('conversation', [usageEntry('a-seed-1', 240_000)]);
+    await agent.restore();
+
+    // 240k > 90% of the 256k default — real usage, not the tiny estimate.
+    expect(agent.needsCompaction()).toBe(true);
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage.source).toBe('usage');
+    expect(usage.usedTokens).toBe(240_000);
+  });
+
+  it('should not seed usage that predates the last compaction marker', async () => {
+    state.set('conversation', [
+      usageEntry('a-seed-2', 240_000),
+      {
+        type: EEntryType.System,
+        uuid: 'compact-seed',
+        parentUuid: null,
+        sessionId: 's',
+        timestamp: new Date().toISOString(),
+        subtype: 'compact',
+        content: 'summary',
+        compactMeta: { summarizedTokenCount: 1 },
+      },
+    ]);
+    await agent.restore();
+
+    expect(agent.needsCompaction()).toBe(false);
+    expect(state.get('dynamicState.contextUsage').source).toBe('estimate');
+  });
+
+  it('should keep recent history and stop re-triggering after the truncation fallback', async () => {
+    // A real usage mark above the threshold, then a summarizer that always fails.
+    state.set('conversation', Array.from({ length: 10 }, (_, i) => usageEntry(`a-trunc-${i}`, 240_000)));
+    await agent.restore();
+    expect(agent.needsCompaction()).toBe(true);
+    vi.mocked(generateText).mockRejectedValue(new Error('provider down'));
+
+    await agent.performCompaction();
+
+    expect(state.get('conversation')).toHaveLength(5);
+    // Stale high-water mark cleared — the next loop must not truncate again.
+    expect(agent.needsCompaction()).toBe(false);
+  });
+
+  // --- controller compaction guards (B5/B6/B7) ---
+
+  it('passes the context window to the state-layer restore so the budgets agree (B6 wiring)', async () => {
+    await agent.restore();
+    // mockModel declares no contextWindowTokens → ContextManager's 256k default.
+    expect(state.restore).toHaveBeenCalledWith(256_000);
+  });
+
+  it('warns with the estimate and the window when compaction cannot clear the threshold (B7)', async () => {
+    const ctx = createMockCtx();
+    const smallWindowAgent = new ControllerAgent(
+      ctx,
+      state as ControllerAgentState,
+      { ...mockModel, contextWindowTokens: 20_000 } as any,
+      {},
+      skills,
+    );
+    // ~5k-token entries on a 20k window: the retained zone plus a huge
+    // "successful" summary stay above the 12k threshold.
+    appendLargeUsers(4, 'u-b7');
+    vi.mocked(generateText).mockResolvedValue({ text: 's'.repeat(48_000) } as any);
+
+    await smallWindowAgent.performCompaction();
+
+    expect(smallWindowAgent.needsCompaction()).toBe(true);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        estimatedTokens: expect.any(Number),
+        contextWindowTokens: 20_000,
+      }),
+      expect.stringContaining('still exceeds the compaction threshold'),
+    );
+  });
+
+  it('stops calling the summarizer past MAX_COMPACTIONS_PER_RUN and truncates instead (B5)', async () => {
+    const ctx = createMockCtx();
+    const smallWindowAgent = new ControllerAgent(
+      ctx,
+      state as ControllerAgentState,
+      { ...mockModel, contextWindowTokens: 20_000 } as any,
+      {},
+      skills,
+    );
+    // A context that never comes down: every "successful" summarizer returns
+    // a summary so large the window stays full, so each loop wake wants
+    // another compaction. Six refills after the first — the shared limit is
+    // five summarizing compactions, then the guard degrades to truncation.
+    appendLargeUsers(2, 'u-b5-seed');
+    vi.mocked(generateText).mockResolvedValue({ text: 's'.repeat(48_000) } as any);
+
+    for (let round = 0; round < 6; round++) {
+      appendLargeUsers(2, `u-b5-r${round}`);
+      await smallWindowAgent.performCompaction();
+    }
+
+    expect(generateText).toHaveBeenCalledTimes(5);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 5 }),
+      'Compaction limit reached — truncating history instead of summarizing',
+    );
+  });
+
+  it('skipped compactions never burn the session budget', async () => {
+    // Below the entry-count guard every compaction is a no-op; the summarizer
+    // is never called and the budget stays untouched.
+    appendLargeUsers(2, 'u-skip-budget');
+    vi.mocked(generateText).mockResolvedValue({ text: 'summary' } as any);
+
+    for (let i = 0; i < 6; i++) await agent.performCompaction();
+
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it('should seed contextUsage from the estimate after restore', async () => {
+    await agent.restore();
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage).toBeDefined();
+    expect(usage.source).toBe('estimate');
+    expect(usage.usedTokens).toBeGreaterThan(0);
+  });
+
+  it('should include the token breakdown and the last step usage in contextUsage', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => {
+      opts.onStepFinish?.({
+        text: 'step text',
+        usage: { inputTokens: 25_000, outputTokens: 100, cachedInputTokens: 20_000 },
+        finishReason: 'stop',
+      });
+      return {
+        textStream: (async function* () { yield 'final text'; })(),
+        text: Promise.resolve('final text'),
+        toolResults: Promise.resolve([]),
+        usage: Promise.resolve({ inputTokens: 25_000, outputTokens: 100, cachedInputTokens: 20_000 }),
+      };
+    }) as any);
+
+    const signals: ControllerSignal[] = [
+      {
+        id: 'sig-ctx-breakdown',
+        source: 'user',
+        type: 'input',
+        payload: { text: 'hello breakdown' },
+        timestamp: Date.now(),
+        status: 'unread',
+      },
+    ];
+    await agent.run(signals);
+
+    const usage = state.get('dynamicState.contextUsage');
+
+    expect(usage.breakdown).toBeDefined();
+    const groups = ['systemPrompt', 'user', 'assistant', 'toolCalls', 'toolResults', 'compactSummary'] as const;
+    for (const group of groups) {
+      expect(typeof usage.breakdown[group]).toBe('number');
+      expect(usage.breakdown[group]).toBeGreaterThanOrEqual(0);
+    }
+    const groupSum = groups.reduce((sum, group) => sum + usage.breakdown[group], 0);
+    expect(usage.breakdown.total).toBe(groupSum);
+
+    expect(usage.lastUsage).toEqual({
+      inputTokens: 25_000,
+      outputTokens: 100,
+      cachedInputTokens: 20_000,
+    });
+  });
+
+  it('should carry the newest assistant usage into contextUsage after restore', async () => {
+    state.append('conversation', {
+      type: 'assistant',
+      uuid: 'a-restored',
+      parentUuid: null,
+      sessionId: 's-controller',
+      timestamp: new Date().toISOString(),
+      message: {
+        role: 'assistant',
+        content: 'restored step',
+        usage: { inputTokens: 9_000, outputTokens: 250, cachedInputTokens: 4_000 },
+      },
+    });
+
+    await agent.restore();
+
+    const usage = state.get('dynamicState.contextUsage');
+    expect(usage.lastUsage).toEqual({
+      inputTokens: 9_000,
+      outputTokens: 250,
+      cachedInputTokens: 4_000,
+    });
+    expect(usage.breakdown.total).toBeGreaterThan(0);
+  });
+});
+
+describe('ControllerAgent: user abort (ESC)', () => {
+  let state: any;
+  let agent: ControllerAgent;
+
+  beforeEach(() => {
+    state = createMockState();
+    vi.mocked(streamText).mockReset();
+    vi.mocked(generateText).mockReset();
+    agent = new ControllerAgent(
+      createMockCtx(),
+      state as ControllerAgentState,
+      mockModel,
+      {}, // tools
+      skills,
+    );
+  });
+
+  const inputSignal = (id: string): ControllerSignal => ({
+    id,
+    source: 'user',
+    type: 'input',
+    payload: { text: 'long question' },
+    timestamp: Date.now(),
+    status: 'unread',
+  });
+
+  /** Mock stream that mimics the SDK on abort: chunks, then abort + AbortError. */
+  const mockAbortingStream = (chunksBeforeAbort: string[], onStepFinish?: (opts: any) => void) => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        for (const chunk of chunksBeforeAbort) {
+          yield chunk;
+        }
+        onStepFinish?.(opts);
+        agent.abort(); // user presses ESC mid-stream
+        throw new Error('AbortError'); // what the real SDK does once the signal fires
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+  };
+
+  const appendedEntries = () =>
+    state.append.mock.calls
+      .filter((call: any[]) => call[0] === 'conversation')
+      .map((call: any[]) => call[1]);
+
+  it('appends a truncated assistant entry and an interrupted marker when aborted mid-stream', async () => {
+    // Realistic interleaving: step one completes (onStepFinish records it),
+    // step two streams a partial, THEN the user aborts.
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'step one full';
+        opts.onStepFinish?.({
+          text: 'step one full',
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        yield 'partial two';
+        agent.abort(); // user presses ESC mid-stream
+        throw new Error('AbortError'); // what the real SDK does once the signal fires
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    const result = await agent.run([inputSignal('sig-abort-1')]);
+
+    // Partial text of the interrupted step is returned, not lost.
+    expect(result.text).toBe('step one fullpartial two');
+
+    const entries = appendedEntries();
+
+    // Step one completed normally — recorded without the interrupted flag.
+    const complete = entries.find((e: any) => e?.type === 'assistant' && e.interrupted !== true);
+    expect(complete).toBeDefined();
+    expect(complete.message.content).toBe('step one full');
+
+    // Step two's partial survives as a truncated entry.
+    const truncated = entries.find((e: any) => e?.type === 'assistant' && e.interrupted === true);
+    expect(truncated).toBeDefined();
+    expect(truncated.message.content).toBe('partial two');
+    expect(truncated.turnId).toEqual(expect.any(String));
+    expect(truncated.finishReason).toBeUndefined();
+
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+    expect(marker.content).toContain('interrupted');
+    expect(marker.actor).toEqual({ kind: 'user', id: 'user' });
+    expect(marker.turnId).toBe(truncated.turnId);
+
+    // Marker sits directly behind the truncated entry.
+    expect(entries.indexOf(truncated)).toBe(entries.indexOf(marker) - 1);
+
+    // Live streaming region is cleared.
+    expect(state.get('dynamicState.streamingEntries')).toEqual([]);
+  });
+
+  it('writes only the interrupt marker when aborted before any output', async () => {
+    mockAbortingStream([]);
+
+    await agent.run([inputSignal('sig-abort-2')]);
+
+    const entries = appendedEntries();
+    // User entry + marker — and crucially NO assistant entry at all.
+    expect(entries.some((e: any) => e?.type === 'assistant')).toBe(false);
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+  });
+
+  it('does not duplicate the step entry when abort lands after step finish', async () => {
+    // Step one completes via onStepFinish; abort arrives with NO further
+    // chunks, so the recorded step must not be appended a second time.
+    mockAbortingStream(['step one full'], opts => {
+      opts.onStepFinish?.({
+        text: 'step one full',
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: 'stop',
+      });
+    });
+
+    await agent.run([inputSignal('sig-abort-3')]);
+
+    const entries = appendedEntries();
+    const stepEntries = entries.filter((e: any) => e?.type === 'assistant');
+    // One complete step entry, no truncated duplicate of it.
+    expect(stepEntries).toHaveLength(1);
+    expect(stepEntries[0].interrupted).toBeUndefined();
+    expect(stepEntries[0].message.content).toBe('step one full');
+    const markers = entries.filter((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(markers).toHaveLength(1);
+  });
+
+  it('persists a complete late step finish that lands after the abort', async () => {
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'partial';
+        agent.abort();
+        // Late step finish after the abort: its tools already ran to
+        // completion, so it carries the full step record — persist it, the
+        // interrupt marker follows right behind.
+        opts.onStepFinish?.({
+          text: 'partial',
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        throw new Error('AbortError');
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    await agent.run([inputSignal('sig-abort-4')]);
+
+    const entries = appendedEntries();
+    const assistantEntries = entries.filter((e: any) => e?.type === 'assistant');
+    // The complete step is recorded — not dropped, not duplicated as a
+    // truncated partial (onStep consumed the streaming uuid).
+    expect(assistantEntries).toHaveLength(1);
+    expect(assistantEntries[0].interrupted).toBeUndefined();
+    expect(assistantEntries[0].message.content).toBe('partial');
+    expect(assistantEntries[0].finishReason).toBe('stop');
+
+    // …and the interrupt marker lands directly behind it.
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+    expect(entries.indexOf(assistantEntries[0])).toBe(entries.indexOf(marker) - 1);
+  });
+
+  it('keeps an add_task toolCall linkable when the abort lands during tool execution', async () => {
+    // MF-1 regression: ESC during add_task execution. The tool completes and
+    // dispatches its task; finish-step flows in AFTER the abort carrying the
+    // complete toolCalls+toolResults. Dropping it would orphan the taskId:
+    // the interrupted turn would derive as cancelled instead of running, and
+    // the worker's completion signal would point at a task absent from the
+    // conversation.
+    const recorder = new ToolCallRecorder();
+    const taskAgent = new ControllerAgent(
+      createMockCtx(),
+      state as ControllerAgentState,
+      mockModel,
+      {}, // tools
+      skills,
+      recorder,
+    );
+
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'dispatching task';
+        recorder.start('tc-add-1', 'add_task');
+        taskAgent.abort(); // user presses ESC while add_task is executing
+        recorder.attachTask('tc-add-1', 'task-esc-tool'); // tool completes, task dispatched
+        opts.onStepFinish?.({
+          text: 'dispatching task',
+          toolCalls: [{ toolCallId: 'tc-add-1', toolName: 'add_task', args: '{"title":"long task"}' }],
+          toolResults: [{ toolCallId: 'tc-add-1', toolName: 'add_task', output: 'task created: task-esc-tool' }],
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'tool-calls',
+        });
+        throw new Error('AbortError');
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    await taskAgent.run([inputSignal('sig-abort-7')]);
+
+    const entries = appendedEntries();
+    const step = entries.find((e: any) => e?.type === 'assistant');
+    expect(step).toBeDefined();
+    // The persisted tool call keeps its taskId association and running status.
+    expect(step.toolCalls).toHaveLength(1);
+    expect(step.toolCalls[0].toolName).toBe('add_task');
+    expect(step.toolCalls[0].taskId).toBe('task-esc-tool');
+    expect(step.toolCalls[0].status).toBe('running');
+
+    // The marker still closes the turn…
+    const marker = entries.find((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(marker).toBeDefined();
+
+    // …and the conversation index derives the interrupted turn as RUNNING —
+    // the dispatched task is unfinished, so its worker's later signals can
+    // resolve against this turn.
+    const idx = new ConversationIndexBuilder(state.get('conversation'));
+    const turn = idx.getTurn(marker.turnId);
+    expect(turn).toBeDefined();
+    expect(turn!.status).toBe('running');
+    expect(turn!.toolCalls[0].taskId).toBe('task-esc-tool');
+  });
+
+  it('does not log an error when the stream is aborted by the user', async () => {
+    const logger = createMockLogger();
+    const logAgent = new ControllerAgent(
+      createMockCtx({ logger }),
+      state as ControllerAgentState,
+      mockModel,
+      {}, // tools
+      skills,
+    );
+
+    vi.mocked(streamText).mockImplementation(((opts: any) => ({
+      textStream: (async function* () {
+        yield 'partial';
+        logAgent.abort();
+        // The real SDK reports the abort through onError before the throw.
+        opts.onError?.({ error: new Error('AbortError') });
+        throw new Error('AbortError');
+      })(),
+      text: Promise.resolve(''),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve(undefined),
+    })) as any);
+
+    await logAgent.run([inputSignal('sig-abort-8')]);
+
+    // The abort is a user action, not a provider failure — no error-level log.
+    expect(logger.error).not.toHaveBeenCalled();
+    // It is still traceable at debug level.
+    const debugMessages = vi.mocked(logger.debug).mock.calls.map((c: any[]) => String(c[1]));
+    expect(debugMessages).toContain('LLM stream aborted by user');
+  });
+
+  it('recovers and runs normally after an aborted turn', async () => {
+    mockAbortingStream(['partial']);
+    await agent.run([inputSignal('sig-abort-5a')]);
+
+    // Second turn on the SAME agent — the abort must not poison it.
+    mockStreamResponse('fresh full answer');
+    const result = await agent.run([inputSignal('sig-abort-5b')]);
+
+    expect(result.text).toBe('fresh full answer');
+    // Only the first turn left an interrupt marker.
+    const markers = appendedEntries().filter((e: any) => e?.type === 'system' && e.subtype === 'interrupted');
+    expect(markers).toHaveLength(1);
+    // And no busy flag is left behind.
+    expect(state.get('dynamicState.busy')).toBe(false);
+  });
+
+  it('writes no interrupt records on normal completion', async () => {
+    mockStreamResponse('ok');
+
+    await agent.run([inputSignal('sig-abort-6')]);
+
+    const entries = appendedEntries();
+    expect(entries.some((e: any) => e?.type === 'system' && e.subtype === 'interrupted')).toBe(false);
+    expect(entries.some((e: any) => e?.type === 'assistant' && e.interrupted === true)).toBe(false);
+  });
+});

@@ -1,0 +1,29 @@
+{
+  "name": "@wayang-ai/core",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Wayang core — services, infrastructure and the server",
+  "type": "module",
+  "dependencies": {
+    "@wayang-ai/protocol": "1.0.0-alpha.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit && eslint src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "types": "./dist/index.d.ts"
+}

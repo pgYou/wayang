@@ -64,7 +64,7 @@
 ### 安装
 
 ```bash
-npm install -g wayang-ai
+npm install -g @wayang-ai/cli
 ```
 
 安装完成后，终端即可使用全局命令 `wayang`（或简写 `waya`）：

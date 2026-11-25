@@ -1,14 +1,8 @@
-import path from 'path';
 import { defineConfig } from 'vitest/config';
 
+// Aggregated run: `npx vitest run` at the root executes every package suite.
 export default defineConfig({
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, 'src'),
-    },
-  },
   test: {
-    globals: true,
-    include: ['src/**/*.test.ts'],
+    projects: ['packages/*/vitest.config.ts'],
   },
 });

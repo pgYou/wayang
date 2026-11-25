@@ -1,20 +1,12 @@
 {
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
     "paths": {
-      "@/*": ["./src/*"]
-    },
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "sourceMap": true,
-    "noEmit": true,
-    "jsx": "react-jsx"
+      "@/rpc/*": ["./packages/protocol/src/rpc/*"],
+      "@/types/*": ["./packages/protocol/src/types/*"],
+      "@/__tests__/*": ["./packages/core/src/__tests__/*"]
+    }
   },
-  "include": ["src/**/*", "e2e/**/*"],
+  "include": ["e2e/**/*"],
   "exclude": ["node_modules", "dist"]
 }
