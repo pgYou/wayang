@@ -14,6 +14,7 @@ import { serverMain } from '@wayang-ai/core/server/main';
 import { CONFIG_OBJECT_ENV } from '../shared/config-env';
 import { isEnvelopeLike, parseConfigEnvelope, validateOrReject } from '../shared/config-envelope';
 import { parseHostFlags } from './flags';
+import { buildStoragePaths, buildWorkspacePolicy } from './server-options';
 
 function fatal(err: unknown): never {
   const message = err instanceof Error ? err.message : String(err);
@@ -53,8 +54,13 @@ try {
   void serverMain(
     {
       config: resolveUtilityConfig(flags.config),
+      // The legacy dataDir/workspaceDir pair now mirrors the injected
+      // contract members (§2.5 storage switch); core prefers the explicit
+      // injection whenever it is present.
       dataDir: flags.dataDir,
       workspaceDir: flags.workspaceDir,
+      storagePaths: buildStoragePaths(flags),
+      workspacePolicy: buildWorkspacePolicy(flags),
       session: flags.session,
       injectPreviousTasks: flags.injectPreviousTasks,
       logLevel: flags.logLevel,

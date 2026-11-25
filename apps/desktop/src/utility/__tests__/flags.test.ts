@@ -14,6 +14,9 @@ describe('parseHostFlags', () => {
       config: '/tmp/c.json',
       dataDir: '/tmp/data',
       workspaceDir: '/tmp/ws',
+      logDir: undefined,
+      cacheDir: undefined,
+      defaultWorkerWorkspace: undefined,
       session: 'new',
       logLevel: 'info',
       injectPreviousTasks: true,
@@ -28,5 +31,26 @@ describe('parseHostFlags', () => {
     expect(flags.logLevel).toBe('debug');
     expect(flags.session).toBe('resume:abc-1');
     expect(() => parseHostFlags(['--config', 'c'])).toThrow(/Missing --data-dir/);
+  });
+
+  it('parses the storage/workspace injection flags when the host passes them', () => {
+    const flags = parseHostFlags([
+      '--config', 'c', '--data-dir', '/data', '--workspace-dir', '/ws',
+      '--log-dir', '/logs', '--cache-dir', '/caches',
+      '--default-worker-workspace', '/agents/ws',
+      '--session', 'new',
+    ]);
+    expect(flags.logDir).toBe('/logs');
+    expect(flags.cacheDir).toBe('/caches');
+    expect(flags.defaultWorkerWorkspace).toBe('/agents/ws');
+  });
+
+  it('rejects a partial storage injection (log-dir without cache-dir)', () => {
+    expect(() =>
+      parseHostFlags(['--config', 'c', '--data-dir', 'd', '--workspace-dir', 'w', '--session', 'new', '--log-dir', '/logs']),
+    ).toThrow(/--log-dir and --cache-dir go together/);
+    expect(() =>
+      parseHostFlags(['--config', 'c', '--data-dir', 'd', '--workspace-dir', 'w', '--session', 'new', '--cache-dir', '/caches']),
+    ).toThrow(/--log-dir and --cache-dir go together/);
   });
 });

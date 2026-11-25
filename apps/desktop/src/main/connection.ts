@@ -73,8 +73,16 @@ export interface DesktopSessionOptions {
    * transitional one-time import when the envelope does not exist yet.
    */
   legacyConfigPath: string;
+  /** storagePaths.dataDir (= userData): sessions live under `<dataDir>/sessions`. */
   dataDir: string;
+  /** storagePaths.logDir: the session log lands in the app logs dir (§2.5). */
+  logDir: string;
+  /** storagePaths.cacheDir: MCP sockets and runtime temp (§2.5). */
+  cacheDir: string;
+  /** workspacePolicy.controllerWorkspace — also mirrors the legacy --workspace-dir. */
   workspaceDir: string;
+  /** workspacePolicy.defaultWorkerWorkspace — the user-visible worker workspace. */
+  defaultWorkerWorkspace: string;
   session: string;
   logLevel: string;
 }
@@ -166,6 +174,12 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
       '--config', options.configPath,
       '--data-dir', options.dataDir,
       '--workspace-dir', options.workspaceDir,
+      // Explicit injection surface (§2.5): the utility entry turns these into
+      // StoragePaths / WorkspacePolicy for serverMain; the legacy pair above
+      // mirrors contract members so there is no second semantic source.
+      '--log-dir', options.logDir,
+      '--cache-dir', options.cacheDir,
+      '--default-worker-workspace', options.defaultWorkerWorkspace,
       '--session', sessionArg,
       '--log-level', options.logLevel,
     ], {
@@ -213,7 +227,7 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
     };
     live = wiring;
 
-    const ready = await waitForReady(rpc, exited, wiring.stderrTail, child, options.dataDir);
+    const ready = await waitForReady(rpc, exited, wiring.stderrTail, child, options.logDir);
     wiring.ready = ready;
     readySessionId = ready.sessionId;
 
@@ -335,7 +349,7 @@ function waitForReady(
   exited: Promise<number | null>,
   stderrTail: () => string,
   child: UtilityProcess,
-  dataDir: string,
+  logDir: string,
 ): Promise<{ sessionId?: string; sessionDir?: string }> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -349,11 +363,12 @@ function waitForReady(
     };
     const timer = setTimeout(() => {
       child.kill();
-      // The server logs to its log dir, not stdio — point whoever reads this
-      // at both evidence sources (stderr tail + the session log path).
+      // The injected logDir (§2.5) is where the server's session log lands
+      // — point whoever reads this at both evidence sources (stderr tail +
+      // the log file).
       finish(new Error(
         `server did not become ready within ${READY_TIMEOUT_MS}ms.\n${stderrTail()}` +
-        `\nServer-side logs (if it booted): ${join(dataDir, 'sessions', '<sessionId>', 'wayang.log')}`,
+        `\nServer-side logs (if it booted): ${join(logDir, 'wayang.log')}`,
       ));
     }, READY_TIMEOUT_MS);
     rpc.on(NOTIFY.READY, (params) => {

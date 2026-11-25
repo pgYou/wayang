@@ -203,7 +203,10 @@ describe('connectServer crash resume (§4.1 工作项④)', () => {
       configPath: join(dir, 'config.json'),
       legacyConfigPath: join(dir, '.wayang.config.json'),
       dataDir: join(dir, 'data'),
+      logDir: join(dir, 'logs'),
+      cacheDir: join(dir, 'caches'),
       workspaceDir: join(dir, 'workspace'),
+      defaultWorkerWorkspace: join(dir, 'agents-workspace'),
       session: 'new',
       logLevel: 'info',
     };
@@ -224,6 +227,13 @@ describe('connectServer crash resume (§4.1 工作项④)', () => {
     const paths = servers[0].subscribeRequests.map((r) => `${r.target}:${r.path}`);
     expect(paths).toContain('engine:tasks.history');
     expect(paths).not.toContain('engine:tasks.completed');
+    // The explicit injection surface travels in the fork argv (§2.5).
+    expect(servers[0].argv).toEqual(expect.arrayContaining([
+      '--data-dir', options.dataDir,
+      '--log-dir', options.logDir,
+      '--cache-dir', options.cacheDir,
+      '--default-worker-workspace', options.defaultWorkerWorkspace,
+    ]));
     expect(ipcChannels.size).toBeGreaterThan(0);
     await conn.stop();
     expect(servers[0].shutdownRequests).toBe(1);

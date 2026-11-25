@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { connectServer, type DesktopConnection } from './connection';
 import { initMainLogger, mainLogger, type MainLogger } from './logger';
-import { getPaths, getPlatformConfig } from '../shared/platform-config';
+import { getPaths, getPlatformConfig, getStoragePaths, getWorkspacePolicy } from '../shared/platform-config';
 
 /** Prepend the paths a GUI-launched process misses (brew, local bin). */
 function fixGuiPath(): void {
@@ -28,7 +28,10 @@ interface SessionOptions {
   configPath: string;
   legacyConfigPath: string;
   dataDir: string;
+  logDir: string;
+  cacheDir: string;
   workspaceDir: string;
+  defaultWorkerWorkspace: string;
   session: string;
   logLevel: string;
 }
@@ -37,16 +40,25 @@ function resolveSessionOptions(): SessionOptions {
   // All paths via the platform config module (决策十) — no hand-joined
   // homedir paths, no direct Electron path calls outside the module.
   const paths = getPaths();
+  // Storage/workspace injection values (§2.5 storage switch): produced by
+  // the platform config module (single source) and injected into core via
+  // the StoragePaths / WorkspacePolicy contract — the serverMain legacy
+  // dataDir/workspaceDir pair only mirrors these members.
+  const storage = getStoragePaths(paths);
+  const workspace = getWorkspacePolicy(paths);
   // defaultWorkerWorkspace is user-visible and must exist before any worker
   // lands in it (§2.5: 启动自动 mkdir).
-  mkdirSync(paths.defaultWorkerWorkspace, { recursive: true });
+  mkdirSync(workspace.defaultWorkerWorkspace, { recursive: true });
   return {
     // Envelope store (决策九): the config load source; the CLI config path
     // is only the transitional one-time import source.
     configPath: paths.configPath,
     legacyConfigPath: paths.cliConfigPath,
-    dataDir: paths.dataDir,
-    workspaceDir: paths.controllerWorkspace,
+    dataDir: storage.dataDir,
+    logDir: storage.logDir,
+    cacheDir: storage.cacheDir,
+    workspaceDir: workspace.controllerWorkspace,
+    defaultWorkerWorkspace: workspace.defaultWorkerWorkspace,
     session: process.env.WAYANG_DESKTOP_SESSION ?? 'new',
     logLevel: process.env.WAYANG_DESKTOP_LOG_LEVEL ?? 'info',
   };
