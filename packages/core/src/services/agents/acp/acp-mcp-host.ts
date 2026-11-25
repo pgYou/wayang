@@ -21,7 +21,7 @@ import type { AcpMcpServer } from '../../acp/types';
 import { AcpError } from '../../acp/errors';
 import { MCP_HANDSHAKE_TIMEOUT_MS, type McpTransport, type StartMcpTransportOptions } from './mcp-transport';
 import { createWayangMcpToolInvoker } from './mcp-tools';
-import pkg from '../../../../package.json';
+import { PRODUCT_VERSION } from './product-version';
 
 export interface AcpMcpHostDeps {
   workerId: string;
@@ -81,7 +81,7 @@ export class AcpMcpHost {
         workerId: this.deps.workerId,
         invoker,
         logger: this.deps.logger,
-        serverInfo: { name: 'wayang', version: pkg.version },
+        serverInfo: { name: 'wayang', version: PRODUCT_VERSION },
       });
       this.transport = transport;
       this.available = true;

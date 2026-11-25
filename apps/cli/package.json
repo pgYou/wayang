@@ -54,7 +54,7 @@
     "@wayang-ai/protocol": "1.0.0-alpha.0"
   },
   "scripts": {
-    "build": "tsup && cp ../../packages/core/dist/mcp-bridge-entry.js dist/",
+    "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit && eslint src/",
     "test": "vitest run",

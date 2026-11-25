@@ -49,7 +49,7 @@ root `package.json` 的 `workspaces: ["apps/*", "packages/*"]`。
 - **库编译恰好一次**：tsup `preserveModules` 镜像 `src/` 目录结构；`tsc` 产相邻 d.ts；exports 指向 dist，子路径 import 全仓零改动；
 - **兄弟包 external**：core 的构建不内联 protocol，引用其 dist——任何一段运行时代码只存在一份编译输出；
 - **apps 内联**：cli 用 tsup `noExternal: [/^@wayang-ai\//]` 读库 dist 内联；desktop 用 electron-vite resolve 到库 dist 后内联；全 ESM 纪律（任何边缘输出 CJS 即为事故）；
-- **MCP bridge 是 core 的内部运行期资产**：core 双入口构建，`mcp-bridge-entry.js` 平铺在 `core/dist/` 根；app 构建脚本机械复制到宿主入口同目录，缺失即构建期失败；
+- **MCP bridge 是 core 的内部运行期资产**：桥源码在 core，但由 apps/cli 的 tsup 作为第三入口直出（读 core 源码构建自包含 bundle，并经 `define` 把 `@wayang-ai/cli` 版本烤进 MCP initialize 应答的 `serverInfo.version`）；core 自身只构建库产物，不再产出桥 bundle、app 也不再复制；
 - **构建拓扑**：turbo 编排 build / lint / test（`^build` 依赖 + 输入哈希缓存）；所有门槛一律经 `turbo run`，禁止绕过 turbo 直跑下游包脚本（陈旧产物纪律）。
 
 ### 2.4 发布模型
@@ -57,7 +57,7 @@ root `package.json` 的 `workspaces: ["apps/*", "packages/*"]`。
 现状（release/1.0.0）：
 
 - 发布单元是根包 `wayang-ai`：`bin` `wayang` / `waya` → `apps/cli/dist/cli.js`；`files: ["apps/cli/dist", "!apps/cli/dist/**/*.map"]`；`prepublishOnly: npm run build`；
-- tarball 含三个入口：`cli.js`（TUI）、`server-entry.js`（server 宿主）、`mcp-bridge-entry.js`（MCP 桥，复制进入）；
+- tarball 含三个入口：`cli.js`（TUI）、`server-entry.js`（server 宿主）、`mcp-bridge-entry.js`（MCP 桥，cli tsup 第三入口直出）；
 - 子包全部 `private: true`，任何情况下不发布；prerelease 版本按首段自动 dist-tag（`1.0.0-alpha.0` → `alpha`），不顶掉 `latest`；
 - desktop 走 electron-builder 安装包（dmg / exe 等），不走 npm。
 

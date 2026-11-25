@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,19 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { build } from 'esbuild';
 import { MAX_PROGRESS_CHARS, MCP_PROTOCOL_VERSION } from '../mcp-schemas';
+import corePkg from '../../../../../package.json';
+
+/**
+ * The version the app build bakes into the bridge. Read as DATA (node:fs, not
+ * an import — core must not import from apps) so the assertion tracks the
+ * shipped @wayang-ai/cli version across releases instead of a hardcoded
+ * literal that would drift on the next release.
+ */
+const cliVersion: string = (
+  JSON.parse(
+    readFileSync(fileURLToPath(new URL('../../../../../../../apps/cli/package.json', import.meta.url)), 'utf8'),
+  ) as { version: string }
+).version;
 
 class BridgeProcess {
   private stdout = '';
@@ -73,6 +86,10 @@ describe('ACP MCP bridge entry (stdio NDJSON)', () => {
       format: 'esm',
       target: 'node20',
       logLevel: 'silent',
+      // The app build (apps/cli tsup) always injects the shipped product
+      // version via define — mirror that here so the tests exercise the
+      // production artifact shape.
+      define: { __WAYANG_PRODUCT_VERSION__: JSON.stringify(cliVersion) },
     });
     children = [];
     servers = [];
@@ -84,8 +101,8 @@ describe('ACP MCP bridge entry (stdio NDJSON)', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const spawnBridge = (env: Record<string, string> = {}): BridgeProcess => {
-    const child = spawn(process.execPath, [entry], {
+  const spawnBridge = (env: Record<string, string> = {}, entryFile: string = entry): BridgeProcess => {
+    const child = spawn(process.execPath, [entryFile], {
       env: {
         ...process.env,
         WAYANG_MCP_SOCK: '',
@@ -108,11 +125,33 @@ describe('ACP MCP bridge entry (stdio NDJSON)', () => {
     const frames = await bridge.waitForFrames(2);
     expect(frames).toHaveLength(2);
     expect(typeof frames[0].result.protocolVersion).toBe('string');
+    expect(frames[0].result.serverInfo).toEqual({ name: 'wayang', version: cliVersion });
     expect(frames[0].result.capabilities.tools).toEqual({});
     expect(frames[1].result.tools.map((t: { name: string }) => t.name)).toEqual(['update_progress', 'ask_controller']);
     expect(Object.keys(frames[1].result.tools[0].inputSchema.properties)).toEqual(['message']);
     expect(frames[1].result.tools[0].inputSchema.properties.message.maxLength).toBe(MAX_PROGRESS_CHARS);
     for (const line of bridge.frames()) expect(JSON.stringify(line)).not.toContain('[wayang-mcp-bridge]');
+    bridge.end();
+    await expect(bridge.exit()).resolves.toBe(0);
+  });
+
+  it('falls back to the core package version when the app define is absent', async () => {
+    // Core's own dist / source runs have no __WAYANG_PRODUCT_VERSION__ define;
+    // there the bridge reports the core package version instead.
+    const fallbackEntry = join(tempDir, 'bridge-fallback.mjs');
+    await build({
+      entryPoints: [fileURLToPath(new URL('../mcp-bridge-entry.ts', import.meta.url))],
+      outfile: fallbackEntry,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      target: 'node20',
+      logLevel: 'silent',
+    });
+    const bridge = spawnBridge({}, fallbackEntry);
+    bridge.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' })}\n`);
+    const frames = await bridge.waitForFrames(1);
+    expect(frames[0].result.serverInfo).toEqual({ name: 'wayang', version: corePkg.version });
     bridge.end();
     await expect(bridge.exit()).resolves.toBe(0);
   });

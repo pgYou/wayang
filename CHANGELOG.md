@@ -11,13 +11,14 @@
 - 发布链路收敛：对外唯一发布物 @wayang-ai/cli（apps/cli，bin wayang / waya 不变）；tarball 含三个入口 —— cli.js（TUI）、server-entry.js（瘦 server 宿主）、mcp-bridge-entry.js（MCP 桥）；release workflow 对 prerelease 版本自动按首段打 dist-tag（alpha/beta/rc），不顶掉 latest
 - 构建编排：turborepo（build / lint / test 管道，^build 拓扑与缓存）；tsconfig.base.json 语义项单点定义
 - 客户端 SDK 下沉：RemoteSupervisor 迁入 core/client，cli 与未来 desktop 共用
-- server 宿主拆分：TUI 进程 spawn 瘦 server-entry.js（server 进程不再携带 ink/react）；MCP bridge 归 core 双入口构建，app 构建脚本机械复制、缺失即构建失败
+- server 宿主拆分：TUI 进程 spawn 瘦 server-entry.js（server 进程不再携带 ink/react）；MCP bridge 由 apps/cli tsup 作为第三入口直出（读 core 源码构建，define 注入发布版本）
 - macOS 本地存在 1 个既有环境性测试失败（permission-askpaths-reuse，BSD find 差异，main 上同样失败，ubuntu CI 通过），与拆包无关
 
 ### 包模型迁移（发布单元 wayang-ai → @wayang-ai/cli）
 
 - 发布单元从根包 wayang-ai 迁至 apps/cli：公开发布名 @wayang-ai/cli、版本 1.0.0-alpha.1；bin wayang / waya 随迁（指向 dist/cli.js，命令名与用户体验不变），repository / homepage / keywords 等发布元数据与第三方运行时依赖（ai / ink / react / zod 等 13 个）迁入 apps/cli，files 收敛为 dist（排除 sourcemap）并补 README / LICENSE；根包退役为纯 private workspace 根——删除 bin / files / prepublishOnly / 发布元数据与运行时依赖，仅保留编排脚本与开发依赖；npm 上的旧包 wayang-ai 停在 0.9.9 不再演进
-- 发布物自包含：@wayang-ai/core 与 @wayang-ai/protocol 经 tsup noExternal 内联进 apps/cli dist，发布包对 @wayang-ai/* 零运行时依赖；修复 mcp-bridge-entry.js 遗留的 @wayang-ai/protocol/rpc/transport 运行时引用——core 的桥构建同样启用 noExternal，三个入口全部自包含（独立安装实测：tarball 在全新目录安装后 wayang / waya / MCP 桥均可用）
+- 发布物自包含：@wayang-ai/core 与 @wayang-ai/protocol 经 tsup noExternal 内联进 apps/cli dist，发布包对 @wayang-ai/* 零运行时依赖；修复 mcp-bridge-entry.js 遗留的 @wayang-ai/protocol/rpc/transport 运行时引用——桥入口同样启用 noExternal，三个入口全部自包含（独立安装实测：tarball 在全新目录安装后 wayang / waya / MCP 桥均可用）
+- MCP bridge 版本对齐：桥与 host 的 MCP initialize `serverInfo.version` 此前报 core 内部包版本（1.0.0-alpha.0），与发布物版本漂移；桥改由 apps/cli tsup 第三入口直出并经 define 烤入 @wayang-ai/cli 版本（无 define 的 core 侧运行回退 core 包版本），core 的桥 bundle 配置与 cli 构建脚本的复制步骤随之移除；bridge 测试断言「应答版本 = apps/cli package.json 的 version」而非硬编码，防下次发版再漂
 - 安装指引对齐：根 README 与中文 README 的安装命令更新为 `npm install -g @wayang-ai/cli`，无残留旧包名 wayang-ai 安装指引（npx 示例不涉及，bin 名 wayang 未变）
 - release workflow 随迁：tag 与 apps/cli 版本一致性校验、已发布检查对象改 @wayang-ai/cli、npm publish 工作目录改 apps/cli；dist-tag 按 prerelease 段通用派生——tag 去 v 前缀后含 '-' 取首段（1.0.0-alpha.1 → alpha、1.0.0-beta.2 → beta、1.0.0-rc.1 → rc），无 prerelease 段走 latest，派生名形如 semver 时提前失败（npm 会拒绝此类 dist-tag）
 - Node 20 runner 已进入 deprecation 警告期：ci.yml 以注释记录（不修，升级与 engines 评估另行处理）

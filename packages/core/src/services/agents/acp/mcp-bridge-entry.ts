@@ -13,7 +13,7 @@
  */
 
 import { connect, type Socket } from 'node:net';
-import pkg from '../../../../package.json';
+import { PRODUCT_VERSION } from './product-version';
 import {
   MCP_ENV_SOCKET,
   MCP_ENV_TOKEN,
@@ -27,7 +27,7 @@ import {
   type McpResponse,
 } from './mcp-protocol';
 
-const SERVER_INFO = { name: 'wayang', version: pkg.version as string };
+const SERVER_INFO = { name: 'wayang', version: PRODUCT_VERSION };
 
 /** NDJSON framing that tolerates split and coalesced writes. */
 class NdjsonDecoder {
