@@ -107,8 +107,14 @@ async function bootServer(config: WayangConfig): Promise<Booted> {
     client,
     conversation: () => JSON.stringify(lastConversation),
     dispose: async () => {
+      // Deterministic teardown: the SHUTDOWN handler runs supervisor.shutdown()
+      // and then process.exit(0), so the (spied) exit call is the observable
+      // "server fully stopped" event — a bounded wait on it instead of a fixed
+      // grace sleep. Best-effort: on timeout we still close the transport.
+      const exitsBefore = exitSpy.mock.calls.length;
       await client.request(METHOD.SHUTDOWN).catch(() => { /* best effort */ });
-      await new Promise((r) => setTimeout(r, 100));
+      await wait('server exit after shutdown', () => exitSpy.mock.calls.length > exitsBefore, 5_000)
+        .catch(() => { /* best effort: server may already be gone */ });
       client.close();
     },
   };
@@ -146,6 +152,29 @@ async function waitTasksCompleted(client: RpcClient, count: number, timeoutMs = 
   while ((await taskHistory(client)).length < count) {
     if (Date.now() - start > timeoutMs) {
       throw new Error(`Timed out waiting for ${count} completed task(s)`);
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/**
+ * All tasks the engine tracks in ANY status (pending + running + history) —
+ * the server-side task list, read through the same LIST_TASKS RPC.
+ */
+async function allTasks(client: RpcClient): Promise<Array<{ status: string; result?: string }>> {
+  return await client.request(METHOD.LIST_TASKS, {}) as Array<{ status: string; result?: string }>;
+}
+
+/**
+ * Wait until the engine knows `count` tasks — the deterministic "task was
+ * created" sync point (add_task's tool call executed), usable BEFORE a config
+ * update lands so the update can never race the task-creating controller turn.
+ */
+async function waitTasksKnown(client: RpcClient, count: number, timeoutMs = 10_000): Promise<void> {
+  const start = Date.now();
+  while ((await allTasks(client)).length < count) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`Timed out waiting for ${count} task(s) to exist`);
     }
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -319,12 +348,26 @@ describe('config hot-update over RPC — worker next-spawn boundary', () => {
     try {
       await submit(client, 'run both tasks');
       await wait('worker 1 request reached provider A', () => since(providerA, a0).some((body) => isWorkerRequest(body as never)));
+      // Task-creation sync BEFORE the update: both add_task tool calls must
+      // have executed (the engine knows 2 tasks) before the provider moves to
+      // B. The provider log above shows only worker 1's request — the
+      // controller turn that creates task two may still have a follow-up step
+      // in flight, and under CI load that step can straddle the update (it
+      // would then be served from B and never create task two).
+      await waitTasksKnown(client, 2);
 
       // Update lands while worker 1 is mid-run.
       await client.request(METHOD.UPDATE_PROVIDER, { name: 'main', patch: { baseURL: providerB.baseURL } });
 
       hold.release();
       await waitTasksCompleted(client, 2);
+      // Deterministic wait for the controller's post-update wake turn: task
+      // completion (the history flip above) is causally EARLIER than the
+      // wake turn — signal → controller loop → per-turn model re-resolution →
+      // request on the NEW baseURL. Under load that chain lands on provider B
+      // only after this poll has already observed the flip, so asserting on
+      // the log right away races (the CI failure this hardens away).
+      await wait('controller wake turn reached provider B', () => since(providerB, b0).some((body) => isControllerRequest(body as never)));
 
       // Worker 1 (in flight at update time) served from A; worker 2 (spawned
       // AFTER the update) served from B.
