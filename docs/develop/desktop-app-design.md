@@ -1,7 +1,7 @@
 # Wayang Desktop 应用架构设计
 
 > 状态：正式设计文档，随实现演进校准；现状事实以本分支代码为准（基线 88ae400，rebase 自 `release/1.0.0`）。
-> 本文按维护者范围裁定重构为单一范围版：废弃此前按批次划分的推进框架，桌面端全部工作并入本次交付；八项既有设计决策保留并按新范围改写，并新增三项，决策枚举共十一项——第九项 desktop 自有配置存储与首启 onboard（2.11，取代「与 CLI 共用 config 文件」旧条款）、第十项 平台配置与常量模块（2.6：路径与平台常量收敛为单一产源并预留 override 入口，自定义路径与跨平台扩展只改一处——可扩展性）、第十一项 shadcn 初始风格主题体系与通用组件（2.8：颜色 / 圆角 / 间距全量 token 化并沉淀 ui 组件，杜绝散落样式——一致性与规范化）；范围裁定为唯一权威，覆盖此前一切分段表述。
+> 本文按维护者范围裁定重构为单一范围版：废弃此前按批次划分的推进框架，桌面端全部工作并入本次交付；八项既有设计决策保留并按新范围改写，并新增三项，决策枚举共十一项——第九项 desktop 自有配置存储与首启 onboard（2.11，取代「与 CLI 共用 config 文件」旧条款）、第十项 平台配置与常量模块（2.6：路径与平台常量收敛为单一产源并预留 override 入口，自定义路径与跨平台扩展只改一处——可扩展性）、第十一项 shadcn 初始风格主题体系与通用组件（2.8：颜色 / 圆角 / 间距全量 token 化并沉淀 ui 组件，杜绝散落样式——一致性与规范化）；会话形态决策（决策一）修订为单窗口多会话（应用内切换）——修订既有决策而非新增，决策枚举仍为十一项，header 右上角设置与会话切换入口规格一并纳入（2.1、2.2、2.7、2.9、4.2、4.3）；范围裁定为唯一权威，覆盖此前一切分段表述。
 > 关联：主仓 `docs/develop/monorepo-design.md`（第 4 节 core/cli 改造为本设计前置成果）；`CHANGELOG.md` 的 v1.0.0 段桌面待办；研发纪律见仓库根 `AGENTS.md`。
 
 ## 1. 目标与范围
@@ -11,14 +11,14 @@
 **纳入清单（按工作域组织，与第 4 节开发计划一一对应）**：
 
 - **功能修复与地基**（域一）：ready 状态黑洞修复、tasks 订阅死路径修复、崩溃 resume、存储目录切换（注入面落地）、平台配置与常量模块、workspace 依赖声明；
-- **架构升级**（域二）：IPC 单一契约、主进程分层（含 ServerProcessHost 自愈状态机）、renderer 状态重构（`useSyncExternalStore`，含首屏快照竞态修复）、renderer 日志桥；
-- **功能与 UI**（域三）：主题体系与通用组件、设置页与配置热更 UI（接 core 8 个细粒度 update 方法）、UI/UX 全套（Sender/Footer 合一、上下文圆环、TurnDotsNav、长消息折叠等）、conversation 分页与 worker 级通道；
+- **架构升级**（域二）：IPC 单一契约、主进程分层（含 ServerProcessHost 自愈状态机与会话切换语义）、会话索引通道（list-sessions）、renderer 状态重构（`useSyncExternalStore`，含首屏快照竞态修复与切换重放）、renderer 日志桥；
+- **功能与 UI**（域三）：主题体系与通用组件、设置页与配置热更 UI（接 core 8 个细粒度 update 方法，入口为 header 右上角设置图标）、UI/UX 全套（Sender/Footer 合一、上下文圆环、TurnDotsNav、长消息折叠等）、会话切换 UI（header 右上角【…】下拉与历史会话弹框）、conversation 分页与 worker 级通道；
 - **打包分发**（域四）：electron-builder 分发（含应用图标）、单实例锁、README / 版本号 / 文档收口。
 
 **明确不做（仅此两项，成文于此；全文其余部分不得扩大排除面）**：
 
 1. **Windows / Linux 跨平台**：目录规范、打包目标、GUI PATH 修复的跨平台化均不做。纪律先行——路径与平台常量一律经平台配置模块（2.6）取值，模块内预留 override 入口，禁止直调 `app.getPath` 与硬编码平台路径（见 2.6、第 5 节），未来引入时只改 override 与模块分支，不改消费点；
-2. **多窗口多会话**：不做第二个 `BrowserWindow`、不做侧栏会话切换与会话路由；会话形态为单窗口单会话（见 2.1）。
+2. **多窗口**：不做第二个 `BrowserWindow`、不做 `windowId↔sessionId` 会话路由，会话切换不经侧栏；会话形态为单窗口多会话（应用内切换，切换语义见 2.1 / 2.2 / 2.9，入口规格见 4.3）。
 
 **本次验收口径**：
 
@@ -28,7 +28,8 @@
 4. 可分发：干净 macOS 机器安装 `.app` → 双击启动 → 已连接 → 发消息 → worker 跑 bash（GUI PATH 生效）→ 退出无残留 utility 进程；第二实例启动即退出并聚焦已有窗口；
 5. 交付物对齐：README 重写、`version` 对齐 alpha.1、本文档与主仓 `CHANGELOG.md` 桌面段按实际交付校准；
 6. 全新环境首启：无配置 → 欢迎页 → onboard 完成 / 导入完成 → 确认写入 → 主界面可用；二次启动不再出现欢迎页；
-7. UI 一致性：界面全部经主题 token 与 `components/ui` 组件实现，无散落样式（硬编码色值、逐组件自定圆角为零）。
+7. UI 一致性：界面全部经主题 token 与 `components/ui` 组件实现，无散落样式（硬编码色值、逐组件自定圆角为零）；
+8. 入口与会话切换：header 右上角设置图标（lucide-react `settings-2`）点击打开设置页；【…】下拉「新会话」确认后进入全新会话；「历史会话」弹框（时间 / 摘要列表）选中确认后切换成功且界面恢复目标会话内容。
 
 ## 2. 架构设计
 
@@ -38,14 +39,14 @@ Desktop 是 Electron 壳：**main 进程当 RPC 客户端 + UtilityProcess 当�
 
 | 上下文 | 技术栈 | 职责 |
 |---|---|---|
-| renderer | React 19 + Tailwind v4（sandbox） | UI 渲染；触达外部世界的唯一方式是 `window.wayang`（preload 白名单：2 个订阅 + 7 个 invoke，快照通道落地后 8 个） |
+| renderer | React 19 + Tailwind v4（sandbox） | UI 渲染；触达外部世界的唯一方式是 `window.wayang`（preload 白名单：2 个订阅 + 7 个 invoke，快照与会话三通道落地后 11 个） |
 | preload | contextBridge + ipcRenderer | 把 IPC 通道包成 api 对象一次性暴露；沙箱内只能用受限 Node 面 |
 | main | Electron 41 + core（构建期内联） | GUI PATH 修复、配置装载与校验、窗口、fork utility、建 RPC、状态转发、进程生命周期与退出协议、崩溃 resume（分层形态见 2.9） |
 | utility | 纯 Node（core 的 serverMain 内联） | 把父进程当 message port，转成 `{stdin, stdout}` 交给 core 的 server 入口 |
 
 一条用户消息的路径：renderer `invoke` → main 的 `RemoteSupervisor` → RPC `submit_input` → utility 侧 `SignalQueue` 唤醒 controller loop → 状态变更经 `NOTIFY state.event` 推回 main 的 `RemoteStateStore` → `webContents.send` 回 renderer 重渲染。
 
-**会话形态**：单窗口单会话。不做第二个 `BrowserWindow`、不做会话路由；侧栏会话切换与多窗口均不在本次范围（第 1 节明确不做第 2 项）。轮次导航等 UI 层增强（4.3）不引入会话概念。
+**会话形态**：单窗口多会话（应用内切换）。不做第二个 `BrowserWindow`、不做 `windowId↔sessionId` 会话路由（第 1 节明确不做第 2 项）；会话切换入口为 header 右上角【…】下拉（4.3），切换语义为优雅停当前 server → 以 `resume:<目标 sessionId>` 重新 boot → renderer store 重置并经 `getInitialState` 快照重放恢复目标会话初始态，会话列表数据源为 core 会话索引（Supervisor conversation index 经 list-sessions 通道暴露；通道与重放详见 2.2、2.7，宿主切换路径见 2.9）。轮次导航等 UI 层增强（4.3）不引入会话概念。
 
 ### 2.2 IPC 通道形态（目标态单一契约）
 
@@ -56,10 +57,11 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 | invoke | `wayang:sendInput` / `wayang:abort` / `wayang:answerInquiry` / `wayang:listTasks` / `wayang:cancelTask` / `wayang:contextUsage` | 转发 `RemoteSupervisor` 调用 |
 | invoke | `wayang:respondPermission` | 声明不接线；worker 级权限卡片列为后续按需，届时启用 |
 | invoke（状态重构新增） | `wayang:getInitialState` | 全量快照拉取，首屏 hydrate 与刷新重放共用 |
+| invoke（会话切换新增） | `wayang:newSession` / `wayang:switchSession` / `wayang:listSessions` | new-session 开新会话；switch-session 入参目标 sessionId（宿主以 `resume:<id>` 重新 boot），切换完成后全部订阅重放（复用既有重放机制，2.7）；list-sessions 返回 core 会话索引（Supervisor conversation index，含时间 / 摘要） |
 | 订阅 | `wayang:state` | `NOTIFY state.event` 逐条转发（target + path + data） |
 | 订阅 | `wayang:status` | 连接状态机（现状 connecting / reconnecting / ready / crashed；目标态相位随 ServerProcessHost 扩展，见 2.9） |
 
-**目标态契约（域二落地）**：`src/shared/ipc-contract.ts` 作为通道名 / 入参 / 返回 / 推送负载的唯一契约源；main 侧 `ipc/router.ts` 泛型 `typedHandle`（Sender 校验 + 入参校验 + `{ok, data, error}` 信封）；preload 侧 `typedInvoke`（统一超时保护 + 解包信封，导出 `WayangBridge` 类型，`global.d.ts` 零重复声明）；renderer 侧 `lib/wayang-api.ts` 薄封装，组件禁止直访 `window.wayang`。新增通道（设置页、分页、日志桥）一律先入契约再实现。
+**目标态契约（域二落地）**：`src/shared/ipc-contract.ts` 作为通道名 / 入参 / 返回 / 推送负载的唯一契约源；main 侧 `ipc/router.ts` 泛型 `typedHandle`（Sender 校验 + 入参校验 + `{ok, data, error}` 信封）；preload 侧 `typedInvoke`（统一超时保护 + 解包信封，导出 `WayangBridge` 类型，`global.d.ts` 零重复声明）；renderer 侧 `lib/wayang-api.ts` 薄封装，组件禁止直访 `window.wayang`。新增通道（设置页、分页、日志桥、会话切换三通道）一律先入契约再实现。
 
 权限流走 controller inquire 通道：controller 发起 inquire → renderer 渲染 InquiryCard → 用户应答经 `answerInquiry` 回流。本次不新增权限 UI 面；worker 级权限卡片为后续按需工作，`respondPermission` 保持声明不接线。
 
@@ -106,7 +108,8 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 ### 2.7 状态与快照（含 renderer 状态重构目标态）
 
 - **权威源与缓存**：UtilityProcess 为业务状态唯一权威源；main 侧 `RemoteStateStore` 逐 path 缓存收到的状态事件，并可经 `GET_SNAPSHOT` 主动拉全量，作可重放缓存（Replay Cache）；机制零 core 改动；
-- **renderer 状态重构目标态**：废弃顶层 `useState` 聚合散装 slice 的现状（一次 `setSlices` 触发全列表重渲染），改模块级外部单例 Store + React 19 `useSyncExternalStore` 按 slice key 细粒度订阅——流式输出只重绘当前条目。boot 序列固定为「先经 `wayang:getInitialState` 拉快照建初始态，再挂 `wayang:state` 订阅增量」：首屏快照竞态（server ready 即推快照、早于 renderer 挂监听则初始态永久丢失，a4）由此在架构层消解，不再作为独立补丁（融入方式见 4.2）；窗口刷新（`did-finish-load`）时全量重发缓存。
+- **renderer 状态重构目标态**：废弃顶层 `useState` 聚合散装 slice 的现状（一次 `setSlices` 触发全列表重渲染），改模块级外部单例 Store + React 19 `useSyncExternalStore` 按 slice key 细粒度订阅——流式输出只重绘当前条目。boot 序列固定为「先经 `wayang:getInitialState` 拉快照建初始态，再挂 `wayang:state` 订阅增量」：首屏快照竞态（server ready 即推快照、早于 renderer 挂监听则初始态永久丢失，a4）由此在架构层消解，不再作为独立补丁（融入方式见 4.2）；窗口刷新（`did-finish-load`）时全量重发缓存；
+- **会话切换重放**：切换（ServerProcessHost 切换路径见 2.9）后 renderer store 重置，经既有 `wayang:getInitialState` 快照拉取重建目标会话初始态、`wayang:state` 订阅重挂——全部订阅重放复用既有重放机制（与刷新重放、resume 重放同源），不新增重放通道；会话列表数据源为 core 会话索引，经 `wayang:listSessions` 暴露（2.2）。
 
 ### 2.8 主题体系与通用组件（决策十一）
 
@@ -126,7 +129,7 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 | 组件 | 职责 |
 |---|---|
 | Application | 编排根；`Disposable` 退出队列统一收口 `before-quit` / `will-quit` / `window-all-closed`（macOS 关窗不退进程） |
-| WindowManager | **单窗口管理器**：窗口创建、bounds 持久化、`ready-to-show` 防白屏；不做 `windowId↔sessionId` 多会话路由（单会话形态无此需求） |
+| WindowManager | **单窗口管理器**：窗口创建、bounds 持久化、`ready-to-show` 防白屏；不做 `windowId↔sessionId` 会话路由（单窗口多会话经应用内切换，窗口与会话无绑定） |
 | SecurityGuard | `will-navigate` 拦截、外链走系统浏览器、默认权限清零、`senderFrame.url` 校验 |
 | ServerProcessHost | UtilityProcess 生命周期状态机与自愈（见下） |
 | SessionService | 持有 `RemoteSupervisor` 与状态订阅 |
@@ -137,7 +140,8 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 - **ServerProcessHost 状态机**：starting → ready → degraded → restarting → fatal，指数退避自愈。域一先落地一次性重试的 resume 语义（a1 缺口修复），域二将其收编升级为完整状态机：
   - utility 意外退出（exit 时非 stopping）→ `restarting`（renderer 侧呈现 reconnecting）→ 指数退避后以 `resume:<sessionId>` 重新 fork → 重建 rpc / store / 重订阅 + `GET_SNAPSHOT` 重拉经既有 `wayang:state` 通道重放 → 重注册 IPC 转发；连续失败达上限落 `fatal`（附 stderr tail 诊断）；
   - `ready` 前崩溃或 sessionId 未知直接 `fatal`，不盲目重试；
-  - 正常退出协议不变（SHUTDOWN RPC → 5s 宽限 → 强杀），`before-quit` 竞态由 stopping 标记吞掉 exit 事件、不发 restarting。
+  - 正常退出协议不变（SHUTDOWN RPC → 5s 宽限 → 强杀），`before-quit` 竞态由 stopping 标记吞掉 exit 事件、不发 restarting；
+  - 会话切换路径（switch-session）：以正常退出协议优雅停当前 server（当前会话状态保留、仍可 resume）→ 以 `resume:<目标 sessionId>` 重新 boot → ready 后经重放恢复（2.7）；切换为用户主动动作，不视为 degraded / fatal、不计入自愈退避。
 
 ### 2.10 打包形态
 
@@ -182,9 +186,9 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 
 **本次必做（工程债）**：路径取值散落——logger.ts 直调 `app.getPath`、index.ts / connection.ts 手拼 homedir 路径，无统一封装（域一收编入平台配置模块）；`apps/desktop/package.json` 零 `@wayang-ai/*` workspace 依赖声明（turbo 冷启动竞态根因，已两次复现，域一）；`version` `1.0.0-alpha.0` 落后基线（域四收口）；README 占位文案（域四）；单实例锁缺失（域四）；设计文档热更方法引用过时（单一 `UPDATE_CONFIG` → 实际 8 个细粒度方法，本文重写即清偿）。
 
-**本次做（架构与体验升级项，原后续批次规划全部转入）**：平台配置与常量模块（决策十）；IPC 单一契约；主进程分层（Application / SecurityGuard / SessionService / UnifiedLogger / ServerProcessHost 状态机；WindowManager 为单窗口管理器）；renderer 状态重构（`useSyncExternalStore`）；主题体系与通用组件（决策十一）；UI/UX 全套（设置页 / Sender 合一 / 上下文圆环 / TurnDotsNav / 长消息折叠）；配置热更设置页；conversation 分页与 worker 级通道；renderer 日志桥。
+**本次做（架构与体验升级项，原后续批次规划全部转入）**：平台配置与常量模块（决策十）；IPC 单一契约；主进程分层（Application / SecurityGuard / SessionService / UnifiedLogger / ServerProcessHost 状态机与会话切换语义；WindowManager 为单窗口管理器）；renderer 状态重构（`useSyncExternalStore`，含切换重放）；会话切换（域二：ServerProcessHost 切换语义 + list-sessions 会话索引通道；域三：header【…】下拉与历史会话弹框）；主题体系与通用组件（决策十一）；UI/UX 全套（设置页 / Sender 合一 / 上下文圆环 / TurnDotsNav / 长消息折叠 / header 右上角设置入口）；配置热更设置页；conversation 分页与 worker 级通道；renderer 日志桥。
 
-**明确不做**：Windows / Linux 跨平台、多窗口多会话（第 1 节成文）。另 worker 级权限卡片（`respondPermission` 接线）列为后续按需，不在本次范围。
+**明确不做**：Windows / Linux 跨平台、多窗口（第 1 节成文）。另 worker 级权限卡片（`respondPermission` 接线）列为后续按需，不在本次范围。
 
 ## 4. 开发计划（四工作域）
 
@@ -192,7 +196,7 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 
 域一 → 域二 → 域三 → 域四 主线串行，域内可并行（见下）。依赖理由：
 
-- **机制依赖**：域二快照通道的拉取时机建立在域一修正后的 ready 语义与订阅路径之上（快照 10 个 slice 含 `tasks.history`）；resume 重放不依赖新通道——重连后 main 侧 `GET_SNAPSHOT` 重拉经既有 `wayang:state` 转发，故崩溃修复可先行落在域一；域二的状态重构与 IPC 契约是域三的结构前置（细粒度订阅未定型先铺 UI 只会返工；新通道必须先入契约再实现）；域三内主题体系与通用组件先于 UI/UX 全套与首启流落地（先立 token 与 ui 组件基座，全套 UI 一律以 token + ui 组件实现），不反向依赖域二状态重构的落地时序；
+- **机制依赖**：域二快照通道的拉取时机建立在域一修正后的 ready 语义与订阅路径之上（快照 10 个 slice 含 `tasks.history`）；resume 重放不依赖新通道——重连后 main 侧 `GET_SNAPSHOT` 重拉经既有 `wayang:state` 转发，故崩溃修复可先行落在域一；域二的状态重构与 IPC 契约是域三的结构前置（细粒度订阅未定型先铺 UI 只会返工；新通道必须先入契约再实现）；域三内主题体系与通用组件先于 UI/UX 全套与首启流落地（先立 token 与 ui 组件基座，全套 UI 一律以 token + ui 组件实现），不反向依赖域二状态重构的落地时序；域三会话切换 UI（header【…】下拉与历史会话弹框）以域二切换语义（ServerProcessHost stop → resume boot）与 list-sessions 索引通道就绪为前置；
 - **配置存储依赖**：信封存储（决策九，2.11）属域一地基——server boot 与首启 onboard 都依赖它；平台配置与常量模块（决策十，2.6）同为域一地基，是存储目录切换与信封存储的路径取值产源；域三的欢迎页 / 向导 / 导入 / 最终确认页 UI 以域一存储就绪为前提；
 - **功能面依赖**：域四打包以域一至域三功能面收齐为前提——装包验证的是「已连接 → 发消息 → worker bash → 设置热更 → 干净退出」完整链路，功能未收齐即打包只会反复重打；装包后首屏立即有内容以域二快照通道为前提；
 - **交付依赖**：域四收口以实际交付为输入，最后校准文档与版本。
@@ -209,19 +213,19 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 
 ### 4.2 域二：架构升级
 
-**工作项**：①IPC 单一契约——2.2 目标态全量（契约源 / `typedHandle` / `typedInvoke` / `WayangBridge` / `wayang-api.ts` 薄封装）；②主进程分层——2.9 组件全量落地，`index.ts` 退化为 Bootstrap，UnifiedLogger 含 renderer 日志桥；③renderer 状态重构——模块级外部单例 Store + `useSyncExternalStore` 按 slice 细粒度订阅；新增 `wayang:getInitialState` 通道与 preload `getInitialState`。**原首屏快照项的融入方式**：竞态修复不再作为独立步骤——快照拉取成为新 Store 固定 boot 序列第一步（先拉快照建初始态、再挂订阅），`did-finish-load` 全量重发保留为刷新重放路径，a4 随重构消解；④ServerProcessHost 状态机——收编域一 resume 实现并升级为指数退避自愈（2.9）。
+**工作项**：①IPC 单一契约——2.2 目标态全量（契约源 / `typedHandle` / `typedInvoke` / `WayangBridge` / `wayang-api.ts` 薄封装），含会话切换三通道 new-session / switch-session / list-sessions（契约名 `wayang:newSession` / `wayang:switchSession` / `wayang:listSessions`）；②主进程分层——2.9 组件全量落地，`index.ts` 退化为 Bootstrap，UnifiedLogger 含 renderer 日志桥；③renderer 状态重构——模块级外部单例 Store + `useSyncExternalStore` 按 slice 细粒度订阅；新增 `wayang:getInitialState` 通道与 preload `getInitialState`。**原首屏快照项的融入方式**：竞态修复不再作为独立步骤——快照拉取成为新 Store 固定 boot 序列第一步（先拉快照建初始态、再挂订阅），`did-finish-load` 全量重发保留为刷新重放路径，a4 随重构消解；该 boot 序列同时承载会话切换恢复——切换后 store 重置，经同一快照拉取与订阅重挂恢复目标会话初始态（2.7）；④ServerProcessHost 状态机——收编域一 resume 实现并升级为指数退避自愈（2.9），并落会话切换语义（2.9 切换路径：优雅停当前 server、其会话状态保留 → `resume:<目标 sessionId>` 重新 boot；不视为 degraded / fatal、不计退避）；⑤会话索引通道——list-sessions 经契约暴露 core 会话索引（Supervisor conversation index：时间 / 摘要），为域三历史会话弹框数据源。
 
 **文件面**：`src/shared/ipc-contract.ts`、`src/main/ipc/router.ts`、`src/main/application.ts` / `window-manager.ts` / `security-guard.ts` / `session-service.ts` / `server-process-host.ts` / `unified-logger.ts`（均新增）；`src/main/index.ts`（退化为 Bootstrap）；`src/preload/index.ts`（typedInvoke 化）；`src/renderer/src/lib/wayang-api.ts`（新增）、`src/renderer/src/lib/store.ts`（重构为外部单例）、`src/renderer/src/types/global.d.ts`。
 
-**验收**：契约文件为通道唯一来源，`global.d.ts` 零重复声明；组件零直访 `window.wayang`（边界检查钉住）；先拉快照后订阅收齐 10 slice，刷新后界面立即有内容；流式输出只重绘当前条目（渲染计数断言）；ServerProcessHost 状态机单测覆盖退避序列、fatal 终态与 before-quit 竞态；`render-process-gone` / `child-process-gone` 记录入统一日志。
+**验收**：契约文件为通道唯一来源，`global.d.ts` 零重复声明；组件零直访 `window.wayang`（边界检查钉住）；先拉快照后订阅收齐 10 slice，刷新后界面立即有内容；流式输出只重绘当前条目（渲染计数断言）；ServerProcessHost 状态机单测覆盖退避序列、fatal 终态、before-quit 竞态与切换路径（stop → resume boot 不进退避、不落 fatal）；切换后经快照重放收齐目标会话 slice；list-sessions 返回会话索引条目（时间 / 摘要）；`render-process-gone` / `child-process-gone` 记录入统一日志。
 
 ### 4.3 域三：功能与 UI
 
-**工作项**：①主题体系与通用组件（决策十一，2.8）——renderer 全局样式落 CSS variables token（shadcn HSL 体系，现有淡蓝主题的 primary 色相映射入 token）、单一 `--radius` 基准与 4 / 8 倍数 spacing 尺度、`components/ui/` 经 shadcn CLI 沉淀通用组件（Button / Card / Dialog / Input / Badge / Skeleton / ScrollArea 按需引入）；本项为域三全部 UI 面的实现基座，先于 ③⑤ 落地（②亦经体系实现）；②表单化 `SettingsPage`——Provider 增删改查、Agent 绑定与 `maxConcurrency`、工作区（`dialog.showOpenDialog` 选择）与权限配置；保存时 main 校验后写入 userData 信封并经 8 个细粒度 update 方法热更到运行中的 server（2.4）；设置页与首启最终确认页同源同校验（共用核心完整性校验与信封写入口径，2.11）；`WAYANG_DESKTOP_*` dev env 移除；③UI/UX 全套——一律以主题 token 与 `components/ui` 组件实现：对话列表通铺 + 悬浮 Sender/Footer 合一（连接态 / 任务 / worker 计数 + 上下文圆环进度条 + 发送 / 停止按 busy 切换）；Controller 输出 Borderless 撑开、user 消息淡蓝灰卡片（>300px 默认折叠 + 展开按钮）；侧边 `TurnDotsNav` 轮次圆点导航（数据源只取 user 消息、≤20 圆点滑动窗口、hover 预览、点击平滑滚动、`IntersectionObserver` 联动高亮，封装为独立组件不侵入气泡渲染）；④会话运维面——conversation 分页与 worker 级通道（controller 读取 worker 会话的分页通道，对齐 CLI 的 worker-transcript 语义）；⑤首启配置流 UI（决策九，2.11）——欢迎页（冷启动判定触发，两入口）、onboard 向导（必要核心步骤靠前必做、含默认 provider + model 兜底步骤，完成必做后其余步骤可跳过）、CLI 导入入口（读 `~/.wayang.config.json` → validate → 直跳最终确认页，失败呈现具体校验错误）、最终确认页（全量展示 + 核心完整性校验 → 确认写入 userData 信封 → 进入主界面）；文件选择器支持非默认导入路径为可选增强；依赖域一信封存储就绪（4.0）。
+**工作项**：①主题体系与通用组件（决策十一，2.8）——renderer 全局样式落 CSS variables token（shadcn HSL 体系，现有淡蓝主题的 primary 色相映射入 token）、单一 `--radius` 基准与 4 / 8 倍数 spacing 尺度、`components/ui/` 经 shadcn CLI 沉淀通用组件（Button / Card / Dialog / Input / Badge / Skeleton / ScrollArea 按需引入）；本项为域三全部 UI 面的实现基座，先于 ③⑤ 落地（②亦经体系实现）；②表单化 `SettingsPage`——Provider 增删改查、Agent 绑定与 `maxConcurrency`、工作区（`dialog.showOpenDialog` 选择）与权限配置；保存时 main 校验后写入 userData 信封并经 8 个细粒度 update 方法热更到运行中的 server（2.4）；设置页与首启最终确认页同源同校验（共用核心完整性校验与信封写入口径，2.11）；`WAYANG_DESKTOP_*` dev env 移除；入口规格——header 右上角 lucide-react `settings-2` 图标，点击打开设置页；③UI/UX 全套——一律以主题 token 与 `components/ui` 组件实现：对话列表通铺 + 悬浮 Sender/Footer 合一（连接态 / 任务 / worker 计数 + 上下文圆环进度条 + 发送 / 停止按 busy 切换）；Controller 输出 Borderless 撑开、user 消息淡蓝灰卡片（>300px 默认折叠 + 展开按钮）；侧边 `TurnDotsNav` 轮次圆点导航（数据源只取 user 消息、≤20 圆点滑动窗口、hover 预览、点击平滑滚动、`IntersectionObserver` 联动高亮，封装为独立组件不侵入气泡渲染）；④会话运维面——conversation 分页与 worker 级通道（controller 读取 worker 会话的分页通道，对齐 CLI 的 worker-transcript 语义）；⑤首启配置流 UI（决策九，2.11）——欢迎页（冷启动判定触发，两入口）、onboard 向导（必要核心步骤靠前必做、含默认 provider + model 兜底步骤，完成必做后其余步骤可跳过）、CLI 导入入口（读 `~/.wayang.config.json` → validate → 直跳最终确认页，失败呈现具体校验错误）、最终确认页（全量展示 + 核心完整性校验 → 确认写入 userData 信封 → 进入主界面）；文件选择器支持非默认导入路径为可选增强；依赖域一信封存储就绪（4.0）；⑥会话切换入口——header 右上角设置入口旁【…】省略号图标（lucide-react `ellipsis` / `ellipsis-vertical` / `more-horizontal`，实现时取 lucide-react 现有图标名），点击展开下拉框，两项：【新会话】——确认后经 new-session 通道开启新会话；【历史会话】——打开历史会话弹框，经 list-sessions 展示历史会话列表（时间 / 摘要），选中后确认 → 经 switch-session 通道执行切换，界面重放恢复目标会话内容（2.7）；依赖域二切换语义与索引通道（4.0）。
 
-**文件面**：`src/renderer/src/globals.css`（token 体系唯一落点）；`src/renderer/src/components/ui/`（新增，shadcn CLI 生成沉淀）；`src/renderer/src/components/onboard/`（新增欢迎页 / 向导 / 导入 / 最终确认页）；`src/renderer/src/components/settings/`（新增页面与表单组件）；`src/renderer/src/components/turn-dots-nav.tsx`（新增）；`src/renderer/src/components/chat/*`、`input-area.tsx`、`status-bar.tsx`（改造合一）；`src/shared/ipc-contract.ts` / `src/main/ipc/router.ts` / `src/renderer/src/lib/wayang-api.ts`（新增通道条目）；main 侧设置持久化与热更调用面。
+**文件面**：`src/renderer/src/globals.css`（token 体系唯一落点）；`src/renderer/src/components/ui/`（新增，shadcn CLI 生成沉淀）；`src/renderer/src/components/onboard/`（新增欢迎页 / 向导 / 导入 / 最终确认页）；`src/renderer/src/components/settings/`（新增页面与表单组件）；`src/renderer/src/components/turn-dots-nav.tsx`（新增）；`src/renderer/src/components/chat/*`、`input-area.tsx`、`status-bar.tsx`（改造合一）；`src/shared/ipc-contract.ts` / `src/main/ipc/router.ts` / `src/renderer/src/lib/wayang-api.ts`（新增通道条目）；main 侧设置持久化与热更调用面；`apps/desktop/package.json`（新增 lucide-react 依赖，现无该依赖）；`src/renderer/src/components/session-menu.tsx`（新增：【…】下拉与历史会话弹框）；`src/renderer/src/App.tsx`（header 右上角设置与会话切换入口挂载）。
 
-**验收**：设置页保存后不重启即生效（运行中 server 可观察 provider / model 变更）；校验失败有错误呈现且不落盘；折叠阈值与导航窗口（≤20 圆点）行为符合参数；点击圆点平滑滚动且高亮联动；分页通道翻页正确且带显式截断标记；移除 dev env 后壳外直启回退路径不受影响；全新环境首启走欢迎页 → onboard 完成 / 导入完成 → 确认写入 → 主界面可用，二次启动不再出现欢迎页；界面全部经主题 token 与 `components/ui` 组件实现，无散落样式（硬编码色值、内联 style、逐组件自定圆角为零），圆角取 `--radius` 派生值、padding / gap 取 4 / 8 尺度值。
+**验收**：设置页保存后不重启即生效（运行中 server 可观察 provider / model 变更）；校验失败有错误呈现且不落盘；折叠阈值与导航窗口（≤20 圆点）行为符合参数；点击圆点平滑滚动且高亮联动；分页通道翻页正确且带显式截断标记；header 右上角 `settings-2` 图标点击打开设置页；【…】下拉「新会话」确认后进入全新会话，「历史会话」弹框选中确认后切换成功且界面恢复目标会话内容；移除 dev env 后壳外直启回退路径不受影响；全新环境首启走欢迎页 → onboard 完成 / 导入完成 → 确认写入 → 主界面可用，二次启动不再出现欢迎页；界面全部经主题 token 与 `components/ui` 组件实现，无散落样式（硬编码色值、内联 style、逐组件自定圆角为零），圆角取 `--radius` 派生值、padding / gap 取 4 / 8 尺度值。
 
 ### 4.4 域四：打包分发与收口
 
