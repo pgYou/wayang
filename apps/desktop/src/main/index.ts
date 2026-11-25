@@ -100,10 +100,10 @@ app.whenReady().then(() => {
   });
 
   createWindow();
-  const sendStatus = (phase: string, detail?: string): void => {
+  const sendStatus = (phase: string, detail?: string, sessionId?: string): void => {
     if (phase === 'crashed') log.error('connection crashed', { detail: detail?.slice(0, 2000) });
-    else log.info(`connection ${phase}`);
-    mainWindow?.webContents.send('wayang:status', { phase, detail });
+    else log.info(`connection ${phase}`, sessionId !== undefined ? { sessionId } : undefined);
+    mainWindow?.webContents.send('wayang:status', { phase, detail, sessionId });
   };
   connectServer({
     getWindow: () => mainWindow,

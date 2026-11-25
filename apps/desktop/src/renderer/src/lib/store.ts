@@ -19,7 +19,9 @@ export const SLICE = {
   activeWorkers: 'engine:activeWorkers',
   tasksPending: 'engine:tasks.pending',
   tasksRunning: 'engine:tasks.running',
-  tasksCompleted: 'engine:tasks.completed',
+  // Core writes the full task history (all terminal states) to tasks.history;
+  // `tasks.completed` was a dead path. Completed tasks are filtered below.
+  tasksHistory: 'engine:tasks.history',
 } as const;
 
 export interface StateUpdate {
@@ -38,8 +40,8 @@ export function useWayangSlices(): SliceStore {
   return slices;
 }
 
-export function useConnectionStatus(): { phase: string; detail?: string } {
-  const [status, setStatus] = useState<{ phase: string; detail?: string }>({ phase: 'connecting' });
+export function useConnectionStatus(): { phase: string; detail?: string; sessionId?: string } {
+  const [status, setStatus] = useState<{ phase: string; detail?: string; sessionId?: string }>({ phase: 'connecting' });
   useEffect(() => window.wayang.onStatus(setStatus), []);
   return status;
 }
@@ -70,7 +72,9 @@ export const selectActiveWorkers = (s: SliceStore): ActiveWorkerInfo[] =>
 export const selectTasks = (s: SliceStore): { pending: TaskDetail[]; running: TaskDetail[]; completed: TaskDetail[] } => ({
   pending: (s[SLICE.tasksPending] as TaskDetail[] | undefined) ?? [],
   running: (s[SLICE.tasksRunning] as TaskDetail[] | undefined) ?? [],
-  completed: (s[SLICE.tasksCompleted] as TaskDetail[] | undefined) ?? [],
+  // `tasks.history` carries every terminal task (completed, failed,
+  // cancelled); the status bar counts only the ones that finished cleanly.
+  completed: ((s[SLICE.tasksHistory] as TaskDetail[] | undefined) ?? []).filter((t) => t.status === 'completed'),
 });
 
 /** Same composition as the TUI controller page: read entries + unread signals. */

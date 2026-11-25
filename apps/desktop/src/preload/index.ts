@@ -12,9 +12,9 @@ const api = {
     ipcRenderer.on('wayang:state', listener);
     return () => ipcRenderer.removeListener('wayang:state', listener);
   },
-  /** Connection lifecycle: connecting / ready / crashed. */
-  onStatus(callback: (status: { phase: string; detail?: string }) => void): () => void {
-    const listener = (_e: unknown, status: { phase: string; detail?: string }): void => callback(status);
+  /** Connection lifecycle: connecting / reconnecting / ready / crashed (+ sessionId on ready). */
+  onStatus(callback: (status: { phase: string; detail?: string; sessionId?: string }) => void): () => void {
+    const listener = (_e: unknown, status: { phase: string; detail?: string; sessionId?: string }): void => callback(status);
     ipcRenderer.on('wayang:status', listener);
     return () => ipcRenderer.removeListener('wayang:status', listener);
   },

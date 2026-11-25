@@ -49,7 +49,7 @@ function asMessagePort(child: UtilityProcess): MessagePortLike {
 }
 
 /** State slices forwarded to the renderer (mirrors the TUI's subscriptions). */
-const SUBSCRIBED_PATHS: ReadonlyArray<readonly [string, string]> = [
+export const SUBSCRIBED_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['controllerAgent', 'conversation'],
   ['controllerAgent', 'dynamicState.streamingEntries'],
   ['controllerAgent', 'dynamicState.busy'],
@@ -59,7 +59,10 @@ const SUBSCRIBED_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['engine', 'activeWorkers'],
   ['engine', 'tasks.pending'],
   ['engine', 'tasks.running'],
-  ['engine', 'tasks.completed'],
+  // Core's task engine writes `tasks.history` (all terminal states); the old
+  // `tasks.completed` path never carried a value, so the completed counter
+  // was stuck at 0. The renderer filters statuses out of the history slice.
+  ['engine', 'tasks.history'],
 ];
 
 export interface DesktopSessionOptions {
@@ -84,7 +87,11 @@ export interface DesktopConnection {
 export interface ConnectDeps {
   getWindow: () => BrowserWindow | null;
   options: DesktopSessionOptions;
-  onStatus: (phase: 'connecting' | 'ready' | 'crashed', detail?: string) => void;
+  /**
+   * Connection status machine (main only, §5 进程纪律). Phases:
+   * connecting → ready (with the session id) → [reconnecting → ready] → crashed.
+   */
+  onStatus: (phase: 'connecting' | 'ready' | 'crashed', detail?: string, sessionId?: string) => void;
   log: MainLogger;
 }
 
@@ -163,6 +170,9 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
     sessionDir: ready.sessionDir,
     serverLog: join(ready.sessionDir ?? '', 'wayang.log'),
   });
+  // The renderer status bar waits for this to show 已连接 — without it the
+  // connection stays "connecting" forever even though the server is up.
+  onStatus('ready', undefined, ready.sessionId);
   const store = new RemoteStateStore(rpc);
   const supervisor = new RemoteSupervisor(rpc, store, options.workspaceDir, {
     stop: () => gracefulStop(rpc, child, exited),
