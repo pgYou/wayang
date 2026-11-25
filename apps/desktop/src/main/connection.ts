@@ -91,7 +91,7 @@ export interface ConnectDeps {
    * Connection status machine (main only, §5 进程纪律). Phases:
    * connecting → ready (with the session id) → [reconnecting → ready] → crashed.
    */
-  onStatus: (phase: 'connecting' | 'ready' | 'crashed', detail?: string, sessionId?: string) => void;
+  onStatus: (phase: 'connecting' | 'reconnecting' | 'ready' | 'crashed', detail?: string, sessionId?: string) => void;
   log: MainLogger;
 }
 
@@ -107,6 +107,22 @@ export interface ConnectDeps {
 async function loadSessionConfig(configPath: string, legacyConfigPath: string): Promise<WayangConfig> {
   const store = new ConfigStore(configPath);
   return store.loadOrImport(legacyConfigPath);
+}
+
+/**
+ * One live server attachment: the forked utility child plus the client stack
+ * wired to it (rpc, state store, supervisor) and its exit signal. Rebuilt
+ * from scratch on every (re)boot — a resume is a full re-fork, never a
+ * half-repaired connection.
+ */
+interface ServerWiring {
+  child: UtilityProcess;
+  rpc: RpcClient;
+  exited: Promise<number | null>;
+  ready: { sessionId?: string; sessionDir?: string };
+  supervisor: RemoteSupervisor;
+  /** Latest stderr tail (crash/timeout diagnostics). */
+  stderrTail: () => string;
 }
 
 export async function connectServer(deps: ConnectDeps): Promise<DesktopConnection> {
@@ -125,84 +141,170 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
   // standalone-run fallback (mirrors the CLI's server-entry).
   const config = await loadSessionConfig(options.configPath, options.legacyConfigPath);
 
-  const child = utilityProcess.fork(join(__dirname, 'utility-entry.js'), [
-    '--config', options.configPath,
-    '--data-dir', options.dataDir,
-    '--workspace-dir', options.workspaceDir,
-    '--session', options.session,
-    '--log-level', options.logLevel,
-  ], {
-    stdio: 'pipe',
-    serviceName: 'wayang-server',
-    env: { ...process.env, [CONFIG_OBJECT_ENV]: JSON.stringify(config) },
-  });
-
-  // The wayang server logs to <sessionDir>/wayang.log, so its stdio carries
-  // only fatal output — echo to the console and persist to main.log. The
-  // tail feeds crash/timeout diagnostics.
-  let stderrTail = '';
-  const stderrLines = createLineSplitter((line) => serverLog.error(line));
-  child.stderr?.setEncoding('utf-8');
-  child.stderr?.on('data', (chunk: string) => {
-    process.stderr.write(`[server] ${chunk}`);
-    stderrTail = (stderrTail + chunk).slice(-4000);
-    stderrLines(chunk);
-  });
-  const stdoutLines = createLineSplitter((line) => serverLog.debug(line));
-  child.stdout?.setEncoding('utf-8');
-  child.stdout?.on('data', (chunk: string) => {
-    process.stdout.write(`[server] ${chunk}`);
-    stdoutLines(chunk);
-  });
-
-  // The UtilityProcess object is structurally a message port for our framing,
-  // modulo Electron's event-shape asymmetry (see asMessagePort).
-  const io = messagePortToStreams(asMessagePort(child));
-  const rpc = new RpcClient(createStreamTransport(io.stdin, io.stdout));
-
-  const exited = new Promise<number | null>((resolve) => {
-    child.once('exit', (code) => resolve(code));
-  });
-
-  const ready = await waitForReady(rpc, exited, stderrTail, child, options.dataDir);
-  connLog.info('server ready', {
-    sessionId: ready.sessionId,
-    sessionDir: ready.sessionDir,
-    serverLog: join(ready.sessionDir ?? '', 'wayang.log'),
-  });
-  // The renderer status bar waits for this to show 已连接 — without it the
-  // connection stays "connecting" forever even though the server is up.
-  onStatus('ready', undefined, ready.sessionId);
-  const store = new RemoteStateStore(rpc);
-  const supervisor = new RemoteSupervisor(rpc, store, options.workspaceDir, {
-    stop: () => gracefulStop(rpc, child, exited),
-  });
+  // Crash-resume state (§2.9, one-shot semantics):
+  // - `stopping` is the idempotent quit flag: an exit caused by (or landing
+  //   during) the shutdown path is swallowed — never a crash, never a
+  //   reconnect. This is what defuses the before-quit ↔ reconnect race.
+  // - `resumeUsed` pins the one-shot retry: exactly one resume attempt after
+  //   an unexpected exit; the next exit is terminal (`crashed`).
+  // - `readySessionId` is only set once the server reported a session id —
+  //   a crash before that (or an id-less ready) goes straight to `crashed`.
+  let stopping = false;
+  let resumeUsed = false;
+  let readySessionId: string | undefined;
+  let live: ServerWiring | null = null;
+  let currentSupervisor: RemoteSupervisor;
 
   // Forward state slices to the renderer. Subscriptions also make the server
   // push the initial snapshot, so the renderer gets values without polling.
   const send = (payload: { target: string; path: string; data: unknown }): void => {
     deps.getWindow()?.webContents.send('wayang:state', payload);
   };
-  for (const [target, path] of SUBSCRIBED_PATHS) {
-    store.subscribe(target, path, (event) => {
-      send({ target, path, data: (event as { data?: unknown }).data });
+
+  async function boot(sessionArg: string, replay: boolean): Promise<ServerWiring> {
+    const child = utilityProcess.fork(join(__dirname, 'utility-entry.js'), [
+      '--config', options.configPath,
+      '--data-dir', options.dataDir,
+      '--workspace-dir', options.workspaceDir,
+      '--session', sessionArg,
+      '--log-level', options.logLevel,
+    ], {
+      stdio: 'pipe',
+      serviceName: 'wayang-server',
+      env: { ...process.env, [CONFIG_OBJECT_ENV]: JSON.stringify(config) },
+    });
+
+    // The wayang server logs to its log dir, so its stdio carries only fatal
+    // output — echo to the console and persist to main.log. The tail feeds
+    // crash/timeout diagnostics.
+    let stderrTail = '';
+    const stderrLines = createLineSplitter((line) => serverLog.error(line));
+    child.stderr?.setEncoding('utf-8');
+    child.stderr?.on('data', (chunk: string) => {
+      process.stderr.write(`[server] ${chunk}`);
+      stderrTail = (stderrTail + chunk).slice(-4000);
+      stderrLines(chunk);
+    });
+    const stdoutLines = createLineSplitter((line) => serverLog.debug(line));
+    child.stdout?.setEncoding('utf-8');
+    child.stdout?.on('data', (chunk: string) => {
+      process.stdout.write(`[server] ${chunk}`);
+      stdoutLines(chunk);
+    });
+
+    // The UtilityProcess object is structurally a message port for our framing,
+    // modulo Electron's event-shape asymmetry (see asMessagePort).
+    const io = messagePortToStreams(asMessagePort(child));
+    const rpc = new RpcClient(createStreamTransport(io.stdin, io.stdout));
+
+    const exited = new Promise<number | null>((resolve) => {
+      child.once('exit', (code) => resolve(code));
+    });
+
+    // Register before awaiting ready so a quit racing the boot can still
+    // reach (and stop) the freshly forked child.
+    const wiring: ServerWiring = {
+      child,
+      rpc,
+      exited,
+      ready: {},
+      supervisor: undefined as unknown as RemoteSupervisor,
+      stderrTail: () => stderrTail,
+    };
+    live = wiring;
+
+    const ready = await waitForReady(rpc, exited, wiring.stderrTail, child, options.dataDir);
+    wiring.ready = ready;
+    readySessionId = ready.sessionId;
+
+    connLog.info('server ready', {
+      sessionId: ready.sessionId,
+      sessionDir: ready.sessionDir,
+      serverLog: join(ready.sessionDir ?? '', 'wayang.log'),
+    });
+    // The renderer status bar waits for this to show 已连接 — without it the
+    // connection stays "connecting" forever even though the server is up.
+    onStatus('ready', undefined, ready.sessionId);
+
+    const store = new RemoteStateStore(rpc);
+    const supervisor = new RemoteSupervisor(rpc, store, options.workspaceDir, {
+      stop: () => gracefulStop(rpc, child, exited),
+    });
+    wiring.supervisor = supervisor;
+    currentSupervisor = supervisor;
+
+    for (const [target, path] of SUBSCRIBED_PATHS) {
+      store.subscribe(target, path, (event) => {
+        send({ target, path, data: (event as { data?: unknown }).data });
+      });
+    }
+    registerIpcHandlers(supervisor, rpc);
+
+    // Snapshot replay after a resume boot (§2.7 replay, one source): the
+    // SUBSCRIBE handshake already carries each path's current value, but a
+    // server-side null fires no event — a GET_SNAPSHOT sweep pushes every
+    // slice once more through the same wayang:state channel so the renderer
+    // converges on the resumed session's state.
+    if (replay) {
+      for (const [target, path] of SUBSCRIBED_PATHS) {
+        void rpc.request<{ data: unknown }>(METHOD.GET_SNAPSHOT, { target, path })
+          .then((res) => send({ target, path, data: res.data }))
+          .catch(() => { /* server gone: the exit path takes over */ });
+      }
+    }
+
+    void exited.then((code) => {
+      // The stop path owns exits it caused (before-quit race); everything
+      // else is an unexpected crash.
+      if (!stopping) handleUnexpectedExit(wiring, code);
+    });
+
+    return wiring;
+  }
+
+  function handleUnexpectedExit(wiring: ServerWiring, code: number | null): void {
+    const tail = wiring.stderrTail();
+    // Crash before ready (or an id-less ready): no session to resume, no
+    // blind retries — straight to `crashed`.
+    if (readySessionId === undefined) {
+      onStatus('crashed', `server exited without a usable session (code ${code})\n${tail}`);
+      return;
+    }
+    if (resumeUsed) {
+      // One-shot semantics: the second unexpected exit is terminal.
+      onStatus('crashed', `server exited again after one resume (code ${code})\n${tail}`);
+      return;
+    }
+    resumeUsed = true;
+    connLog.warn('server exited unexpectedly — resuming session', { code, sessionId: readySessionId });
+    onStatus('reconnecting', `server exited (code ${code}) — resuming session ${readySessionId}`);
+    wiring.rpc.close();
+    // Drop the IPC surface while reconnecting: invokes would hit a dead
+    // transport; the resume boot re-registers the handlers.
+    removeIpcHandlers();
+    void boot(`resume:${readySessionId}`, true).catch((err: unknown) => {
+      // A quit mid-reconnect owns the outcome — never report it as a crash.
+      if (stopping) return;
+      const message = err instanceof Error ? err.message : String(err);
+      connLog.error('resume failed', { error: message });
+      onStatus('crashed', message);
     });
   }
 
-  registerIpcHandlers(supervisor, rpc);
-
-  let stopping = false;
-  void exited.then((code) => {
-    if (!stopping) onStatus('crashed', `server exited (code ${code})\n${stderrTail}`);
-  });
+  const first = await boot(options.session, false);
 
   return {
-    supervisor,
+    get supervisor(): RemoteSupervisor {
+      return currentSupervisor ?? first.supervisor;
+    },
     stop: async () => {
+      // Idempotent quit flag — before-quit can re-enter, and an in-flight
+      // resume boot checks the same flag before reporting anything.
       stopping = true;
       removeIpcHandlers();
       connLog.info('stopping server');
-      await gracefulStop(rpc, child, exited);
+      const victim = live;
+      if (victim) await gracefulStop(victim.rpc, victim.child, victim.exited);
     },
   };
 }
@@ -231,7 +333,7 @@ async function gracefulStop(rpc: RpcClient, child: UtilityProcess, exited: Promi
 function waitForReady(
   rpc: RpcClient,
   exited: Promise<number | null>,
-  stderrTail: string,
+  stderrTail: () => string,
   child: UtilityProcess,
   dataDir: string,
 ): Promise<{ sessionId?: string; sessionDir?: string }> {
@@ -247,10 +349,10 @@ function waitForReady(
     };
     const timer = setTimeout(() => {
       child.kill();
-      // The server logs to its session file, not stdio — point whoever reads
-      // this at both evidence sources (stderr tail + session log path).
+      // The server logs to its log dir, not stdio — point whoever reads this
+      // at both evidence sources (stderr tail + the session log path).
       finish(new Error(
-        `server did not become ready within ${READY_TIMEOUT_MS}ms.\n${stderrTail}` +
+        `server did not become ready within ${READY_TIMEOUT_MS}ms.\n${stderrTail()}` +
         `\nServer-side logs (if it booted): ${join(dataDir, 'sessions', '<sessionId>', 'wayang.log')}`,
       ));
     }, READY_TIMEOUT_MS);
@@ -262,7 +364,7 @@ function waitForReady(
       finish();
     });
     void exited.then((code) => {
-      setImmediate(() => finish(new Error(`server exited before becoming ready (code ${code}).\n${stderrTail}`)));
+      setImmediate(() => finish(new Error(`server exited before becoming ready (code ${code}).\n${stderrTail()}`)));
     });
   });
 }

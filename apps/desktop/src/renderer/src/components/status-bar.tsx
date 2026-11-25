@@ -31,7 +31,13 @@ export function StatusBar({ busy, activeWorkers, tasks, contextUsage, connection
                 : 'h-2 w-2 animate-pulse rounded-full bg-primary'
           }
         />
-        {connection.phase === 'ready' ? '已连接' : connection.phase === 'crashed' ? 'server 已退出' : '连接中…'}
+        {connection.phase === 'ready'
+          ? '已连接'
+          : connection.phase === 'reconnecting'
+            ? '重连中…'
+            : connection.phase === 'crashed'
+              ? 'server 已退出'
+              : '连接中…'}
       </span>
       {busy && <Badge tone="blue">思考中</Badge>}
       <span className="ml-auto flex items-center gap-3">
