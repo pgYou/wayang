@@ -1,6 +1,6 @@
 # Wayang Desktop 应用架构设计
 
-> 状态：正式设计文档，随实现演进校准；现状事实以本分支代码为准（基线 88ae400，rebase 自 `release/1.0.0`）。
+> 状态：正式设计文档，随实现演进校准；现状事实以本分支代码为准（基线 bbf91d1，rebase 自 `release/1.0.0`；域一至域四工作项已全部落地，3.2 缺口清单与第 4 节状态已按实际交付校准）。
 > 本文按维护者范围裁定重构为单一范围版：废弃此前按批次划分的推进框架，桌面端全部工作并入本次交付；八项既有设计决策保留并按新范围改写，并新增三项，决策枚举共十一项——第九项 desktop 自有配置存储与首启 onboard（2.11，取代「与 CLI 共用 config 文件」旧条款）、第十项 平台配置与常量模块（2.6：路径与平台常量收敛为单一产源并预留 override 入口，自定义路径与跨平台扩展只改一处——可扩展性）、第十一项 shadcn 初始风格主题体系与通用组件（2.8：颜色 / 圆角 / 间距全量 token 化并沉淀 ui 组件，杜绝散落样式——一致性与规范化）；会话形态决策（决策一）修订为单窗口多会话（应用内切换）——修订既有决策而非新增，决策枚举仍为十一项，header 右上角设置与会话切换入口规格一并纳入（2.1、2.2、2.7、2.9、4.2、4.3）；范围裁定为唯一权威，覆盖此前一切分段表述。
 > 关联：主仓 `docs/develop/monorepo-design.md`（第 4 节 core/cli 改造为本设计前置成果）；`CHANGELOG.md` 的 v1.0.0 段桌面待办；研发纪律见仓库根 `AGENTS.md`。
 
@@ -148,7 +148,8 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 - electron-builder 分发，macOS dmg 先行：`appId` / `productName` / 图标齐备，`requestSingleInstanceLock` 前置（第二实例直接退出并聚焦已有窗口）；
 - **asar 整目录解包**：`asarUnpack` 对 `out/main/**` 整目录生效——utility 入口与 MCP bridge 以构建哈希 chunk 命名，清单式 unpack 在哈希变化后静默失效，整目录解包是唯一稳健形态；
 - **asar 与 `utilityProcess.fork` / spawn 的兼容性是分发首要验证点**：打包后 fork 失败即回退 extraResources + `process.resourcesPath` 显式解析（core 桥同目录回退已预留），不修改 core；
-- **应用图标**：单一资产源为仓库 `assets/logo/`（mark-icon 64 / 256 / 512 png、logo 1024 png 与 svg、banner、favicon 齐备）；mac 无现成 `.icns`，electron-builder 从 `wayang-mark-icon-512.png`（≥512）自动转换，转换即打包工作项步骤；`BrowserWindow` icon 参数引用同源 mark 资产（mac 窗口图标实际取应用图标，参数为形态统一预留），desktop 不散落图标副本。
+- **应用图标**：单一资产源为仓库 `assets/logo/`（mark-icon 64 / 256 / 512 png、logo 1024 png 与 svg、banner、favicon 齐备）；mac 无现成 `.icns`，electron-builder 从 `wayang-mark-icon-512.png`（≥512）自动转换，转换即打包工作项步骤；`BrowserWindow` icon 参数引用同源 mark 资产（mac 窗口图标实际取应用图标，参数为形态统一预留），desktop 不散落图标副本；
+- **域四落地校准**：①asar 兼容性验证结论——Electron 41 下 `utilityProcess.fork(asar 内路径)` 与「electron 可执行文件 + asar 内脚本路径」两种形态（含整目录解包与全 asar 两种对照）均实测通过，extraResources 回退未启用，`out/main/**` 整目录解包按设计保留（纯 node / 外部进程 spawn 仍需物理文件）；②运行期 node_modules 新事实——electron-vite 全量内联后，ajv 生成代码在运行期以裸说明符 `require("ajv/dist/runtime/*")` / `require("ajv-formats/dist/formats")`，`dependencies` 因此仅声明 ajv / ajv-formats 并经 staging 脚本显式入包（electron-builder 对 workspace 提升布局的自动依赖收集存在「提升依赖被静默丢弃」的不确定路径，不作为依赖手段）；③dmg 构建需 macOS 宿主（vendor dmgbuild 为 macOS 二进制，Linux 宿主实测 `Exec format error`），非 macOS 环境以 `--dir` 产物做文件级核验；④打包应用 `productName` 经 extraMetadata 注入，userData 为 `~/Library/Application Support/Wayang`，与 dev 目录天然隔离。
 
 ### 2.11 配置存储与首启 onboard（决策九）
 
@@ -170,21 +171,21 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 - **单页主题 UI**：header + 会话通铺 + 悬浮输入 + inquiry 卡 + 状态条；10 状态 slice、7 invoke、2 订阅；
 - **日志**：`main.log` 落 `app.getPath('logs')`，server stdio 行拆分入库。
 
-### 3.2 缺口与归组（按本次口径）
+### 3.2 缺口与归组（按本次口径；状态按域四收口时点校准，全部已落地）
 
 **本次必做（功能缺口）**：
 
-| # | 缺口 | 现象 | 落位 |
-|---|---|---|---|
-| a1 | 崩溃 resume 缺失 | utility 意外退出仅发 crashed，无 resume 重连 | 域一（域二升级为状态机） |
-| a2 | electron-builder 分发缺失 | 无打包依赖 / 配置 / dist 脚本 / 图标 | 域四 |
-| a3 | ready 状态黑洞 | `onStatus('ready')` 从未发出（connection.ts 仅 connecting / crashed），「已连接」不可达 | 域一 |
-| a4 | 首屏快照竞态 | server ready 即推快照，早于 renderer 挂监听则初始态永久丢失，无重放通道 | 域二（随状态重构消解） |
-| a5 | tasks 死路径 | renderer 订阅 `tasks.completed` 而 core 写 `tasks.history`，完成计数恒 0 | 域一 |
+| # | 缺口 | 现象 | 落位 | 状态 |
+|---|---|---|---|---|
+| a1 | 崩溃 resume 缺失 | utility 意外退出仅发 crashed，无 resume 重连 | 域一（域二升级为状态机） | ✅ 已落地 |
+| a2 | electron-builder 分发缺失 | 无打包依赖 / 配置 / dist 脚本 / 图标 | 域四 | ✅ 已落地（4.4 校准） |
+| a3 | ready 状态黑洞 | `onStatus('ready')` 从未发出（connection.ts 仅 connecting / crashed），「已连接」不可达 | 域一 | ✅ 已落地 |
+| a4 | 首屏快照竞态 | server ready 即推快照，早于 renderer 挂监听则初始态永久丢失，无重放通道 | 域二（随状态重构消解） | ✅ 已落地 |
+| a5 | tasks 死路径 | renderer 订阅 `tasks.completed` 而 core 写 `tasks.history`，完成计数恒 0 | 域一 | ✅ 已落地 |
 
 **本次必做（决策九新增：配置存储与首启 onboard）**：①信封存储读写与 `schemaVersion`——域一地基，server boot 与 onboard 都依赖（4.0）；②欢迎页检测与两入口；③onboard 向导（含默认 provider / model 兜底步骤）；④CLI 导入（只读 `~/.wayang.config.json`）；⑤最终确认页。②–⑤为 UI 面，落域三，以 ① 就绪为前提。
 
-**本次必做（工程债）**：路径取值散落——logger.ts 直调 `app.getPath`、index.ts / connection.ts 手拼 homedir 路径，无统一封装（域一收编入平台配置模块）；`apps/desktop/package.json` 零 `@wayang-ai/*` workspace 依赖声明（turbo 冷启动竞态根因，已两次复现，域一）；`version` `1.0.0-alpha.0` 落后基线（域四收口）；README 占位文案（域四）；单实例锁缺失（域四）；设计文档热更方法引用过时（单一 `UPDATE_CONFIG` → 实际 8 个细粒度方法，本文重写即清偿）。
+**本次必做（工程债）**：路径取值散落——logger.ts 直调 `app.getPath`、index.ts / connection.ts 手拼 homedir 路径，无统一封装（域一收编入平台配置模块）；`apps/desktop/package.json` 零 `@wayang-ai/*` workspace 依赖声明（turbo 冷启动竞态根因，已两次复现，域一）；`version` `1.0.0-alpha.0` 落后基线（域四收口）；README 占位文案（域四）；单实例锁缺失（域四）；设计文档热更方法引用过时（单一 `UPDATE_CONFIG` → 实际 8 个细粒度方法，本文重写即清偿）。——以上全部落地：version 已对齐 `1.0.0-alpha.1`、README 已重写（真实 dev/build/dist 说明）、单实例锁已前置（4.4）。
 
 **本次做（架构与体验升级项，原后续批次规划全部转入）**：平台配置与常量模块（决策十）；IPC 单一契约；主进程分层（Application / SecurityGuard / SessionService / UnifiedLogger / ServerProcessHost 状态机与会话切换语义；WindowManager 为单窗口管理器）；renderer 状态重构（`useSyncExternalStore`，含切换重放）；会话切换（域二：ServerProcessHost 切换语义 + list-sessions 会话索引通道；域三：header【…】下拉与历史会话弹框）；主题体系与通用组件（决策十一）；UI/UX 全套（设置页 / Sender 合一 / 上下文圆环 / TurnDotsNav / 长消息折叠 / header 右上角设置入口）；配置热更设置页；conversation 分页与 worker 级通道；renderer 日志桥。
 
@@ -205,6 +206,8 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 
 ### 4.1 域一：功能修复与地基
 
+**（状态：已落地——工作项①–⑦全部交付，含验收所列单测钉住。）**
+
 **工作项**：①workspace 依赖声明——`apps/desktop/package.json` 声明 `"@wayang-ai/core": "workspace:*"`、`"@wayang-ai/protocol": "workspace:*"`（devDependencies，建 turbo 图边，不动 electron-vite 内联语义）；②ready 状态——connection.ts 补 `onStatus('ready')`（`waitForReady` 成功后发出，含 sessionId）；③tasks 路径——订阅路径改 `tasks.history`（SUBSCRIBED_PATHS 与 renderer `SLICE` 同步）；④崩溃 resume（一次性语义）——exit 非 stopping → 发 reconnecting → `resume:<sessionId>` 重新 fork → 重建 rpc / store / 重订阅 + `GET_SNAPSHOT` 重拉重放 → 重注册 IPC；一次性重试，失败落 crashed；ready 前崩溃或 sessionId 未知直接 crashed；处理 before-quit 竞态；⑤平台配置与常量模块（决策十，2.6）——`src/shared/platform-config.ts` 落地：`getPaths()` 类型化路径集、`getPlatformConfig()` 平台常量、每类路径的 override 入口（`WAYANG_DESKTOP_*` env 为第一组）；存量取值点迁入——logger.ts 的 `app.getPath` 调用与 index.ts / connection.ts 的手拼 homedir 路径一律改经模块取值，注入 core 的 `StoragePaths` / `WorkspacePolicy` 值由该模块产出（单一产源）；⑥存储目录切换——目录与工作区经 `StoragePaths` / `WorkspacePolicy` 注入面显式传入（2.5，取值经⑤模块），serverMain legacy `dataDir` / `workspaceDir` 二元组退役；⑦信封存储（决策九，2.11）——`userData/config.json` 信封读写（原子单文件写入，路径取值经⑤模块）与 `schemaVersion`、冷启动检测（不存在 / 校验失败 / 必要核心缺失 → 欢迎页判定）、「导入 CLI 配置」的只读装载与校验入口，为 server boot 与 onboard 的共同地基。
 
 **文件面**：`apps/desktop/package.json`；`src/shared/platform-config.ts`（新增）；`src/main/logger.ts`（取值迁入）；`src/main/connection.ts`、`src/main/index.ts`；`src/main/config-store.ts`（新增）；`src/utility/server-host.ts`；`src/renderer/src/lib/store.ts`。
@@ -213,6 +216,8 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 
 ### 4.2 域二：架构升级
 
+**（状态：已落地——工作项①–⑤全部交付，含切换路径与退避序列单测。）**
+
 **工作项**：①IPC 单一契约——2.2 目标态全量（契约源 / `typedHandle` / `typedInvoke` / `WayangBridge` / `wayang-api.ts` 薄封装），含会话切换三通道 new-session / switch-session / list-sessions（契约名 `wayang:newSession` / `wayang:switchSession` / `wayang:listSessions`）；②主进程分层——2.9 组件全量落地，`index.ts` 退化为 Bootstrap，UnifiedLogger 含 renderer 日志桥；③renderer 状态重构——模块级外部单例 Store + `useSyncExternalStore` 按 slice 细粒度订阅；新增 `wayang:getInitialState` 通道与 preload `getInitialState`。**原首屏快照项的融入方式**：竞态修复不再作为独立步骤——快照拉取成为新 Store 固定 boot 序列第一步（先拉快照建初始态、再挂订阅），`did-finish-load` 全量重发保留为刷新重放路径，a4 随重构消解；该 boot 序列同时承载会话切换恢复——切换后 store 重置，经同一快照拉取与订阅重挂恢复目标会话初始态（2.7）；④ServerProcessHost 状态机——收编域一 resume 实现并升级为指数退避自愈（2.9），并落会话切换语义（2.9 切换路径：优雅停当前 server、其会话状态保留 → `resume:<目标 sessionId>` 重新 boot；不视为 degraded / fatal、不计退避）；⑤会话索引通道——list-sessions 经契约暴露 core 会话索引（Supervisor conversation index：时间 / 摘要），为域三历史会话弹框数据源。
 
 **文件面**：`src/shared/ipc-contract.ts`、`src/main/ipc/router.ts`、`src/main/application.ts` / `window-manager.ts` / `security-guard.ts` / `session-service.ts` / `server-process-host.ts` / `unified-logger.ts`（均新增）；`src/main/index.ts`（退化为 Bootstrap）；`src/preload/index.ts`（typedInvoke 化）；`src/renderer/src/lib/wayang-api.ts`（新增）、`src/renderer/src/lib/store.ts`（重构为外部单例）、`src/renderer/src/types/global.d.ts`。
@@ -220,6 +225,8 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 **验收**：契约文件为通道唯一来源，`global.d.ts` 零重复声明；组件零直访 `window.wayang`（边界检查钉住）；先拉快照后订阅收齐 10 slice，刷新后界面立即有内容；流式输出只重绘当前条目（渲染计数断言）；ServerProcessHost 状态机单测覆盖退避序列、fatal 终态、before-quit 竞态与切换路径（stop → resume boot 不进退避、不落 fatal）；切换后经快照重放收齐目标会话 slice；list-sessions 返回会话索引条目（时间 / 摘要）；`render-process-gone` / `child-process-gone` 记录入统一日志。
 
 ### 4.3 域三：功能与 UI
+
+**（状态：已落地——工作项①–⑥全部交付；会话级 logDir 分目录为域一遗留复议项，本文档无此要求锚点，未实施。）**
 
 **工作项**：①主题体系与通用组件（决策十一，2.8）——renderer 全局样式落 CSS variables token（shadcn HSL 体系，现有淡蓝主题的 primary 色相映射入 token）、单一 `--radius` 基准与 4 / 8 倍数 spacing 尺度、`components/ui/` 经 shadcn CLI 沉淀通用组件（Button / Card / Dialog / Input / Badge / Skeleton / ScrollArea 按需引入）；本项为域三全部 UI 面的实现基座，先于 ③⑤ 落地（②亦经体系实现）；②表单化 `SettingsPage`——Provider 增删改查、Agent 绑定与 `maxConcurrency`、工作区（`dialog.showOpenDialog` 选择）与权限配置；保存时 main 校验后写入 userData 信封并经 8 个细粒度 update 方法热更到运行中的 server（2.4）；设置页与首启最终确认页同源同校验（共用核心完整性校验与信封写入口径，2.11）；`WAYANG_DESKTOP_*` dev env 移除；入口规格——header 右上角 lucide-react `settings-2` 图标，点击打开设置页；③UI/UX 全套——一律以主题 token 与 `components/ui` 组件实现：对话列表通铺 + 悬浮 Sender/Footer 合一（连接态 / 任务 / worker 计数 + 上下文圆环进度条 + 发送 / 停止按 busy 切换）；Controller 输出 Borderless 撑开、user 消息淡蓝灰卡片（>300px 默认折叠 + 展开按钮）；侧边 `TurnDotsNav` 轮次圆点导航（数据源只取 user 消息、≤20 圆点滑动窗口、hover 预览、点击平滑滚动、`IntersectionObserver` 联动高亮，封装为独立组件不侵入气泡渲染）；④会话运维面——conversation 分页与 worker 级通道（controller 读取 worker 会话的分页通道，对齐 CLI 的 worker-transcript 语义）；⑤首启配置流 UI（决策九，2.11）——欢迎页（冷启动判定触发，两入口）、onboard 向导（必要核心步骤靠前必做、含默认 provider + model 兜底步骤，完成必做后其余步骤可跳过）、CLI 导入入口（读 `~/.wayang.config.json` → validate → 直跳最终确认页，失败呈现具体校验错误）、最终确认页（全量展示 + 核心完整性校验 → 确认写入 userData 信封 → 进入主界面）；文件选择器支持非默认导入路径为可选增强；依赖域一信封存储就绪（4.0）；⑥会话切换入口——header 右上角设置入口旁【…】省略号图标（lucide-react `ellipsis` / `ellipsis-vertical` / `more-horizontal`，实现时取 lucide-react 现有图标名），点击展开下拉框，两项：【新会话】——确认后经 new-session 通道开启新会话；【历史会话】——打开历史会话弹框，经 list-sessions 展示历史会话列表（时间 / 摘要），选中后确认 → 经 switch-session 通道执行切换，界面重放恢复目标会话内容（2.7）；依赖域二切换语义与索引通道（4.0）。
 
@@ -231,9 +238,17 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 
 **工作项**：electron-builder 分发（mac dmg 先行：appId / productName / 图标齐备——图标源为仓库 `assets/logo/`（512 / 1024 png 与 svg 资产齐备；mac 无 `.icns`，electron-builder 从 `wayang-mark-icon-512.png` 自动转换，转换归本域步骤）；`asarUnpack` 整目录 `out/main/**`——utility 入口与 MCP bridge 以构建哈希 chunk 命名，清单式 unpack 会静默失效；asar 与 `utilityProcess.fork` / spawn 兼容性为首要验证点，有坑回退 extraResources + `process.resourcesPath` 显式解析，不修改 core）；`requestSingleInstanceLock` 于 main 首行前置（第二实例退出并聚焦已有窗口）；README 重写；`version` 对齐 alpha.1；本文档随实现校准；主仓 `release/1.0.0` 的 `CHANGELOG.md` 桌面段按实际交付校准。
 
-**文件面**：`apps/desktop/package.json`（builder 配置 / dist 脚本 / 打包依赖）；图标资源目录；`apps/desktop/README.md`；主仓 `CHANGELOG.md`。
+**落地校准（域四交付实录）**：
+- electron-builder 配置落于 `apps/desktop/package.json` 的 `build` 字段：appId `ai.wayang.desktop`、productName `Wayang`、产物目录 `release/`、`files` 为 `out/**` + 运行期 node_modules staging、`asarUnpack: ["out/main/**"]`、`mac.icon` 指仓库 `assets/logo/wayang-mark-icon-512.png`（实测自动转出 16→512 全尺寸 `icon.icns`）；devDep 增 electron-builder 26、electron 版本锁定精确值（builder 要求非 range）；renderer 全量打包故 react 系依赖全部转 devDependencies；
+- **运行期依赖新事实**：utility 产物内 ajv 生成代码运行期 `require("ajv/dist/runtime/validation_error")` 与 `require("ajv-formats/dist/formats")`（裸说明符不可内联），`dependencies` 声明 ajv / ajv-formats 并经 `scripts/stage-runtime-deps.mjs` 按解析闭包复制到 `.runtime-node-modules/`、以 `files` 对象条目显式入包——electron-builder 对 npm workspace 提升布局的自动收集存在「提升依赖无 path 被静默丢弃」的路径（实测复现），显式 staging 使 asar 内 node_modules 布局可满足上述 require（提取 asar 实测 resolve 成功）；
+- asar 兼容性验证结论（本域首要验证点）：Electron 41 下 `utilityProcess.fork`（asar 路径、含解包洞与全 asar 两对照）与「electron 可执行文件 + asar 内脚本路径」（MCP 桥 descriptor 的 spawn 形态）均实测可用；extraResources 回退未启用，`out/main/**` 整目录解包按设计保留；
+- 单实例锁：`src/main/index.ts` 首行 `requestSingleInstanceLock`，未获锁即 `app.quit()`；`Application` 注册 `second-instance` → `WindowManager.focus()`（restore + focus），窗口未建期为 no-op；
+- dmg 可用性：dmg 目标配置就绪（纯色背景与窗口底色一致）；**本任务在 Linux 宿主执行，dmg 构建实证不可行**（vendor dmgbuild 为 macOS 二进制，`Exec format error`；签名亦仅 macOS 宿主），以 `electron-builder --mac --dir` 产物完成文件级核验：`Wayang.app` 结构完整、`app.asar.unpacked/out/main/` 物理齐备（index / utility-entry / mcp-bridge-entry / chunks）、asar 内 node_modules 闭包完整、Info.plist（CFBundleIdentifier/Name/IconFile/ShortVersionString）与可执行名核验通过。dmg 与实机安装链路验收留待 macOS 宿主执行；
+- 收口：README 重写为真实 dev/build/dist 说明；`version` 对齐 `1.0.0-alpha.1`；本文档按实际交付校准（本节与 2.10/3.2）；**主仓 CHANGELOG 校准移至 desktop 合入 `release/1.0.0` 时点执行**（feat 分支不携带主仓 CHANGELOG 改动）。
 
-**验收**：干净 macOS 装 `.app` → 双击 → 已连接 → 发消息 → worker 跑 bash（验 PATH）→ 设置热更 → 退出无残留 utility 进程；第二实例启动即退出并聚焦已有窗口；README / `version` / 文档对齐实际交付；安装包与窗口使用新 logo（dmg / App 图标与 `BrowserWindow` icon 同源 `assets/logo/`）。
+**文件面**：`apps/desktop/package.json`（builder 配置 / dist 脚本 / 打包依赖）；图标资源目录；`apps/desktop/README.md`；主仓 `CHANGELOG.md`。（实际交付：前两项 + `apps/desktop/scripts/stage-runtime-deps.mjs`、`.gitignore`；主仓 CHANGELOG 按上条移至合流时点。）
+
+**验收**：干净 macOS 装 `.app` → 双击 → 已连接 → 发消息 → worker 跑 bash（验 PATH）→ 设置热更 → 退出无残留 utility 进程；第二实例启动即退出并聚焦已有窗口；README / `version` / 文档对齐实际交付；安装包与窗口使用新 logo（dmg / App 图标与 `BrowserWindow` icon 同源 `assets/logo/`）。（本任务环境为 Linux 宿主：第二实例行为以单测钉住、asar/fork 以实证替代、其余实机项待 macOS 宿主验收。）
 
 ## 5. 边界与纪律
 
