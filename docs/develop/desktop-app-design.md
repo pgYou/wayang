@@ -1,7 +1,7 @@
 # Wayang Desktop 应用架构设计
 
 > 状态：正式设计文档，随实现演进校准；现状事实以本分支代码为准（基线 88ae400，rebase 自 `release/1.0.0`）。
-> 本文按维护者范围裁定重构为单一范围版：废弃此前按批次划分的推进框架，桌面端全部工作并入本次交付；八项既有设计决策保留并按新范围改写；范围裁定为唯一权威，覆盖此前一切分段表述。
+> 本文按维护者范围裁定重构为单一范围版：废弃此前按批次划分的推进框架，桌面端全部工作并入本次交付；八项既有设计决策保留并按新范围改写，并新增第九项——desktop 自有配置存储与首启 onboard（2.9，取代「与 CLI 共用 config 文件」旧条款）；范围裁定为唯一权威，覆盖此前一切分段表述。
 > 关联：主仓 `docs/develop/monorepo-design.md`（第 4 节 core/cli 改造为本设计前置成果）；`CHANGELOG.md` 的 v1.0.0 段桌面待办；研发纪律见仓库根 `AGENTS.md`。
 
 ## 1. 目标与范围
@@ -26,7 +26,8 @@
 2. 功能面完整：「已连接」状态可达、任务完成计数真实、kill utility 进程后自动重连且历史仍在、刷新后界面立即有内容、设置页保存后配置不经重启即时生效；
 3. 架构面达标：IPC 通道唯一契约源落地、主进程分层成型、renderer 经 `useSyncExternalStore` 按 slice 细粒度订阅（流式输出只重绘当前条目）；
 4. 可分发：干净 macOS 机器安装 `.app` → 双击启动 → 已连接 → 发消息 → worker 跑 bash（GUI PATH 生效）→ 退出无残留 utility 进程；第二实例启动即退出并聚焦已有窗口；
-5. 交付物对齐：README 重写、`version` 对齐 alpha.1、本文档与主仓 `CHANGELOG.md` 桌面段按实际交付校准。
+5. 交付物对齐：README 重写、`version` 对齐 alpha.1、本文档与主仓 `CHANGELOG.md` 桌面段按实际交付校准；
+6. 全新环境首启：无配置 → 欢迎页 → onboard 完成 / 导入完成 → 确认写入 → 主界面可用；二次启动不再出现欢迎页。
 
 ## 2. 架构设计
 
@@ -70,7 +71,7 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 
 ### 2.4 配置装载与热更接缝
 
-- **装载**：配置解析上移已落地（monorepo-design.md 4.1）。main 进程全权装载 `~/.wayang.config.json`、经 `validateConfig` 校验，以 `WAYANG_CONFIG_OBJECT` env 把合法 `WayangConfig` 对象交接给 utility；utility 手动运行（壳外直启）时回退读 `--config` 文件；缺配置走 crashed 状态 UX；
+- **装载**：配置解析上移已落地（monorepo-design.md 4.1）。desktop 配置来源为自身信封文件 `app.getPath('userData')` 下的 `config.json`（决策九，2.9）：main 进程全权装载信封中的 `wayangConfig`、经 `validateConfig` 校验，以 `WAYANG_CONFIG_OBJECT` env 把合法 `WayangConfig` 对象交接给 utility；utility 侧 env 对象优先；utility 手动运行（壳外直启）时回退读 `--config` 文件的调试语义保留。冷启动遇 `config.json` 不存在、校验失败或必要核心缺失不再走 crashed 状态 UX，改经欢迎页与 onboard 产出配置（2.9）；`~/.wayang.config.json` 仅在「导入 CLI 配置」动作中被读取且只读，desktop 永不写入、运行期永不依赖，CLI 侧行为不受任何影响；
 - **热更**：无单一 `UPDATE_CONFIG` 大方法，core 暴露 8 个细粒度 update 方法——`updateProvider` / `updateModel` / `addProvider` / `addModel` / `removeProvider` / `removeModel` / `updateControllerModel` / `updateWorkerSettings`——每个方法的 schema 即字段白名单，宿主直调对应方法，可用 protocol 纯函数在发起前本地预校验。设置页（域三）按所选字段映射到对应方法，映射关系随契约入 `ipc-contract.ts`；
 - **`WAYANG_DESKTOP_*` env**（`WAYANG_DESKTOP_WORKSPACE` / `WAYANG_DESKTOP_SESSION`）：定位为 dev 调试覆盖入口（直达指定工作区与 resume 会话），正式路径不依赖；设置页落地后移除（域三）。
 
@@ -83,11 +84,12 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 | dataDir | `app.getPath('userData')` | `sessions/`、`window-state.json`、`workspaces.json` |
 | logDir | `app.getPath('logs')` | `main.log`、`renderer.log`、会话日志 |
 | cacheDir | `app.getPath('caches')` | 运行时临时文件、MCP socket 句柄、缓存 |
-| config | `~/.wayang.config.json` | 与 CLI 共用同一份用户配置；设置页落地时迁 `userData/config.json`（域三） |
+| config | `app.getPath('userData')` 下 `config.json` | desktop 自有信封配置 `{ schemaVersion, wayangConfig, desktop }`（决策九，2.9）；`~/.wayang.config.json` 降格为导入源（只读） |
 | defaultWorkerWorkspace | `~/.agents/wayang-workspace`（启动自动 mkdir） | 未显式指定项目目录时的默认 worker 工作区 |
 | controllerWorkspace | `~`（`os.homedir()`） | 进程工作目录与 Controller 起点 |
 
 - **切换时点**：域一落地、域四打包前完成。注入面改动集中、成本可控；拖后则 `~/.wayang/sessions` 下桌面会话积累越多、迁移越痛，且装包应用写 `~/.wayang` 不合规；
+- **与 CLI 数据隔离**：`~/.wayang/sessions` 仍为 CLI 会话地，与桌面数据隔离；desktop 对 `~/.wayang` 域的唯一触达是「导入 CLI 配置」动作只读 `~/.wayang.config.json`（决策九，2.9），除此之外零读写；
 - **跨平台**：Windows / Linux 目录规范不在本次范围（第 1 节明确不做第 1 项）；路径纪律先行——一律经 `app.getPath` 集中获取，禁止硬编码平台路径。
 
 ### 2.6 状态与快照（含 renderer 状态重构目标态）
@@ -121,6 +123,15 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 - **asar 整目录解包**：`asarUnpack` 对 `out/main/**` 整目录生效——utility 入口与 MCP bridge 以构建哈希 chunk 命名，清单式 unpack 在哈希变化后静默失效，整目录解包是唯一稳健形态；
 - **asar 与 `utilityProcess.fork` / spawn 的兼容性是分发首要验证点**：打包后 fork 失败即回退 extraResources + `process.resourcesPath` 显式解析（core 桥同目录回退已预留），不修改 core。
 
+### 2.9 配置存储与首启 onboard（决策九）
+
+**决策九：desktop 自有配置存储，取代「与 CLI 共用 config 文件」旧条款**——desktop 不复用 CLI 的 `~/.wayang.config.json`，在桌面应用自身配置路径维护配置；`~/.wayang.config.json` 仅在「导入 CLI 配置」动作中被读取且只读，desktop 永不写入、运行期永不依赖，CLI 侧行为不受任何影响。2.4 装载链路与 2.5 目录基线的相关表述已按本决策改写，此前「与 CLI 共用同一份用户配置」条款就此废止。
+
+- **信封存储**：配置文件为 `app.getPath('userData')` 下的单文件 `config.json`（macOS 即 `Application Support/wayang/config.json`，经 `app.getPath` 集中获取，遵守目录纪律）。格式为信封单文件：`{ schemaVersion: 1, wayangConfig: { …标准 WayangConfig… }, desktop: { …桌面偏好字段… } }`——核心配置保持 protocol 的 `WayangConfig` 原样，`validateConfig` 纯函数（packages/protocol）直接复用；`desktop` 区给桌面偏好（未来主题 / 窗口设置等）留位；单文件保证写入原子性；
+- **必要核心配置（决定 onboard 哪些步骤不可跳过）**：① ≥1 个 provider（type / baseURL / apiKey 齐备）；② controller 与 worker 的模型绑定可解析（指向真实存在的 provider 与 model 条目）。其余全部可跳过（workers 第三方定义、`maxConcurrency`、日志级别等）。从零开始无任何模型时，向导内建「创建默认 provider + model」兜底步骤；
+- **首启流程**：冷启动判定——`config.json` 不存在、或 `validateConfig` 失败、或必要核心配置缺失 → 展示欢迎页。欢迎页两入口：「开始配置」→ onboard 向导（必要核心步骤靠前且必做，完成必做后其余步骤可跳过）；「导入 CLI 配置」→ 读 `~/.wayang.config.json` → `validate` → 直接跳最终确认页（读取失败显示具体校验错误；文件选择器支持非默认路径为可选增强）。最终确认页：全量展示 + 核心完整性校验 → 确认写入 userData 信封 → 进入主界面（server 以新配置 boot）；
+- **二次修改**：设置页（域三工作项）与最终确认页同源同校验；运行中修改走既有 8 个细粒度热更方法（2.4）。
+
 ## 3. 现状基线（88ae400）
 
 ### 3.1 已实现
@@ -144,6 +155,8 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 | a4 | 首屏快照竞态 | server ready 即推快照，早于 renderer 挂监听则初始态永久丢失，无重放通道 | 域二（随状态重构消解） |
 | a5 | tasks 死路径 | renderer 订阅 `tasks.completed` 而 core 写 `tasks.history`，完成计数恒 0 | 域一 |
 
+**本次必做（决策九新增：配置存储与首启 onboard）**：①信封存储读写与 `schemaVersion`——域一地基，server boot 与 onboard 都依赖（4.0）；②欢迎页检测与两入口；③onboard 向导（含默认 provider / model 兜底步骤）；④CLI 导入（只读 `~/.wayang.config.json`）；⑤最终确认页。②–⑤为 UI 面，落域三，以 ① 就绪为前提。
+
 **本次必做（工程债）**：`apps/desktop/package.json` 零 `@wayang-ai/*` workspace 依赖声明（turbo 冷启动竞态根因，已两次复现，域一）；`version` `1.0.0-alpha.0` 落后基线（域四收口）；README 占位文案（域四）；单实例锁缺失（域四）；设计文档热更方法引用过时（单一 `UPDATE_CONFIG` → 实际 8 个细粒度方法，本文重写即清偿）。
 
 **本次做（架构与体验升级项，原后续批次规划全部转入）**：IPC 单一契约；主进程分层（Application / SecurityGuard / SessionService / UnifiedLogger / ServerProcessHost 状态机；WindowManager 为单窗口管理器）；renderer 状态重构（`useSyncExternalStore`）；UI/UX 全套（设置页 / Sender 合一 / 上下文圆环 / TurnDotsNav / 长消息折叠）；配置热更设置页；conversation 分页与 worker 级通道；renderer 日志桥。
@@ -157,6 +170,7 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 域一 → 域二 → 域三 → 域四 主线串行，域内可并行（见下）。依赖理由：
 
 - **机制依赖**：域二快照通道的拉取时机建立在域一修正后的 ready 语义与订阅路径之上（快照 10 个 slice 含 `tasks.history`）；resume 重放不依赖新通道——重连后 main 侧 `GET_SNAPSHOT` 重拉经既有 `wayang:state` 转发，故崩溃修复可先行落在域一；域二的状态重构与 IPC 契约是域三的结构前置（细粒度订阅未定型先铺 UI 只会返工；新通道必须先入契约再实现）；
+- **配置存储依赖**：信封存储（决策九，2.9）属域一地基——server boot 与首启 onboard 都依赖它；域三的欢迎页 / 向导 / 导入 / 最终确认页 UI 以域一存储就绪为前提；
 - **功能面依赖**：域四打包以域一至域三功能面收齐为前提——装包验证的是「已连接 → 发消息 → worker bash → 设置热更 → 干净退出」完整链路，功能未收齐即打包只会反复重打；装包后首屏立即有内容以域二快照通道为前提；
 - **交付依赖**：域四收口以实际交付为输入，最后校准文档与版本。
 
@@ -164,11 +178,11 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 
 ### 4.1 域一：功能修复与地基
 
-**工作项**：①workspace 依赖声明——`apps/desktop/package.json` 声明 `"@wayang-ai/core": "workspace:*"`、`"@wayang-ai/protocol": "workspace:*"`（devDependencies，建 turbo 图边，不动 electron-vite 内联语义）；②ready 状态——connection.ts 补 `onStatus('ready')`（`waitForReady` 成功后发出，含 sessionId）；③tasks 路径——订阅路径改 `tasks.history`（SUBSCRIBED_PATHS 与 renderer `SLICE` 同步）；④崩溃 resume（一次性语义）——exit 非 stopping → 发 reconnecting → `resume:<sessionId>` 重新 fork → 重建 rpc / store / 重订阅 + `GET_SNAPSHOT` 重拉重放 → 重注册 IPC；一次性重试，失败落 crashed；ready 前崩溃或 sessionId 未知直接 crashed；处理 before-quit 竞态；⑤存储目录切换——目录与工作区经 `StoragePaths` / `WorkspacePolicy` 注入面显式传入（2.5），serverMain legacy `dataDir` / `workspaceDir` 二元组退役。
+**工作项**：①workspace 依赖声明——`apps/desktop/package.json` 声明 `"@wayang-ai/core": "workspace:*"`、`"@wayang-ai/protocol": "workspace:*"`（devDependencies，建 turbo 图边，不动 electron-vite 内联语义）；②ready 状态——connection.ts 补 `onStatus('ready')`（`waitForReady` 成功后发出，含 sessionId）；③tasks 路径——订阅路径改 `tasks.history`（SUBSCRIBED_PATHS 与 renderer `SLICE` 同步）；④崩溃 resume（一次性语义）——exit 非 stopping → 发 reconnecting → `resume:<sessionId>` 重新 fork → 重建 rpc / store / 重订阅 + `GET_SNAPSHOT` 重拉重放 → 重注册 IPC；一次性重试，失败落 crashed；ready 前崩溃或 sessionId 未知直接 crashed；处理 before-quit 竞态；⑤存储目录切换——目录与工作区经 `StoragePaths` / `WorkspacePolicy` 注入面显式传入（2.5），serverMain legacy `dataDir` / `workspaceDir` 二元组退役；⑥信封存储（决策九，2.9）——`userData/config.json` 信封读写（原子单文件写入）与 `schemaVersion`、冷启动检测（不存在 / 校验失败 / 必要核心缺失 → 欢迎页判定）、「导入 CLI 配置」的只读装载与校验入口，为 server boot 与 onboard 的共同地基。
 
-**文件面**：`apps/desktop/package.json`；`src/main/connection.ts`、`src/main/index.ts`；`src/utility/server-host.ts`；`src/renderer/src/lib/store.ts`。
+**文件面**：`apps/desktop/package.json`；`src/main/connection.ts`、`src/main/index.ts`；`src/main/config-store.ts`（新增）；`src/utility/server-host.ts`；`src/renderer/src/lib/store.ts`。
 
-**验收**：清 `dist` 全新 install 后冷启动 build 一次通过；状态条显示已连接；任务完成计数 ≥1 且单测钉住 `SLICE` 字面量；kill utility 进程后 reconnecting → 恢复且历史仍在，单测断言第二次 fork argv 带 `resume:<id>`；运行期数据只写 `userData` / `logs` / `caches`，不写 `~/.wayang`。
+**验收**：清 `dist` 全新 install 后冷启动 build 一次通过；状态条显示已连接；任务完成计数 ≥1 且单测钉住 `SLICE` 字面量；kill utility 进程后 reconnecting → 恢复且历史仍在，单测断言第二次 fork argv 带 `resume:<id>`；运行期数据只写 `userData` / `logs` / `caches`，不写 `~/.wayang`；信封写入为原子单文件语义、校验失败走欢迎页判定而非 crashed（单测钉住），导入动作对 `~/.wayang.config.json` 只读。
 
 ### 4.2 域二：架构升级
 
@@ -180,11 +194,11 @@ preload 白名单即 renderer 的全部能力面（通道名一律 `wayang:` 前
 
 ### 4.3 域三：功能与 UI
 
-**工作项**：①表单化 `SettingsPage`——Provider 增删改查、Agent 绑定与 `maxConcurrency`、工作区（`dialog.showOpenDialog` 选择）与权限配置；保存时 main 校验持久化并经 8 个细粒度 update 方法热更到运行中的 server（2.4）；config 随之迁 `userData/config.json`，`WAYANG_DESKTOP_*` dev env 移除；②UI/UX 全套——对话列表通铺 + 悬浮 Sender/Footer 合一（连接态 / 任务 / worker 计数 + 上下文圆环进度条 + 发送 / 停止按 busy 切换）；Controller 输出 Borderless 撑开、user 消息淡蓝灰卡片（>300px 默认折叠 + 展开按钮）；侧边 `TurnDotsNav` 轮次圆点导航（数据源只取 user 消息、≤20 圆点滑动窗口、hover 预览、点击平滑滚动、`IntersectionObserver` 联动高亮，封装为独立组件不侵入气泡渲染）；③会话运维面——conversation 分页与 worker 级通道（controller 读取 worker 会话的分页通道，对齐 CLI 的 worker-transcript 语义）。
+**工作项**：①表单化 `SettingsPage`——Provider 增删改查、Agent 绑定与 `maxConcurrency`、工作区（`dialog.showOpenDialog` 选择）与权限配置；保存时 main 校验后写入 userData 信封并经 8 个细粒度 update 方法热更到运行中的 server（2.4）；设置页与首启最终确认页同源同校验（共用核心完整性校验与信封写入口径，2.9）；`WAYANG_DESKTOP_*` dev env 移除；②UI/UX 全套——对话列表通铺 + 悬浮 Sender/Footer 合一（连接态 / 任务 / worker 计数 + 上下文圆环进度条 + 发送 / 停止按 busy 切换）；Controller 输出 Borderless 撑开、user 消息淡蓝灰卡片（>300px 默认折叠 + 展开按钮）；侧边 `TurnDotsNav` 轮次圆点导航（数据源只取 user 消息、≤20 圆点滑动窗口、hover 预览、点击平滑滚动、`IntersectionObserver` 联动高亮，封装为独立组件不侵入气泡渲染）；③会话运维面——conversation 分页与 worker 级通道（controller 读取 worker 会话的分页通道，对齐 CLI 的 worker-transcript 语义）；④首启配置流 UI（决策九，2.9）——欢迎页（冷启动判定触发，两入口）、onboard 向导（必要核心步骤靠前必做、含默认 provider + model 兜底步骤，完成必做后其余步骤可跳过）、CLI 导入入口（读 `~/.wayang.config.json` → validate → 直跳最终确认页，失败呈现具体校验错误）、最终确认页（全量展示 + 核心完整性校验 → 确认写入 userData 信封 → 进入主界面）；文件选择器支持非默认导入路径为可选增强；依赖域一信封存储就绪（4.0）。
 
-**文件面**：`src/renderer/src/components/settings/`（新增页面与表单组件）；`src/renderer/src/components/turn-dots-nav.tsx`（新增）；`src/renderer/src/components/chat/*`、`input-area.tsx`、`status-bar.tsx`（改造合一）；`src/shared/ipc-contract.ts` / `src/main/ipc/router.ts` / `src/renderer/src/lib/wayang-api.ts`（新增通道条目）；main 侧设置持久化与热更调用面。
+**文件面**：`src/renderer/src/components/onboard/`（新增欢迎页 / 向导 / 导入 / 最终确认页）；`src/renderer/src/components/settings/`（新增页面与表单组件）；`src/renderer/src/components/turn-dots-nav.tsx`（新增）；`src/renderer/src/components/chat/*`、`input-area.tsx`、`status-bar.tsx`（改造合一）；`src/shared/ipc-contract.ts` / `src/main/ipc/router.ts` / `src/renderer/src/lib/wayang-api.ts`（新增通道条目）；main 侧设置持久化与热更调用面。
 
-**验收**：设置页保存后不重启即生效（运行中 server 可观察 provider / model 变更）；校验失败有错误呈现且不落盘；折叠阈值与导航窗口（≤20 圆点）行为符合参数；点击圆点平滑滚动且高亮联动；分页通道翻页正确且带显式截断标记；移除 dev env 后壳外直启回退路径不受影响。
+**验收**：设置页保存后不重启即生效（运行中 server 可观察 provider / model 变更）；校验失败有错误呈现且不落盘；折叠阈值与导航窗口（≤20 圆点）行为符合参数；点击圆点平滑滚动且高亮联动；分页通道翻页正确且带显式截断标记；移除 dev env 后壳外直启回退路径不受影响；全新环境首启走欢迎页 → onboard 完成 / 导入完成 → 确认写入 → 主界面可用，二次启动不再出现欢迎页。
 
 ### 4.4 域四：打包分发与收口
 
