@@ -7,16 +7,16 @@
  * UtilityProcess + message port instead of a spawned node child + stdio.
  */
 
-import { readFile } from 'node:fs/promises';
 import { ipcMain, utilityProcess, type BrowserWindow, type UtilityProcess } from 'electron';
 import { join } from 'node:path';
-import { validateConfig, type WayangConfig } from '@wayang-ai/protocol';
+import type { WayangConfig } from '@wayang-ai/protocol';
 import { messagePortToStreams, type MessagePortLike } from '@wayang-ai/protocol/rpc/message-port';
 import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
 import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
 import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
 import { RemoteSupervisor, CONTEXT_USAGE_STATE_PATH } from '@wayang-ai/core/client/remote-supervisor';
 import { CONFIG_OBJECT_ENV } from '../shared/config-env';
+import { ConfigStore } from './config-store';
 import type { MainLogger } from './logger';
 import { createLineSplitter } from './log-lines';
 
@@ -63,7 +63,13 @@ const SUBSCRIBED_PATHS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 export interface DesktopSessionOptions {
+  /** Envelope config file (`<userData>/config.json`, 决策九) — the load source. */
   configPath: string;
+  /**
+   * Legacy CLI config (`~/.wayang.config.json`) — read-only source for the
+   * transitional one-time import when the envelope does not exist yet.
+   */
+  legacyConfigPath: string;
   dataDir: string;
   workspaceDir: string;
   session: string;
@@ -83,18 +89,17 @@ export interface ConnectDeps {
 }
 
 /**
- * Host-side config load (design 4.1): read the file once, parse, validate.
- * The CLI host's loader is app-local to apps/cli and not importable here, so
- * the desktop keeps this minimal read+validate slice — env-var key filling
- * and interactive prompts stay CLI concerns; the desktop settings page
- * (desktop-app-design §4) supersedes them later.
+ * Host-side config load (design 2.4 / 决策九): read the desktop envelope
+ * store at `options.configPath` (`<userData>/config.json`). The store
+ * validates the embedded `wayangConfig` with protocol's `validateConfig`.
+ * A missing envelope triggers the store's transitional one-time import from
+ * the CLI config (read-only, marked for removal once the explicit import
+ * action lands); beyond that import the desktop never touches CLI files at
+ * runtime.
  */
-async function loadSessionConfig(configPath: string): Promise<WayangConfig> {
-  const raw = await readFile(configPath, 'utf-8');
-  const config = JSON.parse(raw) as WayangConfig;
-  const problem = validateConfig(config);
-  if (problem) throw new Error(`Invalid config ${configPath}: ${problem}`);
-  return config;
+async function loadSessionConfig(configPath: string, legacyConfigPath: string): Promise<WayangConfig> {
+  const store = new ConfigStore(configPath);
+  return store.loadOrImport(legacyConfigPath);
 }
 
 export async function connectServer(deps: ConnectDeps): Promise<DesktopConnection> {
@@ -111,7 +116,7 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
   // as the `crashed` status, the same UX the old server-side load failure
   // produced. `--config` stays in the argv surface as the utility's
   // standalone-run fallback (mirrors the CLI's server-entry).
-  const config = await loadSessionConfig(options.configPath);
+  const config = await loadSessionConfig(options.configPath, options.legacyConfigPath);
 
   const child = utilityProcess.fork(join(__dirname, 'utility-entry.js'), [
     '--config', options.configPath,

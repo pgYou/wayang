@@ -26,6 +26,7 @@ function fixGuiPath(): void {
 
 interface SessionOptions {
   configPath: string;
+  legacyConfigPath: string;
   dataDir: string;
   workspaceDir: string;
   session: string;
@@ -40,9 +41,10 @@ function resolveSessionOptions(): SessionOptions {
   // lands in it (§2.5: 启动自动 mkdir).
   mkdirSync(paths.defaultWorkerWorkspace, { recursive: true });
   return {
-    // transitional: the envelope store (决策九) replaces this source next;
-    // until then the loader still reads the CLI config file.
-    configPath: paths.cliConfigPath,
+    // Envelope store (决策九): the config load source; the CLI config path
+    // is only the transitional one-time import source.
+    configPath: paths.configPath,
+    legacyConfigPath: paths.cliConfigPath,
     dataDir: paths.dataDir,
     workspaceDir: paths.controllerWorkspace,
     session: process.env.WAYANG_DESKTOP_SESSION ?? 'new',

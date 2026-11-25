@@ -8,10 +8,11 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { validateConfig, type WayangConfig } from '@wayang-ai/protocol';
+import type { WayangConfig } from '@wayang-ai/protocol';
 import { messagePortToStreams, type MessagePortLike } from '@wayang-ai/protocol/rpc/message-port';
 import { serverMain } from '@wayang-ai/core/server/main';
 import { CONFIG_OBJECT_ENV } from '../shared/config-env';
+import { isEnvelopeLike, parseConfigEnvelope, validateOrReject } from '../shared/config-envelope';
 import { parseHostFlags } from './flags';
 
 function fatal(err: unknown): never {
@@ -24,7 +25,9 @@ function fatal(err: unknown): never {
  * The config object, never a path (design 4.1: the host owns config loading
  * and core never reads files): from the main-process env handoff, or a
  * single read of `--config` for standalone manual runs — the utility-side
- * mirror of the CLI server-entry's standalone fallback.
+ * mirror of the CLI server-entry's standalone fallback. The file read
+ * accepts the desktop envelope (决策九) or a plain `WayangConfig` document,
+ * so manual runs work against either artifact.
  */
 function resolveUtilityConfig(configPath: string): WayangConfig {
   const injected = process.env[CONFIG_OBJECT_ENV];
@@ -32,9 +35,11 @@ function resolveUtilityConfig(configPath: string): WayangConfig {
     // The desktop main process already validated this object.
     return JSON.parse(injected) as WayangConfig;
   }
-  const config = JSON.parse(readFileSync(configPath, 'utf-8')) as WayangConfig;
-  const problem = validateConfig(config);
-  if (problem) throw new Error(`Invalid config ${configPath}: ${problem}`);
+  const raw = readFileSync(configPath, 'utf-8');
+  const parsed: unknown = JSON.parse(raw);
+  if (isEnvelopeLike(parsed)) return parseConfigEnvelope(raw).wayangConfig;
+  const config = parsed as WayangConfig;
+  validateOrReject(config, `config ${configPath}`);
   return config;
 }
 
