@@ -7,13 +7,16 @@
  * UtilityProcess + message port instead of a spawned node child + stdio.
  */
 
+import { readFile } from 'node:fs/promises';
 import { ipcMain, utilityProcess, type BrowserWindow, type UtilityProcess } from 'electron';
 import { join } from 'node:path';
+import { validateConfig, type WayangConfig } from '@wayang-ai/protocol';
 import { messagePortToStreams, type MessagePortLike } from '@wayang-ai/protocol/rpc/message-port';
 import { createStreamTransport } from '@wayang-ai/protocol/rpc/transport';
 import { RpcClient, RemoteStateStore } from '@wayang-ai/protocol/rpc/rpc-client';
 import { METHOD, NOTIFY } from '@wayang-ai/protocol/rpc/protocol';
 import { RemoteSupervisor, CONTEXT_USAGE_STATE_PATH } from '@wayang-ai/core/client/remote-supervisor';
+import { CONFIG_OBJECT_ENV } from '../shared/config-env';
 import type { MainLogger } from './logger';
 import { createLineSplitter } from './log-lines';
 
@@ -79,6 +82,21 @@ export interface ConnectDeps {
   log: MainLogger;
 }
 
+/**
+ * Host-side config load (design 4.1): read the file once, parse, validate.
+ * The CLI host's loader is app-local to apps/cli and not importable here, so
+ * the desktop keeps this minimal read+validate slice — env-var key filling
+ * and interactive prompts stay CLI concerns; the desktop settings page
+ * (desktop-app-design §4) supersedes them later.
+ */
+async function loadSessionConfig(configPath: string): Promise<WayangConfig> {
+  const raw = await readFile(configPath, 'utf-8');
+  const config = JSON.parse(raw) as WayangConfig;
+  const problem = validateConfig(config);
+  if (problem) throw new Error(`Invalid config ${configPath}: ${problem}`);
+  return config;
+}
+
 export async function connectServer(deps: ConnectDeps): Promise<DesktopConnection> {
   const { options, onStatus, log } = deps;
   const connLog = log.child('connection');
@@ -86,13 +104,26 @@ export async function connectServer(deps: ConnectDeps): Promise<DesktopConnectio
   connLog.info('connecting', { ...options });
   onStatus('connecting');
 
+  // The main process owns config resolution (design 4.1 via
+  // desktop-app-design §2): load and validate the object ONCE here — the
+  // spawned utility receives it through the env channel and never reads
+  // config files. A missing/invalid config rejects this promise and surfaces
+  // as the `crashed` status, the same UX the old server-side load failure
+  // produced. `--config` stays in the argv surface as the utility's
+  // standalone-run fallback (mirrors the CLI's server-entry).
+  const config = await loadSessionConfig(options.configPath);
+
   const child = utilityProcess.fork(join(__dirname, 'utility-entry.js'), [
     '--config', options.configPath,
     '--data-dir', options.dataDir,
     '--workspace-dir', options.workspaceDir,
     '--session', options.session,
     '--log-level', options.logLevel,
-  ], { stdio: 'pipe', serviceName: 'wayang-server' });
+  ], {
+    stdio: 'pipe',
+    serviceName: 'wayang-server',
+    env: { ...process.env, [CONFIG_OBJECT_ENV]: JSON.stringify(config) },
+  });
 
   // The wayang server logs to <sessionDir>/wayang.log, so its stdio carries
   // only fatal output — echo to the console and persist to main.log. The

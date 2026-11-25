@@ -7,7 +7,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build && cp ../../packages/core/dist/mcp-bridge-entry.js out/main/",
+    "build": "electron-vite build && cp ../../apps/cli/dist/mcp-bridge-entry.js out/main/",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit && eslint src/",
     "test": "vitest run",

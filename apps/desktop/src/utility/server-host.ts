@@ -7,14 +7,35 @@
  * Everything process-specific lives here; all logic stays in core.
  */
 
+import { readFileSync } from 'node:fs';
+import { validateConfig, type WayangConfig } from '@wayang-ai/protocol';
 import { messagePortToStreams, type MessagePortLike } from '@wayang-ai/protocol/rpc/message-port';
 import { serverMain } from '@wayang-ai/core/server/main';
+import { CONFIG_OBJECT_ENV } from '../shared/config-env';
 import { parseHostFlags } from './flags';
 
 function fatal(err: unknown): never {
   const message = err instanceof Error ? err.message : String(err);
   process.stderr?.write(`[wayang-desktop utility] fatal: ${message}\n`);
   process.exit(1);
+}
+
+/**
+ * The config object, never a path (design 4.1: the host owns config loading
+ * and core never reads files): from the main-process env handoff, or a
+ * single read of `--config` for standalone manual runs — the utility-side
+ * mirror of the CLI server-entry's standalone fallback.
+ */
+function resolveUtilityConfig(configPath: string): WayangConfig {
+  const injected = process.env[CONFIG_OBJECT_ENV];
+  if (injected !== undefined) {
+    // The desktop main process already validated this object.
+    return JSON.parse(injected) as WayangConfig;
+  }
+  const config = JSON.parse(readFileSync(configPath, 'utf-8')) as WayangConfig;
+  const problem = validateConfig(config);
+  if (problem) throw new Error(`Invalid config ${configPath}: ${problem}`);
+  return config;
 }
 
 try {
@@ -26,7 +47,7 @@ try {
   const flags = parseHostFlags(process.argv.slice(2));
   void serverMain(
     {
-      configPath: flags.config,
+      config: resolveUtilityConfig(flags.config),
       dataDir: flags.dataDir,
       workspaceDir: flags.workspaceDir,
       session: flags.session,
