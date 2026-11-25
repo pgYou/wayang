@@ -17,7 +17,7 @@
 import * as path from 'node:path';
 import { parseCliArgs, resolveWayangRoot } from './cli-args';
 import { normalizeWorkspacePath } from '@wayang-ai/core/infra/workspace-registry';
-import { serverMain } from '@wayang-ai/core/server/main';
+import { serverMain, parseSessionArg } from '@wayang-ai/core/server/main';
 import { loadConfig } from './config-loader';
 import { CONFIG_OBJECT_ENV } from './config-env';
 import type { WayangConfig } from '@wayang-ai/protocol';
@@ -62,6 +62,19 @@ async function resolveServerConfig(): Promise<WayangConfig> {
   // its `--config` meaning. Still app-side parsing — core only ever sees the
   // resulting object.
   return loadConfig(configPath, { nonInteractive: true });
+}
+
+// argv-level usage validation BEFORE any config resolution (0.9.9 order): a
+// bad --session value exits here with the flag echoed; only valid arguments
+// may reach config loading, so the config-missing fatal cannot mask the usage
+// error when standalone in a config-less environment. The env-object handoff
+// path never sees this (the client constructs valid values), but the check is
+// pure and cheap. Same shared parser serverMain re-runs — no drift.
+try {
+  parseSessionArg(flags.session ?? 'new');
+} catch (err: unknown) {
+  console.error('Fatal:', err instanceof Error ? err.message : err);
+  process.exit(1);
 }
 
 resolveServerConfig()

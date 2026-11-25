@@ -45,7 +45,7 @@ import { bootstrap } from './bootstrap';
 import { loadConfig } from './config-loader';
 import { normalizeWorkspacePath } from '@wayang-ai/core/infra/workspace-registry';
 import { SessionLockedError, formatSessionLockHint } from '@wayang-ai/core/infra/session-lock';
-import { serverMain } from '@wayang-ai/core/server/main';
+import { serverMain, parseSessionArg } from '@wayang-ai/core/server/main';
 
 const result = parseCliArgs(process.argv.slice(2));
 
@@ -104,6 +104,16 @@ function fatal(err: unknown): never {
 }
 
 if (input[0] === 'server') {
+  // argv-level usage validation BEFORE any config I/O (0.9.9 order): a bad
+  // --session value exits here with the flag echoed; only valid arguments may
+  // reach config resolution, so the config-missing fatal cannot mask the usage
+  // error in config-less environments (CI runners). Same shared parser
+  // serverMain re-runs — no drift by construction.
+  try {
+    parseSessionArg(flags.session ?? 'new');
+  } catch (err) {
+    fatal(err);
+  }
   // The CLI is the single config-resolution point (design 4.1): load once,
   // non-interactively, and hand the OBJECT to the headless server — core
   // never re-parses, re-reads or re-validates.

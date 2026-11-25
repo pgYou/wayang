@@ -11,6 +11,28 @@
 import { runWayangServer } from './wayang-server';
 import type { StoragePaths, WayangConfig, WorkspacePolicy } from '@wayang-ai/protocol';
 
+/** The `--session` argv value parsed into its structured form. */
+export type SessionDecision = { mode: 'new' } | { mode: 'resume'; sessionId: string };
+
+/**
+ * Parse the `--session` argv value (`new` | `resume:<id>`). Pure argv-level
+ * validation, no I/O: hosts run it BEFORE config resolution so a bad value
+ * fails fast with the flag echoed (0.9.9 order) — otherwise the config-missing
+ * fatal fires first in config-less environments (CI runners) and masks the
+ * usage error. `serverMain` re-runs the same function, so there is no drift.
+ */
+export function parseSessionArg(value: string): SessionDecision {
+  if (value === 'new') {
+    return { mode: 'new' };
+  }
+  if (value.startsWith('resume:')) {
+    const sessionId = value.slice('resume:'.length);
+    if (!sessionId) throw new Error('Invalid --session: resume: requires a session id');
+    return { mode: 'resume', sessionId };
+  }
+  throw new Error(`Invalid --session "${value}" (expected "new" or "resume:<id>")`);
+}
+
 /** Structured boot failure — machine-readable for hosts (desktop included). */
 export class ServerBootError extends Error {
   constructor(
@@ -60,16 +82,7 @@ export async function serverMain(options: ServerMainOptions): Promise<void> {
     );
   }
 
-  let session: { mode: 'new' } | { mode: 'resume'; sessionId: string };
-  if (options.session === 'new') {
-    session = { mode: 'new' };
-  } else if (options.session.startsWith('resume:')) {
-    const sessionId = options.session.slice('resume:'.length);
-    if (!sessionId) throw new Error('Invalid --session: resume: requires a session id');
-    session = { mode: 'resume', sessionId };
-  } else {
-    throw new Error(`Invalid --session "${options.session}" (expected "new" or "resume:<id>")`);
-  }
+  const session = parseSessionArg(options.session);
 
   await runWayangServer({
     config: options.config,
