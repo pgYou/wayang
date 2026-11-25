@@ -65,7 +65,7 @@ Complex AI workflows need more than a single chat. Wayang acts as an intelligent
 ### Install
 
 ```bash
-npm install -g wayang-ai
+npm install -g @wayang-ai/cli
 ```
 
 After installation, the global command `wayang` (alias `waya`) is available in your terminal:

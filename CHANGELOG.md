@@ -18,6 +18,7 @@
 
 - 发布单元从根包 wayang-ai 迁至 apps/cli：公开发布名 @wayang-ai/cli、版本 1.0.0-alpha.1；bin wayang / waya 随迁（指向 dist/cli.js，命令名与用户体验不变），repository / homepage / keywords 等发布元数据与第三方运行时依赖（ai / ink / react / zod 等 13 个）迁入 apps/cli，files 收敛为 dist（排除 sourcemap）并补 README / LICENSE；根包退役为纯 private workspace 根——删除 bin / files / prepublishOnly / 发布元数据与运行时依赖，仅保留编排脚本与开发依赖；npm 上的旧包 wayang-ai 停在 0.9.9 不再演进
 - 发布物自包含：@wayang-ai/core 与 @wayang-ai/protocol 经 tsup noExternal 内联进 apps/cli dist，发布包对 @wayang-ai/* 零运行时依赖；修复 mcp-bridge-entry.js 遗留的 @wayang-ai/protocol/rpc/transport 运行时引用——core 的桥构建同样启用 noExternal，三个入口全部自包含（独立安装实测：tarball 在全新目录安装后 wayang / waya / MCP 桥均可用）
+- 安装指引对齐：根 README 与中文 README 的安装命令更新为 `npm install -g @wayang-ai/cli`，无残留旧包名 wayang-ai 安装指引（npx 示例不涉及，bin 名 wayang 未变）
 - release workflow 随迁：tag 与 apps/cli 版本一致性校验、已发布检查对象改 @wayang-ai/cli、npm publish 工作目录改 apps/cli；dist-tag 按 prerelease 段通用派生——tag 去 v 前缀后含 '-' 取首段（1.0.0-alpha.1 → alpha、1.0.0-beta.2 → beta、1.0.0-rc.1 → rc），无 prerelease 段走 latest，派生名形如 semver 时提前失败（npm 会拒绝此类 dist-tag）
 - Node 20 runner 已进入 deprecation 警告期：ci.yml 以注释记录（不修，升级与 engines 评估另行处理）
 
