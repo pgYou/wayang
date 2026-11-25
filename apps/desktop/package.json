@@ -27,6 +27,8 @@
     "@vitejs/plugin-react": "^6.3.0",
     "electron": "^41.7.1",
     "electron-vite": "^6.0.0",
-    "tailwindcss": "^4.3.5"
+    "tailwindcss": "^4.3.5",
+    "@wayang-ai/core": "1.0.0-alpha.0",
+    "@wayang-ai/protocol": "1.0.0-alpha.0"
   }
 }
