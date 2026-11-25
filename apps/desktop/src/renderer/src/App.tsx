@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Settings2Icon } from 'lucide-react';
 import {
   useConnectionStatus,
   useBusy,
@@ -13,6 +14,9 @@ import { ChatArea } from './components/chat/chat-area';
 import { Composer } from './components/chat/composer';
 import { InquiryCard } from './components/inquiry-card';
 import { OnboardFlow } from './components/onboard/onboard-flow';
+import { SettingsPage } from './components/settings/settings-page';
+import { SessionMenu } from './components/session-menu';
+import { Button } from './components/ui/button';
 
 /**
  * App root. Boot routing (§2.11 决策九, cold-start detection): the envelope
@@ -25,6 +29,7 @@ type AppPhase = 'checking' | 'onboard' | 'app';
 export function App() {
   const [phase, setPhase] = useState<AppPhase>('checking');
   const [onboardProblem, setOnboardProblem] = useState<string | undefined>(undefined);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     void wayang
@@ -79,6 +84,13 @@ export function App() {
         </span>
         <span className="text-sm font-semibold">Wayang</span>
         <span className="text-xs text-muted-foreground">多智能体编排工作台</span>
+        {/* Header 右上角：设置入口（settings-2）+ 会话切换【…】（§4.3 工作项②⑥） */}
+        <span className="ml-auto flex items-center gap-1">
+          <Button size="icon-sm" variant="ghost" aria-label="打开设置" onClick={() => setSettingsOpen(true)}>
+            <Settings2Icon />
+          </Button>
+          <SessionMenu disabled={busy} />
+        </span>
       </header>
 
       {connection.phase === 'crashed' && (
@@ -102,6 +114,7 @@ export function App() {
           onAbort={() => void wayang.abort()}
         />
       )}
+      {settingsOpen && <SettingsPage onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

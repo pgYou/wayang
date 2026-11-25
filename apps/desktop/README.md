@@ -1,7 +1,9 @@
 # @wayang-ai/desktop
 
-桌面端外壳（Electron）在 **M3** 落地。
+Wayang 桌面端外壳（Electron）。主进程当 RPC 客户端、UtilityProcess 承载无头
+server（NDJSON-RPC，与 CLI 同协议只换传输层）；renderer 为 React 19 +
+Tailwind v4 的 shadcn 风格界面。
 
-本包当前只占位：不参与构建、不参与 workspaces 脚本，也不被 `@wayang-ai/cli` 依赖。
-M3 接入时它会以工作区内的包形式复用 `@wayang-ai/core` 与 `@wayang-ai/protocol`，
-并承载 Electron 主进程与渲染进程的入口。
+以工作区内的包形式复用 `@wayang-ai/core` 与 `@wayang-ai/protocol`
+（构建期内联），并承载 Electron 主进程、preload 与渲染进程的入口。
+设计与现状见 `docs/develop/desktop-app-design.md`。

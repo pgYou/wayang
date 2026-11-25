@@ -29,7 +29,7 @@
 
 ### 待办
 
-- 桌面端（M3）：@wayang-ai/desktop Electron 壳 —— UtilityProcess 宿主、protocol 的 MessagePort transport、GUI PATH 修复、崩溃 resume；electron-builder 安装包分发（不走 npm）
+- 桌面端：@wayang-ai/desktop Electron 壳 —— UtilityProcess 宿主、protocol 的 MessagePort transport、GUI PATH 修复、崩溃 resume；electron-builder 安装包分发（不走 npm）
 - 1.0.0-alpha.1 发布（alpha.0 从未发布，直接 alpha.1）：PR #98 合入 main 后在 main 打 v1.0.0-alpha.1 tag，release workflow 发布 @wayang-ai/cli@1.0.0-alpha.1 至 dist-tag alpha——不触碰 latest（latest 仍指旧包 wayang-ai@0.9.9，@wayang-ai/cli 的 latest 自 1.0.0 正式版起接续）
 
 ## v0.9.9 (2026-11-24)
