@@ -5,28 +5,23 @@
  *   - GUI PATH fix, before any child process is spawned (agents spawned by the
  *     server resolve binaries through PATH; a Finder-launched app has none).
  *   - Window + preload wiring; renderer talks to the server only via IPC.
- *   - Session defaults (config/data dir shared with the CLI; workspace dir
- *     dedicated to the desktop app unless WAYANG_DESKTOP_WORKSPACE overrides).
+ *   - Session defaults, all sourced from the platform config module
+ *     (§2.5/§2.6: data under userData, workspaces per the baseline; the
+ *     WAYANG_DESKTOP_* env group is the dev override entry).
  *   - Server lifecycle: connect on ready, graceful stop on quit.
  */
 
 import { app, BrowserWindow } from 'electron';
 import { join } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdirSync } from 'node:fs';
 import { connectServer, type DesktopConnection } from './connection';
 import { initMainLogger, mainLogger, type MainLogger } from './logger';
+import { getPaths, getPlatformConfig } from '../shared/platform-config';
 
 /** Prepend the paths a GUI-launched process misses (brew, local bin). */
 function fixGuiPath(): void {
-  const extras = [
-    '/opt/homebrew/bin',
-    '/opt/homebrew/sbin',
-    '/usr/local/bin',
-    join(homedir(), '.local/bin'),
-  ];
   const parts = process.env.PATH?.split(':') ?? [];
-  process.env.PATH = [...new Set([...extras, ...parts])].join(':');
+  process.env.PATH = [...new Set([...getPlatformConfig().guiPathPrefixes, ...parts])].join(':');
 }
 
 interface SessionOptions {
@@ -38,19 +33,18 @@ interface SessionOptions {
 }
 
 function resolveSessionOptions(): SessionOptions {
-  const home = homedir();
-  const configPath = join(home, '.wayang.config.json');
-  if (!existsSync(configPath)) {
-    // Surfaced to the renderer as a crashed/blocked status; the server itself
-    // would fail config loading — fail early with an actionable message.
-    console.error(`[wayang-desktop] config not found: ${configPath}`);
-  }
-  const workspaceDir = process.env.WAYANG_DESKTOP_WORKSPACE ?? join(home, 'wayang-desktop');
-  mkdirSync(workspaceDir, { recursive: true });
+  // All paths via the platform config module (决策十) — no hand-joined
+  // homedir paths, no direct Electron path calls outside the module.
+  const paths = getPaths();
+  // defaultWorkerWorkspace is user-visible and must exist before any worker
+  // lands in it (§2.5: 启动自动 mkdir).
+  mkdirSync(paths.defaultWorkerWorkspace, { recursive: true });
   return {
-    configPath,
-    dataDir: join(home, '.wayang'),
-    workspaceDir,
+    // transitional: the envelope store (决策九) replaces this source next;
+    // until then the loader still reads the CLI config file.
+    configPath: paths.cliConfigPath,
+    dataDir: paths.dataDir,
+    workspaceDir: paths.controllerWorkspace,
     session: process.env.WAYANG_DESKTOP_SESSION ?? 'new',
     logLevel: process.env.WAYANG_DESKTOP_LOG_LEVEL ?? 'info',
   };
@@ -101,7 +95,6 @@ app.whenReady().then(() => {
     node: process.versions.node,
     platform: `${process.platform}/${process.arch}`,
     ...options,
-    configFound: existsSync(options.configPath),
   });
 
   createWindow();

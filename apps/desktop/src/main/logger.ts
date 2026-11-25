@@ -9,10 +9,10 @@
  * `npm run dev` and Console.app (packaged) show the same stream.
  */
 
-import { app } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { createFileLogger, type Logger } from '@wayang-ai/core/infra/logger';
+import { getPaths } from '../shared/platform-config';
 
 export interface MainLogger {
   debug(msg: string, data?: Record<string, unknown>): void;
@@ -29,7 +29,9 @@ let active: MainLogger | null = null;
 /** Idempotent: the first call wins, later calls return the same logger. */
 export function initMainLogger(level: string = 'info'): MainLogger {
   if (active) return active;
-  const dir = app.getPath('logs');
+  // Logs dir via the platform config module (决策十) — the module is the
+  // only place allowed to touch Electron's path API.
+  const dir = getPaths().logs;
   mkdirSync(dir, { recursive: true });
   const file = createFileLogger(level, join(dir, 'main.log'));
 
