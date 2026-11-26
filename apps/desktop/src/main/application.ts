@@ -18,6 +18,7 @@ import { SecurityGuard } from './security-guard';
 import { SessionService, type DesktopSessionOptions } from './session-service';
 import { ConfigStore, type ConfigEnvelope } from './config-store';
 import { resolveOnboardState } from '../shared/onboard';
+import { IPC_SUBSCRIBE } from '../shared/ipc-contract';
 import { getLatestSessionForWorkspace } from '@wayang-ai/core/infra/session-helpers';
 import { getPaths, getPlatformConfig, getStoragePaths, getWorkspacePolicy, type PathSource } from '../shared/platform-config';
 
@@ -186,11 +187,27 @@ export class Application {
       options,
       log,
       isTrustedSender: (sender) => security.isTrustedSender(sender),
+      // Custom-header controls (§2.1): the single window is the only target.
+      windowControls: {
+        minimize: () => windows.minimize(),
+        toggleZoom: () => windows.toggleZoom(),
+        close: () => windows.close(),
+      },
     });
     this.session = session;
 
     // Refresh replay (§2.7): a full renderer load re-sends the cached state.
     windows.onDidFinishLoad(() => session.resendSnapshot());
+
+    // Window state pushes (§2.1 custom header): native fullscreen changes
+    // collapse the traffic-light spacer. The did-finish-load replay keeps a
+    // refresh (Cmd+R) converging while fullscreen — no transition fires then.
+    const sendWindowState = (): void => {
+      const win = windows.window;
+      if (win) win.webContents.send(IPC_SUBSCRIBE.window, { fullscreen: win.isFullScreen() });
+    };
+    windows.onFullScreenChange(() => sendWindowState());
+    windows.onDidFinishLoad(() => sendWindowState());
 
     windows.create();
     await session.start(onboard.onboarded && envelope ? envelope.wayangConfig : null);

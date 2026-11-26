@@ -72,6 +72,10 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
     sender: { id: trusted ? 7 : 999 },
   });
 
+  // Custom-header window controls dep (§2.1): routed through the windowControl
+  // channel; the WindowManager face itself is covered by its own tests.
+  const windowControls = { minimize: vi.fn(), toggleZoom: vi.fn(), close: vi.fn() };
+
   const makeService = (): SessionService =>
     new SessionService({
       getWindow: () =>
@@ -83,6 +87,7 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
       options,
       log: unifiedLog,
       isTrustedSender: (sender) => (sender as { id: number }).id === 7,
+      windowControls,
     });
 
   /** Invoke a registered channel handler the way ipcMain would. */
@@ -103,6 +108,7 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
     servers = [];
     sent = [];
     electronState.handlers.clear();
+    for (const fn of [windowControls.minimize, windowControls.toggleZoom, windowControls.close]) fn.mockClear();
     electronState.forkImpl = (_modulePath, argv) => {
       const server = new LoopbackServer(`session-${servers.length + 1}`);
       (server as unknown as { argv: string[] }).argv = argv;
@@ -253,6 +259,24 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
     await service.start(null);
     const state = await invoke(IPC.getOnboardState, []);
     expect(state).toMatchObject({ ok: true, data: { onboarded: false, problem: expect.stringContaining('controller') } });
+    await service.stop();
+  });
+
+  it('windowControl routes the custom-header actions; invalid actions get the validator message', async () => {
+    const service = makeService();
+    await service.start(validConfig);
+
+    expect(await invoke(IPC.windowControl, ['minimize'])).toMatchObject({ ok: true });
+    expect(await invoke(IPC.windowControl, ['toggleZoom'])).toMatchObject({ ok: true });
+    expect(await invoke(IPC.windowControl, ['close'])).toMatchObject({ ok: true });
+    expect(windowControls.minimize).toHaveBeenCalledTimes(1);
+    expect(windowControls.toggleZoom).toHaveBeenCalledTimes(1);
+    expect(windowControls.close).toHaveBeenCalledTimes(1);
+
+    const invalid = await invoke(IPC.windowControl, ['explode']);
+    expect(invalid).toMatchObject({ ok: false, error: expect.stringContaining('minimize') });
+    // Rejected before the routing — nothing fired twice.
+    expect(windowControls.minimize).toHaveBeenCalledTimes(1);
     await service.stop();
   });
 

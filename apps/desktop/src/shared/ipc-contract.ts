@@ -117,6 +117,12 @@ export const IPC = {
   chooseDirectory: 'wayang:chooseDirectory',
   /** Restart the server with the envelope config (§2.4 restart-needed fields). */
   restartServer: 'wayang:restartServer',
+  /**
+   * Custom-titlebar window controls (§2.1 header): the renderer-drawn
+   * traffic-light dots. No session state involved — a shell concern riding
+   * the same typed surface.
+   */
+  windowControl: 'wayang:windowControl',
 } as const;
 
 export const IPC_SUBSCRIBE = {
@@ -124,6 +130,12 @@ export const IPC_SUBSCRIBE = {
   state: 'wayang:state',
   /** Connection status machine (§2.9 phases). */
   status: 'wayang:status',
+  /**
+   * Window state pushes (§2.1 custom header): native fullscreen changes —
+   * macOS hides the traffic lights in fullscreen, so the renderer collapses
+   * the reserved spacer. Shell concern, same typed subscribe surface.
+   */
+  window: 'wayang:window',
 } as const;
 
 /** All invoke channel names — for bulk (re)registration and teardown. */
@@ -178,6 +190,12 @@ export interface RendererLogEntry {
   data?: Record<string, unknown>;
 }
 
+/** `wayang:window` payload: the live window state (§2.1 custom header). */
+export interface WindowStateUpdate {
+  /** Native fullscreen — macOS hides the traffic lights while in it. */
+  fullscreen: boolean;
+}
+
 /** Result of saving the envelope (§2.4/§2.11): what took effect, and how. */
 export interface SaveConfigResult {
   /** Op methods applied to the RUNNING server (hot path), in order. */
@@ -198,6 +216,13 @@ export interface ReadConfigResult {
 export interface ChooseDirectoryResult {
   path: string | null;
 }
+
+/**
+ * `wayang:windowControl` action — the custom header's traffic-light dots.
+ * `toggleZoom` is the green button: macOS system fullscreen, maximize on the
+ * other platforms (see WindowManager.toggleZoom).
+ */
+export type WindowControlAction = 'minimize' | 'toggleZoom' | 'close';
 
 /** Envelope every typed invoke resolves/rejects through (§2.2 typedHandle/typedInvoke). */
 export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -236,6 +261,7 @@ export interface IpcInvokeContract {
   [IPC.readConfig]: { args: []; result: ReadConfigResult };
   [IPC.chooseDirectory]: { args: []; result: ChooseDirectoryResult };
   [IPC.restartServer]: { args: []; result: { sessionId: string } };
+  [IPC.windowControl]: { args: [action: WindowControlAction]; result: void };
 }
 
 /** Snapshot payload of `wayang:getInitialState` (§2.7). */
@@ -249,6 +275,7 @@ export interface InitialStateSnapshot {
 export interface IpcSubscribeContract {
   [IPC_SUBSCRIBE.state]: { payload: StateUpdate };
   [IPC_SUBSCRIBE.status]: { payload: ConnectionStatus };
+  [IPC_SUBSCRIBE.window]: { payload: WindowStateUpdate };
 }
 
 export type InvokeChannel = keyof IpcInvokeContract;
@@ -328,6 +355,13 @@ export const IPC_ARG_VALIDATORS: Readonly<Record<InvokeChannel, IpcArgValidator>
   [IPC.readConfig]: (args) => (args.length === 0 ? null : 'readConfig takes no arguments'),
   [IPC.chooseDirectory]: (args) => (args.length === 0 ? null : 'chooseDirectory takes no arguments'),
   [IPC.restartServer]: (args) => (args.length === 0 ? null : 'restartServer takes no arguments'),
+  [IPC.windowControl]: (args) => {
+    if (args.length !== 1) return 'windowControl takes exactly one argument';
+    if (typeof args[0] !== 'string' || !['minimize', 'toggleZoom', 'close'].includes(args[0])) {
+      return 'windowControl action must be minimize | toggleZoom | close';
+    }
+    return null;
+  },
 };
 
 /* ------------------------------------------------------------------ *

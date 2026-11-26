@@ -55,6 +55,11 @@
   --sky-soft: oklch(0.957 0.0199 248.0);
   --sky-border: oklch(0.923 0.0318 248.2);
 
+  /* 自绘红绿灯（自定义 header）：macOS 系统色近似（oklch 书写）。 */
+  --traffic-close: oklch(0.697 0.1912 24.5);
+  --traffic-minimize: oklch(0.828 0.1588 84.5);
+  --traffic-zoom: oklch(0.762 0.1839 144.5);
+
   /* 灰阶（grey-1..grey-9）。 */
   --grey-1: oklch(0.977 0.0000 89.9);
   --grey-2: oklch(0.962 0.0000 89.9);
@@ -120,6 +125,10 @@
   --color-chat-sender: var(--chat-sender-bg);
   --color-chat-sender-border: var(--chat-sender-border);
   --color-chat-sender-focus: var(--chat-sender-focus-border);
+
+  --color-traffic-close: var(--traffic-close);
+  --color-traffic-minimize: var(--traffic-minimize);
+  --color-traffic-zoom: var(--traffic-zoom);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

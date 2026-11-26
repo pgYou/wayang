@@ -1,0 +1,14 @@
+/*
+ * AppHeader 拖拽区：自定义标题栏（titleBarStyle: hidden）下，拖动窗口的
+ * 唯一来源就是 CSS drag region——整条 header 可拖，交互件逐个 no-drag
+ * 恢复点击。双击缩放是系统对 drag region 的原生行为，无需手写。
+ * macOS 系统红绿灯的整组 hover 显形 / 失焦变灰同样由系统自带。
+ */
+
+.wayang-app-header {
+  -webkit-app-region: drag;
+}
+
+.wayang-app-header button {
+  -webkit-app-region: no-drag;
+}

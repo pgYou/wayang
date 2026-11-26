@@ -47,6 +47,7 @@ export interface WindowManagerDeps {
 export class WindowManager {
   private win: BrowserWindow | null = null;
   private readonly finishLoadListeners = new Set<() => void>();
+  private readonly fullScreenListeners = new Set<(fullscreen: boolean) => void>();
 
   constructor(private readonly deps: WindowManagerDeps) {}
 
@@ -63,6 +64,17 @@ export class WindowManager {
       minHeight: MIN_HEIGHT,
       title: 'Wayang',
       backgroundColor: '#f7f9fc',
+      // Custom header (§2.1): no native title bar — the renderer draws the
+      // 48px header with its own drag region (`-webkit-app-region`).
+      // `hidden` KEEPS the system traffic lights: they are system-drawn
+      // (macOS 27 gradient, group-hover glyphs, inactive dimming, a11y) and
+      // overlay the web content at the top-left — the single-header pattern
+      // (no second bar). `trafficLightPosition` insets the dots 16px and
+      // lifts them 2px above the strict center (y 16 → center 22): the W
+      // logo's ink is upper-heavy, so the dots sit slightly high to look
+      // optically aligned with it.
+      titleBarStyle: 'hidden',
+      trafficLightPosition: { x: 16, y: 16 },
       // Same-source mark asset (§2.10); absent in the packaged app, where the
       // bundle icon applies.
       icon: resolveWindowIcon(),
@@ -86,6 +98,10 @@ export class WindowManager {
     win.webContents.on('did-finish-load', () => {
       for (const listener of this.finishLoadListeners) listener();
     });
+    // Native fullscreen transitions (§2.1 custom header): macOS hides the
+    // traffic lights in fullscreen — the renderer collapses the spacer.
+    win.on('enter-full-screen', () => this.notifyFullScreen(true));
+    win.on('leave-full-screen', () => this.notifyFullScreen(false));
     win.on('close', () => this.saveState(win));
     win.on('closed', () => {
       this.win = null;
@@ -112,10 +128,52 @@ export class WindowManager {
     win.focus();
   }
 
+  /* ------------------- custom-header window controls ------------------- */
+
+  /** Minimize to the dock/taskbar (§2.1 header 最小化). No-op without a window. */
+  minimize(): void {
+    this.window?.minimize();
+  }
+
+  /**
+   * Green traffic-light action (§2.1 header): macOS uses the system
+   * fullscreen semantics (绿=全屏); the other platforms maximize/unmaximize
+   * (their window model). No-op without a window.
+   */
+  toggleZoom(): void {
+    const win = this.window;
+    if (!win) return;
+    if (process.platform === 'darwin') {
+      win.setFullScreen(!win.isFullScreen());
+    } else if (win.isMaximized()) {
+      win.unmaximize();
+    } else {
+      win.maximize();
+    }
+  }
+
+  /** Close the single window (macOS: hide, the app lives on in the dock). */
+  close(): void {
+    this.window?.close();
+  }
+
   /** Subscribe to full renderer loads (initial + refresh). Returns unsubscribe. */
   onDidFinishLoad(listener: () => void): () => void {
     this.finishLoadListeners.add(listener);
     return () => this.finishLoadListeners.delete(listener);
+  }
+
+  /**
+   * Subscribe to native fullscreen transitions (enter/leave). Returns
+   * unsubscribe. No events without a live window (the window is the source).
+   */
+  onFullScreenChange(listener: (fullscreen: boolean) => void): () => void {
+    this.fullScreenListeners.add(listener);
+    return () => this.fullScreenListeners.delete(listener);
+  }
+
+  private notifyFullScreen(fullscreen: boolean): void {
+    for (const listener of this.fullScreenListeners) listener(fullscreen);
   }
 
   private loadState(): WindowState {

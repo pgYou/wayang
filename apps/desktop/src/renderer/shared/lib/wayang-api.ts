@@ -20,6 +20,8 @@ import type {
   SaveConfigResult,
   StateUpdate,
   WayangConfig,
+  WindowControlAction,
+  WindowStateUpdate,
 } from '@/shared/ipc-contract';
 
 function bridge(): WayangBridge {
@@ -33,6 +35,7 @@ function bridge(): WayangBridge {
 export const wayang = {
   onState: (callback: (update: StateUpdate) => void): (() => void) => bridge().onState(callback),
   onStatus: (callback: (status: ConnectionStatus) => void): (() => void) => bridge().onStatus(callback),
+  onWindowState: (callback: (state: WindowStateUpdate) => void): (() => void) => bridge().onWindowState(callback),
   sendInput: (text: string): Promise<void> => bridge().sendInput(text),
   abort: (): Promise<void> => bridge().abort(),
   answerInquiry: (answer: string): Promise<void> => bridge().answerInquiry(answer),
@@ -54,6 +57,7 @@ export const wayang = {
   readConfig: (): Promise<ReadConfigResult> => bridge().readConfig(),
   chooseDirectory: (): Promise<ChooseDirectoryResult> => bridge().chooseDirectory(),
   restartServer: (): Promise<{ sessionId: string }> => bridge().restartServer(),
+  windowControl: (action: WindowControlAction): Promise<void> => bridge().windowControl(action),
 };
 
 /** Bridge surface subset the store boot needs (DI seam for tests). */

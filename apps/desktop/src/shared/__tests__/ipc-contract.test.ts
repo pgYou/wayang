@@ -46,8 +46,9 @@ describe('IPC channel contract', () => {
       'wayang:readConfig',
       'wayang:chooseDirectory',
       'wayang:restartServer',
+      'wayang:windowControl',
     ]);
-    expect(Object.values(IPC_SUBSCRIBE)).toEqual(['wayang:state', 'wayang:status']);
+    expect(Object.values(IPC_SUBSCRIBE)).toEqual(['wayang:state', 'wayang:status', 'wayang:window']);
   });
 
   it('IPC_INVOKE_CHANNELS matches the invoke contract keys one-to-one', () => {
@@ -77,6 +78,9 @@ describe('IPC arg validators', () => {
     expect(IPC_ARG_VALIDATORS[IPC.respondPermission]([{ requestId: 'r1', approved: true, reason: 'ok' }])).toBeNull();
     expect(IPC_ARG_VALIDATORS[IPC.switchSession](['session-9'])).toBeNull();
     expect(IPC_ARG_VALIDATORS[IPC.rendererLog]([{ level: 'warn', message: 'x' }])).toBeNull();
+    expect(IPC_ARG_VALIDATORS[IPC.windowControl](['minimize'])).toBeNull();
+    expect(IPC_ARG_VALIDATORS[IPC.windowControl](['toggleZoom'])).toBeNull();
+    expect(IPC_ARG_VALIDATORS[IPC.windowControl](['close'])).toBeNull();
   });
 
   it('rejects malformed arguments with a precise message', () => {
@@ -85,6 +89,8 @@ describe('IPC arg validators', () => {
     expect(IPC_ARG_VALIDATORS[IPC.respondPermission]([{ requestId: 'r1' }])).toMatch(/approved/);
     expect(IPC_ARG_VALIDATORS[IPC.switchSession]([''])).toMatch(/non-empty/);
     expect(IPC_ARG_VALIDATORS[IPC.rendererLog]([{ level: 'loud', message: 'x' }])).toMatch(/level/);
+    expect(IPC_ARG_VALIDATORS[IPC.windowControl](['explode'])).toMatch(/minimize/);
+    expect(IPC_ARG_VALIDATORS[IPC.windowControl]([])).toMatch(/exactly one/);
   });
 });
 

@@ -55,6 +55,16 @@ export interface SessionServiceDeps {
   log: UnifiedLogger;
   /** Sender trust check (§2.2 typedHandle Sender 校验, wired from SecurityGuard). */
   isTrustedSender: (sender: WebContents) => boolean;
+  /**
+   * Custom-header window controls (§2.1): the WindowManager face behind
+   * `wayang:windowControl` — registered here so every contract channel keeps
+   * its single registration point (and the bulk teardown symmetry).
+   */
+  windowControls: {
+    minimize(): void;
+    toggleZoom(): void;
+    close(): void;
+  };
 }
 
 export class SessionService {
@@ -348,6 +358,12 @@ export class SessionService {
     typedHandle(IPC.readConfig, router, () => this.readConfig());
     typedHandle(IPC.chooseDirectory, router, () => this.chooseDirectory());
     typedHandle(IPC.restartServer, router, () => this.restartServer());
+    typedHandle(IPC.windowControl, router, ([action]) => {
+      const controls = this.deps.windowControls;
+      if (action === 'minimize') controls.minimize();
+      else if (action === 'toggleZoom') controls.toggleZoom();
+      else controls.close();
+    });
   }
 
   private unregisterIpc(): void {

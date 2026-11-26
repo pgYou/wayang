@@ -21,6 +21,14 @@ const { captured, FakeWindow } = vi.hoisted(() => {
     minimized = false;
     restored = 0;
     focused = 0;
+    maximized = false;
+    fullscreen = false;
+    minimizeCalls = 0;
+    maximizeCalls = 0;
+    unmaximizeCalls = 0;
+    closeCalls = 0;
+    readonly buttonVisibilityCalls: boolean[] = [];
+    readonly setFullScreenCalls: boolean[] = [];
     loadFileCalls: string[] = [];
     loadURLCalls: string[] = [];
     bounds = { x: 10, y: 20, width: 1180, height: 800 };
@@ -63,6 +71,41 @@ const { captured, FakeWindow } = vi.hoisted(() => {
 
     focus(): void {
       this.focused += 1;
+    }
+
+    setWindowButtonVisibility(visible: boolean): void {
+      this.buttonVisibilityCalls.push(visible);
+    }
+
+    minimize(): void {
+      this.minimizeCalls += 1;
+    }
+
+    isMaximized(): boolean {
+      return this.maximized;
+    }
+
+    maximize(): void {
+      this.maximized = true;
+      this.maximizeCalls += 1;
+    }
+
+    unmaximize(): void {
+      this.maximized = false;
+      this.unmaximizeCalls += 1;
+    }
+
+    isFullScreen(): boolean {
+      return this.fullscreen;
+    }
+
+    setFullScreen(flag: boolean): void {
+      this.fullscreen = flag;
+      this.setFullScreenCalls.push(flag);
+    }
+
+    close(): void {
+      this.closeCalls += 1;
     }
 
     isDestroyed(): boolean {
@@ -116,6 +159,18 @@ function freshManager(statePath: string): WindowManager {
   return new WindowManager({ security: security as never, statePath, log: log as never });
 }
 
+/**
+ * Pin `process.platform` to a fixed value for one assertion block; returns a
+ * restore thunk (always run it in `finally` — the property is process-wide).
+ */
+function stubPlatform(value: string): () => void {
+  const original = process.platform;
+  Object.defineProperty(process, 'platform', { value, configurable: true });
+  return () => {
+    Object.defineProperty(process, 'platform', { value: original, configurable: true });
+  };
+}
+
 describe('WindowManager (§2.9 + §2.10 icon/focus)', () => {
   let dir: string;
 
@@ -151,6 +206,82 @@ describe('WindowManager (§2.9 + §2.10 icon/focus)', () => {
     expect(win.loadURLCalls).toEqual([]);
     expect(win.loadFileCalls).toHaveLength(1);
     expect(win.loadFileCalls[0]).toMatch(/(?:src|out)[/\\]renderer[/\\]main-window[/\\]index\.html$/);
+  });
+
+  it('creates a hidden-titlebar window that keeps the native traffic lights (custom header)', () => {
+    freshManager(join(dir, 'window-state.json')).create();
+    const options = captured.instances[0].options;
+    expect(options.titleBarStyle).toBe('hidden');
+    // The system traffic lights stay visible (macOS): 12px dots lifted 2px
+    // above the strict center in the 48px header (y 16), 16px inset.
+    expect(options.trafficLightPosition).toEqual({ x: 16, y: 16 });
+    // Hiding them was the old custom-dots approach — never called now.
+    expect(captured.instances[0].buttonVisibilityCalls).toEqual([]);
+  });
+
+  it('window controls route to the live window: minimize / close / zoom (darwin → fullscreen)', () => {
+    const manager = freshManager(join(dir, 'window-state.json'));
+    manager.create();
+    const win = captured.instances[0];
+
+    const restore = stubPlatform('darwin');
+    try {
+      manager.minimize();
+      expect(win.minimizeCalls).toBe(1);
+
+      // 绿钮 = 系统 fullscreen：进出各一次。
+      manager.toggleZoom();
+      manager.toggleZoom();
+      expect(win.setFullScreenCalls).toEqual([true, false]);
+
+      manager.close();
+      expect(win.closeCalls).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('toggleZoom maximizes/unmaximizes on the non-darwin window model', () => {
+    const manager = freshManager(join(dir, 'window-state.json'));
+    manager.create();
+    const win = captured.instances[0];
+
+    const restore = stubPlatform('win32');
+    try {
+      manager.toggleZoom();
+      expect(win.maximizeCalls).toBe(1);
+      manager.toggleZoom();
+      expect(win.unmaximizeCalls).toBe(1);
+      expect(win.setFullScreenCalls).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('window controls are no-ops without a live window', () => {
+    const manager = freshManager(join(dir, 'window-state.json'));
+    expect(() => {
+      manager.minimize();
+      manager.toggleZoom();
+      manager.close();
+    }).not.toThrow();
+  });
+
+  it('native fullscreen transitions notify subscribers; unsubscribe stops them', () => {
+    const manager = freshManager(join(dir, 'window-state.json'));
+    manager.create();
+    const win = captured.instances[0];
+
+    const seen: boolean[] = [];
+    const unsubscribe = manager.onFullScreenChange((fullscreen) => seen.push(fullscreen));
+
+    win.emit('enter-full-screen');
+    win.emit('leave-full-screen');
+    expect(seen).toEqual([true, false]);
+
+    unsubscribe();
+    win.emit('enter-full-screen');
+    expect(seen).toEqual([true, false]);
   });
 
   it('focus() restores then focuses a minimized window (§2.10 second-instance)', () => {

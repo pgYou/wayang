@@ -5,6 +5,8 @@ export default defineConfig({
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [
+      // 仓库级静态资产（assets/logo 单一来源）；必须排在 `@` 之前（先到先得）。
+      { find: '@assets', replacement: path.resolve(__dirname, '../../assets') },
       // `@/*` is package-local only; cross-package reads use `@wayang-ai/*`.
       { find: '@', replacement: path.resolve(__dirname, 'src') },
       // npm 把 apps/cli 的 react@18 提升到了根；让经过 Vite 管线的模块统一用 desktop 的 react@19。

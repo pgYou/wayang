@@ -51,6 +51,7 @@ vi.mock('../window-manager', () => ({
     create = vi.fn();
     focus = vi.fn();
     onDidFinishLoad = vi.fn(() => () => undefined);
+    onFullScreenChange = vi.fn(() => () => undefined);
     window = null;
     constructor() {
       windowsState.instances.push(this);

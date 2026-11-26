@@ -11,6 +11,7 @@ import { Input } from '@/renderer/shared/components/ui/input';
 import { Label } from '@/renderer/shared/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/shared/components/ui/select';
 import { ConfigSummary } from '@/renderer/shared/components/shared/config-summary';
+import { AppHeader } from '@/renderer/shared/components/shared/app-header';
 import { WIZARD_STEPS, buildFallbackConfig, canSkip, stepProblem, wizardComplete, type WizardStepId } from './wizard-state';
 
 /**
@@ -47,8 +48,11 @@ export function OnboardFlow({ problem, onFinished }: OnboardFlowProps) {
   };
 
   return (
-    <div className="flex h-full items-center justify-center overflow-y-auto bg-background p-8">
-      <div className="flex w-full max-w-xl flex-col gap-4">
+    <div className="flex h-full flex-col bg-background">
+      {/* 首启也保持窗口可拖、logo 与红绿灯区一致（AppHeader 复用，无动作区）。 */}
+      <AppHeader />
+      <div className="flex flex-1 items-center justify-center overflow-y-auto p-8">
+        <div className="flex w-full max-w-xl flex-col gap-4">
         {phase === 'welcome' && (
           <WelcomePage
             problem={problem}
@@ -86,6 +90,7 @@ export function OnboardFlow({ problem, onFinished }: OnboardFlowProps) {
             onConfirm={() => void saveAndEnter()}
           />
         )}
+        </div>
       </div>
     </div>
   );

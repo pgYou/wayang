@@ -62,6 +62,9 @@ const api = {
   /** Connection lifecycle: connecting / reconnecting / ready / crashed (+ sessionId on ready). */
   onStatus: (callback: (status: IpcSubscribeContract[typeof IPC_SUBSCRIBE.status]['payload']) => void): (() => void) =>
     typedSubscribe(IPC_SUBSCRIBE.status, callback),
+  /** Window state (§2.1 custom header): native fullscreen transitions. */
+  onWindowState: (callback: (state: IpcSubscribeContract[typeof IPC_SUBSCRIBE.window]['payload']) => void): (() => void) =>
+    typedSubscribe(IPC_SUBSCRIBE.window, callback),
   sendInput: (text: string): Promise<void> => typedInvoke(IPC.sendInput, text),
   abort: (): Promise<void> => typedInvoke(IPC.abort),
   answerInquiry: (answer: string): Promise<void> => typedInvoke(IPC.answerInquiry, answer),
@@ -102,6 +105,9 @@ const api = {
   /** Restart the server with the envelope config (§2.4 restart-needed fields). */
   restartServer: (): Promise<IpcInvokeContract[typeof IPC.restartServer]['result']> =>
     typedInvoke(IPC.restartServer),
+  /** Custom-header window controls (§2.1): minimize / zoom / close. */
+  windowControl: (action: IpcInvokeContract[typeof IPC.windowControl]['args'][0]): Promise<void> =>
+    typedInvoke(IPC.windowControl, action),
 };
 
 export type WayangBridge = typeof api;

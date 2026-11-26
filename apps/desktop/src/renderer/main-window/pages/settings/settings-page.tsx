@@ -23,6 +23,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/renderer/shared/components/ui/skeleton';
 import { Textarea } from '@/renderer/shared/components/ui/textarea';
 import { ConfigSummary } from '@/renderer/shared/components/shared/config-summary';
+import { AppHeader } from '@/renderer/shared/components/shared/app-header';
 
 /**
  * 设置页— 最终确认页的同源同校验常驻形态：读取/编辑/保存
@@ -99,13 +100,19 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <header className="flex items-center gap-2 border-b border-border bg-card/80 px-4 py-2">
-        <span className="text-sm font-semibold">设置</span>
-        <span className="text-xs text-muted-foreground">修改保存后：可热更字段即时生效，其余字段重启 server 后生效</span>
-        <Button size="sm" variant="ghost" className="ml-auto" onClick={onClose}>
-          关闭
-        </Button>
-      </header>
+      <AppHeader
+        left={
+          <>
+            <span className="text-sm font-semibold">设置</span>
+            <span className="text-xs text-muted-foreground">修改保存后：可热更字段即时生效，其余字段重启 server 后生效</span>
+          </>
+        }
+        right={
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            关闭
+          </Button>
+        }
+      />
       <div className="flex-1 overflow-y-auto p-4">
         <div className="mx-auto flex max-w-2xl flex-col gap-4">
           {load.kind === 'loading' && (
