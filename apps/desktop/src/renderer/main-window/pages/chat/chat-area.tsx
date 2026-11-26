@@ -216,7 +216,8 @@ export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
     !busy;
 
   return (
-    <div className="relative min-h-0 flex-1">
+    // 具名容器：轮次导航 rail 据此判定显隐（@min-[864px]/conversation）。
+    <div className="relative min-h-0 flex-1 @container/conversation">
       <div ref={scrollRef} className="h-full overflow-y-auto py-6">
         {isEmpty ? (
           <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center gap-6 px-6 py-8">
