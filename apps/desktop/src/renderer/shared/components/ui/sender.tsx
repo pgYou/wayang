@@ -244,9 +244,9 @@ export const Sender = forwardRef<SenderRef, SenderProps>(
       <div
         className={cn(
           'wayang-sender',
-          // 背景恒为灰底（聚焦不换白底）；聚焦指示只体现在 1px outline 变深。
-          'flex flex-col overflow-hidden rounded-xl bg-chat-sender outline outline-1 outline-chat-sender-border transition-colors',
-          isFocused && 'wayang-sender-focused outline-chat-sender-focus',
+          // 渐变曲率圆角（squircle）：radius 取实测定档 32px。
+          'flex flex-col overflow-hidden rounded-squircle-lg bg-chat-sender outline outline-1 outline-chat-sender-border transition-shadow',
+          isFocused && 'wayang-sender-focused shadow-chat-sender-focus',
           disabled && 'wayang-sender-disabled cursor-not-allowed opacity-50',
           className,
         )}

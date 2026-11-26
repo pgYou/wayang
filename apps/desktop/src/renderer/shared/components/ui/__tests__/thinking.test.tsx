@@ -56,18 +56,18 @@ describe('Thinking — 耗时标签', () => {
     const startedAt = Date.now() - 30_000;
     const root = render(container, { loading: true, startedAt, children: '推理文本' });
 
-    expect(headerText(container)).toBe('思考中30s');
+    expect(headerText(container)).toBe('思考中 30s');
 
     act(() => {
       vi.advanceTimersByTime(3_000);
     });
-    expect(headerText(container)).toBe('思考中33s');
+    expect(headerText(container)).toBe('思考中 33s');
 
     // 满 1 分钟切换为 xm ys 格式。
     act(() => {
       vi.advanceTimersByTime(28_000);
     });
-    expect(headerText(container)).toBe('思考中1m 1s');
+    expect(headerText(container)).toBe('思考中 1m 1s');
 
     act(() => root.unmount());
   });
@@ -77,26 +77,26 @@ describe('Thinking — 耗时标签', () => {
     act(() => {
       vi.advanceTimersByTime(5_000);
     });
-    expect(headerText(container)).toBe('思考中5s');
+    expect(headerText(container)).toBe('思考中 5s');
 
     // 结束：记录的 durationMs=4.2s 覆盖最后一次 tick（5s）。
     act(() => {
       root.render(<Thinking loading={false} startedAt={Date.now()} durationMs={4_200} children="推理文本" />);
     });
-    expect(headerText(container)).toBe('已思考4s');
+    expect(headerText(container)).toBe('已思考 4s');
 
     // 定格后不再随时间变化。
     act(() => {
       vi.advanceTimersByTime(10_000);
     });
-    expect(headerText(container)).toBe('已思考4s');
+    expect(headerText(container)).toBe('已思考 4s');
 
     act(() => root.unmount());
   });
 
   it('挂载即完成：有 durationMs 显示秒数，无 timing 的历史数据退化为「已思考」', () => {
     render(container, { loading: false, durationMs: 65_000, children: '推理文本' });
-    expect(headerText(container)).toBe('已思考1m 5s');
+    expect(headerText(container)).toBe('已思考 1m 5s');
 
     const legacy = document.createElement('div');
     document.body.appendChild(legacy);

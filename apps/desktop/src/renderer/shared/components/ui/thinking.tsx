@@ -150,9 +150,9 @@ export function Thinking({
   // 默认标题：进行中「思考中 Xs」（每秒更新）；完成「已思考 Xs」——历史
   // 数据无 timing（elapsed=null）时退化为不带秒数的「已思考」。
   const defaultTitle = loading
-    ? `思考中${formatDuration(elapsed ?? 0)}`
+    ? `思考中 ${formatDuration(elapsed ?? 0)}`
     : elapsed !== null
-      ? `已思考${formatDuration(elapsed)}`
+      ? `已思考 ${formatDuration(elapsed)}`
       : '已思考';
   const resolvedTitle = title ?? defaultTitle;
 

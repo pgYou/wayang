@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { ActiveWorkerInfo, ContextUsage, TaskDetail } from '@wayang-ai/protocol';
 import type { ConnectionStatus } from '@/shared/ipc-contract';
 import { Sender } from '@/renderer/shared/components/ui/sender';
@@ -11,7 +12,11 @@ import './composer.scss';
  * - 悬浮卡片容器（wayang-composer-float 四向白光）fixed 在对话流底部，
  *   不占滚动流布局——ChatArea 靠底部 padding 保证最新内容不被遮挡；
  * - 输入框使用 Sender 组件；连接态 / 任务 / worker 计数
- *   走 prefix 插槽，上下文圆环走 suffix 插槽。
+ *   走 prefix 插槽，上下文圆环走 suffix 插槽；
+ * - overlayTop 插槽：「浮在卡片上缘之上」元素的统一挂载层（回底按钮、
+ *   未来的指令输入浮层等）。层由本组件锚定（bottom-full，卡片伸缩自动
+ *   跟随，无需 JS 测量）；挂什么由 chat-page 决定，本组件不感知业务。
+ *   层容器 pointer-events-none，悬浮元素自行声明 pointer-events-auto。
  */
 
 interface ComposerProps {
@@ -22,6 +27,8 @@ interface ComposerProps {
   contextUsage: ContextUsage | null;
   onSubmit: (text: string) => void;
   onAbort: () => void;
+  /** 悬浮在卡片上缘之上的元素层（回底按钮、指令浮层等），见组件注释。 */
+  overlayTop?: ReactNode;
 }
 
 function phaseLabel(phase: string): string {
@@ -45,6 +52,7 @@ export function Composer({
   contextUsage,
   onSubmit,
   onAbort,
+  overlayTop,
 }: ComposerProps) {
   const connectionTone =
     connection.phase === 'ready'
@@ -67,8 +75,18 @@ export function Composer({
   );
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-6 pb-4">
-      <div className="wayang-composer-float pointer-events-auto w-full max-w-3xl rounded-xl">
+    // 定位容器由 chat-page 的浮层持有；本组件只负责内容布局：居中限宽 +
+    // 底距 + 点击穿透（卡片本体恢复可点）。
+    <div className="pointer-events-none flex h-full justify-center px-6 pb-4">
+      <div className="wayang-composer-float pointer-events-auto relative w-full max-w-3xl rounded-xl">
+        {/* 悬浮元素层（架构锚点）：bottom-full 锚在卡片上缘——卡片伸缩
+            自动跟随，子元素只做排布不再各自定位；层穿透，可点元素自行
+            pointer-events-auto；z-20 只被 popover/dialog（z-50）压住。 */}
+        {overlayTop !== undefined && (
+          <div className="wayang-composer-overlay pointer-events-none absolute inset-x-0 bottom-full z-20 mb-2 flex flex-col items-center gap-2">
+            {overlayTop}
+          </div>
+        )}
         <Sender
           loading={busy}
           placeholder="输入任务或指令，Enter 发送，Shift+Enter 换行…"

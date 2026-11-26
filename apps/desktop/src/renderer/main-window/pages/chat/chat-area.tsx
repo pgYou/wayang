@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDownIcon, SparklesIcon, TerminalIcon, GitBranchIcon, LayersIcon } from 'lucide-react';
+import { SparklesIcon, TerminalIcon, GitBranchIcon, LayersIcon } from 'lucide-react';
 import type { ConversationEntry, ControllerSignal } from '@wayang-ai/protocol';
 import {
   SLICE,
@@ -14,12 +14,40 @@ import { SystemRow } from './rows/system-row';
 import { AssistantRow } from './rows/assistant-row';
 import { SignalRow } from './rows/signal-row';
 import { TurnDotsNav } from './parts/turn-dots-nav';
-import { Button } from '@/renderer/shared/components/ui/button';
-import { cn } from '@/renderer/shared/lib/cn';
 
 interface ChatAreaProps {
   busy: boolean;
   onQuickPrompt?: (prompt: string) => void;
+}
+
+/**
+ * 滚动位置状态（页面级共享）：atBottom（距底 <64px）与 scrollToBottom。
+ * ChatArea 消费内部滚动容器；chat-page 把「非底部时回底」接线给
+ * Composer 悬浮卡内锚定的回底按钮。
+ */
+const atBottomListeners = new Set<(atBottom: boolean) => void>();
+let atBottomState = true;
+let scrollBottomAction: (() => void) | null = null;
+
+function setAtBottomState(next: boolean): void {
+  if (atBottomState === next) return;
+  atBottomState = next;
+  for (const listener of atBottomListeners) listener(next);
+}
+
+/** 订阅 atBottom 状态并取得 scrollToBottom（未挂载 ChatArea 前为 no-op）。 */
+export function useAtBottom(): { atBottom: boolean; scrollToBottom: () => void } {
+  const [atBottom, setAtBottom] = useState(atBottomState);
+  useEffect(() => {
+    atBottomListeners.add(setAtBottom);
+    return () => {
+      atBottomListeners.delete(setAtBottom);
+    };
+  }, []);
+  const scrollToBottom = useCallback((): void => {
+    scrollBottomAction?.();
+  }, []);
+  return { atBottom, scrollToBottom };
 }
 
 const WELCOME_SUGGESTIONS = [
@@ -103,7 +131,6 @@ export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
   const pinnedRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
-  const [atBottom, setAtBottom] = useState(true);
 
   const conversation = useSliceValue<ConversationEntry[]>(SLICE.conversation);
   const signals = useSliceValue<ControllerSignal[]>(SLICE.signals);
@@ -150,22 +177,41 @@ export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
     const onScroll = (): void => {
       const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
       pinnedRef.current = bottom;
-      setAtBottom(bottom);
+      setAtBottomState(bottom);
     };
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
+  // 吸底跟随（pinned 态）：新内容 commit 后把滚动容器直接压到底。
+  // 不用 scrollIntoView——commit 时刻浏览器尚未完成新行布局（markdown/
+  // 代码块高度延迟确定），读到的是旧 scrollHeight，滚完后内容继续长高
+  // 就停在半途。requestAnimationFrame 再压一次兜住异步布局。
   useEffect(() => {
-    if (pinnedRef.current) {
-      bottomRef.current?.scrollIntoView({ block: 'end' });
-    }
+    if (!pinnedRef.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    const raf = requestAnimationFrame((): void => {
+      if (pinnedRef.current && el.isConnected) el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
   }, [conversationItems, streamingItems, unreadSignalItems, busy]);
 
-  const scrollToBottom = useCallback(() => {
-    pinnedRef.current = true;
-    setAtBottom(true);
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  // 注册回底动作（useAtBottom 的 scrollToBottom 消费端）：直接把滚动
+  // 容器压到底（scrollTop = scrollHeight），不依赖 bottomRef 锚点的
+  // scrollIntoView——锚点对齐语义受并行追加动画（streaming effect 的
+  // 非平滑滚动）干扰时会让 smooth 滚动半途失去目标，压底恒定到最底。
+  useEffect(() => {
+    scrollBottomAction = (): void => {
+      pinnedRef.current = true;
+      setAtBottomState(true);
+      const el = scrollRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    };
+    return () => {
+      scrollBottomAction = null;
+    };
   }, []);
 
   const isEmpty =
@@ -247,24 +293,8 @@ export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
         )}
       </div>
 
-      {/* 回底悬浮按钮：圆形 icon 按钮形态 */}
-      <div
-        className={cn(
-          'pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center transition-opacity duration-200',
-          atBottom ? 'opacity-0' : 'opacity-100',
-        )}
-      >
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={scrollToBottom}
-          aria-label="滚动到底部"
-          title="回到底部"
-          className="rounded-full shadow-sm"
-        >
-          <ArrowDownIcon />
-        </Button>
-      </div>
+      {/* 回底按钮已移入 Composer 悬浮卡（parts/composer.tsx）：CSS 相对
+          锚定（absolute bottom-full），浮层伸缩自动跟随，无需测量。 */}
 
       <TurnDotsNav items={turnDots} scrollContainer={scrollEl} />
     </div>

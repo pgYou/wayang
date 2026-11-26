@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { ContextUsage } from '@wayang-ai/protocol';
-import { buildTurnDots, contextPercent, formatDuration, formatTokens, shouldFold, TURN_DOT_WINDOW } from '../chat-metrics';
+import { buildTurnDots, contextPercent, formatDuration, formatMessageTime, formatTokens, shouldFold, TURN_DOT_WINDOW } from '../chat-metrics';
 
 /**
  * 折叠阈值与导航窗口（≤20 圆点）行为符合参数。
@@ -30,6 +30,25 @@ describe('shouldFold (长消息折叠 >300px)', () => {
     expect(shouldFold(301, false)).toBe(true);
     expect(shouldFold(640, true)).toBe(false);
     expect(shouldFold(null, false)).toBe(false);
+  });
+});
+
+describe('formatMessageTime (消息时间戳)', () => {
+  it('当天只显示时分秒；非当天带年月日；非法值空串', () => {
+    const now = Date.now();
+    // 同一天内的时刻（今天 09:05:07）。
+    const today = new Date();
+    today.setHours(9, 5, 7, 0);
+    expect(formatMessageTime(today.getTime())).toBe('09:05:07');
+    // 昨天同一时刻：带日期前缀。
+    const yesterday = new Date(today.getTime() - 86_400_000);
+    const expected = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')} 09:05:07`;
+    expect(formatMessageTime(yesterday.getTime())).toBe(expected);
+    // 边界防御。
+    expect(formatMessageTime(0)).toBe('');
+    expect(formatMessageTime(Number.NaN)).toBe('');
+    // now 变量仅说明语义：同日判定基于运行时钟。
+    expect(typeof now).toBe('number');
   });
 });
 

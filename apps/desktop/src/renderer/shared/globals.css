@@ -33,7 +33,9 @@
   --secondary: oklch(0.970 0.0000 89.9);
   --secondary-foreground: oklch(0.216 0.0000 89.9);
 
-  --muted: oklch(0.977 0.0000 89.9);
+  /* muted = hover 提示底（ghost/outline 按钮、图标钮、ContextRing），取
+   * grey-2 深度：白底上 0.977 几乎不可感知，加深一级保证 hover 反馈可见。 */
+  --muted: oklch(0.962 0.0000 89.9);
   --muted-foreground: oklch(0.555 0.0000 89.9);
 
   --accent: oklch(0.962 0.0000 89.9);
@@ -71,13 +73,19 @@
   --grey-8: oklch(0.528 0.0000 89.9);
   --grey-9: oklch(0.280 0.0000 89.9);
 
-  /* chat sender token。 */
+  /* chat sender token。边框色恒定（聚焦不变色）；聚焦指示 = 淡灰阴影
+   * （--chat-sender-focus-shadow，经 box-shadow 叠加）。 */
   --chat-sender-bg: var(--grey-1);
   --chat-sender-border: oklch(0.931 0.0000 89.9);
-  --chat-sender-focus-bg: var(--background);
-  --chat-sender-focus-border: var(--foreground);
+  --chat-sender-focus-shadow: 0 4px 16px oklch(0.0000 89.9 / 0.08);
 
   --radius: 0.5rem;
+
+  /* 渐变曲率圆角专用档（squircle，sender 根 / user 气泡各一档）：
+   * squircle 同半径下视觉角量比圆弧瘦，radius 按实测调大到指定绝对值。
+   * sender 32px、user 气泡 24px。 */
+  --radius-squircle: 24px;
+  --radius-squircle-lg: 32px;
 }
 
 @theme inline {
@@ -124,7 +132,7 @@
 
   --color-chat-sender: var(--chat-sender-bg);
   --color-chat-sender-border: var(--chat-sender-border);
-  --color-chat-sender-focus: var(--chat-sender-focus-border);
+  --shadow-chat-sender-focus: var(--chat-sender-focus-shadow);
 
   --color-traffic-close: var(--traffic-close);
   --color-traffic-minimize: var(--traffic-minimize);
@@ -134,12 +142,23 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  /* rounded-squircle / rounded-squircle-lg 的曲率由全局 base 段钉 squircle。 */
+  --radius-squircle: var(--radius-squircle);
+  --radius-squircle-lg: var(--radius-squircle-lg);
 }
 
 html,
 body,
 #root {
   height: 100%;
+}
+
+/* 渐变曲率圆角工具类（Chromium 139+；旧内核忽略 corner-shape，退化为
+ * 大一档的普通圆角——视觉量近似，无害）。sender 用 lg（32px）、user
+ * 气泡用默认档（24px），不做全局。 */
+.rounded-squircle,
+.rounded-squircle-lg {
+  corner-shape: squircle;
 }
 
 body {

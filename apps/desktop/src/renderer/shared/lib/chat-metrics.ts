@@ -17,11 +17,21 @@ export function formatTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
-/** 消息时间戳格式化（HH:mm）：user 与 assistant 行共用同一格式。 */
+/**
+ * 消息时间戳格式化：当天显示 `HH:mm:ss`，非当天显示
+ * `YYYY-MM-DD HH:mm:ss`——user 与 assistant 行共用同一格式。
+ */
 export function formatMessageTime(ts: number): string {
   if (!ts || Number.isNaN(ts)) return '';
   const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  return sameDay ? hms : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hms}`;
 }
 
 /**

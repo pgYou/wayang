@@ -1,10 +1,10 @@
-import { Settings2Icon, TerminalSquareIcon } from 'lucide-react';
+import { ArrowDownIcon, Settings2Icon, TerminalSquareIcon } from 'lucide-react';
 import { useConnectionStatus, useBusy, usePendingInquiry, useContextUsage, useActiveWorkers, useTasks } from '@/renderer/shared/lib/store';
 import { router } from '@/renderer/shared/lib/router';
 import { wayang } from '@/renderer/shared/lib/wayang-api';
 import { submitInput } from '@/renderer/shared/lib/session-lazy';
 import { AppHeader } from '@/renderer/shared/components/shared/app-header';
-import { ChatArea } from './chat-area';
+import { ChatArea, useAtBottom } from './chat-area';
 import { Composer } from './parts/composer';
 import { InquiryCard } from './parts/inquiry-card';
 import { SessionMenu } from './parts/session-menu';
@@ -15,7 +15,9 @@ import { Button } from '@/renderer/shared/components/ui/button';
  * - header 复用 AppHeader（48px、拖拽区、红绿灯区、logo）；右侧注入运行中
  *   Worker 状态 + 设置入口 + 会话切换；
  * - 主体：ChatArea（居中阅读栏）；底部按 pendingInquiry 切换 InquiryCard / Composer；
- * - 设置页经 lib/router 独立路由（/settings），本页只负责发起导航。
+ * - 设置页经 lib/router 独立路由（/settings），本页只负责发起导航；
+ * - 回底按钮挂在 composer 浮层容器内（CSS 相对锚定 bottom-full，
+ *   浮层伸缩自动跟随）——atBottom 状态经 useAtBottom 上提到页面层接线。
  */
 export function ChatPage() {
   const busy = useBusy();
@@ -24,6 +26,7 @@ export function ChatPage() {
   const activeWorkers = useActiveWorkers();
   const tasks = useTasks();
   const connection = useConnectionStatus();
+  const { atBottom, scrollToBottom } = useAtBottom();
 
   return (
     <div className="relative flex h-full flex-col bg-background">
@@ -52,19 +55,37 @@ export function ChatPage() {
 
       <ChatArea busy={busy} onQuickPrompt={(prompt) => void submitInput(prompt)} />
 
-      {pendingInquiry ? (
-        <InquiryCard inquiry={pendingInquiry} onAnswer={(answer) => void wayang.answerInquiry(answer)} />
-      ) : (
-        <Composer
-          busy={busy}
-          connection={connection}
-          activeWorkers={activeWorkers}
-          tasks={tasks}
-          contextUsage={contextUsage}
-          onSubmit={(text) => void submitInput(text)}
-          onAbort={() => void wayang.abort()}
-        />
-      )}
+      <div className="absolute inset-x-0 bottom-0 z-20">
+        {pendingInquiry ? (
+          <InquiryCard inquiry={pendingInquiry} onAnswer={(answer) => void wayang.answerInquiry(answer)} />
+        ) : (
+          <Composer
+            busy={busy}
+            connection={connection}
+            activeWorkers={activeWorkers}
+            tasks={tasks}
+            contextUsage={contextUsage}
+            onSubmit={(text) => void submitInput(text)}
+            onAbort={() => void wayang.abort()}
+            overlayTop={
+              // overlayTop 插槽的第一个用户：回底按钮（非底部才挂）。
+              // 未来的指令输入浮层等同模式接入，见 composer.tsx 层级契约。
+              atBottom ? undefined : (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={scrollToBottom}
+                  aria-label="滚动到底部"
+                  title="回到底部"
+                  className="pointer-events-auto rounded-full shadow-sm"
+                >
+                  <ArrowDownIcon />
+                </Button>
+              )
+            }
+          />
+        )}
+      </div>
     </div>
   );
 }

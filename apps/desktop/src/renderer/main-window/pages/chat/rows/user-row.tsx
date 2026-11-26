@@ -66,7 +66,8 @@ export const UserRow = memo(function UserRow({ item }: { item: DisplayItem }) {
         <div
           ref={contentRef}
           className={cn(
-            'overflow-hidden whitespace-pre-wrap rounded-xl bg-sky-soft px-4 py-2 text-sm leading-relaxed text-foreground transition-[max-height] duration-300 ease-in-out',
+            // 渐变曲率圆角（squircle）：radius 档位大一档补偿视觉显瘦。
+            'overflow-hidden whitespace-pre-wrap rounded-squircle bg-sky-soft px-4 py-2 text-sm leading-relaxed text-foreground transition-[max-height] duration-300 ease-in-out',
             clamped && 'line-clamp-11',
           )}
         >
