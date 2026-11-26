@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { ContextUsage } from '@wayang-ai/protocol';
-import { buildTurnDots, contextPercent, formatDuration, formatMessageTime, formatTokens, shouldFold, TURN_DOT_WINDOW } from '../chat-metrics';
+import { buildTurnDirectory, contextPercent, formatDuration, formatMessageTime, formatTokens, shouldFold, turnBarVisualState, TURN_BAR_MAX_SCALE } from '../chat-metrics';
 
 /**
  * 折叠阈值与导航窗口（≤20 圆点）行为符合参数。
@@ -70,38 +70,66 @@ describe('formatDuration (思考耗时标签)', () => {
   });
 });
 
-describe('buildTurnDots (≤20 圆点滑动窗口)', () => {
-  const items = Array.from({ length: 60 }, (_, i) => ({ id: `u-${i}`, preview: `msg ${i}` }));
+describe('buildTurnDirectory (轮次导航目录)', () => {
+  type Row = { role: string; id: string; content: string };
+  const user = (id: string, content: string): Row => ({ role: 'user', id, content });
+  const assistant = (id: string, content: string): Row => ({ role: 'assistant', id, content });
 
-  it('short histories show every dot', () => {
-    const { dots, total } = buildTurnDots(items.slice(0, 12), 3);
-    expect(total).toBe(12);
-    expect(dots).toHaveLength(12);
-    expect(dots[0]).toMatchObject({ id: 'u-0', index: 0 });
+  it('每条 user 提问一项；assistant 摘要取该轮内首条带正文的步骤（纯工具步骤跳过）', () => {
+    const rows: Row[] = [
+      user('u1', '第一个问题'),
+      assistant('a1', ''), // 纯工具步骤：无正文
+      assistant('a2', '第一轮的回复正文'),
+      user('u2', '第二个问题'),
+      assistant('a3', '第二轮的回复正文'),
+    ];
+    expect(buildTurnDirectory(rows, false)).toEqual([
+      { id: 'u1', preview: '第一个问题', assistantPreview: '第一轮的回复正文', running: false },
+      { id: 'u2', preview: '第二个问题', assistantPreview: '第二轮的回复正文', running: false },
+    ]);
   });
 
-  it('long histories cap at the window and slide with the active index', () => {
-    const { dots, total } = buildTurnDots(items, 30);
-    expect(total).toBe(60);
-    expect(dots).toHaveLength(TURN_DOT_WINDOW);
-    // Active index 30 with a 20-dot window centered: 21–40.
-    expect(dots[0].index).toBe(21);
-    expect(dots[dots.length - 1].index).toBe(40);
-    // Sliding to the tail keeps the last window reachable.
-    const tail = buildTurnDots(items, 59);
-    expect(tail.dots[tail.dots.length - 1].index).toBe(59);
-    expect(tail.dots[0].index).toBe(40);
-    // Active at the head clamps to the first window.
-    const head = buildTurnDots(items, 0);
-    expect(head.dots[0].index).toBe(0);
+  it('assistant 摘要不会越过下一条 user（不串轮）；signal/system 行不进摘要', () => {
+    const rows: Row[] = [
+      user('u1', '问题一'),
+      { role: 'signal', id: 's1', content: 'worker 完成信号' },
+      user('u2', '问题二'),
+      assistant('a2', '只属于第二轮'),
+    ];
+    const items = buildTurnDirectory(rows, false);
+    expect(items[0].assistantPreview).toBeUndefined();
+    expect(items[1].assistantPreview).toBe('只属于第二轮');
   });
 
-  it('null active (fresh load) anchors on the latest turn', () => {
-    const { dots } = buildTurnDots(items, null);
-    expect(dots[dots.length - 1].index).toBe(59);
+  it('busy 且为最后一条 user 时标 running；非尾轮或非 busy 不标', () => {
+    const rows: Row[] = [user('u1', '问题一'), assistant('a1', '回复一'), user('u2', '问题二')];
+    expect(buildTurnDirectory(rows, true).map((item) => item.running)).toEqual([false, true]);
+    expect(buildTurnDirectory(rows, false).map((item) => item.running)).toEqual([false, false]);
   });
 
-  it('empty input yields no dots', () => {
-    expect(buildTurnDots([], 0)).toEqual({ dots: [], total: 0 });
+  it('空会话或只有一条提问时目录如实返回（显隐由组件按 <2 判定）', () => {
+    expect(buildTurnDirectory([], false)).toEqual([]);
+    expect(buildTurnDirectory([user('u1', '唯一问题')], false)).toHaveLength(1);
+  });
+});
+
+describe('turnBarVisualState (hover 山峰状态机，ZCode 1:1)', () => {
+  it('无交互焦点回落 idle', () => {
+    expect(turnBarVisualState(3, null)).toEqual({ colorTone: 'muted', opacity: 0.58, scaleX: 1, tone: 'idle' });
+  });
+
+  it.each([
+    [0, { colorTone: 'focus', opacity: 1, scaleX: 2.6, tone: 'peak' }],
+    [1, { colorTone: 'muted', opacity: 0.86, scaleX: 1.7, tone: 'near' }],
+    [2, { colorTone: 'muted', opacity: 0.72, scaleX: 1.25, tone: 'mid' }],
+    [5, { colorTone: 'muted', opacity: 0.58, scaleX: 1, tone: 'idle' }],
+  ] as const)('距离 %i 的横条状态', (distance, expected) => {
+    // 焦点两侧对称：上方与下方同距离同状态。
+    expect(turnBarVisualState(10 + distance, 10)).toEqual(expected);
+    expect(turnBarVisualState(10 - distance, 10)).toEqual(expected);
+  });
+
+  it('山峰 scale 封顶为 2（渲染时 min，peak 2.6 → 2）', () => {
+    expect(Math.min(turnBarVisualState(0, 0).scaleX, TURN_BAR_MAX_SCALE)).toBe(2);
   });
 });

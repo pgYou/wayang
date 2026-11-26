@@ -52,33 +52,78 @@ export function shouldFold(contentHeight: number | null, expanded: boolean, thre
   return contentHeight > threshold;
 }
 
-/** One navigation dot's model. */
+/** One navigator bar's model (one user query = one bar). */
 export interface TurnDot {
   /** The user message's conversation uuid (scroll anchor). */
   id: string;
-  /** Hover preview: the first line of the message, clipped. */
+  /** Hover card, first paragraph: the user query text. */
   preview: string;
+  /**
+   * Hover card, second paragraph: the owning turn's assistant body excerpt.
+   * Absent when the turn has no terminal body yet (running / tool-only).
+   */
+  assistantPreview?: string;
+  /** The turn is still streaming — the bar keeps a raised floor opacity. */
+  running?: boolean;
 }
 
 /**
- * The ≤20-dot sliding window over the user turns: centered
- * on the active index so the highlight never leaves the middle band while
- * the whole history stays reachable.
+ * 轮次目录派生（ZCode ConversationTurnNavigator 同款语义）：每条 user
+ * 消息一个导航项；assistant 摘要取该 user 之后、下一条 user 之前的首条
+ * 带正文的 assistant 步骤（纯工具步骤跳过）；最后一条 user 且会话仍在
+ * 流式输出时标 running。tool/reasoning/signal 正文不进入摘要。
  */
-export const TURN_DOT_WINDOW = 20;
-
-export function buildTurnDots(
-  items: readonly TurnDot[],
-  activeIndex: number | null,
-  windowSize: number = TURN_DOT_WINDOW,
-): { dots: Array<TurnDot & { index: number }>; total: number } {
-  if (items.length === 0) return { dots: [], total: 0 };
-  if (items.length <= windowSize) {
-    return { dots: items.map((item, index) => ({ ...item, index })), total: items.length };
+export function buildTurnDirectory(
+  conversation: ReadonlyArray<{ role: string; id: string; content: string }>,
+  busy: boolean,
+): TurnDot[] {
+  const items: TurnDot[] = [];
+  for (let i = 0; i < conversation.length; i += 1) {
+    const entry = conversation[i];
+    if (entry.role !== 'user') continue;
+    let assistantPreview: string | undefined;
+    let isLastUser = true;
+    for (let j = i + 1; j < conversation.length; j += 1) {
+      const next = conversation[j];
+      if (next.role === 'user') {
+        isLastUser = false;
+        break;
+      }
+      // 只取 assistant 正文；signal/system/tool 行不进摘要。
+      if (next.role === 'assistant' && !assistantPreview && next.content.trim()) {
+        assistantPreview = next.content.trim();
+      }
+    }
+    items.push({ id: entry.id, preview: entry.content, assistantPreview, running: busy && isLastUser });
   }
-  const half = Math.floor((windowSize - 1) / 2);
-  const anchor = activeIndex === null ? items.length - 1 : Math.min(Math.max(activeIndex, half), items.length - 1 - half);
-  const start = Math.min(Math.max(anchor - half, 0), Math.max(items.length - windowSize, 0));
-  const dots = items.slice(start, start + windowSize).map((item, i) => ({ ...item, index: start + i }));
-  return { dots, total: items.length };
+  return items;
 }
+
+/** Bar visual state (ZCode resolveConversationTurnNavigatorBarVisualState 1:1). */
+export interface TurnBarVisualState {
+  /** `focus` = peak bar takes the foreground color; `muted` = subtle grays. */
+  colorTone: 'focus' | 'muted';
+  opacity: number;
+  /** Bar length factor; the bar grows from its left end (origin-left). */
+  scaleX: number;
+  tone: 'idle' | 'mid' | 'near' | 'peak';
+}
+
+/**
+ * 横条「山峰」状态机：hover/focus 的那根为峰（最长最亮），邻近 1–2 根
+ * 按距离递减变长——不做阶梯式颜色渐变；无交互焦点时回落 idle。
+ */
+export function turnBarVisualState(itemIndex: number, focusIndex: number | null): TurnBarVisualState {
+  if (focusIndex === null) return { colorTone: 'muted', opacity: 0.58, scaleX: 1, tone: 'idle' };
+  const distance = Math.abs(itemIndex - focusIndex);
+  if (distance === 0) return { colorTone: 'focus', opacity: 1, scaleX: 2.6, tone: 'peak' };
+  if (distance === 1) return { colorTone: 'muted', opacity: 0.86, scaleX: 1.7, tone: 'near' };
+  if (distance === 2) return { colorTone: 'muted', opacity: 0.72, scaleX: 1.25, tone: 'mid' };
+  return { colorTone: 'muted', opacity: 0.58, scaleX: 1, tone: 'idle' };
+}
+
+/**
+ * 横条 scale 封顶（ZCode：Math.min(scaleX, 2)）。横条基础 12px、按钮宽
+ * 24px——封顶后 peak 恰好填满命中区，不越出 rail。
+ */
+export const TURN_BAR_MAX_SCALE = 2;

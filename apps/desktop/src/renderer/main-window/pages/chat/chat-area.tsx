@@ -8,12 +8,12 @@ import {
   buildUnreadSignalItems,
   useSliceValue,
 } from '@/renderer/shared/lib/store';
-import type { TurnDot } from '@/renderer/shared/lib/chat-metrics';
+import { buildTurnDirectory, type TurnDot } from '@/renderer/shared/lib/chat-metrics';
 import { UserRow } from './rows/user-row';
 import { SystemRow } from './rows/system-row';
 import { AssistantRow } from './rows/assistant-row';
 import { SignalRow } from './rows/signal-row';
-import { TurnDotsNav } from './parts/turn-dots-nav';
+import { TurnNav } from './parts/turn-dots-nav';
 
 interface ChatAreaProps {
   busy: boolean;
@@ -158,16 +158,11 @@ export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
     return undefined;
   }, [conversationItems, streamingItems, unreadSignalItems]);
 
-  // 轮次导航数据源：只取 user 消息，预览取首行截断。
+  // 轮次导航目录：每条 user 提问一项 + 所属轮次的 assistant 正文摘要
+  // （buildTurnDirectory 派生；流式中的尾轮标 running）。
   const turnDots = useMemo<TurnDot[]>(
-    () =>
-      conversationItems
-        .filter((item) => item.role === 'user')
-        .map((item) => ({
-          id: item.id,
-          preview: item.content.length > 40 ? `${item.content.slice(0, 40)}…` : item.content,
-        })),
-    [conversationItems],
+    () => buildTurnDirectory(conversationItems, busy),
+    [conversationItems, busy],
   );
 
   useEffect(() => {
@@ -296,7 +291,7 @@ export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
       {/* 回底按钮已移入 Composer 悬浮卡（parts/composer.tsx）：CSS 相对
           锚定（absolute bottom-full），浮层伸缩自动跟随，无需测量。 */}
 
-      <TurnDotsNav items={turnDots} scrollContainer={scrollEl} />
+      <TurnNav items={turnDots} scrollContainer={scrollEl} />
     </div>
   );
 }
