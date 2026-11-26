@@ -40,6 +40,12 @@ export interface DisplayItem {
   subtype?: string;
   /** assistant-only: this step's output was truncated by a user interrupt (ESC). */
   interrupted?: boolean;
+  /**
+   * assistant-only: the step's recorded duration (entry `timing.durationMs`,
+   * best-effort — absent on legacy entries). Powers the「已思考 Xs」label;
+   * the live「思考中 Xs」ticks from `timestamp` instead.
+   */
+  thinkingMs?: number;
   /** system-only: compaction marker metadata — present iff this is a real compact marker. */
   compactMeta?: { summarizedTokenCount?: number };
   isError?: boolean;
@@ -115,6 +121,7 @@ export function entryToDisplayItem(entry: ConversationEntry): DisplayItem | null
         content: entry.message.content,
         sections,
         interrupted: entry.interrupted,
+        thinkingMs: entry.timing?.durationMs,
       };
     }
 

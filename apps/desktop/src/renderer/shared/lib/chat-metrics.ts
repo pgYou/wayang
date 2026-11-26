@@ -24,6 +24,16 @@ export function formatMessageTime(ts: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/**
+ * 思考耗时格式化：不足 1 分钟只显示秒（`45s`），满 1 分钟显示分秒
+ * （`1m 5s`）。负值/NaN 按 0 处理（防御历史数据）。
+ */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor((Number.isFinite(ms) ? ms : 0) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
+}
+
 /** Fold a message whose rendered height exceeds the threshold. */
 export const FOLD_THRESHOLD_PX = 300;
 

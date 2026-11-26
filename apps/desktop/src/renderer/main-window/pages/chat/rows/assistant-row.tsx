@@ -151,9 +151,11 @@ export const AssistantRow = memo(function AssistantRow({
 
   return (
     <div className="wayang-assistant-row group flex flex-col">
-      {/* 思考过程：可折叠（loading 自动展开、结束自动收起） */}
+      {/* 思考过程：可折叠（loading 自动展开、结束自动收起）；耗时标签——
+          进行中以 step 开始时刻（entry timestamp）起算，完成态用记录的
+          timing.durationMs（历史会话同样有效）。 */}
       {reasoning && (
-        <Thinking loading={reasoningActive}>
+        <Thinking loading={reasoningActive} startedAt={item.timestamp} durationMs={item.thinkingMs}>
           <span className="whitespace-pre-wrap">{reasoning.text}</span>
         </Thinking>
       )}

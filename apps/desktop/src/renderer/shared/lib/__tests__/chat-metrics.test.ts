@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { ContextUsage } from '@wayang-ai/protocol';
-import { buildTurnDots, contextPercent, formatTokens, shouldFold, TURN_DOT_WINDOW } from '../chat-metrics';
+import { buildTurnDots, contextPercent, formatDuration, formatTokens, shouldFold, TURN_DOT_WINDOW } from '../chat-metrics';
 
 /**
  * 折叠阈值与导航窗口（≤20 圆点）行为符合参数。
@@ -30,6 +30,24 @@ describe('shouldFold (长消息折叠 >300px)', () => {
     expect(shouldFold(301, false)).toBe(true);
     expect(shouldFold(640, true)).toBe(false);
     expect(shouldFold(null, false)).toBe(false);
+  });
+});
+
+describe('formatDuration (思考耗时标签)', () => {
+  // 不足 1 分钟只显示秒；满 1 分钟显示 xm ys；非法值按 0 防御。
+  it.each([
+    [0, '0s'],
+    [999, '0s'],
+    [3_000, '3s'],
+    [59_999, '59s'],
+    [60_000, '1m 0s'],
+    [65_000, '1m 5s'],
+    [125_000, '2m 5s'],
+    [3_600_000, '60m 0s'],
+    [-5_000, '0s'],
+    [Number.NaN, '0s'],
+  ])('formats %d ms as %s', (ms, expected) => {
+    expect(formatDuration(ms)).toBe(expected);
   });
 });
 
