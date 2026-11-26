@@ -28,5 +28,8 @@ export function buildWorkspacePolicy(flags: HostFlags): WorkspacePolicy {
   return {
     controllerWorkspace: flags.workspaceDir,
     defaultWorkerWorkspace: flags.defaultWorkerWorkspace ?? join(flags.dataDir, 'workspace'),
+    // add_task 无声明时的硬缺省：与 defaultWorkerWorkspace 同源
+    // （main 侧 platform-config 注入 `~/.agents/wayang-workspace` 或信封 pref）。
+    undeclaredTaskWorkspace: flags.defaultWorkerWorkspace ?? join(flags.dataDir, 'workspace'),
   };
 }

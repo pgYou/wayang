@@ -21,6 +21,17 @@
     "test:coverage": {
       "dependsOn": ["^build"],
       "outputs": ["coverage/**"]
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true
+    },
+    "@wayang-ai/cli#dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true,
+      "interactive": true
     }
   }
 }

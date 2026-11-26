@@ -45,6 +45,8 @@ describe('buildWorkspacePolicy (explicit injection)', () => {
     expect(buildWorkspacePolicy(flags)).toEqual({
       controllerWorkspace: '/home/u',
       defaultWorkerWorkspace: '/home/u/.agents/wayang-workspace',
+      // add_task 无声明时的硬缺省与 worker workspace 同源。
+      undeclaredTaskWorkspace: '/home/u/.agents/wayang-workspace',
     });
   });
 
@@ -52,6 +54,7 @@ describe('buildWorkspacePolicy (explicit injection)', () => {
     expect(buildWorkspacePolicy(hostFlags())).toEqual({
       controllerWorkspace: '/home/u',
       defaultWorkerWorkspace: join('/app/userData', 'workspace'),
+      undeclaredTaskWorkspace: join('/app/userData', 'workspace'),
     });
   });
 });

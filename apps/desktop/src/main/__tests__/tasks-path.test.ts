@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { STATE_SLICE_PATHS } from '../../shared/ipc-contract';
-import { SLICE } from '../../renderer/src/lib/store';
+import { SLICE } from '../../renderer/shared/lib/store';
 
 /**
  * Pin test (§4.1 工作项③, kept through 域二): the renderer's slice literal and

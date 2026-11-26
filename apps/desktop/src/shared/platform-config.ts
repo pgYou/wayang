@@ -163,5 +163,8 @@ export function getWorkspacePolicy(paths: PlatformPaths): WorkspacePolicy {
   return {
     controllerWorkspace: paths.controllerWorkspace,
     defaultWorkerWorkspace: paths.defaultWorkerWorkspace,
+    // add_task 无声明 workspace 时的硬缺省：desktop 没有「启动目录」概念
+    // （controllerWorkspace 是 home），无 codebase 的任务落到 general workspace。
+    undeclaredTaskWorkspace: paths.defaultWorkerWorkspace,
   };
 }

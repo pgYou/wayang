@@ -28,8 +28,8 @@ Wayang is a multi-agent orchestration platform — a CLI tool that coordinates m
 - 并行需求或改动较大的需求，基于 `release/x.y.z` 拉 `feat/xxx` 分支开发；需要同时推进多个需求时用独立 worktree 隔离工作区（见「工作区布局」）。
 - 需求开发完成、跑完门槛后，直接在本地把 feat 分支合入 `release/x.y.z` 并推送，例如 `git checkout release/x.y.z && git merge --no-ff feat/xxx && git push`。
 - 合入 release 分支不需要开 PR（feat → release 走本地合并）；PR 只用于需要评审的场景，以及 release 最终合回 main（release → main）。
-- 开发前先确定验收标准；实现后跑完门槛（`npm run lint`、`npx vitest run`、`npm run build`）再合入 release。
-- release 收口：版本号与 `CHANGELOG.md` 按实际交付校准、`npm run lint` / `npx vitest run` / `npm run build` 全绿后，开 PR（`release/x.y.z` → `main`）。
+- 开发前先确定验收标准；实现后跑完门槛（`pnpm run lint`、`pnpm exec vitest run`、`pnpm run build`）再合入 release。
+- release 收口：版本号与 `CHANGELOG.md` 按实际交付校准、`pnpm run lint` / `pnpm exec vitest run` / `pnpm run build` 全绿后，开 PR（`release/x.y.z` → `main`）。
 - PR 由维护者 review 并合入 main；agent 不得自行合并到 main，也不得在 PR 未合并前打 tag。
 - 维护者合入后：切到 main、`git pull` 拉最新，再在 main 上打 tag `vX.Y.Z` 并推送（push tag 即正式发布，见下节）。
 - 具体发布流程见下方《发布与 tag》。
@@ -44,7 +44,7 @@ tag 必须在 main 分支且已 pull 到最新后创建，不要在 release 分�
 - push 形如 `v0.9.4` 的 tag：立即正式发布到 npm。没有 dry-run、没有二次确认，推送即生效。
 - 手动 workflow_dispatch：`dry_run` 默认 `true`，只执行 `npm publish --dry-run`；要正式发布必须把 `dry_run` 显式设为 `false`。
 
-发布前置条件：`package.json` 的 `version` 与 tag 名一致（tag 必须是 `v` + version，不一致会在 `Verify tag matches package.json version` 步骤失败）；CHANGELOG.md 已按实际交付校准；`npm run lint`、`npx vitest run`、`npm run build` 全绿。
+发布前置条件：`package.json` 的 `version` 与 tag 名一致（tag 必须是 `v` + version，不一致会在 `Verify tag matches package.json version` 步骤失败）；CHANGELOG.md 已按实际交付校准；`pnpm run lint`、`pnpm exec vitest run`、`pnpm run build` 全绿。
 
 ### 工作区布局
 
@@ -73,14 +73,14 @@ tag 必须在 main 分支且已 pull 到最新后创建，不要在 release 分�
 ## Commands
 
 ```bash
-npm run build          # turbo：按依赖拓扑构建（packages 库产物 → apps/cli 交付物）
-npm run cli            # 构建（turbo 增量）+ 运行 CLI（本地 .env.local + config.local.json）
-npm test               # turbo run test（各包 vitest，前置库构建）
-npm run test:watch     # vitest (watch mode)
-npm run lint           # check:boundaries + turbo lint + eslint e2e/
+pnpm run build          # turbo：按依赖拓扑构建（packages 库产物 → apps/cli 交付物）
+pnpm run cli            # 构建（turbo 增量）+ 运行 CLI（本地 .env.local + config.local.json）
+pnpm test               # turbo run test（各包 vitest，前置库构建）
+pnpm run test:watch     # vitest (watch mode)
+pnpm run lint           # check:boundaries + turbo lint + eslint e2e/
 ```
 
-Run a single test file: `npx vitest run src/path/to/file.test.ts`
+Run a single test file: `pnpm exec vitest run src/path/to/file.test.ts`
 
 ## Architecture
 

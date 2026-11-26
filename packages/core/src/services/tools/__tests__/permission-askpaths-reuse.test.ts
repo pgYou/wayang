@@ -18,7 +18,7 @@
  *     not over-block the intended #46 behaviour.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { SignalQueue } from '@/services/signal/signal-queue';
@@ -39,9 +39,13 @@ let out: string; // readable but outside the read scope of a workspace-anchored 
 let realHome: string | undefined;
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'askpaths-home-'));
-  ws = mkdtempSync(join(tmpdir(), 'askpaths-ws-'));
-  out = mkdtempSync(join(tmpdir(), 'askpaths-out-'));
+  // realpath 化 fixture：mkdtempSync 返回逻辑拼写（macOS 上 /var/…），而权限
+  // 判定对命令里的路径做 realpath（/private/var/…）。grant key（字符串精确匹配）
+  // 与命令拼写必须与规范化结果一致，否则预授权不命中——控制用例就退化为询问。
+  // Linux 上 realpath 为恒等，不影响 CI。
+  home = realpathSync(mkdtempSync(join(tmpdir(), 'askpaths-home-')));
+  ws = realpathSync(mkdtempSync(join(tmpdir(), 'askpaths-ws-')));
+  out = realpathSync(mkdtempSync(join(tmpdir(), 'askpaths-out-')));
   realHome = process.env.HOME;
   process.env.HOME = home;
   mkdirSync(join(home, '.ssh'), { recursive: true });

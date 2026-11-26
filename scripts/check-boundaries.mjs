@@ -40,7 +40,9 @@ const OWNED = {
   protocol: ['types', 'rpc'],
   core: ['services', 'infra', 'server', 'utils', '__tests__', 'client'],
   cli: ['tui', 'client', 'cli', 'cli-args', 'bootstrap', 'config-loader', 'config-env', 'session-select', '__tests__', 'server-entry'],
-  desktop: ['main', 'preload', 'renderer', 'utility', '__tests__'],
+  // `shared` is desktop's cross-context namespace (IPC contract §2.2, config
+  // envelope, onboard logic): renderer/preload/main/utility all consume it.
+  desktop: ['main', 'preload', 'renderer', 'utility', 'shared', '__tests__'],
 };
 
 /** Allowed `@wayang-ai/*` edges. Anything not listed is a violation. */

@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+# pnpm 默认阻止依赖执行 install 脚本；这些包的脚本是硬需求：
+# electron 下载运行时二进制、esbuild 装平台二进制、@parcel/watcher 编译原生监听。
+# pnpm 11+ 的键是 allowBuilds（映射表）；package.json 的 pnpm 字段已不再读取。
+allowBuilds:
+  electron: true
+  esbuild: true
+  '@parcel/watcher': true
+  electron-winstaller: true

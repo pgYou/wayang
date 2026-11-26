@@ -4,7 +4,7 @@
 // pin the four P0 fixes and the observed allow/ask baseline so a later change
 // cannot silently reopen the boundary.
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -242,7 +242,9 @@ describe('0.9.9 review regression matrix', () => {
         expect(result.decision).toBe('ask');
         expect(result.matchedRule).toBe('dangerous-bash');
         expect(result.access).toBe('write');
-        expect(result.askPaths).toContain('/etc');
+        // 权限判定对路径 realpath 化（macOS 上 /etc → /private/etc；
+        // Linux 恒等）。断言规范化后的拼写，两平台一致。
+        expect(result.askPaths).toContain(realpathSync('/etc'));
       });
 
       it('a read-access dangerous line still carries no askPaths (no grant reuse)', () => {

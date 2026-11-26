@@ -11,16 +11,17 @@
   ],
   "scripts": {
     "build": "turbo run build",
-    "cli": "npm run build && node --env-file=.env.local apps/cli/dist/cli.js --wayang-root . -w . -c ./config.local.json --verbose",
+    "cli": "turbo run dev --filter=@wayang-ai/cli",
+    "desktop": "turbo run dev --filter=@wayang-ai/desktop",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "test:watch": "turbo run test:watch",
     "test:coverage": "turbo run test:coverage",
-    "test:e2e": "npm run build && vitest run --config e2e.config.ts",
+    "test:e2e": "pnpm run build && pnpm exec vitest run --config e2e.config.ts",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "lint": "npm run check:boundaries && turbo run lint && eslint e2e/"
   },
-  "packageManager": "npm@10.8.2",
+  "packageManager": "pnpm@12.23.0",
   "engines": {
     "node": ">=20"
   },

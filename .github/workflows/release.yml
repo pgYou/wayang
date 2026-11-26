@@ -27,18 +27,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      # pnpm 版本由根 package.json 的 packageManager 字段锁定（corepack 读取）。
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          cache: npm
+          cache: pnpm
 
+      # 安装走 pnpm；发布本身仍用 npm CLI（trusted publishing / provenance
+      # 需要 npm >= 11.5.1，与安装器无关）。
       - name: Ensure npm supports trusted publishing
         run: |
           npm install -g npm@latest
           npm --version
           node -e "const [a,b,c]=process.argv[1].split('.').map(Number); if (a<11 || (a===11 && (b<5 || (b===5 && c<1)))) { console.error('npm >= 11.5.1 required'); process.exit(1); }" "$(npm --version)"
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - name: Verify tag matches apps/cli package version
         if: startsWith(github.ref, 'refs/tags/')
@@ -51,9 +56,9 @@ jobs:
             exit 1
           fi
 
-      - run: npm run lint
-      - run: npm test
-      - run: npm run build
+      - run: pnpm run lint
+      - run: pnpm test
+      - run: pnpm run build
       # 构建产物经 turbo 产出 apps/cli/dist（cli.js / server-entry.js /
       # mcp-bridge-entry.js），publish 从 apps/cli 目录打包该 dist。
 

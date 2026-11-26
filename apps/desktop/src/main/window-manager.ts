@@ -75,9 +75,11 @@ export class WindowManager {
     win.once('ready-to-show', () => win.show());
 
     if (process.env.ELECTRON_RENDERER_URL) {
-      void win.loadURL(process.env.ELECTRON_RENDERER_URL);
+      // 多入口 dev server：主窗口在 /main-window/ 路由下。
+      const base = process.env.ELECTRON_RENDERER_URL;
+      void win.loadURL(`${base.endsWith('/') ? base : `${base}/`}main-window/`);
     } else {
-      void win.loadFile(join(__dirname, '../renderer/index.html'));
+      void win.loadFile(join(__dirname, '../renderer/main-window/index.html'));
     }
 
     // Refresh replay path (§2.7): every full load re-sends the cached state.

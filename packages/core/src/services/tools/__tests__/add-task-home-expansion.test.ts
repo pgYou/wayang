@@ -147,7 +147,12 @@ describe('addTaskTool — home expansion in a declared workspace', () => {
   it('still resolves a relative declaration against the process workspace', async () => {
     const added: TaskDetail[] = [];
     const tool = makeTool(added);
-    const relative = path.relative(process.cwd(), workspaceDir);
+    // 相对声明以 controller workspace（deps.workspaceDir）为解析基准：真等价的
+    // 相对拼写是 './'。不要用 path.relative(process.cwd(), …)——那是按 cwd 深度
+    // 数 ../、却按 workspaceDir 应用，只有在「两者向上会合于根」的平台（浅根
+    // /tmp，Linux CI）才巧合等价；macOS 的 /private/var 深路径下层数错位产生
+    // 双拼路径（/private/var/private/var/…）。
+    const relative = './';
 
     const result = await exec(tool, { title: 'T', description: 'D', workspace: relative });
 

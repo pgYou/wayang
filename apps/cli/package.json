@@ -51,11 +51,12 @@
   },
   "devDependencies": {
     "@types/react": "^18.3.28",
-    "@wayang-ai/core": "1.0.0-alpha.0",
-    "@wayang-ai/protocol": "1.0.0-alpha.0"
+    "@wayang-ai/core": "workspace:*",
+    "@wayang-ai/protocol": "workspace:*"
   },
   "scripts": {
     "build": "tsup",
+    "dev": "node --env-file=../../.env.local dist/cli.js --wayang-root ../.. -w ../.. -c ../../config.local.json --verbose",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit && eslint src/",
     "test": "vitest run",

@@ -142,6 +142,8 @@ describe('core injection values (StoragePaths / WorkspacePolicy)', () => {
     expect(getWorkspacePolicy(paths)).toEqual({
       controllerWorkspace: '/base/home',
       defaultWorkerWorkspace: join('/base/home', '.agents', 'wayang-workspace'),
+      // add_task 无声明时的硬缺省与 general workspace 同源（desktop 无启动目录概念）。
+      undeclaredTaskWorkspace: join('/base/home', '.agents', 'wayang-workspace'),
     });
   });
 });

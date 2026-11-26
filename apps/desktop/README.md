@@ -14,12 +14,12 @@ server（NDJSON-RPC，与 CLI 同协议只换传输层）；renderer 为 React 1
 
 ```bash
 # 仓库根（首次）
-npm install && npm run build        # cli/core/protocol 产物就绪（MCP 桥源 apps/cli/dist/）
+pnpm install && ppnpm run build        # cli/core/protocol 产物就绪（MCP 桥源 apps/cli/dist/）
 
 # apps/desktop
-npm run dev                         # electron-vite dev（热更 renderer）
-npm run test                        # vitest 单测
-npm run lint                        # tsc --noEmit + eslint src/
+pnpm run dev                         # electron-vite dev（热更 renderer）
+pnpm test                        # vitest 单测
+pnpm run lint                        # tsc --noEmit + eslint src/
 ```
 
 dev 运行期数据落在 Electron 默认目录（`~/Library/Application Support/@wayang-ai/desktop`
@@ -28,9 +28,9 @@ dev 运行期数据落在 Electron 默认目录（`~/Library/Application Support
 ## 构建与分发
 
 ```bash
-npm run build                       # electron-vite build + MCP 桥复制进 out/main/
-npm run dist                        # build + 依赖 staging + electron-builder --mac（dmg）
-npm run dist:dir                    # 同上但 --dir：解包 .app（冒烟/检视用）
+pnpm run build                       # electron-vite build + MCP 桥复制进 out/main/
+pnpm run dist                        # build + 依赖 staging + electron-builder --mac（dmg）
+pnpm run dist:dir                    # 同上但 --dir：解包 .app（冒烟/检视用）
 ```
 
 产物在 `apps/desktop/release/`（已 gitignore）：

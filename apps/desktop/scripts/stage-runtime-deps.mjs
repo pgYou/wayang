@@ -9,26 +9,28 @@
  * validator code, so those packages must exist as a real node_modules tree
  * inside the packaged app.
  *
- * electron-builder's automatic dependency collection is not deterministic
- * for this monorepo layout: the packages are workspace-hoisted (ajv@8 lives
- * at apps/desktop/node_modules, ajv-formats and the transitive leaves at the
- * workspace root), and `npm ls` run from the workspace member reports the
- * hoisted ones as path-less deduplicated references — the collector then
- * warns "cannot find path for dependency" and silently drops them. The dist
- * scripts therefore stage the closure explicitly: resolve every package the
- * way node would (upward node_modules walk from the dependent), copy it into
- * the staging dir, and let the `files` entry place the tree at node_modules
- * in the archive. Nested node_modules that already live inside a copied
- * package come along verbatim; a dependency that resolves to a different
- * version than the one already staged at the top level is staged nested
- * under its dependent, mirroring node resolution semantics.
+ * electron-builder's automatic dependency collection was not deterministic
+ * for this monorepo layout (workspace-hoisting silently dropped path-less
+ * dedup references under npm; pnpm's symlinked .pnpm store is equally
+ * outside its assumptions). The dist scripts therefore stage the closure
+ * explicitly: resolve every package the way node would, copy it into the
+ * staging dir, and let the `files` entry place the tree at node_modules in
+ * the archive.
+ *
+ * pnpm layout note: `node_modules/ajv` is a symlink into
+ * `node_modules/.pnpm/ajv@x/node_modules/ajv`, and ajv's own dependencies
+ * live SIBLING to it (`.pnpm/ajv@x/node_modules/fast-deep-equal`), not in an
+ * ancestor. Resolution therefore starts from the REALPATH of the dependent
+ * (the .pnpm store path), where the plain upward walk finds them; copies
+ * dereference symlinks so the staged tree is a self-contained plain file
+ * tree with no links back into .pnpm.
  *
  * Usage: node scripts/stage-runtime-deps.mjs [outDir]
  * (default outDir: <app>/.runtime-node-modules; relative paths resolve
  * against the app dir.)
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,12 +39,16 @@ const appDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** Runtime dependencies — the ajv closure the bundle's generated code requires. */
 const RUNTIME_DEPENDENCIES = ['ajv', 'ajv-formats'];
 
-/** Resolve a package DIRECTORY the way node resolves bare specifiers. */
+/**
+ * Resolve a package DIRECTORY the way node resolves bare specifiers.
+ * Starts from the realpath of `fromDir` so pnpm's `.pnpm` sibling layout
+ * resolves; returns the realpath of the found package.
+ */
 function findPackageDir(name, fromDir) {
-  let dir = fromDir;
+  let dir = realpathSync(fromDir);
   for (;;) {
     const candidate = join(dir, 'node_modules', name);
-    if (existsSync(join(candidate, 'package.json'))) return candidate;
+    if (existsSync(join(candidate, 'package.json'))) return realpathSync(candidate);
     const parent = dirname(dir);
     if (parent === dir) throw new Error(`cannot resolve package "${name}" from ${fromDir}`);
     dir = parent;
@@ -59,11 +65,12 @@ function declaredDependencyNames(packageDir) {
  * Stage `packageDir` as `name` into `outDir` (flat at the top level unless
  * `nestUnder` is given). Already-staged realpaths are skipped; a name that
  * resolves to a different version than a top-level staging lands nested
- * under its dependent.
+ * under its dependent. Symlinks are dereferenced — the staged tree must be
+ * a plain, self-contained file tree.
  */
 function stage(name, packageDir, outDir, nestUnder) {
   const destDir = nestUnder ? join(nestUnder, 'node_modules', name) : join(outDir, name);
-  cpSync(packageDir, destDir, { recursive: true });
+  cpSync(packageDir, destDir, { recursive: true, dereference: true });
   console.log(`staged ${name} <- ${relative(appDir, packageDir) || packageDir} -> ${relative(appDir, destDir) || destDir}`);
   return destDir;
 }

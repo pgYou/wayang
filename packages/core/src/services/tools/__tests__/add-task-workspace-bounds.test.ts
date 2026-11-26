@@ -227,13 +227,16 @@ describe('addTaskTool — workspace boundary (issue #77)', () => {
     const tool = makeTool(added);
 
     const ok = await exec(tool, {
-      title: 'T', description: 'D', workspace: path.relative(process.cwd(), inHome),
+      // 相对声明以 controller workspace（workspaceDir）为基准解析——
+      // path.relative 以 workspaceDir 为锚，与 add_task 的 resolve 基准一致
+      // （path.relative(process.cwd(), …) 只在浅根平台巧合等价，见 macOS 双拼）。
+      title: 'T', description: 'D', workspace: path.relative(workspaceDir, inHome),
     });
     expect(ok).toContain('added');
     expect(added[0].workspace?.path).toBe(normalizePath(inHome));
 
     const rejected = await exec(tool, {
-      title: 'T', description: 'D', workspace: path.relative(process.cwd(), outside),
+      title: 'T', description: 'D', workspace: path.relative(workspaceDir, outside),
     });
     expect(rejected).toContain('outside-home');
     expect(rejected).toContain('NOT created');

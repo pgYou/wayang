@@ -1,0 +1,23 @@
+// 细而克制的中性滚动条，全局生效（Electron 单窗口，无宿主冲突）。
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: var(--radius-md);
+
+    &:hover {
+      background: var(--grey-4);
+    }
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}

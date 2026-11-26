@@ -18,6 +18,7 @@ import { SecurityGuard } from './security-guard';
 import { SessionService, type DesktopSessionOptions } from './session-service';
 import { ConfigStore, type ConfigEnvelope } from './config-store';
 import { resolveOnboardState } from '../shared/onboard';
+import { getLatestSessionForWorkspace } from '@wayang-ai/core/infra/session-helpers';
 import { getPaths, getPlatformConfig, getStoragePaths, getWorkspacePolicy, type PathSource } from '../shared/platform-config';
 
 /** Prepend the paths a GUI-launched process misses (brew, local bin). */
@@ -50,9 +51,20 @@ function resolveSessionOptions(envelope: ConfigEnvelope | null): DesktopSessionO
     cacheDir: storage.cacheDir,
     workspaceDir: workspace.controllerWorkspace,
     defaultWorkerWorkspace: workspace.defaultWorkerWorkspace,
-    session: process.env.WAYANG_DESKTOP_SESSION ?? 'new',
+    session: process.env.WAYANG_DESKTOP_SESSION ?? 'latest',
     logLevel: process.env.WAYANG_DESKTOP_LOG_LEVEL ?? 'info',
   };
+}
+
+/**
+ * The `latest` session sentinel resolves to the most recently active session
+ * for the controller workspace（与 CLI 无参 resume 同一语义，issue #40）——
+ * 打开软件默认回到用户上次工作的会话；没有任何会话时回落 `new`。
+ */
+function resolveDefaultSession(options: DesktopSessionOptions): void {
+  if (options.session !== 'latest') return;
+  const latest = getLatestSessionForWorkspace(options.dataDir, options.workspaceDir);
+  options.session = latest ? `resume:${latest.sessionId}` : 'new';
 }
 
 /**
@@ -150,6 +162,7 @@ export class Application {
     }
     const onboard = resolveOnboardState(envelope, loadError);
     const options = resolveSessionOptions(envelope);
+    resolveDefaultSession(options);
     log.info('app ready', {
       version: app.getVersion(),
       electron: process.versions.electron,

@@ -52,9 +52,12 @@ export class SecurityGuard {
     // No popups from the app shell.
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
-    // Default-deny every permission request (权限清零).
-    contents.session.setPermissionRequestHandler((_contents, _permission, callback) => {
-      callback(false);
+    // Default-deny every permission request (权限清零) — with one carve-out:
+    // `clipboard-sanitized-write` is Electron's sanctioned write-only clipboard
+    // grant (fires only inside a user gesture); denying it breaks every
+    // copy button with "Write permission denied".
+    contents.session.setPermissionRequestHandler((_contents, permission, callback) => {
+      callback(permission === 'clipboard-sanitized-write');
     });
   }
 

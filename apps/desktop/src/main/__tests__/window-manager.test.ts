@@ -150,7 +150,7 @@ describe('WindowManager (§2.9 + §2.10 icon/focus)', () => {
     const win = captured.instances[0];
     expect(win.loadURLCalls).toEqual([]);
     expect(win.loadFileCalls).toHaveLength(1);
-    expect(win.loadFileCalls[0]).toMatch(/(?:src|out)[/\\]renderer[/\\]index\.html$/);
+    expect(win.loadFileCalls[0]).toMatch(/(?:src|out)[/\\]renderer[/\\]main-window[/\\]index\.html$/);
   });
 
   it('focus() restores then focuses a minimized window (§2.10 second-instance)', () => {
