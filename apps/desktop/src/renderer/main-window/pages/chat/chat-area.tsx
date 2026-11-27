@@ -13,7 +13,7 @@ import { UserRow } from './rows/user-row';
 import { SystemRow } from './rows/system-row';
 import { AssistantRow } from './rows/assistant-row';
 import { SignalRow } from './rows/signal-row';
-import { TurnNav } from './parts/turn-dots-nav';
+import { TurnNav } from './parts/turn-nav';
 
 interface ChatAreaProps {
   busy: boolean;
@@ -122,7 +122,7 @@ function isAssistantBlockLast(
 }
 
 /**
- * 会话流：居中阅读栏（max-w-3xl）+ 空状态欢迎建议 +
+ * 会话流：居中阅读栏（max-w-5xl）+ 空状态欢迎建议 +
  * 自动滚底与浮动回底按钮 + 侧边轮次圆点导航。
  * 空态建议卡片是「可点击交互容器」（非标准按钮样式），保留原生 button 承载无障碍。
  */
@@ -216,8 +216,7 @@ export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
     !busy;
 
   return (
-    // 具名容器：轮次导航 rail 据此判定显隐（@min-[864px]/conversation）。
-    <div className="relative min-h-0 flex-1 @container/conversation">
+    <div className="relative min-h-0 flex-1 ">
       <div ref={scrollRef} className="h-full overflow-y-auto py-6">
         {isEmpty ? (
           <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center gap-6 px-6 py-8">
@@ -254,7 +253,7 @@ export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
           </div>
         ) : (
           // 底部留白（pb-36）：Composer 以悬浮卡片 fixed 在底部，滚动到底时最新内容不被遮挡。
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-6 pb-36">
+          <div className="mx-auto flex w-full max-w-250 flex-col gap-3 px-12 pb-36">
             {conversationItems.map((item, i) =>
               renderRow(
                 item,

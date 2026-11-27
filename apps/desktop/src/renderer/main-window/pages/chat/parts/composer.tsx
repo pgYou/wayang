@@ -77,8 +77,8 @@ export function Composer({
   return (
     // 定位容器由 chat-page 的浮层持有；本组件只负责内容布局：居中限宽 +
     // 底距 + 点击穿透（卡片本体恢复可点）。
-    <div className="pointer-events-none flex h-full justify-center px-6 pb-4">
-      <div className="wayang-composer-float pointer-events-auto relative w-full max-w-3xl rounded-xl">
+    <div className="pointer-events-none flex h-full justify-center px-11 pb-4">
+      <div className="wayang-composer-float pointer-events-auto relative w-full max-w-240 rounded-xl">
         {/* 悬浮元素层（架构锚点）：bottom-full 锚在卡片上缘——卡片伸缩
             自动跟随，子元素只做排布不再各自定位；层穿透，可点元素自行
             pointer-events-auto；z-20 只被 popover/dialog（z-50）压住。 */}

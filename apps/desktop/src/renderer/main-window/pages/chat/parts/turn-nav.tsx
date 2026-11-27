@@ -3,11 +3,10 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { TURN_BAR_MAX_SCALE, turnBarVisualState, type TurnDot } from '@/renderer/shared/lib/chat-metrics';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/renderer/shared/components/ui/hover-card';
 import { cn } from '@/renderer/shared/lib/cn';
-import './turn-dots-nav.scss';
+import './turn-nav.scss';
 
 /**
- * TurnNav：聊天时间线左侧的轮次导航 rail（交互 1:1 对齐 ZCode
- * ConversationTurnNavigator，见其 docs/ui/conversation-turn-navigator.md）。
+ * TurnNav：聊天时间线左侧的轮次导航 rail
  *
  * - 每条 user 提问 = 一根横条，全部轮次按序均匀纵向堆叠（不按消息
  *   高度映射）；rail 垂直居中、自身可纵向滚动（轮次多时不出界）；
@@ -33,7 +32,6 @@ import './turn-dots-nav.scss';
 
 const TURN_ANCHOR_ATTR = 'data-turn-uuid';
 
-/** 固定行高（ZCode estimateSize: () => 10）与 overscan。 */
 const RAIL_ROW_PX = 10;
 const RAIL_OVERSCAN = 6;
 
@@ -65,7 +63,7 @@ export function TurnNav({ items, scrollContainer, className }: TurnNavProps) {
   });
   const virtualRows = railVirtualizer.getVirtualItems();
 
-  // scroll active：视口内最靠上的 user 轮次（与 ZCode active query 同语义）。
+  // scroll active：视口内最靠上的 user 轮次
   useEffect(() => {
     if (!scrollContainer || items.length === 0) return;
     const anchors = items
@@ -104,7 +102,7 @@ export function TurnNav({ items, scrollContainer, className }: TurnNavProps) {
   // active 变化时把该条滚入 rail 自身视口（长目录下高亮条始终可见）。
   // 目录从 tail 一次扩展到上千项时，scrollToIndex 与 virtualizer 的测量
   // 更新处于同一个 commit，Chromium 可能合并 scroll 通知——补发一次只
-  // 同步 rail observer，确保活动项对应的可视窗口立即挂载（ZCode 同款）。
+  // 同步 rail observer，确保活动项对应的可视窗口立即挂载
   useEffect(() => {
     if (activeIndex === null || activeIndex < 0 || items.length < 2) return;
     railVirtualizer.scrollToIndex(activeIndex, { align: 'auto' });
@@ -130,12 +128,8 @@ export function TurnNav({ items, scrollContainer, className }: TurnNavProps) {
       aria-label="轮次导航"
       data-item-count={items.length}
       data-rendered-item-count={virtualRows.length}
-      // 窄屏隐藏走容器查询（祖先需声明 @container/conversation）：会话区
-      // < 864px 时 visibility + opacity + translateX 隐藏，达标后淡入滑回；
-      // 不用 JS 量宽度，也不维护逐像素状态（ZCode 同款）。
       className={cn(
-        'pointer-events-none invisible absolute inset-y-0 left-3 z-10 w-6 -translate-x-2 opacity-0 transition-[opacity,transform,visibility] duration-150 ease-out motion-reduce:transition-none',
-        '@min-[864px]/conversation:visible @min-[864px]/conversation:translate-x-0 @min-[864px]/conversation:opacity-100',
+        'pointer-events-none absolute inset-y-0 left-3 z-10 w-6 transition-[opacity,transform,visibility] duration-150 ease-out motion-reduce:transition-none',
         className,
       )}
     >

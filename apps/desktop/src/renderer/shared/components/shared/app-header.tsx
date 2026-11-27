@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import logoUrl from '@assets/logo/wayang-logo-light.svg';
 import { wayang } from '@/renderer/shared/lib/wayang-api';
+import { cn } from '@/renderer/shared/lib/cn';
 import { WindowControls } from './window-controls';
 import './app-header.scss';
 
@@ -18,6 +19,8 @@ export interface AppHeaderProps {
   left?: ReactNode;
   /** 右侧动作区（设置入口、会话切换、关闭按钮等）。 */
   right?: ReactNode;
+  /** 覆盖 header 外观（如设置页灰底）。 */
+  className?: string;
 }
 
 /**
@@ -30,7 +33,7 @@ export interface AppHeaderProps {
  * - wayang logo（assets/logo 单一来源，@assets 别名；light 变体为浅色底
  *   设计）；页面私有内容经 left/right 插槽注入。
  */
-export function AppHeader({ left, right }: AppHeaderProps) {
+export function AppHeader({ left, right, className }: AppHeaderProps) {
   // macOS 原生全屏隐藏红绿灯（wayang:window 推送）——占位随之收拢，
   // logo 直接从 header 左缘排起。非 darwin 无占位，状态不参与渲染。
   const [fullscreen, setFullscreen] = useState(false);
@@ -38,7 +41,7 @@ export function AppHeader({ left, right }: AppHeaderProps) {
   const isMac = isMacPlatform();
 
   return (
-    <header className="wayang-app-header flex h-12 shrink-0 items-center gap-3 border-b border-border bg-background px-4">
+    <header className={cn('wayang-app-header flex h-12 shrink-0 items-center gap-3 border-b border-border bg-background px-4', className)}>
       {isMac ? (
         // 系统红绿灯占位：按钮组 trafficLightPosition(16,18) 起宽 52px，
         // 占位 64px 后 logo 落在 80px 起（px-4 16 + 64）；fullscreen 下隐藏。

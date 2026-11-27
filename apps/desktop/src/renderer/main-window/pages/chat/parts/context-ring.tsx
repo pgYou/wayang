@@ -51,11 +51,19 @@ function MetricRow({ label, value, tone }: { label: ReactNode; value: string; to
   );
 }
 
+/** 环带宽度与画布边长（css px）：16px 画布、2px 描边，与此前 DOM 双层圆的环宽一致。 */
+const RING_SIZE = 16;
+const RING_LINE_WIDTH = 2;
+
 /**
  * 上下文圆环：contextUsage 的环形可视化 + 点击弹出明细 popover。
- * - DOM 实现（conic-gradient 双层圆，无 SVG）：外层 18px 圆按 percent
- *   从 12 点方向分色画进度，内层 12px 圆挖洞形成 3px 环；>80% 进度色
- *   变 destructive；
+ * - Canvas 实现（非 DOM 双层圆）：此前用两个同心 <span> 做环（外层
+ *   conic-gradient 画进度、内层纯色圆挖洞）有两个问题——conic-gradient
+ *   的色块分界是硬边，起止两端缺圆头收口；内层挖洞圆固定填 sender 背景
+ *   色，hover 时按钮底色变 grey-3 而挖洞圆色不跟随，露出方形色差。canvas
+ *   用单层 stroke 画环（先画整圈 sky-soft 轨道，再按 percent 画 sky/
+ *   destructive 进度弧，lineCap=round 收口两端），不填内部区域——画布
+ *   其余像素保持透明，hover 底色变化透过画布直接可见，无挖洞圆层。
  * - 点击（Esc/再次点击关闭）展示纯数值：占用百分比、已用/窗口上限
  *   tokens（estimate 来源走 muted 色阶表达）、按组 breakdown（用户
  *   消息 / 助手输出 / 工具调用参数 / 工具返回 / 压缩摘要）——浮层内
@@ -73,8 +81,8 @@ export function ContextRing({ usage, className }: { usage: ContextUsage | null; 
 
   // popover 经 Portal 挂 body 并按触发器实测位置定位：sender 根容器
   // overflow-hidden（squircle 裁切）会截掉任何从卡片内弹出的层——
-  // portal 从裁剪链解耦，弹层完整可见。锚点坐标是动态测量值，与 conic
-  // 同款走命令式注入（JSX 不留内联样式）。
+  // portal 从裁剪链解耦，弹层完整可见。锚点坐标是动态测量值，与 canvas
+  // 环同款走命令式注入（JSX 不留内联样式）。
   const [anchorRect, setAnchorRect] = useState<{ top: number; right: number } | null>(null);
   const { popoverRef } = usePopoverDismiss(open, close, triggerRef);
   useLayoutEffect(() => {
@@ -90,21 +98,43 @@ export function ContextRing({ usage, className }: { usage: ContextUsage | null; 
     el.style.transform = 'translateY(-100%)';
   }, [anchorRect, open]);
 
-  // conic 进度是运行时数据（percent/danger），按 user-row 折叠 max-height
-  // 的先例走命令式 el.style（UI 纪律：JSX 里静态样式一律 class，动态值
-  // 才允许命令式注入）。0%/轨道色也经 effect 落，不与任何静态 bg 类竞争。
-  // 低占用保底：弧段不足 6% 时视觉不可辨（3px 环带 × 7°≈1px）——下限 6%。
-  // 轨道用淡蓝（sky-soft，用户气泡同款）：灰轨道与灰底 sender 融为一体，
-  // 淡蓝既标出环的存在又不抢进度弧。
-  const arcRef = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    const el = arcRef.current;
-    if (!el) return;
-    const arcPercent = resolvedPercent > 0 ? Math.max(resolvedPercent, 6) : 0;
-    el.style.background =
-      arcPercent > 0
-        ? `conic-gradient(${danger ? 'var(--destructive)' : 'var(--sky)'} ${arcPercent}%, var(--sky-soft) ${arcPercent}%)`
-        : 'var(--sky-soft)';
+  // canvas 画环：先画整圈轨道（sky-soft），再按 percent 画进度弧
+  // （lineCap=round 两端圆头）。只 stroke 不 fill——内部像素保持透明，
+  // hover 时按钮底色变化直接透出，不存在填色挖洞圆层。
+  // 低占用保底：弧段不足 6% 时视觉不可辨（2px 环带 × 7°≈1px）——下限 6%。
+  // 颜色取自 CSS 变量（oklch 字面值，非 var() 引用——canvas 2d 不解析
+  // 自定义属性），每次重绘按需读取，天然跟随主题变化。
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = RING_SIZE * dpr;
+    canvas.height = RING_SIZE * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, RING_SIZE, RING_SIZE);
+
+    const root = getComputedStyle(document.documentElement);
+    const trackColor = root.getPropertyValue('--sky-soft').trim();
+    const progressColor = root.getPropertyValue(danger ? '--destructive' : '--sky').trim();
+    const center = RING_SIZE / 2;
+    const radius = center - RING_LINE_WIDTH / 2;
+    const startAngle = -Math.PI / 2;
+
+    ctx.lineWidth = RING_LINE_WIDTH;
+    ctx.beginPath();
+    ctx.arc(center, center, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = trackColor;
+    ctx.stroke();
+
+    if (resolvedPercent <= 0) return;
+    const arcPercent = Math.max(resolvedPercent, 6);
+    ctx.beginPath();
+    ctx.arc(center, center, radius, startAngle, startAngle + (arcPercent / 100) * Math.PI * 2);
+    ctx.strokeStyle = progressColor;
+    ctx.lineCap = 'round';
+    ctx.stroke();
   }, [resolvedPercent, danger]);
 
   const label =
@@ -123,7 +153,7 @@ export function ContextRing({ usage, className }: { usage: ContextUsage | null; 
     : [];
 
   return (
-    <span className={cn('relative inline-flex size-10 shrink-0 items-center justify-center', className)}>
+    <span className={cn('relative inline-flex shrink-0 items-center justify-center', className)}>
       <button
         ref={triggerRef}
         type="button"
@@ -135,16 +165,10 @@ export function ContextRing({ usage, className }: { usage: ContextUsage | null; 
         }}
         className="group/ring relative inline-flex h-6 cursor-pointer items-center gap-1 rounded-full px-1 outline-none transition-colors hover:bg-grey-3 focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-default"
       >
-        {/* DOM 环（conic-gradient，无 SVG）：外层 18px 圆从 12 点方向按
-            percent 分色（arcRef 命令式注入，见上）；内层 12px 圆挖洞
-            （卡片同色背景）形成 3px 环。0% 时整环为轨道色。
-            环 18px 装不下数字——环与 n% 水平相邻（图标+标签形态）；
-            两圆 inset-0 在 18px wrapper 内居中（absolute 无 inset 会
-            停在 static 位错叠到文字上）。 */}
-        <span aria-hidden className="relative inline-flex size-[18px] shrink-0">
-          <span ref={arcRef} aria-hidden className="absolute inset-0 rounded-full" />
-          <span aria-hidden className="absolute inset-0 m-auto size-[12px] rounded-full bg-chat-sender" />
-        </span>
+        {/* canvas 环（见组件顶部注释）：只 stroke 轨道 + 进度弧，不填内部，
+            hover 底色变化透过画布直接可见。环 16px 装不下数字——环与
+            n% 水平相邻（图标+标签形态）。 */}
+        <canvas ref={canvasRef} aria-hidden className="size-[16px] shrink-0" width={RING_SIZE} height={RING_SIZE} />
         {percent !== null && percent > 0 && (
           <span
             className={cn(

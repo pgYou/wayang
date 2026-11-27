@@ -79,6 +79,9 @@
   --chat-sender-border: oklch(0.931 0.0000 89.9);
   --chat-sender-focus-shadow: 0 4px 16px oklch(0.0000 89.9 / 0.08);
 
+  /* 灰底页面上的白卡片：近距细影 + 远距弥散影两层叠加，边缘柔和不发硬。 */
+  --card-shadow: 0 1px 2px oklch(0 0 0 / 0.04), 0 8px 24px oklch(0 0 0 / 0.05);
+
   --radius: 0.5rem;
 
   /* 渐变曲率圆角专用档（squircle，sender 根 / user 气泡各一档）：
@@ -133,6 +136,7 @@
   --color-chat-sender: var(--chat-sender-bg);
   --color-chat-sender-border: var(--chat-sender-border);
   --shadow-chat-sender-focus: var(--chat-sender-focus-shadow);
+  --shadow-card: var(--card-shadow);
 
   --color-traffic-close: var(--traffic-close);
   --color-traffic-minimize: var(--traffic-minimize);
