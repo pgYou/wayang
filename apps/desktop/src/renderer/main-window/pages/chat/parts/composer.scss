@@ -1,0 +1,32 @@
+// Composer 悬浮层样式：脱离内容流的底部浮动卡片（§4.3 Sender/Footer 合一）。
+// 遮蔽与质感分两层处理：
+// - 底部遮蔽（box-shadow 第四段）：无模糊、加重、偏移更远——对话列表
+//   不从 composer 底部透出，被一块实色白直接盖住；
+// - 顶部/两侧白光：把卡片从滚动内容上「托起」（背景近白，深色阴影显脏）；
+// - 轻投影：卡片自身体积感（sender 聚焦的 focus-shadow 由组件自带）。
+//
+// 层级契约（浮在 sender 上的元素一律经 wayang-composer-overlay 挂载）：
+// - overlay 层 absolute bottom-full：锚在卡片上缘，卡片伸缩自动跟随，
+//   子元素只做排布（flex 纵向堆叠），不各自定位、不各自写 z-index；
+// - 层容器 pointer-events-none（点击穿透），可点元素自行 pointer-events-auto；
+// - z 序三档：卡片 z-10（浮层容器）/ overlay z-20（悬浮元素）/
+//   popover·dialog z-50（瞬时弹层）——新元素按档取值，不发明新数字。
+.wayang-composer-float {
+  box-shadow:
+    0 -8px 24px rgba(255, 255, 255, 0.9),
+    -8px 0 24px rgba(255, 255, 255, 0.9),
+    8px 0 24px rgba(255, 255, 255, 0.9),
+    // 底部遮蔽：无 blur 的实色白，只盖下方（offset 40px、spread 0）。
+    // 不可用 spread——向四周扩会把卡片顶缘之上也盖白，overlay 层的
+    // 悬浮元素（回底按钮等）泡在白里视觉消失。
+    0 40px 0 0 rgba(255, 255, 255, 1);
+}
+
+// 需要浮层同款「托起」质感的悬浮元素（如指令输入浮层）复用此类——
+// 白光遮蔽与卡片一致，视觉上是同一族表面。
+.wayang-composer-float--raised {
+  box-shadow:
+    0 -8px 24px rgba(255, 255, 255, 0.9),
+    -8px 0 24px rgba(255, 255, 255, 0.9),
+    8px 0 24px rgba(255, 255, 255, 0.9);
+}

@@ -277,9 +277,9 @@ e2e/                      E2E tests (fake OpenAI provider + server harness + sce
 ## Testing
 
 ```bash
-npm test           # 39 test files, 332 tests
-npm run test:e2e   # build + e2e scenarios (spawns dist server, fake LLM provider)
-npm run lint       # type check + lint
+pnpm test           # 39 test files, 332 tests
+pnpm run test:e2e   # build + e2e scenarios (spawns dist server, fake LLM provider)
+pnpm run lint       # type check + lint
 ```
 
 CI runs lint + unit + build + e2e on every push and pull request.

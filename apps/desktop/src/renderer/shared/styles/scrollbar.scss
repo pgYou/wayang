@@ -1,0 +1,25 @@
+// 细而克制的中性滚动条，全局生效（Electron 单窗口，无宿主冲突）。
+// thumb 取 grey-5（0.877）：border 级（0.939）在浅底上对比过淡、几乎
+// 不可见——滚动条是常驻指示件，可发现性优先于极简。
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--grey-5) transparent;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: var(--grey-5);
+    border-radius: var(--radius-md);
+
+    &:hover {
+      background: var(--grey-6);
+    }
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}

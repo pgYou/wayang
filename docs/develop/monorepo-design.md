@@ -27,7 +27,7 @@
 wayang-ai/                      ← workspace 根
 ├── apps/                       ← 应用包：可独立交付的构建边缘
 │   ├── cli/                    ← 终端产品（TUI + stdio 宿主）
-│   └── desktop/                ← Electron 产品（占位，M3 在 feat/desktop-m3 推进）
+│   └── desktop/                ← Electron 产品（在 feat/desktop-m3 分支推进，设计见 desktop-app-design.md）
 └── packages/                   ← 库包：编译一次、被 apps 消费产物
     ├── core/                   ← 逻辑内核（服务端 + 客户端 SDK）
     └── protocol/               ← 类型 + RPC 契约 + transport

@@ -3,7 +3,7 @@
 // log file, and structured spawn errors.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runProcessTool } from '@/services/tools/run-process';
@@ -12,6 +12,9 @@ import { runProcessTool } from '@/services/tools/run-process';
 async function exec(toolLike: any, args: Record<string, unknown>): Promise<string> {
   return toolLike.execute(args);
 }
+
+/** /proc/self/fd 只有 Linux 提供——fd 泄漏类用例在无 /proc 的平台（macOS）跳过。 */
+const itIfProc = existsSync('/proc/self/fd') ? it : it.skip;
 
 let cwd: string;
 
@@ -143,7 +146,9 @@ describe('run_process background mode', () => {
     expect(readFileSync(second.logFile, 'utf-8')).toBe('second-line\n');
   });
 
-  it('a background call does not leak a parent fd for the log (D1)', async () => {
+  // fd 泄漏检查依赖 /proc/self/fd（Linux 专属）——macOS 无 /proc，跳过而非失败；
+  // fd-level 断言本来就不是所有平台都能观测的能力。
+  itIfProc('a background call does not leak a parent fd for the log (D1)', async () => {
     // The parent closes its copy of the append fd right after spawn (the
     // child holds its own dup), so the process fd table is unchanged.
     const fdDir = '/proc/self/fd';

@@ -8,6 +8,7 @@
  * config is a structured boot error, never an interactive prompt.
  */
 
+import type { Readable, Writable } from 'node:stream';
 import { runWayangServer } from './wayang-server';
 import type { StoragePaths, WayangConfig, WorkspacePolicy } from '@wayang-ai/protocol';
 
@@ -72,7 +73,17 @@ export interface ServerMainOptions {
   logLevel?: string;
 }
 
-export async function serverMain(options: ServerMainOptions): Promise<void> {
+/**
+ * Optional io injection: hosts that are not a plain stdio process (Electron
+ * UtilityProcess over a message port) pass their own stream pair; the default
+ * (`process`) keeps the CLI behavior unchanged.
+ */
+export interface ServerIo {
+  stdin: Readable;
+  stdout: Writable;
+}
+
+export async function serverMain(options: ServerMainOptions, io?: ServerIo): Promise<void> {
   // Zero prompts, zero file reads: an absent config object is a structured
   // error the host can render however it wants (desktop takeover premise).
   if (typeof options.config !== 'object' || options.config === null || Array.isArray(options.config)) {
@@ -93,7 +104,7 @@ export async function serverMain(options: ServerMainOptions): Promise<void> {
     session,
     injectPreviousTasks: options.injectPreviousTasks,
     logLevel: options.logLevel,
-  });
+  }, io);
 
   // The RPC transport, supervisor loop and logger keep the event loop alive.
 }

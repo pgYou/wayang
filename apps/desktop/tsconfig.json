@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@assets/*": ["../../assets/*"],
+      "@/*": ["./src/*"]
+    },
+    "types": ["node"]
+  },
+  "include": ["src/**/*", "electron.vite.config.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "out", "dist"]
+}

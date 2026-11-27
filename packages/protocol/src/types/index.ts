@@ -3,6 +3,10 @@
 export type { ProviderConfig, ModelConfig, ModelRef, WayangConfig, WorkerConfig, WorkerType, AcpProtocolConfig, ToolChoice, PermissionConfig, SensitiveMode, LoggingConfig } from './config';
 export { validateConfig, collectWorkerWarnings, collectProviderWarnings, normalizeWorkerTypes, WORKER_TYPES } from './config';
 
+// --- Config normalization (legacy spellings → canonical shape; hosts call it at their config entry) ---
+export type { NormalizeConfigResult } from './config-normalize';
+export { normalizeConfig, findLegacyConfigKeys } from './config-normalize';
+
 // --- Config hot-update (monorepo-design 4.1 运行时热更) ---
 export type {
   ProviderPatch,

@@ -1,0 +1,185 @@
+@import "tailwindcss";
+
+/*
+ * Tailwind 入口（保持 .css：@tailwindcss/vite 只处理 .css，.scss 里的 @apply 不会被展开）。
+ * 本文件只放三类东西：设计 token（:root）、Tailwind 主题映射（@theme inline）、全局 base。
+ * 组件/模块样式一律就近放同名 .scss，由组件自己 import，不要再堆回这里。
+ *
+ * 色彩规范（shadcn 初始风格）：深色为主色、多灰阶主体。
+ * primary = 近黑；secondary/muted/accent = 灰阶层次；destructive/success 语义色。
+ * 灰蓝（sky 系）只在少数特殊位置使用：用户消息气泡、链接、进行中状态与数据可视化。
+ *
+ * 间距走 Tailwind 默认 4/8 尺度；圆角只有 --radius 一个基准，组件取派生值。
+ */
+
+:root {
+  --background: oklch(1.000 0.0000 89.9);
+  --foreground: oklch(0.170 0.0000 89.9);
+
+  --card: oklch(1.000 0.0000 89.9);
+  --card-foreground: oklch(0.170 0.0000 89.9);
+
+  --popover: oklch(1.000 0.0000 89.9);
+  --popover-foreground: oklch(0.170 0.0000 89.9);
+
+  /* Primary：近黑主操作色（shadcn 默认风格）。 */
+  --primary: oklch(0.204 0.0000 89.9);
+  --primary-foreground: oklch(0.985 0.0000 89.9);
+  --primary-strong: oklch(0.146 0.0000 89.9);
+  /* primary 的灰阶衍生：软底 / 边框（弱强调场景）。 */
+  --primary-soft: oklch(0.962 0.0000 89.9);
+  --primary-border: oklch(0.923 0.0000 89.9);
+
+  --secondary: oklch(0.970 0.0000 89.9);
+  --secondary-foreground: oklch(0.216 0.0000 89.9);
+
+  /* muted = hover 提示底（ghost/outline 按钮、图标钮、ContextRing），取
+   * grey-2 深度：白底上 0.977 几乎不可感知，加深一级保证 hover 反馈可见。 */
+  --muted: oklch(0.962 0.0000 89.9);
+  --muted-foreground: oklch(0.555 0.0000 89.9);
+
+  --accent: oklch(0.962 0.0000 89.9);
+  --accent-foreground: oklch(0.193 0.0000 89.9);
+
+  --destructive: oklch(0.639 0.2086 20.2);
+  --destructive-soft: oklch(0.968 0.0141 10.4);
+  --destructive-foreground: oklch(1.000 0.0000 89.9);
+  --success: oklch(0.735 0.1736 157.1);
+
+  --border: oklch(0.939 0.0000 89.9);
+  --input: oklch(0.962 0.0000 89.9);
+  --ring: oklch(0.204 0.0000 89.9);
+
+  /* 灰蓝（特殊位专用）：用户气泡、链接、进行中状态、数据可视化。 */
+  --sky: oklch(0.594 0.2037 259.9);
+  --sky-strong: oklch(0.517 0.2015 260.4);
+  /* 用户气泡底：#e8f3fe（更淡雅的浅蓝）。 */
+  --sky-soft: oklch(0.957 0.0199 248.0);
+  --sky-border: oklch(0.923 0.0318 248.2);
+
+  /* 自绘红绿灯（自定义 header）：macOS 系统色近似（oklch 书写）。 */
+  --traffic-close: oklch(0.697 0.1912 24.5);
+  --traffic-minimize: oklch(0.828 0.1588 84.5);
+  --traffic-zoom: oklch(0.762 0.1839 144.5);
+
+  /* 灰阶（grey-1..grey-9）。 */
+  --grey-1: oklch(0.977 0.0000 89.9);
+  --grey-2: oklch(0.962 0.0000 89.9);
+  --grey-3: oklch(0.939 0.0000 89.9);
+  --grey-4: oklch(0.908 0.0000 89.9);
+  --grey-5: oklch(0.877 0.0000 89.9);
+  --grey-6: oklch(0.813 0.0000 89.9);
+  --grey-7: oklch(0.716 0.0000 89.9);
+  --grey-8: oklch(0.528 0.0000 89.9);
+  --grey-9: oklch(0.280 0.0000 89.9);
+
+  /* chat sender token。边框色恒定（聚焦不变色）；聚焦指示 = 淡灰阴影
+   * （--chat-sender-focus-shadow，经 box-shadow 叠加）。 */
+  --chat-sender-bg: var(--grey-1);
+  --chat-sender-border: oklch(0.931 0.0000 89.9);
+  --chat-sender-focus-shadow: 0 4px 16px oklch(0.0000 89.9 / 0.08);
+
+  /* 灰底页面上的白卡片：近距细影 + 远距弥散影两层叠加，边缘柔和不发硬。 */
+  --card-shadow: 0 1px 2px oklch(0 0 0 / 0.04), 0 8px 24px oklch(0 0 0 / 0.05);
+
+  --radius: 0.5rem;
+
+  /* 渐变曲率圆角专用档（squircle，sender 根 / user 气泡各一档）：
+   * squircle 同半径下视觉角量比圆弧瘦，radius 按实测调大到指定绝对值。
+   * sender 32px、user 气泡 24px。 */
+  --radius-squircle: 24px;
+  --radius-squircle-lg: 32px;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-strong: var(--primary-strong);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-border: var(--primary-border);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* 灰蓝特殊位映射。 */
+  --color-sky: var(--sky);
+  --color-sky-strong: var(--sky-strong);
+  --color-sky-soft: var(--sky-soft);
+  --color-sky-border: var(--sky-border);
+
+  --color-grey-1: var(--grey-1);
+  --color-grey-2: var(--grey-2);
+  --color-grey-3: var(--grey-3);
+  --color-grey-4: var(--grey-4);
+  --color-grey-5: var(--grey-5);
+  --color-grey-6: var(--grey-6);
+  --color-grey-7: var(--grey-7);
+  --color-grey-8: var(--grey-8);
+  --color-grey-9: var(--grey-9);
+
+  --color-chat-sender: var(--chat-sender-bg);
+  --color-chat-sender-border: var(--chat-sender-border);
+  --shadow-chat-sender-focus: var(--chat-sender-focus-shadow);
+  --shadow-card: var(--card-shadow);
+
+  --color-traffic-close: var(--traffic-close);
+  --color-traffic-minimize: var(--traffic-minimize);
+  --color-traffic-zoom: var(--traffic-zoom);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  /* rounded-squircle / rounded-squircle-lg 的曲率由全局 base 段钉 squircle。 */
+  --radius-squircle: var(--radius-squircle);
+  --radius-squircle-lg: var(--radius-squircle-lg);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* 渐变曲率圆角工具类（Chromium 139+；旧内核忽略 corner-shape，退化为
+ * 大一档的普通圆角——视觉量近似，无害）。sender 用 lg（32px）、user
+ * 气泡用默认档（24px），不做全局。 */
+.rounded-squircle,
+.rounded-squircle-lg {
+  corner-shape: squircle;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Arial",
+    "Inter",
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}

@@ -68,4 +68,13 @@ export interface WorkspacePolicy {
    * CLI default: `<dataDir>/workspace`.
    */
   defaultWorkerWorkspace: string;
+  /**
+   * Optional HARD default stamped by `add_task` when a call declares NO
+   * workspace: the task runs here instead of the controller workspace.
+   * Absent (CLI) → the legacy behavior: the dispatch baseline
+   * (`controllerWorkspace`, i.e. the directory the user launched wayang in).
+   * Desktop sets it to the general workspace so codeless tasks do not land
+   * in the user's home directory.
+   */
+  undeclaredTaskWorkspace?: string;
 }

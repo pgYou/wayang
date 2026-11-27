@@ -1,0 +1,19 @@
+// HoverCard 入场/退场过渡。radix 只切 data-state，动画交给原生 CSS：
+// @starting-style 让首次挂载（data-state=open 那一帧）从透明过渡进来，
+// 关闭时 data-state=closed 触发过渡淡出，radix 等动画结束再卸载。
+.wayang-hover-card {
+  opacity: 1;
+  transition: opacity 150ms ease-out;
+
+  @starting-style {
+    opacity: 0;
+  }
+
+  &[data-state='closed'] {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+  }
+}

@@ -88,7 +88,10 @@ describe('addTaskTool — workspace declaration', () => {
 
     const variants = [
       `${workspaceDir}/`,
-      path.relative(process.cwd(), workspaceDir),
+      // 相对拼写以 controller workspace 为基准（resolve(base, './') === base）。
+      // path.relative(process.cwd(), …) 按 cwd 深度数 ../ 却按 workspaceDir 应用，
+      // 只在浅根平台（Linux CI 的 /tmp）巧合等价；macOS 深路径下双拼错位。
+      './',
       path.join(workspaceDir, '.'),
       linkPath,
     ];

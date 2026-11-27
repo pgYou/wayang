@@ -1,0 +1,21 @@
+// 轮次导航 rail 的横条入场动画
+// 展示层从左侧 6px 淡入到原位，180ms ease-out；同批横条同时入场，不按
+// 目录序号叠加延迟。只作用于横条的独立展示层——按钮的命中区、纵向定位
+// 不动；内层横条继续独立处理 active 色彩与 hover 山峰缩放。
+@keyframes wayang-turn-nav-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wayang-turn-nav-enter {
+    animation: wayang-turn-nav-enter 180ms ease-out;
+  }
+}

@@ -75,6 +75,15 @@ export interface AddTaskToolDeps {
    */
   generalWorkspaceDir?: string;
   /**
+   * HARD default for calls that declare NO workspace (host-injected via
+   * `WorkspacePolicy.undeclaredTaskWorkspace`): the task runs here instead
+   * of the controller workspace. Absent (CLI) → the legacy dispatch
+   * baseline semantics. A trusted absolute path — not a controller-authored
+   * declaration, so it skips the boundary validation and is only
+   * materialized (`mkdir -p`, idempotent).
+   */
+  undeclaredWorkspace?: string;
+  /**
    * Session logger for workspace-boundary audit records (issue #77): every
    * workspace admitted through `permission.extraWorkspaceRoots` is recorded
    * here. Optional — auditing must never break the dispatch path.
@@ -267,10 +276,22 @@ function resolveTaskWorkspace(
   // startup directory.
   const requestedPath = declared !== undefined ? normalizeWorkspacePath(declared, current) : undefined;
 
-  // Declared workspace wins; the process workspace is only the default.
+  // Declared workspace wins; the host-injected hard default (undeclaredWorkspace)
+  // covers calls with no declaration; the process workspace is the last fallback.
   // Canonicalization keeps `task.workspace.path` the single value the engine
   // later uses for cwd and permission checks (no raw-spelling drift).
-  const targetPath = requestedPath ?? normalizeWorkspacePath(current);
+  let targetPath: string;
+  if (requestedPath !== undefined) {
+    targetPath = requestedPath;
+  } else if (deps.undeclaredWorkspace !== undefined) {
+    // Host-injected trusted path (e.g. the desktop general workspace): only
+    // materialize it, no controller-authored declaration to validate.
+    const dirError = ensureWorkspaceDir(deps.undeclaredWorkspace);
+    if (dirError !== null) return { error: dirError };
+    targetPath = normalizeWorkspacePath(deps.undeclaredWorkspace);
+  } else {
+    targetPath = normalizeWorkspacePath(current);
+  }
 
   // resolveWorkspaceRef never throws — without a readable registry it degrades
   // to the rule-based slug.

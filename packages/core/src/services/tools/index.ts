@@ -138,6 +138,12 @@ export interface ControllerToolDeps {
    * description.
    */
   generalWorkspaceDir?: string;
+  /**
+   * HARD default for add_task calls with NO workspace declaration
+   * (`WorkspacePolicy.undeclaredTaskWorkspace`). Absent → the legacy
+   * dispatch-baseline default (`workspaceDir`).
+   */
+  undeclaredWorkspace?: string;
 }
 
 export interface WorkerToolDeps {
@@ -172,6 +178,7 @@ export function createControllerTools(deps: ControllerToolDeps) {
       workspaceDir: deps.workspaceDir,
       wayangDir: deps.wayangDir,
       generalWorkspaceDir: deps.generalWorkspaceDir,
+      undeclaredWorkspace: deps.undeclaredWorkspace,
       userHome: deps.userHome,
       permissionConfig: deps.permissionConfig,
       logger: deps.logger,

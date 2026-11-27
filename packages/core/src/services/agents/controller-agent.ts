@@ -141,6 +141,9 @@ export class ControllerAgent extends ControllerTurnRun implements Subscribable {
       workspaceDir: ctx.workspaceDir,
       wayangDir,
       generalWorkspaceDir,
+      // Host-injected hard default for undeclared workspaces (desktop → the
+      // general workspace); absent in the CLI → dispatch baseline semantics.
+      undeclaredWorkspace: ctx.workspacePolicy?.undeclaredTaskWorkspace,
     });
 
     return new ControllerAgent(ctx, state, model, tools, skills, recorder, controllerRules);

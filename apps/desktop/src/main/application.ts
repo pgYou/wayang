@@ -1,0 +1,231 @@
+/**
+ * Application (desktop-app-design §2.9, 4.2 域二工作项②).
+ *
+ * The assembly root: composes the WindowManager, SecurityGuard,
+ * SessionService (which owns the ServerProcessHost) and UnifiedLogger, and
+ * runs the Disposable-style quit queue that unifies
+ * `before-quit` / `window-all-closed` (macOS 关窗不退进程) / `activate`
+ * (dock reopen) plus the process-level crash records.
+ */
+
+import { app, type BrowserWindow } from 'electron';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { initMainLogger } from './logger';
+import { UnifiedLogger } from './unified-logger';
+import { WindowManager } from './window-manager';
+import { SecurityGuard } from './security-guard';
+import { SessionService, type DesktopSessionOptions } from './session-service';
+import { ConfigStore, type ConfigEnvelope } from './config-store';
+import { resolveOnboardState } from '../shared/onboard';
+import { IPC_SUBSCRIBE } from '../shared/ipc-contract';
+import { getLatestSessionForWorkspace } from '@wayang-ai/core/infra/session-helpers';
+import { getPaths, getPlatformConfig, getStoragePaths, getWorkspacePolicy, type PathSource } from '../shared/platform-config';
+
+/** Prepend the paths a GUI-launched process misses (brew, local bin). */
+function fixGuiPath(): void {
+  const parts = process.env.PATH?.split(':') ?? [];
+  process.env.PATH = [...new Set([...getPlatformConfig().guiPathPrefixes, ...parts])].join(':');
+}
+
+function resolveSessionOptions(envelope: ConfigEnvelope | null): DesktopSessionOptions {
+  // All paths via the platform config module (决策十) — no hand-joined
+  // homedir paths, no direct Electron path calls outside the module. The
+  // envelope's desktop prefs ride the SAME override mechanism (§2.6): the
+  // workspace pref (§4.3 工作项② settings page) enters as a PathSource
+  // override, future prefs plug in the same way.
+  const paths = getPaths(electronPathSourceWithPrefs(envelope));
+  // Storage/workspace injection values (§2.5 storage switch): produced by
+  // the platform config module (single source) and injected into core via
+  // the StoragePaths / WorkspacePolicy contract — the serverMain legacy
+  // dataDir/workspaceDir pair only mirrors these members.
+  const storage = getStoragePaths(paths);
+  const workspace = getWorkspacePolicy(paths);
+  // defaultWorkerWorkspace is user-visible and must exist before any worker
+  // lands in it (§2.5: 启动自动 mkdir).
+  mkdirSync(workspace.defaultWorkerWorkspace, { recursive: true });
+  return {
+    configPath: paths.configPath,
+    legacyConfigPath: paths.cliConfigPath,
+    dataDir: storage.dataDir,
+    logDir: storage.logDir,
+    cacheDir: storage.cacheDir,
+    workspaceDir: workspace.controllerWorkspace,
+    defaultWorkerWorkspace: workspace.defaultWorkerWorkspace,
+    session: process.env.WAYANG_DESKTOP_SESSION ?? 'latest',
+    logLevel: process.env.WAYANG_DESKTOP_LOG_LEVEL ?? 'info',
+  };
+}
+
+/**
+ * The `latest` session sentinel resolves to the most recently active session
+ * for the controller workspace（与 CLI 无参 resume 同一语义，issue #40）——
+ * 打开软件默认回到用户上次工作的会话；没有任何会话时回落 `new`。
+ */
+function resolveDefaultSession(options: DesktopSessionOptions): void {
+  if (options.session !== 'latest') return;
+  const latest = getLatestSessionForWorkspace(options.dataDir, options.workspaceDir);
+  options.session = latest ? `resume:${latest.sessionId}` : 'new';
+}
+
+/**
+ * The Electron path source plus the envelope's desktop prefs (决策十/§2.6):
+ * the settings page's workspace selection persists in the envelope and
+ * enters the path resolution through the same override slot.
+ */
+function electronPathSourceWithPrefs(envelope: ConfigEnvelope | null): PathSource {
+  const prefs = envelope?.desktop ?? {};
+  const workspace = typeof prefs.defaultWorkerWorkspace === 'string' ? prefs.defaultWorkerWorkspace : undefined;
+  return {
+    userData: app.getPath('userData'),
+    logs: app.getPath('logs'),
+    home: app.getPath('home'),
+    appName: app.getName(),
+    defaultWorkerWorkspace: workspace,
+  };
+}
+
+export class Application {
+  private logger: UnifiedLogger | null = null;
+  private windows: WindowManager | null = null;
+  private session: SessionService | null = null;
+  /** Idempotent quit flag — before-quit can re-enter once stop() is in flight. */
+  private quitting = false;
+
+  /** Wire every process-level concern and start the app lifecycle. */
+  run(): void {
+    // GUI PATH fix first: agents spawned by the server resolve binaries
+    // through PATH; a Finder-launched app has none.
+    fixGuiPath();
+
+    this.logger = new UnifiedLogger(initMainLogger(process.env.WAYANG_DESKTOP_LOG_LEVEL ?? 'info'));
+
+    // A GUI shell must not die silently: surface anything that escapes a
+    // handler into the log instead of an invisible default crash.
+    process.on('uncaughtException', (err) => {
+      this.logger?.error('uncaughtException', { error: err.stack ?? String(err) });
+    });
+    process.on('unhandledRejection', (reason) => {
+      this.logger?.error('unhandledRejection', { error: String(reason) });
+    });
+
+    // Crash records (§2.9 UnifiedLogger): renderer and child deaths.
+    app.on('render-process-gone', (_event, _contents, details) => {
+      this.logger?.crash('render-process-gone', { reason: details.reason, exitCode: details.exitCode });
+    });
+    app.on('child-process-gone', (_event, details) => {
+      this.logger?.crash('child-process-gone', {
+        type: details.type,
+        reason: details.reason,
+        exitCode: details.exitCode,
+        name: 'name' in details ? String(details.name) : undefined,
+      });
+    });
+
+    app.whenReady().then(() => void this.start());
+
+    // Second instance launched (§2.10 single-instance lock): the loser
+    // process has already quit in index.ts; bring our single window back
+    // to the front (no-op while the window does not exist yet).
+    app.on('second-instance', () => this.windows?.focus());
+
+    // macOS keeps the process alive with no windows (§2.9); dock icon
+    // re-opens the single window.
+    app.on('window-all-closed', () => {
+      if (process.platform !== 'darwin') app.quit();
+    });
+    app.on('activate', () => {
+      if (process.platform === 'darwin') this.windows?.create();
+    });
+
+    app.on('before-quit', (event) => {
+      if (this.quitting) return;
+      this.quitting = true;
+      event.preventDefault();
+      void this.shutdown();
+    });
+  }
+
+  /** Assemble the components once Electron is ready. */
+  private async start(): Promise<void> {
+    const log = this.logger as UnifiedLogger;
+
+    // Cold-boot decision (§2.11 决策九): load the envelope FIRST. Missing /
+    // invalid / core-incomplete → onboard mode (welcome page); the server
+    // boots only after the renderer's confirm page saves a valid config.
+    const store = new ConfigStore(join(getPaths().configPath));
+    let envelope: ConfigEnvelope | null = null;
+    let loadError: string | null = null;
+    try {
+      envelope = await store.load();
+    } catch (err) {
+      loadError = err instanceof Error ? err.message : String(err);
+    }
+    const onboard = resolveOnboardState(envelope, loadError);
+    const options = resolveSessionOptions(envelope);
+    resolveDefaultSession(options);
+    log.info('app ready', {
+      version: app.getVersion(),
+      electron: process.versions.electron,
+      node: process.versions.node,
+      platform: `${process.platform}/${process.arch}`,
+      onboarded: onboard.onboarded,
+      problem: onboard.problem,
+      ...options,
+    });
+
+    const security = new SecurityGuard();
+    const windows = new WindowManager({
+      security,
+      statePath: join(options.dataDir, 'window-state.json'),
+      log,
+    });
+    this.windows = windows;
+
+    const session = new SessionService({
+      getWindow: (): BrowserWindow | null => windows.window,
+      options,
+      log,
+      isTrustedSender: (sender) => security.isTrustedSender(sender),
+      // Custom-header controls (§2.1): the single window is the only target.
+      windowControls: {
+        minimize: () => windows.minimize(),
+        toggleZoom: () => windows.toggleZoom(),
+        close: () => windows.close(),
+      },
+    });
+    this.session = session;
+
+    // Refresh replay (§2.7): a full renderer load re-sends the cached state.
+    windows.onDidFinishLoad(() => session.resendSnapshot());
+
+    // Window state pushes (§2.1 custom header): native fullscreen changes
+    // collapse the traffic-light spacer. The did-finish-load replay keeps a
+    // refresh (Cmd+R) converging while fullscreen — no transition fires then.
+    const sendWindowState = (): void => {
+      const win = windows.window;
+      if (win) win.webContents.send(IPC_SUBSCRIBE.window, { fullscreen: win.isFullScreen() });
+    };
+    windows.onFullScreenChange(() => sendWindowState());
+    windows.onDidFinishLoad(() => sendWindowState());
+
+    windows.create();
+    await session.start(onboard.onboarded && envelope ? envelope.wayangConfig : null);
+  }
+
+  /** The Disposable exit queue: stop the server, flush the log, then quit. */
+  private async shutdown(): Promise<void> {
+    const log = this.logger as UnifiedLogger;
+    log.info('quitting: stopping server');
+    try {
+      await this.session?.stop();
+      log.info('server stopped');
+    } catch (err) {
+      log.error('server stop failed', { error: String(err) });
+    }
+    // Sink appends are synchronous, but close() guarantees the file is
+    // quiescent before the process goes away.
+    await log.close().catch(() => undefined);
+    app.quit();
+  }
+}

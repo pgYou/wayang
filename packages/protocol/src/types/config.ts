@@ -102,9 +102,10 @@ export const WORKER_TYPES: readonly WorkerType[] = ['claude-code', 'acp', 'codeb
 /**
  * Pre-0.9.x `workers.<id>.type` values, mapped to their current names.
  * `normalizeWorkerTypes` rewrites them (with a deprecation warning) at the
- * config-parse exit so no consumer ever sees the legacy spellings.
+ * config-parse exit so no consumer ever sees the legacy spellings. Exported
+ * for `findLegacyConfigKeys` (the legacy-key inventory).
  */
-const DEPRECATED_WORKER_TYPES: Readonly<Record<string, WorkerType>> = {
+export const DEPRECATED_WORKER_TYPES: Readonly<Record<string, WorkerType>> = {
   'codebuddy-acp': 'codebuddy',
   'opencode-acp': 'opencode',
 };
