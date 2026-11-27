@@ -23,6 +23,16 @@
 - release workflow 随迁：tag 与 apps/cli 版本一致性校验、已发布检查对象改 @wayang-ai/cli、npm publish 工作目录改 apps/cli；dist-tag 按 prerelease 段通用派生——tag 去 v 前缀后含 '-' 取首段（1.0.0-alpha.1 → alpha、1.0.0-beta.2 → beta、1.0.0-rc.1 → rc），无 prerelease 段走 latest，派生名形如 semver 时提前失败（npm 会拒绝此类 dist-tag）
 - Node 20 runner 已进入 deprecation 警告期：ci.yml 以注释记录（不修，升级与 engines 评估另行处理）
 
+### 配置规范格式收敛（core 只认新写法，旧写法在入口翻译一次）
+
+- protocol 新增 `normalizeConfig`：旧版配置写法 → 规范格式的唯一翻译点——provider `endpoint` 别名、provider 上的隐式模型（`modelName` + 窗口预算）、`controller.provider` / `worker.provider` 键绑定、`permission.deniedDirs`、worker type 旧拼写、已移除的 `workerRunTimeoutMs`。纯函数、不改入参、幂等；逐条对照旧解析规则保证行为等价（窗口预算下推到引用它的模型条目，provider 上的 `temperature` / `maxOutputTokens` 照旧不发送）
+- 类型层收敛：`WayangConfig` 只描述规范格式（provider 仅连接信息、绑定只有 `model`、权限只有 `sensitiveDirs`），废弃字段不再是类型成员——core / cli 里任何对旧写法的引用在编译期即被拦下；`validateConfig` 只认规范格式，新增 `validateCanonicalConfig`（废弃键 + 结构校验）作为 core 准入检查；`collectProviderWarnings` / `normalizeWorkerTypes` 不再对外导出
+- core 收紧：`serverMain` 准入拒绝仍带旧键或校验不过的配置（结构化 `CONFIG_INVALID`，server 不启动）；`resolveModelRef` 只解析 `model` 引用，删除旧绑定分支与 env 兜底、不再继承 provider 窗口；`deniedDirs` 合并逻辑移出 core；core 不再为配置读取 `process.env`
+- CLI 入口承担全部差异：`loadConfig` 改为「normalize → env 模型兜底物化（真实的 provider + `models` 条目，绑定 > env > 报错）→ validate」，逐项打印翻译说明，不改写用户的配置文件
+- desktop：CLI 配置导入经 `normalizeConfig` 翻译后再校验，桌面存储与 renderer 保存拒绝任何旧键（读 envelope 时先查旧键，报错指向重新 onboard），内部旧绑定兼容清除
+- 测试：core 夹具迁到规范格式、旧格式行为测试移除（由 protocol 的 normalize 单测覆盖）；新增 core 准入、CLI env 物化用例；e2e 新增「旧格式配置文件照常启动并服务」场景，e2e 夹具迁到规范格式
+- 文档：配置指南只讲新写法（旧写法说明与迁移对照移除）；monorepo-design、05-config、permission-policy 0.8.1 设计文档同步
+
 ### 阶段工作流（临时记录）
 
 - desktop 第一版迭代确认还需改 core/cli：先完成一批改造作为阶段成果——① 配置解析上移（终端交互迁 apps/cli、App 层全权装载产出 WayangConfig 对象、protocol 新增 UPDATE_CONFIG 运行时热更新）② rootDir(dataDir) 与 controller-workspace 解耦（StoragePaths + WorkspacePolicy 双轨显式注入）；执行计划见 docs/develop/monorepo-design.md 第 4 节（待评审）。该批改造经 feat/core-app-decouple 分支实施、合回 release/1.0.0 并合入 main 后，发布 1.0.0-alpha.1；feat/desktop-m3 随后 rebase 到新基线推进 desktop 重构。

@@ -102,7 +102,7 @@ wayang --resume # 恢复上次会话
 }
 ```
 
-旧写法（把 `modelName` 等直接写在 provider 上，用 `controller.provider` / `worker.provider` 绑定）仍然完全可用，启动时提示一次弃用告警。
+#88 之前的旧配置（provider 上直接写 `modelName`、用 `controller.provider` / `worker.provider` 绑定）不用迁移，加载时自动翻译一次；新配置请按上面的写法。
 
 API Key 可通过配置文件或环境变量 `WAYANG_LLM_API_KEY` 设置。
 
