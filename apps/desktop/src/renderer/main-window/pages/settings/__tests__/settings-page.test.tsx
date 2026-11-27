@@ -67,6 +67,8 @@ vi.mock('lucide-react', () => {
     FolderIcon: Icon,
     ShieldIcon: Icon,
     SlidersHorizontalIcon: Icon,
+    ChevronRightIcon: Icon,
+    PlusIcon: Icon,
     LoaderIcon: Icon,
     RotateCcwIcon: Icon,
     FolderOpenIcon: Icon,
@@ -137,5 +139,34 @@ describe('SettingsPage', () => {
     act(() => navButton('Worker').click());
     const concurrency = container!.querySelector('input[inputmode="numeric"]') as HTMLInputElement | null;
     expect(concurrency?.value).toBe('3');
+  });
+
+  it('groups models under a collapsible provider card, with bindings last', async () => {
+    await act(async () => {
+      root!.render(<SettingsPage onClose={() => undefined} />);
+    });
+    const text = container!.textContent ?? '';
+    // provider 在前、模型绑定在后。
+    expect(text.indexOf('Providers')).toBeLessThan(text.indexOf('模型绑定'));
+    // provider 卡片内直接列出其模型。
+    expect(text).toContain('gpt-fast');
+
+    const toggle = Array.from(container!.querySelectorAll('button[aria-expanded]')).find((el) => el.textContent?.includes('main'));
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    act(() => (toggle as HTMLButtonElement).click());
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('lets a third-party worker be edited, not only toggled', async () => {
+    await act(async () => {
+      root!.render(<SettingsPage onClose={() => undefined} />);
+    });
+    act(() => navButton('Worker').click());
+    const description = Array.from(container!.querySelectorAll('input')).find(
+      (el) => (el as HTMLInputElement).value === '第三方编码 agent',
+    ) as HTMLInputElement | undefined;
+    expect(description).toBeDefined();
+    expect(container!.querySelector('button[role="switch"]')).not.toBeNull();
+    expect(container!.textContent).toContain('新增 worker');
   });
 });

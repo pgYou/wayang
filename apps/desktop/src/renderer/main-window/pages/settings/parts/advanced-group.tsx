@@ -54,12 +54,12 @@ export function AdvancedGroup({ config, commit }: { config: WayangConfig; commit
       <SettingsSection title="运行参数" restart>
         <SettingsRow>
           <FieldLabel>空闲超时（idleTimeoutMs）</FieldLabel>
-          <Input inputMode="numeric" placeholder="留空表示使用默认值" value={idleTimeout.value} onChange={(e) => idleTimeout.setValue(e.target.value)} />
+          <Input inputMode="numeric" fieldSize="sm" placeholder="留空表示使用默认值" value={idleTimeout.value} onChange={(e) => idleTimeout.setValue(e.target.value)} />
           <SaveCancelBar dirty={idleTimeout.dirty} saving={idleTimeout.saving} error={idleTimeout.error} onSave={idleTimeout.save} onCancel={idleTimeout.cancel} />
         </SettingsRow>
         <SettingsRow>
           <FieldLabel>信号窗口大小（signalWindowSize）</FieldLabel>
-          <Input inputMode="numeric" placeholder="留空表示使用默认值" value={signalWindow.value} onChange={(e) => signalWindow.setValue(e.target.value)} />
+          <Input inputMode="numeric" fieldSize="sm" placeholder="留空表示使用默认值" value={signalWindow.value} onChange={(e) => signalWindow.setValue(e.target.value)} />
           <SaveCancelBar dirty={signalWindow.dirty} saving={signalWindow.saving} error={signalWindow.error} onSave={signalWindow.save} onCancel={signalWindow.cancel} />
         </SettingsRow>
       </SettingsSection>
@@ -70,6 +70,7 @@ export function AdvancedGroup({ config, commit }: { config: WayangConfig; commit
               <FieldLabel>单文件最大字节（maxFileSizeBytes）</FieldLabel>
               <Input
                 inputMode="numeric"
+                fieldSize="sm"
                 placeholder="默认 10MB"
                 value={logging.value.maxFileSizeBytes !== undefined ? String(logging.value.maxFileSizeBytes) : ''}
                 onChange={(e) => logging.setValue({ ...logging.value, maxFileSizeBytes: e.target.value.trim() === '' ? undefined : Number(e.target.value) })}
@@ -79,6 +80,7 @@ export function AdvancedGroup({ config, commit }: { config: WayangConfig; commit
               <FieldLabel>保留文件数（maxFiles）</FieldLabel>
               <Input
                 inputMode="numeric"
+                fieldSize="sm"
                 placeholder="默认 3"
                 value={logging.value.maxFiles !== undefined ? String(logging.value.maxFiles) : ''}
                 onChange={(e) => logging.setValue({ ...logging.value, maxFiles: e.target.value.trim() === '' ? undefined : Number(e.target.value) })}

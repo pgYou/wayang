@@ -21,7 +21,7 @@ export function PermissionGroup({ config, commit }: { config: WayangConfig; comm
             value={config.permission?.sensitiveMode ?? 'ask'}
             onValueChange={(v) => modeAction.run(() => commit(setSensitiveMode(config, v as 'ask' | 'deny')))}
           >
-            <SelectTrigger>
+            <SelectTrigger fieldSize="md">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -36,7 +36,7 @@ export function PermissionGroup({ config, commit }: { config: WayangConfig; comm
             value={config.permission?.approvalMemory ?? 'task'}
             onValueChange={(v) => modeAction.run(() => commit(setApprovalMemory(config, v as 'task' | 'off')))}
           >
-            <SelectTrigger>
+            <SelectTrigger fieldSize="md">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

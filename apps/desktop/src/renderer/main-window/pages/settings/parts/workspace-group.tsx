@@ -35,7 +35,7 @@ export function WorkspaceGroup({
       <SettingsRow className="flex-row items-center gap-3">
         <span className="flex-1 truncate font-mono text-xs text-muted-foreground">{workspace ?? '默认（~/.agents/wayang-workspace）'}</span>
         <Badge variant={workspace ? 'default' : 'outline'}>{workspace ? '已自定义' : '默认'}</Badge>
-        <Button size="sm" variant="outline" disabled={action.pending} onClick={pick}>
+        <Button size="sm" variant="secondary" disabled={action.pending} onClick={pick}>
           <FolderOpenIcon />
           选择目录
         </Button>

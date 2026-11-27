@@ -15,8 +15,8 @@ export function RestartBadge() {
 }
 
 /**
- * 「输入类」卡片的保存/取消条：按钮常驻、dirty 时才点亮（启用）——与
- * 参考图「分类/标签」卡片底部的保存按钮一致。
+ * 「输入类」控件的保存/取消条：按钮常驻、dirty 时才点亮（启用）。
+ * `inline` 用于短字段（数字等）——与输入框同排，不另起一行。
  */
 export function SaveCancelBar({
   dirty,
@@ -24,25 +24,40 @@ export function SaveCancelBar({
   error,
   onSave,
   onCancel,
+  inline = false,
 }: {
   dirty: boolean;
   saving: boolean;
   error: string | null;
   onSave: () => void;
   onCancel: () => void;
+  inline?: boolean;
 }) {
+  const buttons = (
+    <div className="flex shrink-0 items-center gap-2">
+      <Button size="sm" onClick={onSave} disabled={!dirty || saving}>
+        {saving && <LoaderIcon className="animate-spin" />}
+        保存
+      </Button>
+      <Button size="sm" variant="ghost" onClick={onCancel} disabled={!dirty || saving}>
+        取消
+      </Button>
+    </div>
+  );
+
+  if (inline) {
+    return (
+      <div className="flex min-w-0 items-center gap-3">
+        {error && <p className="min-w-0 truncate text-xs text-destructive">{error}</p>}
+        {buttons}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-2">
       {error && <p className="text-xs text-destructive">{error}</p>}
-      <div className="flex items-center gap-2">
-        <Button size="sm" onClick={onSave} disabled={!dirty || saving}>
-          {saving && <LoaderIcon className="animate-spin" />}
-          保存
-        </Button>
-        <Button size="sm" variant="ghost" onClick={onCancel} disabled={!dirty || saving}>
-          取消
-        </Button>
-      </div>
+      {buttons}
     </div>
   );
 }
