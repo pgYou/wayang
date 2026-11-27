@@ -128,11 +128,23 @@ describe('planConfigUpdates (§2.4 八方法映射)', () => {
     expectParses(next);
   });
 
-  it('clearing a binding (legacy fallback) is restart-required, not a hot op', () => {
-    const next: WayangConfig = { ...prev, worker: { provider: 'main', maxConcurrency: 2 } };
+  it('clearing a binding is restart-required, not a hot op', () => {
+    const next: WayangConfig = { ...prev, worker: { maxConcurrency: 2 } };
     const plan = planConfigUpdates(prev, next);
     expect(plan.ops.map((op) => op.method)).toEqual([]);
     expect(plan.restartRequired.join(' ')).toMatch(/worker\.model 被清空/);
-    expect(plan.restartRequired.join(' ')).toMatch(/worker\.provider/);
+  });
+
+  it('a legacy spelling never reaches the planner — both sides are canonical configs', () => {
+    // The legacy provider-key binding and the deprecated provider model fields
+    // are translated at the config entry (protocol normalizeConfig); the
+    // planner has no branch for them, so they diff as nothing at all.
+    const legacy: WayangConfig = {
+      ...prev,
+      providers: { ...prev.providers, main: { ...prev.providers.main, modelName: 'gpt-x' } },
+      controller: { model: 'fast', provider: 'main' },
+    };
+    expect(planConfigUpdates(prev, legacy)).toEqual({ ops: [], restartRequired: [] });
+    expect(planConfigUpdates(legacy, prev)).toEqual({ ops: [], restartRequired: [] });
   });
 });

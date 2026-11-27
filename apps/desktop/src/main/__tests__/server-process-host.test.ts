@@ -42,12 +42,16 @@ import { makeEnvelope } from '../../shared/config-envelope';
 import { LoopbackServer } from './helpers/loopback-server';
 import type { MainLogger } from '../logger';
 
+// The canonical shape (models + model references) — the only form the desktop passes to the host.
 const validConfig: WayangConfig = {
   providers: {
-    default: { baseURL: 'http://localhost:1234/v1', apiKey: 'test-key', modelName: 'test-model' },
+    default: { baseURL: 'http://localhost:1234/v1', apiKey: 'test-key' },
   },
-  controller: { provider: 'default' },
-  worker: { provider: 'default', maxConcurrency: 2 },
+  models: {
+    default: { provider: 'default', name: 'test-model' },
+  },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 2 },
 };
 
 /** Tight backoff so self-heal cycles run in milliseconds. */

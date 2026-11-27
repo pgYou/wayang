@@ -3,9 +3,11 @@
  *
  * Pure protocol-level logic shared by the main process (cold-boot decision,
  * save-config validation) and the renderer's onboarding UI (wizard
- * completeness, final-confirm preview). Mirrors core's `resolveModelRef`
- * priority 1–2 (named entry → composite → inline → legacy provider key) with
- * NO env fallback — the desktop's necessary core must be real config entries.
+ * completeness, final-confirm preview). Mirrors core's resolveModelRef
+ * reference forms (named entry → composite → inline) with NO env fallback —
+ * the desktop's necessary core must be real config entries. The legacy
+ * provider-key binding never reaches here: it is translated at the one
+ * config entry (the CLI import, via protocol normalizeConfig).
  */
 
 import type { ModelRef, WayangConfig } from '@wayang-ai/protocol';
@@ -38,27 +40,22 @@ export function checkCoreCompleteness(config: WayangConfig): string | null {
     if (provider.type !== undefined && provider.type !== 'openai-compatible') {
       return `providers.${key}.type 必须为 'openai-compatible'`;
     }
-    if (!provider.baseURL && !provider.endpoint) {
+    if (!provider.baseURL) {
       return `providers.${key} 缺少 baseURL`;
     }
     if (!provider.apiKey) {
       return `providers.${key} 缺少 apiKey`;
     }
   }
-  const controllerProblem = bindingProblem(config, config.controller?.model, config.controller?.provider, 'controller');
+  const controllerProblem = bindingProblem(config, config.controller?.model, 'controller');
   if (controllerProblem) return controllerProblem;
-  const workerProblem = bindingProblem(config, config.worker?.model, config.worker?.provider, 'worker');
+  const workerProblem = bindingProblem(config, config.worker?.model, 'worker');
   if (workerProblem) return workerProblem;
   return null;
 }
 
 /** One binding's resolvability, mirroring core's resolveModelRef (no env). */
-function bindingProblem(
-  config: WayangConfig,
-  ref: ModelRef | undefined,
-  legacyProviderKey: string | undefined,
-  label: string,
-): string | null {
+function bindingProblem(config: WayangConfig, ref: ModelRef | undefined, label: string): string | null {
   if (ref !== undefined) {
     if (typeof ref === 'string') {
       const named = config.models?.[ref];
@@ -92,13 +89,6 @@ function bindingProblem(
       return `${label} 的内联模型缺少模型名`;
     }
     return null;
-  }
-  // Legacy binding: the provider key must exist (its deprecated modelName /
-  // window fields form the implicit model — validateConfig checks shapes).
-  if (legacyProviderKey !== undefined && legacyProviderKey !== '') {
-    return config.providers?.[legacyProviderKey]
-      ? null
-      : `${label}.provider "${legacyProviderKey}" 不存在`;
   }
   return `${label} 未绑定模型（缺少 controller/worker 的 model 绑定）`;
 }

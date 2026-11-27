@@ -37,7 +37,7 @@ import {
 } from '../shared/ipc-contract';
 import { checkCoreCompleteness, resolveOnboardState } from '../shared/onboard';
 import { planConfigUpdates } from '../shared/config-update-plan';
-import { makeEnvelope, validateOrReject, type ConfigEnvelope } from '../shared/config-envelope';
+import { assertCanonicalConfig, makeEnvelope, validateOrReject, type ConfigEnvelope } from '../shared/config-envelope';
 import { ConfigStore } from './config-store';
 import { ServerProcessHost, type HostSessionOptions } from './server-process-host';
 import { removeTypedHandler, typedHandle, type IpcRouterDeps } from './ipc/router';
@@ -222,6 +222,9 @@ export class SessionService {
    * boot (`restartServer`).
    */
   async saveConfig(config: WayangConfig, desktop?: Record<string, unknown>): Promise<SaveConfigResult> {
+    // 严格门槛：桌面配置只存规范格式（旧版写法已在导入入口翻译），renderer
+    // 侧若还带废弃键直接报错，不做静默兼容。
+    assertCanonicalConfig(config, 'config from renderer');
     validateOrReject(config, 'config from renderer');
     const coreProblem = checkCoreCompleteness(config);
     if (coreProblem) throw new Error(coreProblem);

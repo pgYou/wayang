@@ -40,7 +40,7 @@ export function stepProblem(config: WayangConfig, step: WizardStepId): string | 
     if (keys.length === 0) return '至少配置一个 provider（type / baseURL / apiKey）';
     for (const key of keys) {
       const p = config.providers[key];
-      if (!p?.baseURL && !p?.endpoint) return `providers.${key} 缺少 baseURL`;
+      if (!p?.baseURL) return `providers.${key} 缺少 baseURL`;
       if (!p?.apiKey) return `providers.${key} 缺少 apiKey`;
     }
     return null;

@@ -16,7 +16,7 @@ export function ConfigSummary({ config }: { config: WayangConfig }) {
         {providers.length === 0 && <p className="text-xs text-destructive">无 provider</p>}
         {providers.map(([key, p]) => (
           <div key={key} className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs">
-            {key}: {p.baseURL ?? p.endpoint ?? '?'} · apiKey {p.apiKey ? '已设置' : '缺失'}
+            {key}: {p.baseURL ?? '?'} · apiKey {p.apiKey ? '已设置' : '缺失'}
           </div>
         ))}
       </section>
@@ -33,7 +33,6 @@ export function ConfigSummary({ config }: { config: WayangConfig }) {
         <h3 className="font-medium">绑定</h3>
         <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs">
           controller: {binding(config.controller?.model)}
-          {config.controller?.provider ? `（legacy provider ${config.controller.provider}）` : ''}
         </div>
         <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs">
           worker: {binding(config.worker?.model)} · maxConcurrency {config.worker?.maxConcurrency ?? 3}

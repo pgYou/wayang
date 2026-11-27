@@ -7,12 +7,40 @@ import { ConfigStore } from '../config-store';
 import { makeEnvelope, parseConfigEnvelope, CONFIG_SCHEMA_VERSION } from '../../shared/config-envelope';
 import type { WayangConfig } from '@wayang-ai/protocol';
 
+// The canonical shape (models + model references) — the only form the desktop stores.
 const validConfig: WayangConfig = {
   providers: {
-    default: { endpoint: 'http://localhost:1234/v1', apiKey: 'test-key', modelName: 'test-model' },
+    default: { baseURL: 'http://localhost:1234/v1', apiKey: 'test-key' },
   },
-  controller: { provider: 'default' },
-  worker: { provider: 'default', maxConcurrency: 3 },
+  models: {
+    default: { provider: 'default', name: 'test-model' },
+  },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 3 },
+};
+
+/** A pre-#88 CLI config: endpoint alias, provider implicit model, provider-key bindings. */
+const legacyConfig: WayangConfig = {
+  providers: {
+    ds: { endpoint: 'https://api.deepseek.com', apiKey: 'k1', modelName: 'deepseek-flash' },
+    hub: { endpoint: 'https://hub/v3', apiKey: 'k2', modelName: 'ds-v4', contextWindowTokens: 1_000_000 },
+  },
+  controller: { provider: 'hub' },
+  worker: { provider: 'hub', maxConcurrency: 3 },
+};
+
+/** What the import must hand back: models entries + model references, no legacy key. */
+const translatedConfig: WayangConfig = {
+  providers: {
+    ds: { baseURL: 'https://api.deepseek.com', apiKey: 'k1' },
+    hub: { baseURL: 'https://hub/v3', apiKey: 'k2' },
+  },
+  models: {
+    ds: { provider: 'ds', name: 'deepseek-flash' },
+    hub: { provider: 'hub', name: 'ds-v4', contextWindowTokens: 1_000_000 },
+  },
+  controller: { model: 'hub' },
+  worker: { model: 'hub', maxConcurrency: 3 },
 };
 
 let dir: string;
@@ -112,6 +140,31 @@ describe('ConfigStore.importFrom (explicit CLI import, 决策九 域三落地)',
     await writeFile(legacyPath, JSON.stringify({ providers: {} }), 'utf-8');
     await expect(new ConfigStore(configPath).importFrom(legacyPath)).rejects.toThrow(/invalid CLI config/);
     expect(existsSync(configPath)).toBe(false);
+  });
+});
+
+describe('旧版 CLI 配置：导入时翻译一次，桌面存储不做兼容', () => {
+  it('importFrom 交回规范格式（models 条目 + model 引用，无任何废弃键）；CLI 文件只读未动', async () => {
+    await writeFile(legacyPath, JSON.stringify(legacyConfig), 'utf-8');
+    const imported = await new ConfigStore(configPath).importFrom(legacyPath);
+    // 翻译逻辑在 protocol normalizeConfig（自有单测）；这里钉的是接线：
+    // 导入是唯一翻译点，落进桌面的已经是规范格式。
+    expect(imported).toStrictEqual(translatedConfig);
+    expect(JSON.parse(readFileSync(legacyPath, 'utf-8'))).toStrictEqual(legacyConfig);
+  });
+
+  it('load 拒绝带旧版键的 envelope——报错走重新 onboard，而不是静默兼容', async () => {
+    await writeFile(configPath, JSON.stringify(makeEnvelope(legacyConfig)), 'utf-8');
+    await expect(new ConfigStore(configPath).load()).rejects.toThrow(/含旧版配置键 providers\.ds\.endpoint、providers\.ds\.modelName/);
+
+    // 只剩旧的 provider 键绑定同样被拒。
+    const legacyBinding: WayangConfig = {
+      ...validConfig,
+      controller: { provider: 'default' },
+      worker: { provider: 'default', maxConcurrency: 3 },
+    };
+    await writeFile(configPath, JSON.stringify(makeEnvelope(legacyBinding)), 'utf-8');
+    await expect(new ConfigStore(configPath).load()).rejects.toThrow(/含旧版配置键 controller\.provider、worker\.provider/);
   });
 });
 

@@ -54,14 +54,16 @@ describe('checkCoreCompleteness (必要核心配置)', () => {
     expect(checkCoreCompleteness(dangling)).toMatch(/不存在的 provider "ghost"/);
   });
 
-  it('accepts the legacy provider binding when it names a real provider', () => {
+  it('rejects the legacy provider-key binding: the desktop only knows `model` references', () => {
+    // The legacy spelling is translated at the one config entry (the CLI
+    // import, protocol normalizeConfig) — it must never count as a binding here.
     const legacy: WayangConfig = {
       providers: { main: { baseURL: 'https://api.example.com/v1', apiKey: 'sk-1', modelName: 'gpt-x' } },
       controller: { provider: 'main' },
       worker: { provider: 'main', maxConcurrency: 2 },
     };
-    expect(checkCoreCompleteness(legacy)).toBeNull();
-    expect(checkCoreCompleteness({ ...legacy, controller: { provider: 'ghost' } })).toMatch(/controller\.provider "ghost" 不存在/);
+    expect(checkCoreCompleteness(legacy)).toMatch(/controller 未绑定模型/);
+    expect(checkCoreCompleteness({ ...legacy, controller: { model: 'main/gpt-x' } })).toMatch(/worker 未绑定模型/);
   });
 });
 

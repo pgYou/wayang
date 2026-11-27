@@ -38,9 +38,22 @@ import { makeEnvelope } from '../../shared/config-envelope';
 import type { MainLogger } from '../logger';
 import type { UnifiedLogger } from '../unified-logger';
 
+// The canonical shape (models + model references) — the only form the desktop stores.
 const validConfig: WayangConfig = {
   providers: {
-    default: { baseURL: 'http://localhost:1234/v1', apiKey: 'test-key', modelName: 'test-model' },
+    default: { baseURL: 'http://localhost:1234/v1', apiKey: 'test-key' },
+  },
+  models: {
+    default: { provider: 'default', name: 'test-model' },
+  },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 2 },
+};
+
+/** The same config in the pre-#88 CLI spelling — what `importCliConfig` translates. */
+const legacyCliConfig: WayangConfig = {
+  providers: {
+    default: { endpoint: 'http://localhost:1234/v1', apiKey: 'test-key', modelName: 'test-model' },
   },
   controller: { provider: 'default' },
   worker: { provider: 'default', maxConcurrency: 2 },
@@ -280,15 +293,19 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
     await service.stop();
   });
 
-  it('importCliConfig validates read-only: a valid CLI config returns, an invalid one errors', async () => {
+  it('importCliConfig translates the legacy CLI spelling to the canonical shape, read-only; an invalid one errors', async () => {
     rmSync(options.configPath, { force: true });
-    writeFileSync(options.legacyConfigPath, JSON.stringify(validConfig));
+    // The pre-#88 CLI file (provider-key bindings, no models map) comes back
+    // canonical — the desktop never stores the legacy spelling.
+    writeFileSync(options.legacyConfigPath, JSON.stringify(legacyCliConfig));
     const service = makeService();
     await service.start(null);
     const ok = await invoke(IPC.importCliConfig, []);
     expect(ok).toMatchObject({ ok: true, data: { config: validConfig } });
-    // Read-only: no envelope seeded by the import itself.
+    // Read-only in both directions: no envelope seeded by the import itself,
+    // and the CLI file is untouched.
     expect(existsSync(options.configPath)).toBe(false);
+    expect(JSON.parse(readFileSync(options.legacyConfigPath, 'utf-8'))).toEqual(legacyCliConfig);
 
     writeFileSync(options.legacyConfigPath, JSON.stringify({ providers: {} }));
     const bad = await invoke(IPC.importCliConfig, []);

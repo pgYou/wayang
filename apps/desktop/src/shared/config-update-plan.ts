@@ -10,10 +10,13 @@
  * the protocol parser before touching the running server.
  *
  * Fields outside the eight methods' whitelists (third-party `workers` rows,
- * `permission`, `logging`, a provider's deprecated request-param fields, a
- * model entry's `name`, the legacy `controller.provider` / `worker.provider`
- * binding) are reported as restart-required — the envelope is written, the
- * running server picks them up on the next boot.
+ * `permission`, `logging`, a model entry's `name`) are reported as
+ * restart-required — the envelope is written, the running server picks them
+ * up on the next boot.
+ *
+ * Both sides are canonical configs (protocol normalizeConfig runs at the one
+ * config entry): legacy spellings — a provider's deprecated model fields, the
+ * provider-key binding — never appear in a diff and have no branch here.
  */
 
 import type { WayangConfig } from '@wayang-ai/protocol';
@@ -47,8 +50,6 @@ export interface ConfigUpdatePlan {
 const PROVIDER_PATCH_KEYS = ['baseURL', 'apiKey', 'type'] as const;
 /** Field whitelist of `update_model` (protocol's ModelPatch). */
 const MODEL_PATCH_KEYS = ['provider', 'contextWindowTokens', 'temperature', 'maxOutputTokens'] as const;
-/** Provider keys whose changes update_provider cannot express (deprecated). */
-const PROVIDER_RESTART_KEYS = ['contextWindowTokens', 'temperature', 'maxOutputTokens', 'modelName', 'endpoint'] as const;
 
 function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -97,11 +98,6 @@ export function planConfigUpdates(prev: WayangConfig, next: WayangConfig): Confi
     if (!before) continue;
     const patch = patchOf(before, def, PROVIDER_PATCH_KEYS);
     if (Object.keys(patch).length > 0) updateProviderOps.push({ method: 'update_provider', params: { name, patch } });
-    for (const key of PROVIDER_RESTART_KEYS) {
-      if (!sameJson((before as unknown as Record<string, unknown>)[key], (def as unknown as Record<string, unknown>)[key])) {
-        restartRequired.push(`providers.${name}.${key}（废弃字段，需重启生效）`);
-      }
-    }
   }
 
   /* --- models: adds (wire-required fields only), updates, removals --- */
@@ -135,22 +131,21 @@ export function planConfigUpdates(prev: WayangConfig, next: WayangConfig): Confi
   if (!sameJson(prev.controller?.model, next.controller?.model)) {
     const ref = next.controller?.model;
     if (ref === undefined) {
-      restartRequired.push('controller.model 被清空（回退 legacy provider 绑定需重启生效）');
+      // update_controller_model requires a model — a cleared binding only
+      // takes effect on the next boot.
+      restartRequired.push('controller.model 被清空（需重启生效）');
     } else {
       bindingOps.push({ method: 'update_controller_model', params: { model: ref } });
     }
-  }
-  if (!sameJson(prev.controller?.provider, next.controller?.provider)) {
-    restartRequired.push('controller.provider（legacy 绑定，需重启生效）');
   }
 
   /* --- worker binding + settings --- */
   const workerPatch: Record<string, unknown> = {};
   if (!sameJson(prev.worker?.model, next.worker?.model)) {
     if (next.worker?.model === undefined) {
-      // The patch whitelist rejects a bare undefined; a cleared binding is a
-      // legacy-provider fallback — restart territory.
-      restartRequired.push('worker.model 被清空（回退 legacy provider 绑定需重启生效）');
+      // The patch whitelist rejects a bare undefined — a cleared binding only
+      // takes effect on the next boot.
+      restartRequired.push('worker.model 被清空（需重启生效）');
     } else {
       workerPatch.model = next.worker?.model;
     }
@@ -159,9 +154,6 @@ export function planConfigUpdates(prev: WayangConfig, next: WayangConfig): Confi
   if (!sameJson(prev.worker?.toolChoice, next.worker?.toolChoice)) workerPatch.toolChoice = next.worker?.toolChoice;
   if (Object.keys(workerPatch).length > 0) {
     bindingOps.push({ method: 'update_worker_settings', params: { patch: workerPatch } });
-  }
-  if (!sameJson(prev.worker?.provider, next.worker?.provider)) {
-    restartRequired.push('worker.provider（legacy 绑定，需重启生效）');
   }
 
   /* --- sections the eight methods do not cover: restart-only --- */
