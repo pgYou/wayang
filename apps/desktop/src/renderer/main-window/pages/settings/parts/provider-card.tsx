@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronRightIcon, LoaderIcon } from 'lucide-react';
+import { ChevronRightIcon, EyeIcon, EyeOffIcon, LoaderIcon } from 'lucide-react';
 import type { ModelConfig, ProviderConfig, WayangConfig } from '@wayang-ai/protocol';
 import { removeModel, removeProvider, upsertModel, upsertProvider } from '@/renderer/shared/lib/config-draft';
 import { Button } from '@/renderer/shared/components/ui/button';
@@ -27,7 +27,9 @@ interface ProviderForm {
 
 /**
  * 一个 provider 一张卡片：头部可折叠（折叠时不渲染模型列表的高度，只保留
- * 概要行），展开后在卡内直接增删改其下的模型。
+ * 概要行），展开后连接信息表单项常驻展示——非编辑态为纯文本（API Key 默认
+ * 打码，眼睛图标切换明文），点「编辑」切换为输入框 + 保存/取消；其下的
+ * 模型直接在卡内增删改。
  */
 export function ProviderCard({
   config,
@@ -46,12 +48,15 @@ export function ProviderCard({
 }) {
   const models = Object.entries(config.models ?? {}).filter(([, m]) => m.provider === providerKey);
   const [editing, setEditing] = useState<ProviderForm | null>(null);
+  /** 只读态 API Key 是否明文展示（默认打码，眼睛图标切换）。 */
+  const [revealKey, setRevealKey] = useState(false);
   const [modelForm, setModelForm] = useState<ModelForm | null>(null);
   const action = useAutoSaveAction();
 
   const saveProvider = (): void => {
     if (!editing) return;
     action.run(async () => {
+      if (!editing.baseURL.trim() || !editing.apiKey.trim()) throw new Error('Base URL 与 API Key 不能为空');
       await commit(upsertProvider(config, providerKey, { ...provider, baseURL: editing.baseURL.trim(), apiKey: editing.apiKey.trim() }));
       setEditing(null);
     });
@@ -79,7 +84,7 @@ export function ProviderCard({
         <button type="button" onClick={onToggle} aria-expanded={open} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left">
           <ChevronRightIcon className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
           <span className="font-mono text-sm font-medium">{providerKey}</span>
-          <span className="truncate text-xs text-muted-foreground">{provider.baseURL ?? provider.endpoint}</span>
+          <span className="truncate text-xs text-muted-foreground">{provider.baseURL ?? '—'}</span>
           <span className="shrink-0 text-xs text-muted-foreground">{models.length} 个模型</span>
         </button>
         {editing === null && (
@@ -95,20 +100,44 @@ export function ProviderCard({
       </div>
       <Collapse open={open}>
         <div className="divide-y divide-border border-t border-border">
-          {editing !== null && (
+          {/* 连接信息表单项常驻展示：非编辑态为纯文本（API Key 打码），
+              「编辑」后切换为输入框 + 保存/取消。 */}
+          {editing === null ? (
             <div className="flex flex-col gap-3 px-4 py-3">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="flex flex-col gap-1">
-                  <Label>Base URL</Label>
-                  <Input value={editing.baseURL} onChange={(e) => setEditing((prev) => (prev ? { ...prev, baseURL: e.target.value } : prev))} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label>API Key</Label>
-                  <Input type="password" value={editing.apiKey} onChange={(e) => setEditing((prev) => (prev ? { ...prev, apiKey: e.target.value } : prev))} />
+              <div className="flex flex-col gap-1">
+                <Label>Base URL</Label>
+                <span className="break-all text-sm">{provider.baseURL ?? '—'}</span>
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label>API Key</Label>
+                <div className="flex items-center gap-1">
+                  <span className="min-w-0 flex-1 break-all text-sm">{provider.apiKey ? (revealKey ? provider.apiKey : '••••••••') : '—'}</span>
+                  {provider.apiKey && (
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label={revealKey ? '隐藏 API Key' : '展示 API Key'}
+                      aria-pressed={revealKey}
+                      onClick={() => setRevealKey((v) => !v)}
+                    >
+                      {revealKey ? <EyeOffIcon /> : <EyeIcon />}
+                    </Button>
+                  )}
                 </div>
               </div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 px-4 py-3">
+              <div className="flex flex-col gap-1">
+                <Label>Base URL</Label>
+                <Input value={editing.baseURL} onChange={(e) => setEditing((prev) => (prev ? { ...prev, baseURL: e.target.value } : prev))} />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label>API Key</Label>
+                <Input type="password" value={editing.apiKey} onChange={(e) => setEditing((prev) => (prev ? { ...prev, apiKey: e.target.value } : prev))} />
+              </div>
               <div className="flex items-center gap-2">
-                <Button size="sm" onClick={saveProvider} disabled={!editing.baseURL.trim() || !editing.apiKey.trim() || action.pending}>
+                <Button size="sm" onClick={saveProvider} disabled={action.pending}>
                   {action.pending && <LoaderIcon className="animate-spin" />}
                   保存
                 </Button>
