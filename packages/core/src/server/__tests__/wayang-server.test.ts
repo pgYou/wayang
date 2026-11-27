@@ -30,9 +30,10 @@ beforeAll(async () => {
   // Injected config object (design 4.1): the server runs on the object the
   // host hands it — no config file involved at all.
   config = {
-    providers: { fake: { endpoint: provider.baseURL, apiKey: 'test-key', modelName: 'fake-model' } },
-    controller: { provider: 'fake' },
-    worker: { provider: 'fake', maxConcurrency: 1 },
+    providers: { fake: { baseURL: provider.baseURL, apiKey: 'test-key' } },
+    models: { fake: { provider: 'fake', name: 'fake-model' } },
+    controller: { model: 'fake' },
+    worker: { model: 'fake', maxConcurrency: 1 },
   };
   exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 });

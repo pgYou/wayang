@@ -50,10 +50,20 @@ export function validateOrReject(config: WayangConfig, label: string): void {
  * 只认、只存规范格式（顶层 `models` + `model` 引用）。旧版 CLI 写法只在
  * 「导入 CLI 配置」入口经 protocol 的 normalizeConfig 翻译一次；撞上任何
  * 废弃键说明是旧版本残留或外来文件——报错让人重新 onboard / 导入，不做
- * 静默兼容。
+ * 静默兼容。与 core 准入（validateCanonicalConfig）同一个条件，只是报错
+ * 文案面向桌面用户。
+ *
+ * 先于 validateOrReject 调用：validateConfig 只认规范格式，旧版配置若先过
+ * 结构校验，报出来的是「缺 baseURL」而不是「含旧版键、请重新导入」。
  */
 export function assertCanonicalConfig(config: WayangConfig, label: string): void {
-  const legacyKeys = findLegacyConfigKeys(config);
+  let legacyKeys: string[];
+  try {
+    legacyKeys = findLegacyConfigKeys(config);
+  } catch {
+    // 顶层结构坏了：交给 validateOrReject 报「malformed config」。
+    return;
+  }
   if (legacyKeys.length === 0) return;
   throw new Error(
     `invalid ${label}: 含旧版配置键 ${legacyKeys.join('、')}——桌面配置只存规范格式，请重新 onboard（可重新导入 CLI 配置）`,
@@ -70,8 +80,8 @@ export function isEnvelopeLike(value: unknown): value is { schemaVersion: unknow
 
 /**
  * Parse + validate one envelope: schema version must be exactly the one this
- * build speaks, and the embedded `wayangConfig` must pass `validateConfig`
- * and be canonical (no legacy key — see assertCanonicalConfig).
+ * build speaks, and the embedded `wayangConfig` must be canonical (no legacy
+ * key — see assertCanonicalConfig, checked FIRST) and pass `validateConfig`.
  * Throws with a precise message on any rejection.
  */
 export function parseConfigEnvelope(raw: string): ConfigEnvelope {
@@ -94,7 +104,7 @@ export function parseConfigEnvelope(raw: string): ConfigEnvelope {
       ? (parsed.desktop as Record<string, unknown>)
       : {};
   const config = parsed.wayangConfig as WayangConfig;
-  validateOrReject(config, 'wayangConfig in envelope');
   assertCanonicalConfig(config, 'wayangConfig in envelope');
+  validateOrReject(config, 'wayangConfig in envelope');
   return { schemaVersion: CONFIG_SCHEMA_VERSION, wayangConfig: config, desktop };
 }

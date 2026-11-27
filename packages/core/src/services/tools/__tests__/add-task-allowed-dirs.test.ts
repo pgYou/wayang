@@ -126,22 +126,6 @@ describe('addTaskTool — allowedDirs declaration', () => {
     expect(added).toHaveLength(0);
   });
 
-  it('honours the deprecated deniedDirs alias for the same rejection', async () => {
-    const added: TaskDetail[] = [];
-    const secretDir = makeDir(userHome, 'legacy-area');
-    const tool = makeTool(added, { permissionConfig: { deniedDirs: ['legacy-area'] } });
-
-    const result = await exec(tool, {
-      title: 'T',
-      description: 'D',
-      allowedDirs: [secretDir],
-    });
-
-    expect(result).toContain('sensitive list');
-    expect(result).toContain('NOT created');
-    expect(added).toHaveLength(0);
-  });
-
   it('resolves a relative entry against the task workspace', async () => {
     const added: TaskDetail[] = [];
     const tool = makeTool(added);

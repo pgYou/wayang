@@ -77,8 +77,8 @@ export type ConfigUpdateRequest =
 export interface ConfigUpdateAffected {
   /**
    * Binding that consumes the changed provider/model:
-   * - `controller` — the `controller.model` (or legacy `controller.provider`) binding; effective next TURN;
-   * - `worker` — the default puppet worker binding (`worker.model` / legacy `worker.provider`); effective next SPAWN;
+   * - `controller` — the `controller.model` binding; effective next TURN;
+   * - `worker` — the default puppet worker binding (`worker.model`); effective next SPAWN;
    * - `workerRow` — a third-party `workers.<id>.model` row; effective next SPAWN.
    */
   kind: 'controller' | 'worker' | 'workerRow';
@@ -289,15 +289,13 @@ export interface BindingSite {
   workerId?: string;
   /** The model reference the binding declares, if any. */
   ref: ModelRef | undefined;
-  /** Deprecated legacy provider key still honoured when `ref` is absent. */
-  legacyProvider?: string;
 }
 
 /** The binding sites that may reference a model — order matters for output. */
 export function bindingSites(config: WayangConfig): BindingSite[] {
   const sites: BindingSite[] = [
-    { site: 'controller.model', kind: 'controller', ref: config.controller.model, legacyProvider: config.controller.provider },
-    { site: 'worker.model', kind: 'worker', ref: config.worker.model, legacyProvider: config.worker.provider },
+    { site: 'controller.model', kind: 'controller', ref: config.controller.model },
+    { site: 'worker.model', kind: 'worker', ref: config.worker.model },
   ];
   for (const [id, worker] of Object.entries(config.workers ?? {})) {
     if (typeof worker !== 'object' || worker === null) continue;
@@ -312,7 +310,7 @@ export function bindingSites(config: WayangConfig): BindingSite[] {
  * whose `provider` field names the provider). Returns null when the ref
  * names no provider at all.
  */
-export function modelRefProvider(config: WayangConfig, ref: ModelRef | undefined, legacyProviderKey?: string): string | null {
+export function modelRefProvider(config: WayangConfig, ref: ModelRef | undefined): string | null {
   if (ref !== undefined) {
     if (typeof ref === 'string') {
       const named = config.models?.[ref];
@@ -322,7 +320,7 @@ export function modelRefProvider(config: WayangConfig, ref: ModelRef | undefined
     }
     return typeof ref.provider === 'string' && ref.provider.length > 0 ? ref.provider : null;
   }
-  return legacyProviderKey ?? null;
+  return null;
 }
 
 /** Which `models` key a string model reference names, or null (composite / inline / none). */

@@ -1,17 +1,25 @@
-// Behavioural lock for normalizeConfig / findLegacyConfigKeys — the single
-// translation point from legacy config spellings to the canonical shape.
-// Every case pins behaviour preservation against core's resolveModelRef
+// Behavioural lock for normalizeConfig / findLegacyConfigKeys /
+// validateCanonicalConfig — the single translation point from legacy config
+// spellings to the canonical shape, and the intake check built on it. Every
+// translation case pins behaviour preservation against the pre-#88 resolution
 // rules: same model name, base URL, window budget and request parameters
 // before and after the translation.
 
 import { describe, it, expect } from 'vitest';
-import { normalizeConfig, findLegacyConfigKeys } from '../config-normalize';
-import { validateConfig, type WayangConfig, type WorkerConfig } from '../config';
+import { normalizeConfig, findLegacyConfigKeys, validateCanonicalConfig } from '../config-normalize';
+import { validateConfig, type WayangConfig } from '../config';
 
 // --- Fixtures ------------------------------------------------------------
 
+/**
+ * A pre-#88 config. The legacy spellings are not part of the `WayangConfig`
+ * TYPE any more — that is the point of the split — so legacy fixtures are
+ * built untyped and cast here, exactly like the JSON a host reads off disk.
+ */
+const pre88 = (config: unknown): WayangConfig => config as WayangConfig;
+
 /** A real pre-#88 CLI config: one provider per model, provider-key bindings. */
-const legacy: WayangConfig = {
+const legacy: WayangConfig = pre88({
   providers: {
     'ds-flash': { endpoint: 'https://api.deepseek.com', apiKey: 'k1', modelName: 'deepseek-flash' },
     hub: {
@@ -26,7 +34,7 @@ const legacy: WayangConfig = {
   controller: { provider: 'hub' },
   worker: { provider: 'hub', maxConcurrency: 3, toolChoice: 'auto', maxTurns: 1000 },
   workers: { cc: { type: 'claude-code', description: 'coding' } },
-};
+});
 
 /** What `legacy` must become: models entries keyed by the provider key, bindings by reference. */
 const canonical: WayangConfig = {
@@ -56,7 +64,7 @@ describe('normalizeConfig (legacy → canonical)', () => {
     expect(Object.keys(config.worker)).toStrictEqual(['model', 'maxConcurrency', 'toolChoice', 'maxTurns']);
     // The result is canonical and usable as-is.
     expect(findLegacyConfigKeys(config)).toStrictEqual([]);
-    expect(validateConfig(config)).toBeNull();
+    expect(validateCanonicalConfig(config)).toBeNull();
     // The caller's object is never mutated (the CLI file content, a draft…).
     expect(legacy).toStrictEqual(pristine);
     // One line per translated spelling, in config order.
@@ -80,15 +88,17 @@ describe('normalizeConfig (legacy → canonical)', () => {
 
   it('findLegacyConfigKeys inventories every deprecated key, in config order', () => {
     expect(
-      findLegacyConfigKeys({
-        ...legacy,
-        permission: { deniedDirs: ['/secrets'] },
-        workers: {
-          // The deprecated spelling is not a WorkerType any more — that is the point.
-          cb: { type: 'codebuddy-acp', description: 'x' } as unknown as WorkerConfig,
-          cc: { type: 'claude-code', description: 'y' },
-        },
-      }),
+      findLegacyConfigKeys(
+        pre88({
+          ...legacy,
+          permission: { deniedDirs: ['/secrets'] },
+          workers: {
+            // The deprecated spelling is not a WorkerType any more — that is the point.
+            cb: { type: 'codebuddy-acp', description: 'x' },
+            cc: { type: 'claude-code', description: 'y' },
+          },
+        }),
+      ),
     ).toStrictEqual([
       'providers.ds-flash.endpoint',
       'providers.ds-flash.modelName',
@@ -106,27 +116,58 @@ describe('normalizeConfig (legacy → canonical)', () => {
   });
 
   it('baseURL wins over a coexisting endpoint alias', () => {
-    const { config } = normalizeConfig({
-      providers: { hub: { baseURL: 'https://a/v1', endpoint: 'https://b/v1', apiKey: 'k' } },
-      controller: {},
-      worker: { maxConcurrency: 1 },
-    });
+    const { config } = normalizeConfig(
+      pre88({
+        providers: { hub: { baseURL: 'https://a/v1', endpoint: 'https://b/v1', apiKey: 'k' } },
+        controller: {},
+        worker: { maxConcurrency: 1 },
+      }),
+    );
     expect(config.providers.hub).toStrictEqual({ baseURL: 'https://a/v1', apiKey: 'k' });
+  });
+});
+
+describe('validateCanonicalConfig (the intake check)', () => {
+  it('accepts a canonical, structurally valid config', () => {
+    expect(validateCanonicalConfig(canonical)).toBeNull();
+  });
+
+  it('refuses a config that still carries a legacy key — naming every one of them', () => {
+    expect(validateCanonicalConfig(legacy)).toBe(
+      'config carries deprecated keys (providers.ds-flash.endpoint, providers.ds-flash.modelName, providers.hub.endpoint, ' +
+        'providers.hub.modelName, providers.hub.contextWindowTokens, providers.hub.temperature, providers.hub.maxOutputTokens, ' +
+        'controller.provider, worker.provider) — the host must call normalizeConfig at its config entry before handing a config to core',
+    );
+    // A single leftover key is enough — e.g. a host that only half-translated.
+    expect(validateCanonicalConfig({ ...canonical, controller: { model: 'hub', provider: 'hub' } as unknown as WayangConfig['controller'] })).toMatch(
+      /^config carries deprecated keys \(controller\.provider\)/,
+    );
+  });
+
+  it('falls through to the structural validation once the shape is canonical', () => {
+    const broken: WayangConfig = { ...canonical, providers: { hub: { apiKey: 'k' } } };
+    expect(validateCanonicalConfig(broken)).toBe('providers.hub.baseURL is required');
+  });
+
+  it('reports a malformed top level as a problem instead of throwing (an intake never leaks a TypeError)', () => {
+    expect(validateCanonicalConfig({ controller: {}, worker: {} } as unknown as WayangConfig)).toMatch(/^malformed config \(/);
   });
 });
 
 describe('normalizeConfig (window budget: moved, never lost, never invented)', () => {
   it('moves a provider window onto the entries and references that inherit it; materializes composites', () => {
-    const { config } = normalizeConfig({
-      providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'old', contextWindowTokens: 200_000 } },
-      models: {
-        fast: { provider: 'hub', name: 'fast-model' },
-        big: { provider: 'hub', name: 'big-model', contextWindowTokens: 64_000 },
-      },
-      controller: { model: 'fast' },
-      // A composite inherits the provider's window in core — it becomes an entry carrying it.
-      worker: { model: 'hub/other', maxConcurrency: 1 },
-    });
+    const { config } = normalizeConfig(
+      pre88({
+        providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'old', contextWindowTokens: 200_000 } },
+        models: {
+          fast: { provider: 'hub', name: 'fast-model' },
+          big: { provider: 'hub', name: 'big-model', contextWindowTokens: 64_000 },
+        },
+        controller: { model: 'fast' },
+        // A composite inherited the provider's window — it becomes an entry carrying it.
+        worker: { model: 'hub/other', maxConcurrency: 1 },
+      }),
+    );
     // The implicit model lands under the PROVIDER key ("hub"), not its model name.
     expect(config.models).toStrictEqual({
       fast: { provider: 'hub', name: 'fast-model', contextWindowTokens: 200_000 },
@@ -151,12 +192,14 @@ describe('normalizeConfig (window budget: moved, never lost, never invented)', (
   });
 
   it('fills an inline reference with the provider window it inherits', () => {
-    const { config } = normalizeConfig({
-      providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', contextWindowTokens: 128_000 } },
-      controller: { model: { provider: 'hub', name: 'x' } },
-      worker: { model: { provider: 'hub', name: 'y', contextWindowTokens: 8_000 }, maxConcurrency: 1 },
-      workers: { cc: { type: 'claude-code', description: 'd', model: { provider: 'hub', name: 'z' } } },
-    });
+    const { config } = normalizeConfig(
+      pre88({
+        providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', contextWindowTokens: 128_000 } },
+        controller: { model: { provider: 'hub', name: 'x' } },
+        worker: { model: { provider: 'hub', name: 'y', contextWindowTokens: 8_000 }, maxConcurrency: 1 },
+        workers: { cc: { type: 'claude-code', description: 'd', model: { provider: 'hub', name: 'z' } } },
+      }),
+    );
     expect(config.controller.model).toStrictEqual({ provider: 'hub', name: 'x', contextWindowTokens: 128_000 });
     // An entry's own window is never overridden.
     expect(config.worker.model).toStrictEqual({ provider: 'hub', name: 'y', contextWindowTokens: 8_000 });
@@ -166,14 +209,16 @@ describe('normalizeConfig (window budget: moved, never lost, never invented)', (
 
   it('drops a window nothing references', () => {
     // The bindings point at ANOTHER provider: nothing inherits hub's window.
-    const { config, notes } = normalizeConfig({
-      providers: {
-        hub: { baseURL: 'https://hub/v3', apiKey: 'k', contextWindowTokens: 128_000 },
-        other: { baseURL: 'https://other/v1', apiKey: 'k2' },
-      },
-      controller: { model: 'other/x' },
-      worker: { model: 'other/x', maxConcurrency: 1 },
-    });
+    const { config, notes } = normalizeConfig(
+      pre88({
+        providers: {
+          hub: { baseURL: 'https://hub/v3', apiKey: 'k', contextWindowTokens: 128_000 },
+          other: { baseURL: 'https://other/v1', apiKey: 'k2' },
+        },
+        controller: { model: 'other/x' },
+        worker: { model: 'other/x', maxConcurrency: 1 },
+      }),
+    );
     expect(config.providers.hub).toStrictEqual({ baseURL: 'https://hub/v3', apiKey: 'k' });
     expect(notes).toStrictEqual(['providers.hub.contextWindowTokens is deprecated — dropped (no model referenced it)']);
   });
@@ -181,24 +226,28 @@ describe('normalizeConfig (window budget: moved, never lost, never invented)', (
 
 describe('normalizeConfig (entry keys and bindings)', () => {
   it('reuses the entry that already is the implicit model — no duplicate', () => {
-    const { config } = normalizeConfig({
-      providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'fast-model' } },
-      models: { fast: { provider: 'hub', name: 'fast-model' } },
-      controller: { provider: 'hub' },
-      worker: { provider: 'hub', maxConcurrency: 1 },
-    });
+    const { config } = normalizeConfig(
+      pre88({
+        providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'fast-model' } },
+        models: { fast: { provider: 'hub', name: 'fast-model' } },
+        controller: { provider: 'hub' },
+        worker: { provider: 'hub', maxConcurrency: 1 },
+      }),
+    );
     expect(config.models).toStrictEqual({ fast: { provider: 'hub', name: 'fast-model' } });
     expect(config.controller).toStrictEqual({ model: 'fast' });
     expect(config.worker.model).toBe('fast');
   });
 
   it('keeps a same-name entry with a different window apart (the legacy binding resolved the provider window)', () => {
-    const { config } = normalizeConfig({
-      providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'fast-model', contextWindowTokens: 200_000 } },
-      models: { fast: { provider: 'hub', name: 'fast-model', contextWindowTokens: 64_000 } },
-      controller: { provider: 'hub' },
-      worker: { provider: 'hub', maxConcurrency: 1 },
-    });
+    const { config } = normalizeConfig(
+      pre88({
+        providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'fast-model', contextWindowTokens: 200_000 } },
+        models: { fast: { provider: 'hub', name: 'fast-model', contextWindowTokens: 64_000 } },
+        controller: { provider: 'hub' },
+        worker: { provider: 'hub', maxConcurrency: 1 },
+      }),
+    );
     expect(config.models).toStrictEqual({
       fast: { provider: 'hub', name: 'fast-model', contextWindowTokens: 64_000 },
       hub: { provider: 'hub', name: 'fast-model', contextWindowTokens: 200_000 },
@@ -207,22 +256,26 @@ describe('normalizeConfig (entry keys and bindings)', () => {
   });
 
   it('falls back to -2 when the provider key is taken by another model', () => {
-    const { config } = normalizeConfig({
-      providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'm' } },
-      models: { hub: { provider: 'other', name: 'x' } },
-      controller: { provider: 'hub' },
-      worker: { provider: 'hub', maxConcurrency: 1 },
-    });
+    const { config } = normalizeConfig(
+      pre88({
+        providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'm' } },
+        models: { hub: { provider: 'other', name: 'x' } },
+        controller: { provider: 'hub' },
+        worker: { provider: 'hub', maxConcurrency: 1 },
+      }),
+    );
     expect(Object.keys(config.models ?? {})).toStrictEqual(['hub', 'hub-2']);
     expect(config.controller).toStrictEqual({ model: 'hub-2' });
   });
 
   it('leaves the binding empty when the legacy provider declares no modelName (the env fallback was a host concern)', () => {
-    const { config, notes } = normalizeConfig({
-      providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k' } },
-      controller: { provider: 'hub' },
-      worker: { provider: 'hub', maxConcurrency: 1 },
-    });
+    const { config, notes } = normalizeConfig(
+      pre88({
+        providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k' } },
+        controller: { provider: 'hub' },
+        worker: { provider: 'hub', maxConcurrency: 1 },
+      }),
+    );
     expect(config.controller).toStrictEqual({});
     expect(config.worker).toStrictEqual({ maxConcurrency: 1 });
     expect(notes).toStrictEqual([
@@ -232,22 +285,26 @@ describe('normalizeConfig (entry keys and bindings)', () => {
   });
 
   it('a present model reference wins over the legacy provider key', () => {
-    const { config } = normalizeConfig({
-      providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'old' } },
-      controller: { provider: 'hub', model: 'hub/direct' },
-      worker: { provider: 'hub', maxConcurrency: 1 },
-    });
+    const { config } = normalizeConfig(
+      pre88({
+        providers: { hub: { baseURL: 'https://hub/v3', apiKey: 'k', modelName: 'old' } },
+        controller: { provider: 'hub', model: 'hub/direct' },
+        worker: { provider: 'hub', maxConcurrency: 1 },
+      }),
+    );
     expect(config.controller).toStrictEqual({ model: 'hub/direct' });
     expect(config.worker.model).toBe('hub');
   });
 
   it('rewrites deprecated worker type spellings, merges deniedDirs, drops removed keys', () => {
-    const { config, notes } = normalizeConfig({
-      ...canonical,
-      permission: { sensitiveDirs: ['/a', '/shared'], deniedDirs: ['/shared', '/b'], sensitiveMode: 'deny' },
-      workers: { cb: { type: 'codebuddy-acp', description: 'x' } as unknown as WorkerConfig },
-      ...( { workerRunTimeoutMs: 60_000 } as unknown as Partial<WayangConfig>),
-    });
+    const { config, notes } = normalizeConfig(
+      pre88({
+        ...canonical,
+        permission: { sensitiveDirs: ['/a', '/shared'], deniedDirs: ['/shared', '/b'], sensitiveMode: 'deny' },
+        workers: { cb: { type: 'codebuddy-acp', description: 'x' } },
+        workerRunTimeoutMs: 60_000,
+      }),
+    );
     expect(config.workers?.cb.type).toBe('codebuddy');
     expect(config.permission).toStrictEqual({ sensitiveDirs: ['/a', '/shared', '/b'], sensitiveMode: 'deny' });
     expect((config as unknown as Record<string, unknown>).workerRunTimeoutMs).toBeUndefined();
@@ -259,24 +316,21 @@ describe('normalizeConfig (entry keys and bindings)', () => {
   });
 
   it('drops a permission section that the merge leaves empty', () => {
-    const { config } = normalizeConfig({
-      ...canonical,
-      permission: { deniedDirs: [] },
-    });
+    const { config } = normalizeConfig(pre88({ ...canonical, permission: { deniedDirs: [] } }));
     expect(config.permission).toBeUndefined();
   });
 });
 
 describe('normalizeConfig (robustness)', () => {
   it('passes malformed shapes through for validateConfig to report — never throws', () => {
-    const malformed = {
+    const malformed = pre88({
       providers: { broken: null },
       controller: null,
       worker: { provider: 'broken', maxConcurrency: 1 },
       models: { bad: 'nope' },
       permission: { deniedDirs: 'not-a-list' },
       workers: { cb: { type: 'codebuddy-acp', description: 'x' } },
-    } as unknown as WayangConfig;
+    });
     const { config } = normalizeConfig(malformed);
     // The translation only touched what it understands.
     expect(config.workers?.cb.type).toBe('codebuddy');

@@ -283,6 +283,7 @@
 ### C.3 配置键兼容
 
 - 内外部命名统一为 sensitiveList / sensitive 语义：类型字段 `permission.sensitiveDirs`，代码常量 `DEFAULT_SENSITIVE_RELATIVE_PATHS` / `SENSITIVE_NAME_SEGMENTS`，日志与文案 "sensitive list"。
+- **后续变更（配置入口统一翻译）**：`deniedDirs` 不再由 core 读取。旧键现在在宿主的配置入口由 protocol `normalizeConfig` 一次性并入 `sensitiveDirs`（当前键在前、去重），core 的准入拒绝任何仍带旧键的配置——「不悄悄取消用户保护」的目标不变，只是翻译点从 core 内部挪到了入口。下面三条理由与实现描述是 0.8.1 当时的设计。
 - **旧键 `permission.deniedDirs` 保留为 deprecated 别名，继续读取**，理由有三条：
   - 配置在磁盘上（`~/.wayang.config.json`），没有迁移工具；把旧键静默忽略等于把用户自己声明的保护目录**悄悄取消**，是 fail-open 方向的破坏（比多留一个键危险得多）。
   - 别名成本很低：加载时 `sensitiveDirs = dedupe([...sensitiveDirs, ...deniedDirs])`，校验函数对两个键做同一套"字符串数组"检查。

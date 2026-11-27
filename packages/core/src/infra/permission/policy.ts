@@ -144,9 +144,10 @@ export interface DecideAccessInput {
   /** User-config `permission.autoAllowRoots`. Relative entries resolve against `userHome`. */
   autoAllowRoots?: string[];
   /**
-   * User-config `permission.sensitiveDirs` (plus the deprecated `deniedDirs`
-   * alias, already merged by the caller). Appended to the built-in sensitive
-   * list; relative entries resolve against `userHome`.
+   * User-config `permission.sensitiveDirs` (deduped by the caller; the
+   * deprecated `deniedDirs` alias is folded in by the host at its config
+   * entry). Appended to the built-in sensitive list; relative entries resolve
+   * against `userHome`.
    */
   extraSensitiveDirs?: string[];
   /**

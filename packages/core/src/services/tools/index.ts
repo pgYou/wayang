@@ -78,8 +78,8 @@ export interface ControllerToolDeps {
   userHome?: string;
   /**
    * User-config permission section, injected into add_task so its
-   * `sensitiveDirs` (and the deprecated `deniedDirs` alias) extend the built-in
-   * sensitive list when validating `allowedDirs`.
+   * `sensitiveDirs` extend the built-in sensitive list when validating
+   * `allowedDirs`.
    */
   permissionConfig?: PermissionConfig;
   /**

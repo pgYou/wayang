@@ -139,11 +139,11 @@ describe('planConfigUpdates (§2.4 八方法映射)', () => {
     // The legacy provider-key binding and the deprecated provider model fields
     // are translated at the config entry (protocol normalizeConfig); the
     // planner has no branch for them, so they diff as nothing at all.
-    const legacy: WayangConfig = {
+    const legacy = {
       ...prev,
       providers: { ...prev.providers, main: { ...prev.providers.main, modelName: 'gpt-x' } },
       controller: { model: 'fast', provider: 'main' },
-    };
+    } as unknown as WayangConfig;
     expect(planConfigUpdates(prev, legacy)).toEqual({ ops: [], restartRequired: [] });
     expect(planConfigUpdates(legacy, prev)).toEqual({ ops: [], restartRequired: [] });
   });

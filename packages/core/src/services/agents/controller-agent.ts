@@ -113,7 +113,7 @@ export class ControllerAgent extends ControllerTurnRun implements Subscribable {
       userHome,
       // User-config permission section: add_task validates a task's allowedDirs
       // against the built-in sensitive list plus these configured
-      // sensitiveDirs (the deprecated deniedDirs alias is merged in).
+      // sensitiveDirs.
       permissionConfig: opts.config.permission,
       // Session logger: add_task audits every workspace admitted through
       // permission.extraWorkspaceRoots (issue #77).

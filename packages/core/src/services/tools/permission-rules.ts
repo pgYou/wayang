@@ -7,8 +7,7 @@
  *   1. the sensitive list (highest priority, not overridable by any allow):
  *      a read AND a write both ask for approval; `sensitiveMode: 'deny'`
  *      refuses both without asking instead,
- *   2. user-config `allowedDirs` / `autoAllowRoots` / `sensitiveDirs`
- *      (plus the deprecated `deniedDirs` alias, merged into the same list),
+ *   2. user-config `allowedDirs` / `autoAllowRoots` / `sensitiveDirs`,
  *   3. the task's own `allowedDirs`,
  *   4. the task workspace,
  *   5. "reads inside home are fine, writes are not" — DELIBERATELY NARROWED

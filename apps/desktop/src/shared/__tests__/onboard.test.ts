@@ -57,11 +57,11 @@ describe('checkCoreCompleteness (必要核心配置)', () => {
   it('rejects the legacy provider-key binding: the desktop only knows `model` references', () => {
     // The legacy spelling is translated at the one config entry (the CLI
     // import, protocol normalizeConfig) — it must never count as a binding here.
-    const legacy: WayangConfig = {
+    const legacy = {
       providers: { main: { baseURL: 'https://api.example.com/v1', apiKey: 'sk-1', modelName: 'gpt-x' } },
       controller: { provider: 'main' },
       worker: { provider: 'main', maxConcurrency: 2 },
-    };
+    } as unknown as WayangConfig;
     expect(checkCoreCompleteness(legacy)).toMatch(/controller 未绑定模型/);
     expect(checkCoreCompleteness({ ...legacy, controller: { model: 'main/gpt-x' } })).toMatch(/worker 未绑定模型/);
   });

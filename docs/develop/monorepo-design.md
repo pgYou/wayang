@@ -129,9 +129,9 @@ protocol ◀── core ◀──┬── cli（apps）
 
 **职责与纯函数归属**
 
-- 配置的纯函数归 `packages/protocol`（零 Node 依赖，cli / desktop / core 三方共享）：`validateConfig`、`collectWorkerWarnings`、`collectProviderWarnings`、`normalizeWorkerTypes`、`resolveModelRef`；
-- 文件读取、env 兜底、onboard 交互 prompts 归 `apps/cli`：宿主全权负责定位配置文件、读写 JSON、合并环境变量，产出合法的 `WayangConfig` 对象；
-- core 只以配置对象形式经 `SupervisorOptions` / `ServerOptions` 注入，不感知配置来源——不读盘、不读 env、不做交互引导。
+- 配置的纯函数归 `packages/protocol`（零 Node 依赖，cli / desktop / core 三方共享）：`validateConfig`（只认规范格式）、`normalizeConfig` / `findLegacyConfigKeys` / `validateCanonicalConfig`（旧写法 → 规范格式的唯一翻译点，以及各入口的准入检查）、`collectWorkerWarnings`；`resolveModelRef` 在 core（`services/config`），只解析规范格式的 `model` 引用；
+- 文件读取、旧写法翻译（入口处调一次 `normalizeConfig`）、env 兜底（物化成真实的 provider + `models` 条目）、onboard 交互 prompts 归 `apps/cli`（desktop 的 CLI 导入同理由主进程翻译一次）：宿主全权负责定位配置文件、读写 JSON、合并环境变量，产出合法的、规范格式的 `WayangConfig` 对象；
+- core 只以配置对象形式经 `SupervisorOptions` / `ServerOptions` 注入，不感知配置来源——不读盘、不读 env、不做交互引导，也不含任何新旧写法兼容：准入处（`serverMain` → `validateCanonicalConfig`）拒绝仍带旧键或校验不过的配置。
 
 **运行时热更（粒度化 update 方法）**
 

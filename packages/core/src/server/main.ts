@@ -4,13 +4,14 @@
  * All session/config decisions were already made by the client and are
  * passed as options; this process never prompts. The config arrives as a
  * `WayangConfig` OBJECT (monorepo-design 4.1 改造一) — the host (cli /
- * desktop) owns locating, reading and validating the config; a missing
- * config is a structured boot error, never an interactive prompt.
+ * desktop) owns locating, reading, translating and validating the config; a
+ * missing config is a structured boot error, never an interactive prompt,
+ * and so is one that is not canonical (see validateCanonicalConfig).
  */
 
 import type { Readable, Writable } from 'node:stream';
 import { runWayangServer } from './wayang-server';
-import type { StoragePaths, WayangConfig, WorkspacePolicy } from '@wayang-ai/protocol';
+import { validateCanonicalConfig, type StoragePaths, type WayangConfig, type WorkspacePolicy } from '@wayang-ai/protocol';
 
 /** The `--session` argv value parsed into its structured form. */
 export type SessionDecision = { mode: 'new' } | { mode: 'resume'; sessionId: string };
@@ -37,8 +38,12 @@ export function parseSessionArg(value: string): SessionDecision {
 /** Structured boot failure — machine-readable for hosts (desktop included). */
 export class ServerBootError extends Error {
   constructor(
-    /** Boot failure kind: `CONFIG_MISSING` — no config object was injected. */
-    readonly code: 'CONFIG_MISSING',
+    /**
+     * Boot failure kind: `CONFIG_MISSING` — no config object was injected;
+     * `CONFIG_INVALID` — the config still carries a deprecated key or fails
+     * validation.
+     */
+    readonly code: 'CONFIG_MISSING' | 'CONFIG_INVALID',
     message: string,
   ) {
     super(message);
@@ -91,6 +96,15 @@ export async function serverMain(options: ServerMainOptions, io?: ServerIo): Pro
       'CONFIG_MISSING',
       'serverMain requires a resolved WayangConfig object (design 4.1: the host owns config loading; the server never reads files, env or prompts)',
     );
+  }
+  // Core accepts the canonical shape only. The host translates the legacy
+  // spellings (and resolves the env fallback) at its config entry — protocol
+  // `normalizeConfig`; a config that still carries a deprecated key, or fails
+  // validation, is a structured boot error. There is no compat branch inside
+  // core to fall back on.
+  const configProblem = validateCanonicalConfig(options.config);
+  if (configProblem) {
+    throw new ServerBootError('CONFIG_INVALID', `serverMain received an unusable config: ${configProblem}`);
   }
 
   const session = parseSessionArg(options.session);

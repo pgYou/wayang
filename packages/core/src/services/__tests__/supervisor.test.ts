@@ -11,15 +11,15 @@ import type { WayangConfig } from '@wayang-ai/protocol';
 // --- Helpers ---
 
 const providerConfig = {
-  endpoint: 'http://localhost:1234/v1',
+  baseURL: 'http://localhost:1234/v1',
   apiKey: 'test-key',
-  modelName: 'test-model',
 };
 
 const defaultConfig: WayangConfig = {
   providers: { default: providerConfig },
-  controller: { provider: 'default' },
-  worker: { provider: 'default', maxConcurrency: 3 },
+  models: { default: { provider: 'default', name: 'test-model' } },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 3 },
 };
 
 function makeConfig(overrides?: Partial<WayangConfig>): WayangConfig {

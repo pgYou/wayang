@@ -48,8 +48,6 @@ wayang 启动时按下面的顺序找配置：
 }
 ```
 
-旧写法（模型直接写在 provider 上、用 `controller.provider` / `worker.provider` 绑定）仍然完全可用，启动时会提示一次弃用告警；迁移对照见《老配置 → 新配置迁移对照》。
-
 ## 字段参考
 
 ### 顶层字段
@@ -58,7 +56,7 @@ wayang 启动时按下面的顺序找配置：
 | --- | --- | --- | --- | --- |
 | `providers` | 对象 | 是 | — | LLM 连接定义（baseURL / apiKey），键为自定义名字 |
 | `models` | 对象 | 否 | 无 | 命名模型条目，键为自定义模型名，供 `model` 引用 |
-| `controller` | 对象 | 是 | — | controller 绑定的模型（`model`），旧配置的 `provider` 仍生效 |
+| `controller` | 对象 | 是 | — | controller 绑定的模型（`model`） |
 | `worker` | 对象 | 是 | — | puppet worker 默认绑定的模型与并发设置 |
 | `workers` | 对象 | 否 | 无 | 各个 worker 的定义，键为 worker ID |
 | `tavilyApiKey` | 字符串 | 否 | — | 网页搜索工具的 Tavily key，未设置时该工具返回错误 |
@@ -70,19 +68,15 @@ wayang 启动时按下面的顺序找配置：
 
 `worker` 子字段：
 
-- `model`（推荐，模型引用）：puppet worker 默认使用的模型，见下面的《models 与 model 引用》。与旧的 `provider` 二选一即可。
-- `provider`（已废弃但生效，字符串）：旧写法——直接绑定一个 provider，把它当作默认模型。`model` 存在时以 `model` 为准。
+- `model`（模型引用）：puppet worker 默认使用的模型，见下面的《models 与 model 引用》。
 - `maxConcurrency`（必填，数字）：最多同时运行几个 worker。建议 1–10 之间；wayang 不校验这个值，请自己填 ≥1 的整数。
 - `toolChoice`（可选，`'auto' | 'required' | 'none'`，默认 `'auto'`）：worker 调用工具的模式。部分模型服务（DeepSeek/GLM）会拒绝 `required`；仅当端点支持时用 `required` 强制每步都调用工具以保证收尾。
 - `maxTurns`（可选，正整数，默认不限）：puppet worker 的 LLM 步数上限。未配置即不限制；非法值（非正整数、超过 1000000）视为不限并 warn 一次。达到上限仍未调用 done/fail 时按失败收尾。仅对 puppet 生效——claude-code 用 `workers.<id>.maxTurns`，ACP 类型不消费该键。
 
-`providers.<name>` 子字段：
+`providers.<name>` 子字段（provider 只写“怎么连”，模型一律写在 `models` 里）：
 
-- `baseURL`（必填，字符串）：OpenAI 兼容 base URL。旧键 `endpoint` 是它的别名，仍然生效，两者同时存在时 `baseURL` 优先。
+- `baseURL`（必填，字符串）：OpenAI 兼容 base URL。
 - `apiKey`（必填，字符串）：可留空，留空时由环境变量 `WAYANG_LLM_API_KEY` 补齐。
-- `modelName`（已废弃但生效，字符串）：旧写法——该 provider 的默认模型名。新配置请写进 `models`，再用 `model` 引用；provider 仍被 `model` 引用时以引用为准。
-- `temperature`、`maxOutputTokens`（已废弃，数字，仅记录）：旧写法——这两个字段只作为配置记录保留，不会进入 LLM 请求，也不会被引用该 provider 的 `models` 条目继承。只有写在 `models` 条目或内联对象上时才会真正随请求发送；`provider/model` 组合串无处声明，一律不发送（见下）。
-- `contextWindowTokens`（已废弃但生效，可选，正整数，默认 256000）：旧写法——该 provider 默认模型的上下文窗口（输入侧预算）。新配置请写在 `models` 条目里。
 
 ### models 与 model 引用
 
@@ -99,12 +93,12 @@ wayang 启动时按下面的顺序找配置：
 | `provider` | 字符串 | 是 | — | 所属 provider 名，必须存在于 `providers` |
 | `name` | 字符串 | 是 | — | 发给 provider 的模型名（OpenAI 协议的 `model` 字段） |
 | `contextWindowTokens` | 正整数 | 否 | 256000 | 上下文窗口（输入侧预算），不是输出上限；controller 与 puppet worker 都在用到 60% 时压缩。未声明时兜底 256000 |
-| `maxOutputTokens` | 数字 | 否 | — | 单次请求的最大输出 token；仅 `models` 条目（新写法）下传给 SDK 的 `maxOutputTokens`，provider 上的同名字段仅记录 |
-| `temperature` | 数字 | 否 | — | 采样温度；仅 `models` 条目（新写法）下传给 SDK 的 `temperature`，provider 上的同名字段仅记录 |
+| `maxOutputTokens` | 数字 | 否 | — | 单次请求的最大输出 token；写在 `models` 条目（或内联对象）上才会随请求发送 |
+| `temperature` | 数字 | 否 | — | 采样温度；写在 `models` 条目（或内联对象）上才会随请求发送 |
 
-未配置、或仅配置在 legacy provider 上时，请求里不携带 `temperature` / `maxOutputTokens`，行为与升级前完全一致；只有 `models` 条目 / 内联对象显式配置才会进入请求，组合串无法携带这两个参数（#88 的行为变更点）。
+未配置时，请求里不携带 `temperature` / `maxOutputTokens`；组合写法（`provider名/模型名`）没有地方声明这两个参数，需要它们时请改用 `models` 条目或内联对象。
 
-解析优先级（`resolveModelRef`）：`model` 引用 > 旧的 `provider` 绑定（把 provider 的 `modelName` / `contextWindowTokens` 当作该 provider 的默认模型；provider 上的 `temperature` / `maxOutputTokens` 仅记录、不进入请求）> 环境变量构造的隐式 `default` 模型 > 报错。引用的 `models` 条目里未声明的 `contextWindowTokens` 会回退到 provider 上的旧字段（`models` 条目 / `provider/model` 组合串 / 内联对象三种新写法都会回退）；`temperature` / `maxOutputTokens` 不回退——仅模型级显式声明生效；再没有就保持未定义。
+解析规则：`model` 引用是唯一的解析入口，引用的 `models` 条目 / 内联对象 / 组合串自己声明什么就解析什么——`contextWindowTokens` 只取条目上声明的值（未声明兜底 256000），`temperature` / `maxOutputTokens` 仅模型级显式声明生效。
 
 `workers.<id>.model`（可选）：给第三方 worker 指定模型。`claude-code` 会把它解析后传给 Claude Agent SDK 的 `model` 选项；ACP 类 worker（`acp` / `codebuddy` / `opencode`）的协议没有模型字段，配置了只会在启动时记录一条「配置的模型 X 未被该 provider 消费」，不会伪造能力。
 
@@ -142,63 +136,13 @@ wayang 启动时按下面的顺序找配置：
 }
 ```
 
-### 老配置 → 新配置迁移对照
-
-0.9.9 起 provider 只保留连接信息，模型下沉到 `models`。旧写法仍被完整支持（加载时给一次弃用告警），不迁移也能跑；按下表逐项替换即可。
-
-| 旧写法 | 新写法 |
-| --- | --- |
-| `providers.<name>.modelName` | `models.<key>.name`，再用 `controller.model` / `worker.model` / `workers.<id>.model` 引用该 key |
-| `providers.<name>.contextWindowTokens` | `models.<key>.contextWindowTokens` |
-| `providers.<name>.temperature` | `models.<key>.temperature` |
-| `providers.<name>.maxOutputTokens` | `models.<key>.maxOutputTokens` |
-| `providers.<name>.endpoint` | `providers.<name>.baseURL` |
-| `controller: { "provider": "x" }` | `controller: { "model": "<key>" }`（或 `"x/<模型名>"`） |
-| `worker: { "provider": "x" }` | `worker: { "model": "<key>" }`（或 `"x/<模型名>"`） |
-| 无（旧配置无法按 worker 指定模型） | `workers.<id>.model`（claude-code 消费；ACP 只记录未消费） |
-
-对照示例（旧）：
-
-```json
-{
-  "providers": {
-    "default": {
-      "endpoint": "https://api.anthropic.com",
-      "apiKey": "sk-xxx",
-      "modelName": "claude-sonnet-4-20250514",
-      "contextWindowTokens": 200000
-    }
-  },
-  "controller": { "provider": "default" },
-  "worker": { "provider": "default", "maxConcurrency": 3 }
-}
-```
-
-对照示例（新）：
-
-```json
-{
-  "providers": {
-    "default": { "baseURL": "https://api.anthropic.com", "apiKey": "sk-xxx" }
-  },
-  "models": {
-    "sonnet": {
-      "provider": "default",
-      "name": "claude-sonnet-4-20250514",
-      "contextWindowTokens": 200000
-    }
-  },
-  "controller": { "model": "sonnet" },
-  "worker": { "model": "sonnet", "maxConcurrency": 3 }
-}
-```
+### permission
 
 `permission` 子字段（全部可选，相对路径以你的 home 目录解析）：
 
 - `allowedDirs: string[]`：读写都始终允许的目录。
 - `autoAllowRoots: string[]`：额外免审批放行的根目录。
 - `sensitiveDirs: string[]`：追加到内置敏感目录列表（内置项不可移除），命中时按 `sensitiveMode` 处理。
-- `deniedDirs: string[]`：已废弃的旧写法，仍会被读取并与 `sensitiveDirs` 合并，启动时会提示一次。
 - `sensitiveMode`：`'ask'`（默认，命中即请求 controller 审批）或 `'deny'`（直接拒绝，从不询问）。
 - `approvalMemory`：`'task'`（默认，同一任务内已批准的读路径不再重复询问）或 `'off'`。
 - `extraWorkspaceRoots: string[]`：add_task 声明的工作区（`workspace` 参数）允许落在 home 之外的根目录，默认空（仅 home 内）。给仓库统一放在 home 之外的部署用（如 `/codev`）。生效时启动会提示一次，且每次经由它放行的工作区都会写入会话审计日志（`audit: "workspace"`）；敏感目录列表仍优先生效。
@@ -209,11 +153,9 @@ wayang 启动时按下面的顺序找配置：
 - `allowedDirs` 是任务工作区之外的补充授权：逐条校验（home 内、不碰敏感列表），一条非法即整单拒绝；授予的目录享受与工作区同级的放行，但敏感目录列表同样优先。
 - 需要让任务访问工作区以外的目录，用 `allowedDirs`，不要试图把工作区指到别处。
 
+### logging
+
 `logging` 子字段：`maxFileSizeBytes`（默认 10485760）、`maxFiles`（默认 3），均为正整数。
-
-### 运行时长限制已移除
-
-v0.9.7 移除了 worker 单次运行的 wall time 上限（原 #76 能力撤回）：全局配置 `workerRunTimeoutMs` 与 `add_task` 的 `runTimeoutMs` 均已废弃，不再有任何基于运行时长的终止。旧配置仍带入这两个键时不会报错——加载时提示一次弃用告警后忽略，可以安全地从配置里删掉。
 
 ### workers.<id> 字段
 
@@ -247,9 +189,9 @@ v0.9.7 移除了 worker 单次运行的 wall time 上限（原 #76 能力撤回�
 | 变量 | 作用 | 与配置文件的关系 |
 | --- | --- | --- |
 | `WAYANG_LLM_API_KEY` | provider API key | 文件存在时仅补齐留空的 `apiKey`，文件值优先；无文件时是构造来源之一 |
-| `WAYANG_ENDPOINT` | endpoint | 仅在配置文件不存在时使用，文件优先 |
+| `WAYANG_ENDPOINT` | endpoint | 无文件时是构造来源之一；文件存在但 `controller.model` / `worker.model` 未绑定时，与另外两个变量一起作为兜底模型补上。已绑定的值优先 |
 | `WAYANG_MODEL` | 模型名 | 同上；等价于隐式 `models.default.name` |
-| `WAYANG_CONTEXT_WINDOW_TOKENS` | 上下文窗口 | 仅环境变量配置方式（无文件）时使用；等价于隐式 `models.default.contextWindowTokens` |
+| `WAYANG_CONTEXT_WINDOW_TOKENS` | 上下文窗口 | 仅环境变量兜底（无文件，或文件里有未绑定的 `model`）时使用；等价于隐式 `models.default.contextWindowTokens` |
 | `WAYANG_TAVILY_API_KEY` | Tavily key | 配置文件的 `tavilyApiKey` 优先 |
 
 ## 上下文压缩
@@ -304,7 +246,7 @@ controller 与 puppet worker 共用同一套上下文压缩（0.9.9 的 #90 / #9
 
 什么时候选它：手上的 agent CLI 支持 ACP（Agent Client Protocol），但 wayang 没有为它提供专用类型。`command` 必填——通用类型不内置任何可执行文件，由它决定启动什么；`args`/`env`/`protocol` 按需覆盖。如果该 CLI 已有专用类型（codebuddy/opencode），优先用专用类型：它们自带实测好的启动参数与策略。
 
-### codebuddy（原 codebuddy-acp）
+### codebuddy
 
 ```json
 {
@@ -320,7 +262,7 @@ controller 与 puppet worker 共用同一套上下文压缩（0.9.9 的 #90 / #9
 
 什么时候选它：安装并登录腾讯 CodeBuddy CLI 之后（终端跑 `codebuddy --version` 确认）。默认以 `codebuddy --acp` 启动（仅 `cbc` 别名存在时会回退）。需要代理或额外环境变量时用 `env` 注入；工具调用会经 wayang 权限闸，敏感操作会弹审批。
 
-### opencode（原 opencode-acp）
+### opencode
 
 ```json
 {
@@ -370,22 +312,15 @@ controller 与 puppet worker 共用同一套上下文压缩（0.9.9 的 #90 / #9
 | `workers.<id>.type is required (allowed: claude-code, acp, codebuddy, opencode)` | 缺少 type 字段，补上 |
 | `workers.<id>.command is required for type "acp" (set workers.<id>.command to the ACP agent executable)` | 通用 acp 行必须写 `command`，填该 CLI 的可执行文件名 |
 | `workers.<id>.<key> is not supported for type "claude-code" (claude-code uses cliPath)` | claude-code 行混入了 ACP 字段，删掉 `command`/`args`/`env`/`protocol`/`trustUpdatesAfterCancel` |
-| `controller.provider "foo" not found`（worker.provider 同理） | 旧写法绑定的名字不在 `providers` 里，检查拼写 |
+| `model reference is not configured (bind controller.model / worker.model / workers.<id>.model)` | `controller.model` / `worker.model` 没有绑定，且 `WAYANG_*` 环境变量不齐全；补上 `model` 绑定，或设齐三个环境变量 |
 | `controller.model "foo" is not a known model (available: ...; or use "provider/model")` | `model` 既不是 `models` 的键，也不是 `"provider/model"` 组合；检查拼写或改成组合写法 |
 | `models.<key>.provider "foo" not found` | `models` 条目指向的 provider 不存在，检查 `providers` 的键 |
+| `providers.<name>.baseURL is required` | 该 provider 缺 base URL，填上 `baseURL` |
 | `providers.<name>.apiKey is required (set WAYANG_LLM_API_KEY or configure in config file)` | key 缺失，填进文件或设环境变量 |
-| `providers.<name>.contextWindowTokens must be a positive integer (got ...)` | 该字段须为正整数 |
+| `models.<key>.contextWindowTokens must be a positive integer (got ...)` | 该字段须为正整数 |
 | `permission.sensitiveMode must be 'ask' or 'deny' (got ...)` | 改为 `ask` 或 `deny` |
 
 另外两处不会报错但要留意：`maxConcurrency` 填 0 或负数不会被拦截，请自行填 ≥1 的整数；`maxTurns`/`cliPath` 写在 ACP 类 worker 上无效，会各提示一次 no effect。
-
-## 0.9.3 类型改名说明
-
-0.9.3 起 worker 类型改名：`codebuddy-acp` → `codebuddy`、`opencode-acp` → `opencode`。旧写法 `codebuddy-acp` 仍可用，启动时会给一条提示并自动按新写法处理：
-
-`Warning: worker type 'codebuddy-acp' is deprecated, use 'codebuddy' (workers.<id>)`
-
-（opencode 同理。）配置文件不急着改也能正常跑，但建议尽早更新为新名字。
 
 ## 已知限制
 

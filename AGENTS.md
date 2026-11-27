@@ -136,7 +136,9 @@ Conversation output is always paginated with explicit truncation markers (limit 
 
 Environment variables: `WAYANG_LLM_API_KEY`, `WAYANG_ENDPOINT`, `WAYANG_MODEL` (see `.env.example`).
 
-Config file (`~/.wayang.config.json` or `--config`): defines providers, controller/worker provider bindings, maxConcurrency, and third-party worker definitions (e.g. claude-code with capabilities, emoji, maxTurns).
+Config file (`~/.wayang.config.json` or `--config`): defines providers (connection info only), named `models` entries, the `controller.model` / `worker.model` bindings, maxConcurrency, and third-party worker definitions (e.g. claude-code with capabilities, emoji, maxTurns). See `docs/guides/configuration.md`.
+
+**Config spelling — core is canonical-only.** `WayangConfig` (protocol) models the current shape only. Pre-#88 spellings are translated ONCE at each host's config entry by protocol `normalizeConfig` (the CLI's `loadConfig`; the desktop's CLI-config import) — never inside core. Core's intake (`serverMain` → `validateCanonicalConfig`) refuses a config that still carries a deprecated key or fails validation, and core never reads `process.env` for its config (the `WAYANG_*` model fallback is materialized by the CLI entry as a real provider + `models` entry). Do not add compat branches to core; extend `normalizeConfig` instead.
 
 ## Key Patterns
 

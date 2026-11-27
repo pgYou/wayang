@@ -13,7 +13,7 @@ export const WORKER_TYPES: readonly WorkerType[] = ['claude-code', 'acp', 'codeb
 
 `WORKER_TYPES` 是唯一真源（`src/types/config.ts`）：`switch` 的 case、`validateConfig` 的允许值、错误文案、文档示例全部引用它。加 provider 时 `switch` 末尾的穷尽检查（`const _exhaustive: never = config.type`）让 `npm run lint` 直接报错，不会漏 case（02 分册 §1）。
 
-旧拼写 `codebuddy-acp` / `opencode-acp` 在配置解析出口（`loadConfig` → `normalizeWorkerTypes`）一次性规范化为新值并输出弃用告警（形如 `worker type 'codebuddy-acp' is deprecated, use 'codebuddy'`）；校验与所有使用方只见新值。存量配置无需改动。
+旧拼写 `codebuddy-acp` / `opencode-acp` 在宿主的配置入口（`loadConfig` → protocol `normalizeConfig`）一次性翻译为新值并输出提示（形如 `worker type 'codebuddy-acp' is deprecated, use 'codebuddy'`）；校验与所有使用方（core 只接受规范格式）只见新值。存量配置无需改动。
 
 ## 2. `WorkerConfig` 扩展（ACP 行新增字段）
 

@@ -4,8 +4,11 @@
  * Moved from `packages/core/src/onboard.ts` (monorepo-design 4.1 改造一):
  * file reading, env-var fallback and terminal prompts are host concerns —
  * the CLI owns locating the config file, reading/writing the JSON and
- * merging environment variables, and produces a validated `WayangConfig`
- * object. core receives the object and never senses where it came from.
+ * merging environment variables, and produces a validated, CANONICAL
+ * `WayangConfig` object. core receives the object and never senses where it
+ * came from — and accepts the canonical shape only (its intake refuses
+ * anything else), so every difference in spelling or source is flattened
+ * here, at this one entry.
  *
  * Runs before Ink render when no config file exists. Uses the prompts
  * library for terminal interaction.
@@ -16,8 +19,7 @@ import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import prompts from 'prompts';
 import type { WayangConfig, WorkerConfig } from '@wayang-ai/protocol';
-import { validateConfig, collectWorkerWarnings, collectProviderWarnings, normalizeWorkerTypes } from '@wayang-ai/protocol';
-import { warnDeprecatedPermissionKeys } from '@wayang-ai/core/infra/permission/permission-config';
+import { validateConfig, collectWorkerWarnings, normalizeConfig } from '@wayang-ai/protocol';
 
 /** Fill missing apiKeys from environment variables. */
 function fillApiKeys(config: WayangConfig): void {
@@ -29,6 +31,50 @@ function fillApiKeys(config: WayangConfig): void {
   }
   // Optional tool API keys
   config.tavilyApiKey = config.tavilyApiKey || process.env.WAYANG_TAVILY_API_KEY || undefined;
+}
+
+/** A `providers` / `models` key that is free in `config`: the candidate, else `-2`, `-3`, … */
+function freeEntryKey(config: WayangConfig, candidate: string): string {
+  const taken = (key: string): boolean => key in (config.providers ?? {}) || key in (config.models ?? {});
+  if (!taken(candidate)) return candidate;
+  for (let n = 2; ; n += 1) {
+    const key = `${candidate}-${n}`;
+    if (!taken(key)) return key;
+  }
+}
+
+/**
+ * The `WAYANG_*` model fallback, materialized at the config entry (the
+ * documented priority binding > env > error). core has no env fallback: when
+ * the environment carries the complete triplet (WAYANG_LLM_API_KEY +
+ * WAYANG_ENDPOINT + WAYANG_MODEL) and a binding is still empty, the env
+ * model becomes a real provider + models entry (the same values onboard
+ * writes into `providers.default`) and is bound there. The entry is added
+ * once and shared by both bindings. A partial environment is no fallback:
+ * the config stays as it is and core reports the unbound site.
+ */
+export function bindEnvModelFallback(config: WayangConfig, env: NodeJS.ProcessEnv = process.env): WayangConfig {
+  const controllerUnbound = config.controller?.model === undefined;
+  const workerUnbound = config.worker?.model === undefined;
+  if (!controllerUnbound && !workerUnbound) return config;
+  const apiKey = env.WAYANG_LLM_API_KEY || '';
+  const baseURL = env.WAYANG_ENDPOINT || '';
+  const modelName = env.WAYANG_MODEL || '';
+  if (!apiKey || !baseURL || !modelName) return config;
+
+  const key = freeEntryKey(config, 'default');
+  const rawWindow = env.WAYANG_CONTEXT_WINDOW_TOKENS;
+  const contextWindowTokens = rawWindow ? Number(rawWindow) : NaN;
+  return {
+    ...config,
+    providers: { ...config.providers, [key]: { type: 'openai-compatible', baseURL, apiKey } },
+    models: {
+      ...(config.models ?? {}),
+      [key]: { provider: key, name: modelName, ...(Number.isFinite(contextWindowTokens) && contextWindowTokens > 0 && { contextWindowTokens }) },
+    },
+    controller: controllerUnbound ? { ...config.controller, model: key } : config.controller,
+    worker: workerUnbound ? { ...config.worker, model: key } : config.worker,
+  };
 }
 
 /** Values onboard collected for the default model. */
@@ -201,6 +247,17 @@ export interface LoadConfigOptions {
 /**
  * Load config from file, env vars, or interactive onboard.
  * Writes config to disk if newly created.
+ *
+ * This is THE config entry of the CLI — the only place the config's
+ * spelling and source are dealt with:
+ * 1. a file on disk may still use the pre-#88 spellings (`endpoint`, a
+ *    provider-level default model, provider-key bindings, `deniedDirs`…):
+ *    translated once here by protocol `normalizeConfig`. The file itself is
+ *    never rewritten; each translation is reported once as a warning.
+ * 2. a binding that is still empty falls back to the `WAYANG_*` env model,
+ *    materialized as a real provider + models entry (bindEnvModelFallback).
+ * 3. the result is validated and handed to core, which accepts the
+ *    canonical shape only.
  */
 export async function loadConfig(configPath: string, options: LoadConfigOptions = {}): Promise<WayangConfig> {
   const { nonInteractive = false } = options;
@@ -241,24 +298,17 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
   }
   fillApiKeys(config);
 
-  // Worker-type compatibility: 'codebuddy-acp' / 'opencode-acp' are the
-  // pre-generic-ACP spellings. Rewritten once, here at the config-parse exit,
-  // so validation and every consumer only see the canonical names.
-  normalizeWorkerTypes(config, (message) => console.warn(`Warning: ${message}`));
-
-  // Config-key compatibility: `permission.deniedDirs` is a deprecated alias of
-  // `permission.sensitiveDirs`. It is still honoured (see
-  // `mergeSensitiveDirs`), and a config that uses it gets one pointer to the
-  // new key per process — warn only when the legacy key is really populated.
-  warnDeprecatedPermissionKeys(config.permission, (message) => console.warn(`Warning: ${message}`));
-  // Config-key compatibility: `workerRunTimeoutMs` is deprecated — v0.9.7
-  // removed worker run wall-time limits. A config still carrying the key is
-  // not an error: it is silently ignored, with one warning.
-  if ((config as unknown as Record<string, unknown>).workerRunTimeoutMs !== undefined) {
-    console.warn(
-      'Warning: workerRunTimeoutMs is deprecated and ignored — worker run wall-time limits were removed; the key can be deleted from the config.',
-    );
+  // (1) Legacy spellings → canonical, once, here. The file is never
+  // rewritten; validation and every consumer only see the canonical shape.
+  const normalized = normalizeConfig(config);
+  config = normalized.config;
+  for (const note of normalized.notes) {
+    console.warn(`Warning: ${note}`);
   }
+
+  // (2) A binding still empty → the WAYANG_* env model, materialized.
+  config = bindEnvModelFallback(config);
+
   // issue #77: an active workspace-boundary extension must be visible, not
   // silent — one line at startup naming the configured roots. Each workspace
   // admitted through them is additionally audited on the session log.
@@ -272,12 +322,6 @@ export async function loadConfig(configPath: string, options: LoadConfigOptions 
   // neither has any effect there (05 §4) — surface that once at load instead
   // of failing configs that used to work.
   for (const warning of collectWorkerWarnings(config)) {
-    console.warn(`Warning: ${warning}`);
-  }
-  // issue #88: deprecated provider model fields, and a provider `modelName`
-  // that lost to a `model` reference, are surfaced once at load. The
-  // validation layer only returns the strings — it never prints.
-  for (const warning of collectProviderWarnings(config)) {
     console.warn(`Warning: ${warning}`);
   }
 
