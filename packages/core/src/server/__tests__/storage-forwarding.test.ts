@@ -34,9 +34,10 @@ vi.mock('@/services/supervisor', () => ({
 import { serverMain } from '../main';
 
 const config: WayangConfig = {
-  providers: { default: { endpoint: 'http://localhost:1', apiKey: 'k', modelName: 'm' } },
-  controller: { provider: 'default' },
-  worker: { provider: 'default', maxConcurrency: 1 },
+  providers: { default: { baseURL: 'http://localhost:1', apiKey: 'k' } },
+  models: { default: { provider: 'default', name: 'm' } },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 1 },
 };
 
 describe('serverMain storage/workspace forwarding (design 4.2)', () => {

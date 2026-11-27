@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConfig, collectWorkerWarnings, normalizeWorkerTypes, WORKER_TYPES, type WayangConfig, type WorkerConfig } from '@wayang-ai/protocol/types/config';
+import { validateConfig, collectWorkerWarnings, WORKER_TYPES, type WayangConfig, type WorkerConfig } from '@wayang-ai/protocol/types/config';
 import type { AcpProtocolConfig } from '@wayang-ai/protocol/types/config';
 import type { AcpProtocolOverrides } from '@/services/agents/acp/base-acp-worker';
 
@@ -19,19 +19,15 @@ describe('AcpProtocolConfig shape lock (05 §3)', () => {
   });
 });
 
-/** Fresh minimal valid config per call — no shared mutable fixture. */
+/** Fresh minimal canonical config per call — no shared mutable fixture. */
 function makeConfig(contextWindowTokens?: unknown): WayangConfig {
   return {
-    providers: {
-      p: {
-        endpoint: 'http://localhost',
-        apiKey: 'k',
-        modelName: 'm',
-        ...(contextWindowTokens !== undefined && { contextWindowTokens: contextWindowTokens as number }),
-      },
+    providers: { p: { baseURL: 'http://localhost', apiKey: 'k' } },
+    models: {
+      p: { provider: 'p', name: 'm', ...(contextWindowTokens !== undefined && { contextWindowTokens: contextWindowTokens as number }) },
     },
-    controller: { provider: 'p' },
-    worker: { provider: 'p', maxConcurrency: 1 },
+    controller: { model: 'p' },
+    worker: { model: 'p', maxConcurrency: 1 },
   };
 }
 
@@ -43,7 +39,7 @@ describe('validateConfig: contextWindowTokens', () => {
 
   it.each([0, -1, 1.5, Number.NaN, '128000'])('rejects %s', (bad) => {
     const err = validateConfig(makeConfig(bad));
-    expect(err).toContain('providers.p.contextWindowTokens must be a positive integer');
+    expect(err).toContain('models.p.contextWindowTokens must be a positive integer');
   });
 });
 
@@ -73,8 +69,6 @@ describe('validateConfig: permission', () => {
           allowedDirs: ['/data/shared'],
           autoAllowRoots: ['/tmp'],
           sensitiveDirs: ['/data/keys'],
-          // Deprecated alias of sensitiveDirs — still accepted and validated.
-          deniedDirs: ['/data/secrets'],
           sensitiveMode: 'deny',
           // Workspace-boundary extension (issue #77) — same shape rule.
           extraWorkspaceRoots: ['/codev'],
@@ -88,14 +82,13 @@ describe('validateConfig: permission', () => {
     ['allowedDirs', '/data/shared'],
     ['autoAllowRoots', 42],
     ['sensitiveDirs', { path: '/data/keys' }],
-    ['deniedDirs', { path: '/data/secrets' }],
     ['extraWorkspaceRoots', '/codev'],
   ])('rejects %s when it is not an array', (key, value) => {
     const err = validateConfig(makeConfigWithPermission({ [key]: value }));
     expect(err).toContain(`permission.${key} must be an array of strings`);
   });
 
-  it.each(['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'deniedDirs', 'extraWorkspaceRoots'])('rejects %s containing a non-string', (key) => {
+  it.each(['allowedDirs', 'autoAllowRoots', 'sensitiveDirs', 'extraWorkspaceRoots'])('rejects %s containing a non-string', (key) => {
     const err = validateConfig(makeConfigWithPermission({ [key]: ['/data/shared', 7] }));
     expect(err).toContain(`permission.${key} must be an array of strings`);
     expect(err).toContain('7');
@@ -350,44 +343,5 @@ describe('collectWorkerWarnings (05 §4: inert fields warn, never fail)', () => 
       ),
     ).toEqual([]);
     expect(collectWorkerWarnings(makeConfig())).toEqual([]);
-  });
-});
-
-describe('normalizeWorkerTypes (legacy type names, config-parse exit)', () => {
-  it('rewrites both legacy names in place and warns once per affected row', () => {
-    const config = makeConfigWithWorkers({
-      cb: { type: 'codebuddy-acp', description: 'x' },
-      oc: { type: 'opencode-acp', description: 'x' },
-    });
-    const warnings: string[] = [];
-    normalizeWorkerTypes(config as WayangConfig, (m) => warnings.push(m));
-
-    expect((config.workers!.cb as { type: string }).type).toBe('codebuddy');
-    expect((config.workers!.oc as { type: string }).type).toBe('opencode');
-    expect(warnings).toEqual([
-      "worker type 'codebuddy-acp' is deprecated, use 'codebuddy' (workers.cb)",
-      "worker type 'opencode-acp' is deprecated, use 'opencode' (workers.oc)",
-    ]);
-  });
-
-  it('the rewritten config validates cleanly (old configs keep loading)', () => {
-    const config = makeConfigWithWorkers({
-      cb: { type: 'codebuddy-acp', description: 'x' },
-      oc: { type: 'opencode-acp', description: 'x' },
-    });
-    normalizeWorkerTypes(config as WayangConfig, () => undefined);
-    expect(validateConfig(config)).toBeNull();
-  });
-
-  it('leaves canonical names and non-worker configs untouched (no warnings)', () => {
-    const config = makeConfigWithWorkers({
-      cb: { type: 'codebuddy', description: 'x' },
-      mycli: { type: 'acp', command: 'my-cli', description: 'x' },
-      cc: { type: 'claude-code', description: 'x' },
-    });
-    const warnings: string[] = [];
-    normalizeWorkerTypes(config as WayangConfig, (m) => warnings.push(m));
-    expect(warnings).toEqual([]);
-    expect((config.workers!.cb as { type: string }).type).toBe('codebuddy');
   });
 });

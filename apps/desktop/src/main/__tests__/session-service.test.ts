@@ -51,13 +51,13 @@ const validConfig: WayangConfig = {
 };
 
 /** The same config in the pre-#88 CLI spelling — what `importCliConfig` translates. */
-const legacyCliConfig: WayangConfig = {
+const legacyCliConfig = {
   providers: {
     default: { endpoint: 'http://localhost:1234/v1', apiKey: 'test-key', modelName: 'test-model' },
   },
   controller: { provider: 'default' },
   worker: { provider: 'default', maxConcurrency: 2 },
-};
+} as unknown as WayangConfig;
 
 interface SentPayload {
   channel: string;

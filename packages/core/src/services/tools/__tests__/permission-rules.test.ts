@@ -1334,15 +1334,6 @@ describe('evaluateFileAccess', () => {
     expect(write.access).toBe('write');
   });
 
-  it('the deprecated deniedDirs alias protects exactly like sensitiveDirs', () => {
-    const read = evaluateFileAccess(scope({ permission: { deniedDirs: ['docs'] } }), 'read_file', {
-      path: join(home, 'docs', 'a.md'),
-    });
-    expect(read.decision).toBe('ask');
-    expect(read.matchedEntry).toBe('docs');
-    expect(read.matchedRule).toBe('sensitive-list');
-  });
-
   it('sensitiveMode: deny refuses BOTH directions without asking', () => {
     const strict = scope({ permission: { sensitiveMode: 'deny' } });
     const read = evaluateFileAccess(strict, 'read_file', { path: '~/.ssh/id_rsa' });

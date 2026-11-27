@@ -6,7 +6,7 @@ import type { PermissionConfig } from '@wayang-ai/protocol/types/config';
 import type { Logger } from '../../infra/logger';
 import { normalizeWorkspacePath, resolveWorkspaceRef } from '../../infra/workspace-registry';
 import { defaultSensitivePaths, isDenied, isPathWithin, normalizePath } from '../../infra/permission/policy';
-import { mergeSensitiveDirs } from '../../infra/permission/permission-config';
+import { resolveSensitiveDirs } from '../../infra/permission/permission-config';
 import { generateId } from '../../utils/id';
 import { defineTool, safeExecute } from './common';
 import { expandHome } from './permission-rules';
@@ -62,9 +62,9 @@ export interface AddTaskToolDeps {
    */
   userHome?: string;
   /**
-   * User-config permission section. Its `sensitiveDirs` (plus the deprecated
-   * `deniedDirs` alias) extend the built-in sensitive list for `allowedDirs`
-   * validation. Injected (never read globally).
+   * User-config permission section. Its `sensitiveDirs` extend the built-in
+   * sensitive list for `allowedDirs` validation. Injected (never read
+   * globally).
    */
   permissionConfig?: PermissionConfig;
   /**
@@ -168,7 +168,7 @@ function validateDeclaredWorkspace(
 
   const sensitivePaths = [
     ...defaultSensitivePaths(home),
-    ...mergeSensitiveDirs(deps.permissionConfig).map((d) => normalizePath(d, { base: home })),
+    ...resolveSensitiveDirs(deps.permissionConfig).map((d) => normalizePath(d, { base: home })),
   ].map((d) => normalizePath(d));
   const matchedEntry = sensitivePaths.find((sensitive) => isPathWithin(sensitive, normalized));
   if (matchedEntry !== undefined) {
@@ -305,7 +305,7 @@ function resolveTaskWorkspace(
  * Every entry is normalized through the shared policy (relative entries resolve
  * against the target workspace), must sit inside the user's home directory, and
  * must not match the sensitive list (built-in entries plus configured
- * `sensitiveDirs`, `deniedDirs` included). A single bad entry fails the WHOLE
+ * `sensitiveDirs`). A single bad entry fails the WHOLE
  * call — the returned error
  * names the offending entry and the reason — so a task is never created with a
  * partial grant. Valid entries are deduped while preserving declaration order.
@@ -333,7 +333,7 @@ function resolveTaskAllowedDirs(
   const base = workspacePath !== undefined ? normalizePath(workspacePath, { base: home }) : home;
   const sensitivePaths = [
     ...defaultSensitivePaths(home),
-    ...mergeSensitiveDirs(deps.permissionConfig).map((d) => normalizePath(d, { base: home })),
+    ...resolveSensitiveDirs(deps.permissionConfig).map((d) => normalizePath(d, { base: home })),
   ].map((d) => normalizePath(d));
 
   const seen = new Set<string>();

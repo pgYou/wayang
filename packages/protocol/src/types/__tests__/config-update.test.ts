@@ -220,7 +220,7 @@ describe('reference-graph helpers (pure, host-previewable)', () => {
     expect(sites[2]).toMatchObject({ kind: 'workerRow', workerId: 'codex', ref: 'openai/o3' });
   });
 
-  it('modelRefProvider resolves through models entries, composites, inline entries and legacy keys', () => {
+  it('modelRefProvider resolves through models entries, composites and inline entries', () => {
     const config = fixtureConfig();
     // Key ref: through the entry's provider.
     expect(modelRefProvider(config, 'fast')).toBe('openai');
@@ -228,11 +228,8 @@ describe('reference-graph helpers (pure, host-previewable)', () => {
     expect(modelRefProvider(config, 'other/inline-model')).toBe('other');
     // Inline entry: its own provider field.
     expect(modelRefProvider(config, { provider: 'other', name: 'x' })).toBe('other');
-    // No ref: the legacy provider key, when given.
-    expect(modelRefProvider(config, undefined, 'openai')).toBe('openai');
+    // No ref: no provider (the legacy provider-key binding no longer exists).
     expect(modelRefProvider(config, undefined)).toBeNull();
-    // A ref wins over a legacy key — resolution order preserved.
-    expect(modelRefProvider(config, 'fast', 'other')).toBe('openai');
   });
 
   it('modelRefKey names the models entry a string ref addresses (null for composite/inline)', () => {

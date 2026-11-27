@@ -16,10 +16,9 @@ export interface TaskExecuteEngineOptions {
   userHome?: string;
   /**
    * User-config permission section (`allowedDirs` / `autoAllowRoots` /
-   * `sensitiveDirs`, plus the deprecated `deniedDirs` alias and
-   * `sensitiveMode`) the policy consults. Defaults to `ctx.config.permission`;
-   * injectable so a caller can hand the engine the exact policy it should
-   * enforce instead of relying on ambient config.
+   * `sensitiveDirs` and `sensitiveMode`) the policy consults. Defaults to
+   * `ctx.config.permission`; injectable so a caller can hand the engine the
+   * exact policy it should enforce instead of relying on ambient config.
    */
   permission?: PermissionConfig;
   /**

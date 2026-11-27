@@ -11,7 +11,7 @@
 // 3. 引用完整性 — add strictly rejects duplicates; removals reject when
 //    referenced (with the reference list) — no cascade, no force; every
 //    added/changed entry goes through the SAME protocol validator
-//    (`validateConfig`) before anything is committed.
+//    (`validateCanonicalConfig`) before anything is committed.
 //
 // The service mutates the live config object IN PLACE (identity-preserving
 // field writes) so every consumer reading `ctx.config.*` at its own
@@ -19,7 +19,7 @@
 
 import { RpcError, RPC_ERROR } from '@wayang-ai/protocol/rpc/protocol';
 import {
-  validateConfig,
+  validateCanonicalConfig,
   bindingSites,
   modelRefProvider,
   modelRefKey,
@@ -54,7 +54,7 @@ function affectedOf(site: BindingSite): ConfigUpdateAffected {
   return {
     kind: site.kind,
     ...(site.kind === 'workerRow' && site.workerId !== undefined && { workerId: site.workerId }),
-    via: refSpelling(site.ref ?? site.legacyProvider),
+    via: refSpelling(site.ref),
     effective: site.kind === 'controller' ? 'next-turn' : 'next-spawn',
   };
 }
@@ -62,7 +62,7 @@ function affectedOf(site: BindingSite): ConfigUpdateAffected {
 /** Bindings whose resolution runs through provider `name` (post-change graph). */
 function bindingsOnProvider(config: WayangConfig, name: string): ConfigUpdateAffected[] {
   return bindingSites(config)
-    .filter((site) => modelRefProvider(config, site.ref, site.legacyProvider) === name)
+    .filter((site) => modelRefProvider(config, site.ref) === name)
     .map(affectedOf);
 }
 
@@ -76,9 +76,8 @@ function bindingsOnModelKey(config: WayangConfig, key: string): ConfigUpdateAffe
 /**
  * References that block `removeProvider` (design 4.1 引用完整性): model
  * entries on the provider, plus bindings that reference the provider
- * DIRECTLY (legacy provider key, `"name/model"` composite, inline entry).
- * A binding that goes through a `models.<key>` entry is not itself listed —
- * the entry it names is.
+ * DIRECTLY (`"name/model"` composite, inline entry). A binding that goes
+ * through a `models.<key>` entry is not itself listed — the entry it names is.
  */
 export function removeProviderBlockers(config: WayangConfig, name: string): ConfigUpdateBlocker[] {
   const blockers: ConfigUpdateBlocker[] = [];
@@ -88,9 +87,8 @@ export function removeProviderBlockers(config: WayangConfig, name: string): Conf
     }
   }
   for (const site of bindingSites(config)) {
-    if (site.ref === undefined) {
-      if (site.legacyProvider === name) blockers.push({ site: site.site, kind: 'binding' });
-    } else if (typeof site.ref === 'string') {
+    if (site.ref === undefined) continue; // an unbound site references nothing
+    if (typeof site.ref === 'string') {
       if (config.models?.[site.ref]) continue; // key ref — the entry itself is the blocker
       if (modelRefProvider(config, site.ref) === name) blockers.push({ site: site.site, kind: 'binding' });
     } else if (site.ref.provider === name) {
@@ -140,7 +138,7 @@ export class ConfigUpdateService {
   ): ConfigUpdateResult {
     const candidate = structuredClone(this.config);
     mutate(candidate);
-    const err = validateConfig(candidate);
+    const err = validateCanonicalConfig(candidate);
     if (err) {
       reject('invalid', `${what}: ${err}`);
     }
@@ -286,7 +284,7 @@ export class ConfigUpdateService {
       // The default puppet worker binding — it switches at the NEXT spawn.
       () => [{
         kind: 'worker',
-        via: refSpelling(this.config.worker.model ?? this.config.worker.provider),
+        via: refSpelling(this.config.worker.model),
         effective: 'next-spawn',
       }],
     );

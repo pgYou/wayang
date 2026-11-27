@@ -12,7 +12,7 @@ import type { WayangConfig } from '@wayang-ai/protocol';
 import { messagePortToStreams, type MessagePortLike } from '@wayang-ai/protocol/rpc/message-port';
 import { serverMain } from '@wayang-ai/core/server/main';
 import { CONFIG_OBJECT_ENV } from '../shared/config-env';
-import { isEnvelopeLike, parseConfigEnvelope, validateOrReject } from '../shared/config-envelope';
+import { assertCanonicalConfig, isEnvelopeLike, parseConfigEnvelope, validateOrReject } from '../shared/config-envelope';
 import { parseHostFlags } from './flags';
 import { buildStoragePaths, buildWorkspacePolicy } from './server-options';
 
@@ -40,6 +40,9 @@ function resolveUtilityConfig(configPath: string): WayangConfig {
   const parsed: unknown = JSON.parse(raw);
   if (isEnvelopeLike(parsed)) return parseConfigEnvelope(raw).wayangConfig;
   const config = parsed as WayangConfig;
+  // Canonical only, like core's own intake: the desktop never translates a
+  // config here — the one translation point is the CLI import (main process).
+  assertCanonicalConfig(config, `config ${configPath}`);
   validateOrReject(config, `config ${configPath}`);
   return config;
 }

@@ -5,12 +5,17 @@
 // Everything downstream — core, the desktop UI — then only ever sees the
 // canonical shape introduced by issue #88: top-level `models` entries
 // referenced through `controller.model` / `worker.model` / `workers.<id>.model`.
-// findLegacyConfigKeys is the matching inventory: entry points use it to
-// refuse anything that still carries a deprecated key.
+// The deprecated spellings are not part of the `WayangConfig` TYPE any more —
+// this module reads them through untyped record views, which is why it is the
+// only place that can.
 //
-// The translation is behaviour-preserving — it mirrors core's
-// resolveModelRef rule by rule, so a legacy config resolves to the same model
-// (name, base URL, window budget, request parameters) before and after:
+// findLegacyConfigKeys inventories what is still deprecated;
+// validateCanonicalConfig is the intake check built on it (core refuses any
+// config that still carries a legacy key).
+//
+// The translation is behaviour-preserving — it mirrors the pre-#88 resolution
+// rule by rule, so a legacy config resolves to the same model (name, base URL,
+// window budget, request parameters) as before the split:
 // - `endpoint` → `baseURL` (baseURL already wins when both are present);
 // - a provider's implicit model (`modelName` + the window budget) → a
 //   top-level `models` entry, keyed by the provider key (the CLI onboard's
@@ -24,11 +29,11 @@
 //   an entry carrying it;
 // - `controller.provider` / `worker.provider` → the `model` reference of the
 //   provider's implicit model (a `model` reference already present wins, as
-//   in core); the legacy key is always removed;
+//   it did in the former resolution); the legacy key is always removed;
 // - deprecated `workers.<id>.type` spellings → canonical names
 //   (normalizeWorkerTypes — the protocol's own rewriter);
-// - `permission.deniedDirs` → merged into `sensitiveDirs` (core's merge
-//   semantics: current key first, deduped, declared order kept).
+// - `permission.deniedDirs` → merged into `sensitiveDirs` (current key first,
+//   deduped, declared order kept).
 //
 // Zero Node built-ins in this file (protocol discipline): pure functions.
 // Validation is NOT done here — the shape is translated, validateConfig
@@ -37,6 +42,7 @@
 import {
   DEPRECATED_WORKER_TYPES,
   normalizeWorkerTypes,
+  validateConfig,
   type ModelConfig,
   type ModelRef,
   type ProviderConfig,
@@ -226,19 +232,23 @@ export function normalizeConfig(input: WayangConfig): NormalizeConfigResult {
 
   // permission.deniedDirs → sensitiveDirs. A malformed shape is left alone
   // for validateConfig to report.
-  const permission = config.permission;
-  if (permission && Array.isArray(permission.deniedDirs) && (permission.sensitiveDirs === undefined || Array.isArray(permission.sensitiveDirs))) {
-    const seen = new Set<string>();
-    const merged = [...(permission.sensitiveDirs ?? []), ...permission.deniedDirs].filter((entry): entry is string => {
-      if (typeof entry !== 'string' || entry.length === 0 || seen.has(entry)) return false;
-      seen.add(entry);
-      return true;
-    });
-    if (merged.length > 0) permission.sensitiveDirs = merged;
-    else delete permission.sensitiveDirs;
-    delete permission.deniedDirs;
-    if (Object.keys(permission).length === 0) delete config.permission;
-    notes.push('permission.deniedDirs is deprecated — merged into permission.sensitiveDirs');
+  const permission: unknown = config.permission;
+  if (isRecord(permission)) {
+    const denied = permission.deniedDirs;
+    const current = permission.sensitiveDirs;
+    if (Array.isArray(denied) && (current === undefined || Array.isArray(current))) {
+      const seen = new Set<string>();
+      const merged = [...(current ?? []), ...denied].filter((entry): entry is string => {
+        if (typeof entry !== 'string' || entry.length === 0 || seen.has(entry)) return false;
+        seen.add(entry);
+        return true;
+      });
+      if (merged.length > 0) permission.sensitiveDirs = merged;
+      else delete permission.sensitiveDirs;
+      delete permission.deniedDirs;
+      if (Object.keys(permission).length === 0) delete config.permission;
+      notes.push('permission.deniedDirs is deprecated — merged into permission.sensitiveDirs');
+    }
   }
 
   // Removed top-level key (core ignores it): never carried into a canonical config.
@@ -271,12 +281,35 @@ export function findLegacyConfigKeys(config: WayangConfig): string[] {
     }
   }
   for (const name of ['controller', 'worker'] as const) {
-    if (config[name]?.provider !== undefined) found.push(`${name}.provider`);
+    const section: unknown = config[name];
+    if (isRecord(section) && section.provider !== undefined) found.push(`${name}.provider`);
   }
-  if (config.permission?.deniedDirs !== undefined) found.push('permission.deniedDirs');
+  const permission: unknown = config.permission;
+  if (isRecord(permission) && permission.deniedDirs !== undefined) found.push('permission.deniedDirs');
   for (const [id, worker] of Object.entries(config.workers ?? {})) {
     const type = isRecord(worker) ? worker.type : undefined;
     if (typeof type === 'string' && type in DEPRECATED_WORKER_TYPES) found.push(`workers.${id}.type`);
   }
   return found;
+}
+
+/**
+ * The intake check for every core entry point. A config is accepted only when
+ * it is canonical — no deprecated key may remain (hosts translate them once
+ * at their config entry with normalizeConfig; core has no compat branch) —
+ * AND it passes the structural validateConfig. Returns the error message, or
+ * null when the config is accepted.
+ */
+export function validateCanonicalConfig(config: WayangConfig): string | null {
+  const legacyKeys = findLegacyConfigKeys(config);
+  if (legacyKeys.length > 0) {
+    return `config carries deprecated keys (${legacyKeys.join(', ')}) — the host must call normalizeConfig at its config entry before handing a config to core`;
+  }
+  // validateConfig assumes a well-shaped top level; an intake must never leak
+  // a TypeError for a malformed payload — report it like any other problem.
+  try {
+    return validateConfig(config);
+  } catch (err) {
+    return `malformed config (${err instanceof Error ? err.message : String(err)})`;
+  }
 }

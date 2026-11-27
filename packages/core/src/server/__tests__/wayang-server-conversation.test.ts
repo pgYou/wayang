@@ -120,9 +120,10 @@ let tempRoot: string;
 let exitSpy: ReturnType<typeof vi.spyOn>;
 /** Injected config object (design 4.1) — the server runs on the object, no file. */
 const config: WayangConfig = {
-  providers: { fake: { endpoint: 'http://localhost:9/v1', apiKey: 'test-key', modelName: 'fake-model' } },
-  controller: { provider: 'fake' },
-  worker: { provider: 'fake', maxConcurrency: 1 },
+  providers: { fake: { baseURL: 'http://localhost:9/v1', apiKey: 'test-key' } },
+  models: { fake: { provider: 'fake', name: 'fake-model' } },
+  controller: { model: 'fake' },
+  worker: { model: 'fake', maxConcurrency: 1 },
 };
 
 beforeAll(() => {

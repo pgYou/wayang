@@ -20,14 +20,14 @@ const validConfig: WayangConfig = {
 };
 
 /** A pre-#88 CLI config: endpoint alias, provider implicit model, provider-key bindings. */
-const legacyConfig: WayangConfig = {
+const legacyConfig = {
   providers: {
     ds: { endpoint: 'https://api.deepseek.com', apiKey: 'k1', modelName: 'deepseek-flash' },
     hub: { endpoint: 'https://hub/v3', apiKey: 'k2', modelName: 'ds-v4', contextWindowTokens: 1_000_000 },
   },
   controller: { provider: 'hub' },
   worker: { provider: 'hub', maxConcurrency: 3 },
-};
+} as unknown as WayangConfig;
 
 /** What the import must hand back: models entries + model references, no legacy key. */
 const translatedConfig: WayangConfig = {
@@ -158,11 +158,11 @@ describe('旧版 CLI 配置：导入时翻译一次，桌面存储不做兼容',
     await expect(new ConfigStore(configPath).load()).rejects.toThrow(/含旧版配置键 providers\.ds\.endpoint、providers\.ds\.modelName/);
 
     // 只剩旧的 provider 键绑定同样被拒。
-    const legacyBinding: WayangConfig = {
+    const legacyBinding = {
       ...validConfig,
       controller: { provider: 'default' },
       worker: { provider: 'default', maxConcurrency: 3 },
-    };
+    } as unknown as WayangConfig;
     await writeFile(configPath, JSON.stringify(makeEnvelope(legacyBinding)), 'utf-8');
     await expect(new ConfigStore(configPath).load()).rejects.toThrow(/含旧版配置键 controller\.provider、worker\.provider/);
   });

@@ -25,14 +25,11 @@ import { SystemContext } from '@/infra/system-context';
 
 const testConfig: WayangConfig = {
   providers: {
-    default: {
-      endpoint: 'https://api.anthropic.com',
-      apiKey: 'test-key',
-      modelName: 'claude-sonnet-4-20250514',
-    },
+    default: { baseURL: 'https://api.anthropic.com', apiKey: 'test-key' },
   },
-  controller: { provider: 'default' },
-  worker: { provider: 'default', maxConcurrency: 3 },
+  models: { default: { provider: 'default', name: 'claude-sonnet-4-20250514' } },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 3 },
 };
 
 describe('SystemContext', () => {

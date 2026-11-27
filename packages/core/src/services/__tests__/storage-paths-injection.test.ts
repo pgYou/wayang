@@ -23,15 +23,15 @@ import { mcpSocketPathFor } from '@/services/agents/acp/mcp-transport';
 import type { StoragePaths, WayangConfig, WorkspacePolicy } from '@wayang-ai/protocol';
 
 const providerConfig = {
-  endpoint: 'http://localhost:1234/v1',
+  baseURL: 'http://localhost:1234/v1',
   apiKey: 'test-key',
-  modelName: 'test-model',
 };
 
 const defaultConfig: WayangConfig = {
   providers: { default: providerConfig },
-  controller: { provider: 'default' },
-  worker: { provider: 'default', maxConcurrency: 3 },
+  models: { default: { provider: 'default', name: 'test-model' } },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 3 },
 };
 
 const created: Supervisor[] = [];

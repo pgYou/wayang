@@ -46,9 +46,10 @@ describe('single-parse flow: host loads once, server consumes the object', () =>
     writeFileSync(configPath, JSON.stringify({
       // Dead endpoint on purpose: no controller turn is driven here, so the
       // provider is never called — the assertion is about parsing, not LLM.
-      providers: { fake: { endpoint: 'http://localhost:9/v1', apiKey: 'test-key', modelName: 'fake-model' } },
-      controller: { provider: 'fake' },
-      worker: { provider: 'fake', maxConcurrency: 1 },
+      providers: { fake: { baseURL: 'http://localhost:9/v1', apiKey: 'test-key' } },
+      models: { fake: { provider: 'fake', name: 'fake-model' } },
+      controller: { model: 'fake' },
+      worker: { model: 'fake', maxConcurrency: 1 },
     }));
 
     // --- Host side: THE single resolution + validation point. ---

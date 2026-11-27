@@ -34,10 +34,11 @@ import { streamText } from 'ai';
 
 const config: WayangConfig = {
   providers: {
-    default: { endpoint: 'http://localhost:1', apiKey: 'test-key', modelName: 'test-model' },
+    default: { baseURL: 'http://localhost:1', apiKey: 'test-key' },
   },
-  controller: { provider: 'default' },
-  worker: { provider: 'default', maxConcurrency: 1 },
+  models: { default: { provider: 'default', name: 'test-model' } },
+  controller: { model: 'default' },
+  worker: { model: 'default', maxConcurrency: 1 },
 };
 
 const PROMPT_MARKER = 'USER-PROMPT-MARKER-9d3f-do-not-log';

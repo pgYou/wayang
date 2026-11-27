@@ -11,7 +11,7 @@ export const mockModel: ResolvedModel = {
   modelName: 'test-model',
   baseURL: 'http://localhost:1234',
   apiKey: 'test-key',
-  source: 'legacy-provider',
+  source: 'models',
 };
 
 /** Create a mock Logger with all methods as vi.fn(). */

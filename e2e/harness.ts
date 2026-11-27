@@ -47,6 +47,8 @@ export interface E2ESetup {
   state: E2EState;
   /** Latest workerId from `completed` signals (for assignToWorker scripts). */
   lastCompletedWorkerId(): string | undefined;
+  /** The tail of the server's stderr (config-load warnings, boot errors). */
+  stderr(): string;
   submit(text: string): Promise<void>;
   waitFor(what: string, predicate: (state: E2EState) => boolean, timeoutMs?: number): Promise<void>;
   /**
@@ -66,6 +68,13 @@ export interface E2EOptions {
   root?: string;
   /** Reuse a fake provider so the endpoint in the reused config stays valid. */
   provider?: FakeProvider;
+  /**
+   * Spelling of the generated config file. `legacy` writes the pre-#88 shape
+   * (provider `endpoint` + `modelName`, provider-key bindings) — proving the
+   * CLI entry translates it before core, which accepts the canonical shape
+   * only, ever sees it. Default: the canonical shape.
+   */
+  configShape?: 'canonical' | 'legacy';
 }
 
 export async function setupE2E(script: ScriptEntry[], options: E2EOptions = {}): Promise<E2ESetup> {
@@ -77,11 +86,23 @@ export async function setupE2E(script: ScriptEntry[], options: E2EOptions = {}):
   const configPath = join(root, 'config.json');
   if (!options.root) {
     mkdirSync(workspaceDir, { recursive: true });
-    writeFileSync(configPath, JSON.stringify({
-      providers: { fake: { endpoint: provider.baseURL, apiKey: 'e2e-key', modelName: 'fake-model' } },
-      controller: { provider: 'fake' },
-      worker: { provider: 'fake', maxConcurrency: 1 },
-    }));
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        options.configShape === 'legacy'
+          ? {
+              providers: { fake: { endpoint: provider.baseURL, apiKey: 'e2e-key', modelName: 'fake-model' } },
+              controller: { provider: 'fake' },
+              worker: { provider: 'fake', maxConcurrency: 1 },
+            }
+          : {
+              providers: { fake: { baseURL: provider.baseURL, apiKey: 'e2e-key' } },
+              models: { fake: { provider: 'fake', name: 'fake-model' } },
+              controller: { model: 'fake' },
+              worker: { model: 'fake', maxConcurrency: 1 },
+            },
+      ),
+    );
   }
 
   const child: ChildProcess = spawn(process.execPath, [
@@ -145,6 +166,10 @@ export async function setupE2E(script: ScriptEntry[], options: E2EOptions = {}):
     lastCompletedWorkerId() {
       const completed = state.signals.filter((s) => s.type === 'completed');
       return completed.at(-1)?.payload?.workerId;
+    },
+    /** The tail of the server's stderr (config-load warnings, boot errors). */
+    stderr() {
+      return stderrTail;
     },
     async submit(text: string): Promise<void> {
       await client.request(METHOD.SUBMIT_INPUT, { text });

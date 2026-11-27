@@ -5,7 +5,7 @@ import {
   type AccessMode,
   type DecideAccessResult,
 } from '../../../infra/permission/policy';
-import { mergeSensitiveDirs, resolveSensitiveMode } from '../../../infra/permission/permission-config';
+import { resolveSensitiveDirs, resolveSensitiveMode } from '../../../infra/permission/permission-config';
 import type { ToolAccessDecision, WorkerAccessScope } from './types';
 
 /**
@@ -33,10 +33,7 @@ export function decidePath(
     taskAllowedDirs: scope.taskAllowedDirs,
     configAllowedDirs: permission?.allowedDirs,
     autoAllowRoots: permission?.autoAllowRoots,
-    // `sensitiveDirs` is the current key; `deniedDirs` is its deprecated alias
-    // and is merged (deduped) here so a legacy config keeps protecting exactly
-    // the directories it declares.
-    extraSensitiveDirs: mergeSensitiveDirs(permission),
+    extraSensitiveDirs: resolveSensitiveDirs(permission),
     sensitiveMode: resolveSensitiveMode(permission),
     allowReadWithinHome: false,
   });

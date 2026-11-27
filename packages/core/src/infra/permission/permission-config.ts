@@ -1,20 +1,17 @@
 /**
- * `permission` config-section compatibility helpers.
+ * `permission` config-section helpers.
  *
  * 0.8.1 renamed the credential/tool-config directory list from "deny list" to
  * "sensitive list": the matching entries are protected locations, and a READ
  * hit is now an approval (`ask`) rather than a hard refusal. The config key
- * moved with it:
+ * moved with it (`permission.deniedDirs` → `permission.sensitiveDirs`).
  *
- *   permission.sensitiveDirs  — the current key
- *   permission.deniedDirs     — deprecated alias, STILL READ and merged
- *
- * The alias is kept on purpose. The config lives on disk with no migration
- * tool, so silently ignoring the old key would quietly DROP a protection the
- * user declared themselves — a fail-open failure, far worse than carrying one
- * extra key. Merging is cheap: dedupe the union and be done. Once merged, the
- * origin of an entry has no effect on any decision, so nothing downstream needs
- * to know which key it came from.
+ * The old key is NOT read here. Hosts fold it into `sensitiveDirs` once at
+ * their config entry (protocol `normalizeConfig`) — a silently dropped
+ * user-declared protection would be a fail-open failure, which is exactly
+ * what that translation prevents — and core's intake refuses a config that
+ * still carries it. Once merged, the origin of an entry has no effect on any
+ * decision, so nothing downstream needs to know where an entry came from.
  *
  * `permission.sensitiveMode` is the escape hatch: `'ask'` (default) asks the
  * controller before a sensitive hit in EITHER direction (read or write),
@@ -33,22 +30,20 @@ export const DEFAULT_SENSITIVE_MODE: SensitiveMode = 'ask';
 export const DEFAULT_APPROVAL_MEMORY: ApprovalMemoryMode = 'task';
 
 /**
- * The configured sensitive directories, deduped, with the deprecated
- * `deniedDirs` alias folded in. Entries keep their declared order (current key
- * first); duplicates are dropped so a dir listed in both keys is not reported
+ * The configured sensitive directories, deduped. Entries keep their declared
+ * order; empty entries and duplicates are dropped so a dir is not reported
  * twice in approval prompts or audits.
  */
-export function mergeSensitiveDirs(permission?: PermissionConfig): string[] {
-  const entries = [...(permission?.sensitiveDirs ?? []), ...(permission?.deniedDirs ?? [])];
+export function resolveSensitiveDirs(permission?: PermissionConfig): string[] {
   const seen = new Set<string>();
-  const merged: string[] = [];
-  for (const entry of entries) {
+  const resolved: string[] = [];
+  for (const entry of permission?.sensitiveDirs ?? []) {
     if (typeof entry !== 'string' || entry.length === 0) continue;
     if (seen.has(entry)) continue;
     seen.add(entry);
-    merged.push(entry);
+    resolved.push(entry);
   }
-  return merged;
+  return resolved;
 }
 
 /** `permission.sensitiveMode` with the default applied. */
@@ -63,30 +58,4 @@ export function resolveSensitiveMode(permission?: PermissionConfig): SensitiveMo
  */
 export function resolveApprovalMemory(permission?: PermissionConfig): ApprovalMemoryMode {
   return permission?.approvalMemory ?? DEFAULT_APPROVAL_MEMORY;
-}
-
-/** True once the deprecation warning has been emitted (per process). */
-let deprecatedDeniedDirsWarned = false;
-
-/**
- * Warn ONCE per process — and only when the old key is actually populated — so
- * a legacy config prints a single pointer to the new key at startup instead of
- * a line per permission check.
- */
-export function warnDeprecatedPermissionKeys(
-  permission: PermissionConfig | undefined,
-  warn: (message: string) => void,
-): void {
-  if (deprecatedDeniedDirsWarned) return;
-  const legacy = permission?.deniedDirs;
-  if (!Array.isArray(legacy) || legacy.length === 0) return;
-  deprecatedDeniedDirsWarned = true;
-  warn(
-    'permission.deniedDirs is deprecated and will be removed in a future release — use permission.sensitiveDirs instead (both keys are read and merged).',
-  );
-}
-
-/** Test-only: forget that the deprecation warning was already emitted. */
-export function resetDeprecatedPermissionKeysWarning(): void {
-  deprecatedDeniedDirsWarned = false;
 }
