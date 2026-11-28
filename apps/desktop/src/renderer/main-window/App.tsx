@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import type { WayangConfig } from '@wayang-ai/protocol';
 import { wayang } from '@/renderer/shared/lib/wayang-api';
 import { wayangStore } from '@/renderer/shared/lib/store';
 import { router, useRoute } from '@/renderer/shared/lib/router';
 import { ChatPage } from './pages/chat/chat-page';
+import { Toaster } from '@/renderer/shared/components/ui/sonner';
 import { OnboardFlow } from './pages/onboard/onboard-flow';
 import { SettingsPage } from './pages/settings/settings-page';
 
@@ -21,7 +23,9 @@ export function App() {
     void wayang
       .getOnboardState()
       .then((state) => {
-        if (!state.onboarded) router.replace('/onboard', { problem: state.problem });
+        // 磁盘上有「结构合法但必要核心不完整」的配置时一并带过去，欢迎页
+        // 据此提供「修改现有配置」。
+        if (!state.onboarded) router.replace('/onboard', { problem: state.problem, config: state.config });
       })
       .catch((err: unknown) => {
         // The state channel itself failed (not the envelope): the main UI's
@@ -52,17 +56,33 @@ export function App() {
     );
   }
 
+  let page: ReactNode;
   switch (route.path) {
-    case '/onboard':
-      return (
+    case '/onboard': {
+      // 路由 params 是 unknown：只认「看起来像配置对象」的值。
+      const raw = route.params.config;
+      const existingConfig = typeof raw === 'object' && raw !== null ? (raw as WayangConfig) : undefined;
+      page = (
         <OnboardFlow
           problem={typeof route.params.problem === 'string' ? route.params.problem : undefined}
+          existingConfig={existingConfig}
           onFinished={() => router.replace('/chat')}
         />
       );
+      break;
+    }
     case '/settings':
-      return <SettingsPage onClose={() => router.back()} />;
+      page = <SettingsPage onClose={() => router.back()} />;
+      break;
     default:
-      return <ChatPage key={route.key} />;
+      page = <ChatPage key={route.key} />;
   }
+
+  return (
+    <>
+      {page}
+      {/* 全应用的 toast 宿主：挂在根上一次，各页面只管调 toast()。 */}
+      <Toaster />
+    </>
+  );
 }

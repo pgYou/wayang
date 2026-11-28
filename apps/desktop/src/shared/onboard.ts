@@ -18,6 +18,12 @@ export interface OnboardState {
   onboarded: boolean;
   /** Why the envelope is unusable: missing, invalid, or core-incomplete. */
   problem?: string;
+  /**
+   * The config already on disk when it is structurally valid but core-INCOMPLETE
+   * — the welcome page offers「修改现有配置」on it instead of making the user
+   * start over (and silently dropping everything they had configured).
+   */
+  config?: WayangConfig;
 }
 
 /**
@@ -105,29 +111,7 @@ export function resolveOnboardState(
   if (loadError) return { onboarded: false, problem: loadError };
   if (!envelope) return { onboarded: false, problem: '尚未配置：config.json 不存在' };
   const problem = checkCoreCompleteness(envelope.wayangConfig);
-  if (problem) return { onboarded: false, problem };
+  // 结构合法只差必要核心：把配置带给欢迎页，供「修改现有配置」接着改。
+  if (problem) return { onboarded: false, problem, config: envelope.wayangConfig };
   return { onboarded: true };
-}
-
-/**
- * The wizard's built-in「创建默认 provider + model」fallback (§2.11 兜底步骤):
- * a minimal, immediately-runnable config from one provider form.
- */
-export function buildFallbackConfig(input: {
-  providerKey: string;
-  baseURL: string;
-  apiKey: string;
-  modelKey: string;
-  modelName: string;
-}): WayangConfig {
-  return {
-    providers: {
-      [input.providerKey]: { type: 'openai-compatible', baseURL: input.baseURL, apiKey: input.apiKey },
-    },
-    models: {
-      [input.modelKey]: { provider: input.providerKey, name: input.modelName },
-    },
-    controller: { model: input.modelKey },
-    worker: { model: input.modelKey, maxConcurrency: 3 },
-  };
 }

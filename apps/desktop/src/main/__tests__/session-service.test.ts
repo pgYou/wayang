@@ -275,6 +275,30 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
     await service.stop();
   });
 
+  it('a core-incomplete envelope hands its config to the welcome page; re-onboarding keeps the stored desktop prefs', async () => {
+    const incomplete = {
+      providers: { default: { baseURL: 'http://localhost:1234/v1', apiKey: 'k' } },
+      models: { default: { provider: 'default', name: 'test-model' } },
+      controller: {},
+      worker: { maxConcurrency: 2 },
+    } as unknown as WayangConfig;
+    const keptPrefs = { defaultWorkerWorkspace: join(dir, 'kept-ws') };
+    writeFileSync(options.configPath, JSON.stringify(makeEnvelope(incomplete, keptPrefs)));
+    const service = makeService();
+    await service.start(null);
+
+    // 欢迎页据此提供「修改现有配置」：配置原样带过去，不必从零重填。
+    const state = await invoke(IPC.getOnboardState, []);
+    expect(state).toMatchObject({ ok: true, data: { onboarded: false, config: incomplete } });
+
+    // 向导改完后不带桌面偏好地保存：信封里已有的偏好不能被抹掉。
+    expect(await invoke(IPC.saveConfig, [validConfig])).toMatchObject({ ok: true, data: { booted: true } });
+    const saved = JSON.parse(readFileSync(options.configPath, 'utf-8')) as { desktop: Record<string, unknown> };
+    expect(saved.desktop).toEqual(keptPrefs);
+    await vi.waitFor(() => expect(statusEvents().map((s) => s.phase)).toContain('ready'));
+    await service.stop();
+  });
+
   it('windowControl routes the custom-header actions; invalid actions get the validator message', async () => {
     const service = makeService();
     await service.start(validConfig);

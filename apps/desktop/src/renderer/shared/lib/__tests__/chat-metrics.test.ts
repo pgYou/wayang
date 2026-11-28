@@ -20,7 +20,8 @@ describe('contextPercent (上下文圆环)', () => {
 
   it('formats compact token labels', () => {
     expect(formatTokens(999)).toBe('999');
-    expect(formatTokens(12_340)).toBe('12.3k');
+    expect(formatTokens(12_340)).toBe('12.1k');
+    expect(formatTokens(256 * 1024)).toBe('256.0k');
   });
 });
 

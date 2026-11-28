@@ -1,0 +1,110 @@
+/*
+ * sonner 自带一套 CSS 变量（--normal-bg / --normal-text / --border-radius …），默认值
+ * 声明在 `[data-sonner-toaster][data-sonner-theme='…']` 上，而且它的样式表是运行时
+ * 注入的，排在 app 的 CSS 之后。所以这里的规则一律带
+ * `body [data-sonner-toaster].wayang-toaster` 前缀：特异性高出一档，才盖得住。
+ *
+ * 颜色 / 圆角 / 阴影只取 app 里真正落在 :root 的 token（--card、--border、
+ * --radius……）。注意 Tailwind `@theme inline` 里的派生值（--radius-lg、
+ * --shadow-card 等）不会被输出成 CSS 变量，接到它们上等于接了个空值——之前圆角
+ * 变成直角就是这么来的。要更大的圆角就在 --radius 上做运算。
+ * （不用 JSX 的 style 属性：内联样式是本项目 UI 规范禁止的。）
+ */
+body [data-sonner-toaster].wayang-toaster {
+  font-family: inherit;
+  /* 比默认的 356px 宽一些：标题不换行，右侧还要放一个动作按钮。
+     sonner 把 --width 写在元素的行内样式里，只有 !important 才盖得住。 */
+  --width: 420px !important;
+  /* 24px + 渐变曲率：和聊天里的用户气泡同一档（--radius-squircle 落在 :root，
+   * 可以直接接；曲率由下面 toast 规则里的 corner-shape 钉上）。 */
+  --border-radius: var(--radius-squircle);
+  --normal-bg: var(--card);
+  --normal-bg-hover: var(--accent);
+  --normal-border: var(--border);
+  --normal-border-hover: var(--border);
+  --normal-text: var(--card-foreground);
+  /* richColors 用的几组：底色仍是卡片色，只靠文字 / 图标色区分类型。 */
+  --success-bg: var(--card);
+  --success-border: var(--border);
+  --success-text: var(--success);
+  --info-bg: var(--card);
+  --info-border: var(--border);
+  --info-text: var(--primary);
+  --warning-bg: var(--card);
+  --warning-border: var(--border);
+  --warning-text: var(--destructive);
+  --error-bg: var(--card);
+  --error-border: var(--border);
+  --error-text: var(--destructive);
+}
+
+/* 卡片本体：阴影换成 app 的卡片阴影，内边距和字号对齐 app 的正文（14px）。 */
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-styled='true'] {
+  /* 渐变曲率圆角（同 globals.css 里的 .rounded-squircle）；旧内核忽略它，退化成同样半径的普通圆角。 */
+  corner-shape: squircle;
+  padding: 12px 16px;
+  gap: 10px;
+  font-size: 14px;
+  box-shadow: var(--card-shadow);
+}
+/* 标题永远一行：长内容应该放 description（它可以换行）。真写长了就省略号，不撑破布局。 */
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-styled='true'] [data-title] {
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* sonner 把说明文字的颜色写死成了 #3f3f3f，这里接回次要色。 */
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-styled='true'] [data-description] {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+/* 图标按类型上色（sonner 默认全是正文字色）；出错的标题也用警示色。 */
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-type='success'] [data-icon] {
+  color: var(--success);
+}
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-type='error'] [data-icon] {
+  color: var(--destructive);
+}
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-type='error'] [data-title] {
+  color: var(--destructive);
+}
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-type='loading'] [data-icon] {
+  color: var(--primary);
+}
+
+/* 动作按钮：同 ui/button 的 secondary + sm 档（浅灰底、深色字、悬停八成不透明）。
+   toast 本身就是提示，按钮不用实心主色去抢——占地方，也把标题挤得放不下。 */
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-styled='true'] [data-button] {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: calc(var(--radius) - 2px);
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  transition: background 150ms ease;
+}
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-styled='true'] [data-button]:hover {
+  background: color-mix(in oklch, var(--secondary) 80%, transparent);
+}
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-styled='true'] [data-button]:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+/* 关闭按钮：位置沿用 sonner 默认（压在卡片角上），图标用次要色，悬停才有底色。 */
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-styled='true'] [data-close-button] {
+  color: var(--muted-foreground);
+  background: var(--card);
+  border-color: var(--border);
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+body [data-sonner-toaster].wayang-toaster [data-sonner-toast][data-styled='true']:hover [data-close-button]:hover {
+  color: var(--card-foreground);
+  background: var(--accent);
+  border-color: var(--border);
+}

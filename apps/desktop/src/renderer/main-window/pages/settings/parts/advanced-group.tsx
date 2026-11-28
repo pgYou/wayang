@@ -1,94 +1,120 @@
-import type { WayangConfig } from '@wayang-ai/protocol';
+import type { LoggingConfig, WayangConfig } from '@wayang-ai/protocol';
 import { parseDirList, setIdleTimeoutMs, setLogging, setSignalWindowSize, setSkillsDirs, setTavilyApiKey } from '@/renderer/shared/lib/config-draft';
 import { Input } from '@/renderer/shared/components/ui/input';
 import { Textarea } from '@/renderer/shared/components/ui/textarea';
-import { useDraftSection } from './draft-section';
-import { SaveCancelBar } from './field-controls';
-import { FieldLabel, SettingsRow, SettingsSection } from './settings-section';
+import { FormField, parsePositiveInt } from '@/renderer/main-window/components/settings';
+import { DraftRow } from './draft-row';
+import { SettingsSection } from './settings-section';
 import type { ConfigCommitState } from '../use-config-commit';
 
 type CommitFn = ConfigCommitState['commit'];
 
-/** 把「留空=默认，否则正整数」的数字输入转成 commit 调用。 */
-function optionalPositiveInt(name: string, apply: (n: number | undefined) => Promise<void>) {
-  return async (value: string): Promise<void> => {
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return apply(undefined);
-    const n = Number(trimmed);
-    if (!Number.isInteger(n) || n <= 0) throw new Error(`${name} 必须是正整数，留空表示使用默认值`);
-    return apply(n);
+/**
+ * 「留空 = 用默认值，否则必须是正整数」的输入框：草稿里是文本，校验交给
+ * DraftRow 就近显示，保存时才转成数字（留空即 undefined）。
+ */
+function positiveIntField(name: string): {
+  problem: (text: string) => string | null;
+  parse: (text: string) => number | undefined;
+} {
+  return {
+    problem: (text) => (parsePositiveInt(text).invalid ? `${name} 必须是正整数，留空表示使用默认值` : null),
+    parse: (text) => parsePositiveInt(text).value,
   };
+}
+
+/** 日志滚动两项的草稿（都是文本）。 */
+interface LoggingForm {
+  maxFileSizeBytes: string;
+  maxFiles: string;
 }
 
 /** 高级分组：低频字段，全部重启后生效。 */
 export function AdvancedGroup({ config, commit }: { config: WayangConfig; commit: CommitFn }) {
-  const tavily = useDraftSection(config.tavilyApiKey ?? '', (value) => commit(setTavilyApiKey(config, value)));
-  const skillsDirs = useDraftSection((config.skillsDirs ?? []).join('\n'), (text) => commit(setSkillsDirs(config, parseDirList(text))));
-  const idleTimeout = useDraftSection(
-    config.idleTimeoutMs !== undefined ? String(config.idleTimeoutMs) : '',
-    optionalPositiveInt('idleTimeoutMs', (n) => commit(setIdleTimeoutMs(config, n))),
-  );
-  const signalWindow = useDraftSection(
-    config.signalWindowSize !== undefined ? String(config.signalWindowSize) : '',
-    optionalPositiveInt('signalWindowSize', (n) => commit(setSignalWindowSize(config, n))),
-  );
-  const logging = useDraftSection(
-    { maxFileSizeBytes: config.logging?.maxFileSizeBytes, maxFiles: config.logging?.maxFiles },
-    (value) => commit(setLogging(config, value)),
-  );
+  const idleTimeout = positiveIntField('idleTimeoutMs');
+  const signalWindow = positiveIntField('signalWindowSize');
+  const logSize = positiveIntField('maxFileSizeBytes');
+  const logFiles = positiveIntField('maxFiles');
+
+  const loggingCommitted: LoggingForm = {
+    maxFileSizeBytes: config.logging?.maxFileSizeBytes !== undefined ? String(config.logging.maxFileSizeBytes) : '',
+    maxFiles: config.logging?.maxFiles !== undefined ? String(config.logging.maxFiles) : '',
+  };
+  const saveLogging = (form: LoggingForm): Promise<void> => {
+    // 两项都留空即整个 logging 段落清掉。
+    const logging: LoggingConfig = {};
+    const size = logSize.parse(form.maxFileSizeBytes);
+    const files = logFiles.parse(form.maxFiles);
+    if (size !== undefined) logging.maxFileSizeBytes = size;
+    if (files !== undefined) logging.maxFiles = files;
+    return commit(setLogging(config, logging));
+  };
 
   return (
     <>
       <SettingsSection title="集成" restart>
-        <SettingsRow>
-          <FieldLabel>Tavily API Key</FieldLabel>
-          <Input type="password" value={tavily.value} onChange={(e) => tavily.setValue(e.target.value)} />
-          <SaveCancelBar dirty={tavily.dirty} saving={tavily.saving} error={tavily.error} onSave={tavily.save} onCancel={tavily.cancel} />
-        </SettingsRow>
-        <SettingsRow>
-          <FieldLabel>Skills 目录（skillsDirs）</FieldLabel>
-          <Textarea rows={3} placeholder="/Users/me/skills" value={skillsDirs.value} onChange={(e) => skillsDirs.setValue(e.target.value)} />
-          <SaveCancelBar dirty={skillsDirs.dirty} saving={skillsDirs.saving} error={skillsDirs.error} onSave={skillsDirs.save} onCancel={skillsDirs.cancel} />
-        </SettingsRow>
+        <DraftRow label="Tavily API Key" committed={config.tavilyApiKey ?? ''} onSave={(value) => commit(setTavilyApiKey(config, value))}>
+          {(value, set) => <Input type="password" value={value} onChange={(e) => set(e.target.value)} />}
+        </DraftRow>
+        <DraftRow
+          label="Skills 目录（skillsDirs）"
+          committed={(config.skillsDirs ?? []).join('\n')}
+          onSave={(text) => commit(setSkillsDirs(config, parseDirList(text)))}
+        >
+          {(text, set) => <Textarea placeholder="/Users/me/skills" value={text} onChange={(e) => set(e.target.value)} />}
+        </DraftRow>
       </SettingsSection>
+
       <SettingsSection title="运行参数" restart>
-        <SettingsRow>
-          <FieldLabel>空闲超时（idleTimeoutMs）</FieldLabel>
-          <Input inputMode="numeric" fieldSize="sm" placeholder="留空表示使用默认值" value={idleTimeout.value} onChange={(e) => idleTimeout.setValue(e.target.value)} />
-          <SaveCancelBar dirty={idleTimeout.dirty} saving={idleTimeout.saving} error={idleTimeout.error} onSave={idleTimeout.save} onCancel={idleTimeout.cancel} />
-        </SettingsRow>
-        <SettingsRow>
-          <FieldLabel>信号窗口大小（signalWindowSize）</FieldLabel>
-          <Input inputMode="numeric" fieldSize="sm" placeholder="留空表示使用默认值" value={signalWindow.value} onChange={(e) => signalWindow.setValue(e.target.value)} />
-          <SaveCancelBar dirty={signalWindow.dirty} saving={signalWindow.saving} error={signalWindow.error} onSave={signalWindow.save} onCancel={signalWindow.cancel} />
-        </SettingsRow>
+        <DraftRow
+          label="空闲超时（idleTimeoutMs）"
+          committed={config.idleTimeoutMs !== undefined ? String(config.idleTimeoutMs) : ''}
+          onSave={(text) => commit(setIdleTimeoutMs(config, idleTimeout.parse(text)))}
+          problem={idleTimeout.problem}
+        >
+          {(value, set) => <Input inputMode="numeric" fieldSize="sm" placeholder="留空表示使用默认值" value={value} onChange={(e) => set(e.target.value)} />}
+        </DraftRow>
+        <DraftRow
+          label="信号窗口大小（signalWindowSize）"
+          committed={config.signalWindowSize !== undefined ? String(config.signalWindowSize) : ''}
+          onSave={(text) => commit(setSignalWindowSize(config, signalWindow.parse(text)))}
+          problem={signalWindow.problem}
+        >
+          {(value, set) => <Input inputMode="numeric" fieldSize="sm" placeholder="留空表示使用默认值" value={value} onChange={(e) => set(e.target.value)} />}
+        </DraftRow>
       </SettingsSection>
+
       <SettingsSection title="日志滚动" restart>
-        <SettingsRow>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="flex flex-col gap-1">
-              <FieldLabel>单文件最大字节（maxFileSizeBytes）</FieldLabel>
-              <Input
-                inputMode="numeric"
-                fieldSize="sm"
-                placeholder="默认 10MB"
-                value={logging.value.maxFileSizeBytes !== undefined ? String(logging.value.maxFileSizeBytes) : ''}
-                onChange={(e) => logging.setValue({ ...logging.value, maxFileSizeBytes: e.target.value.trim() === '' ? undefined : Number(e.target.value) })}
-              />
+        <DraftRow committed={loggingCommitted} onSave={saveLogging} problem={(form) => logSize.problem(form.maxFileSizeBytes) ?? logFiles.problem(form.maxFiles)}>
+          {(form, set) => (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <FormField label="单文件最大字节（maxFileSizeBytes）">
+                {(id) => (
+                  <Input
+                    id={id}
+                    inputMode="numeric"
+                    fieldSize="sm"
+                    placeholder="默认 10MiB"
+                    value={form.maxFileSizeBytes}
+                    onChange={(e) => set({ ...form, maxFileSizeBytes: e.target.value })}
+                  />
+                )}
+              </FormField>
+              <FormField label="保留文件数（maxFiles）">
+                {(id) => (
+                  <Input
+                    id={id}
+                    inputMode="numeric"
+                    fieldSize="sm"
+                    placeholder="默认 3"
+                    value={form.maxFiles}
+                    onChange={(e) => set({ ...form, maxFiles: e.target.value })}
+                  />
+                )}
+              </FormField>
             </div>
-            <div className="flex flex-col gap-1">
-              <FieldLabel>保留文件数（maxFiles）</FieldLabel>
-              <Input
-                inputMode="numeric"
-                fieldSize="sm"
-                placeholder="默认 3"
-                value={logging.value.maxFiles !== undefined ? String(logging.value.maxFiles) : ''}
-                onChange={(e) => logging.setValue({ ...logging.value, maxFiles: e.target.value.trim() === '' ? undefined : Number(e.target.value) })}
-              />
-            </div>
-          </div>
-          <SaveCancelBar dirty={logging.dirty} saving={logging.saving} error={logging.error} onSave={logging.save} onCancel={logging.cancel} />
-        </SettingsRow>
+          )}
+        </DraftRow>
       </SettingsSection>
     </>
   );

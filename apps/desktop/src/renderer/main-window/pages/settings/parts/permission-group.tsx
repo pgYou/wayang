@@ -2,8 +2,8 @@ import type { WayangConfig } from '@wayang-ai/protocol';
 import { parseDirList, setApprovalMemory, setPermissionList, setSensitiveMode } from '@/renderer/shared/lib/config-draft';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/shared/components/ui/select';
 import { Textarea } from '@/renderer/shared/components/ui/textarea';
-import { useAutoSaveAction, useDraftSection } from './draft-section';
-import { SaveCancelBar } from './field-controls';
+import { useAutoSaveAction } from './draft-section';
+import { DraftRow } from './draft-row';
 import { FieldLabel, SettingsRow, SettingsSection } from './settings-section';
 import type { ConfigCommitState } from '../use-config-commit';
 
@@ -74,12 +74,9 @@ export function PermissionGroup({ config, commit }: { config: WayangConfig; comm
 }
 
 function DirListRow({ title, value, onSave }: { title: string; value: string; onSave: (dirs: string[]) => Promise<void> }) {
-  const section = useDraftSection(value, (text) => onSave(parseDirList(text)));
   return (
-    <SettingsRow>
-      <FieldLabel>{title}</FieldLabel>
-      <Textarea rows={3} placeholder={'/Users/me/projects\n/Users/me/work'} value={section.value} onChange={(e) => section.setValue(e.target.value)} />
-      <SaveCancelBar dirty={section.dirty} saving={section.saving} error={section.error} onSave={section.save} onCancel={section.cancel} />
-    </SettingsRow>
+    <DraftRow label={title} committed={value} onSave={(text) => onSave(parseDirList(text))}>
+      {(text, set) => <Textarea placeholder={'/Users/me/projects\n/Users/me/work'} value={text} onChange={(e) => set(e.target.value)} />}
+    </DraftRow>
   );
 }

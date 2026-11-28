@@ -1,42 +1,43 @@
 import { useState } from 'react';
-import { LoaderIcon } from 'lucide-react';
+import { PlusIcon } from 'lucide-react';
 import type { WayangConfig } from '@wayang-ai/protocol';
-import { removeModel, setControllerModel, setWorkerModel, upsertProvider } from '@/renderer/shared/lib/config-draft';
+import { upsertProvider } from '@/renderer/shared/lib/config-draft';
 import { Button } from '@/renderer/shared/components/ui/button';
-import { Card } from '@/renderer/shared/components/ui/card';
-import { Input } from '@/renderer/shared/components/ui/input';
-import { Label } from '@/renderer/shared/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/shared/components/ui/select';
+import {
+  ProviderForm,
+  providerFormProblem,
+  providerFromForm,
+  type ProviderFormValues,
+} from '@/renderer/main-window/components/settings';
 import { useAutoSaveAction } from './draft-section';
+import { FormDialog } from './form-dialog';
 import { ProviderCard } from './provider-card';
-import { SettingsRow, SettingsSection } from './settings-section';
+import { SectionTitle } from './settings-section';
 import type { ConfigCommitState } from '../use-config-commit';
 
 type CommitFn = ConfigCommitState['commit'];
 
-interface ProviderForm {
-  key: string;
-  baseURL: string;
-  apiKey: string;
-}
+const EMPTY_PROVIDER: ProviderFormValues = { key: '', baseURL: '', apiKey: '' };
 
 /**
  * 模型分组：Provider → Model 两层树。每个 provider 一张可折叠卡片，其下
- * 的模型直接在该卡片内增删改；模型绑定是全局的两条引用，放在最下面。
+ * 的模型直接在该卡片内增删。（模型绑定不在这里——它属于 Agent 分组。）
+ * 新增 / 编辑都在弹窗里做（FormDialog），表单是原子设置组件
+ * （components/settings），这里只负责接到 commit。
  */
 export function ModelsGroup({ config, commit }: { config: WayangConfig; commit: CommitFn }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [creating, setCreating] = useState<ProviderForm | null>(null);
+  const [creating, setCreating] = useState<ProviderFormValues | null>(null);
   const providers = Object.entries(config.providers ?? {});
   const action = useAutoSaveAction();
+  // 按钮不合法不点亮；动过之后才把原因显示出来（空表单一上来不该报错）。
+  const touched = creating !== null && JSON.stringify(creating) !== JSON.stringify(EMPTY_PROVIDER);
+  const problem = creating !== null ? providerFormProblem(creating, { requireKey: true, takenKeys: Object.keys(config.providers ?? {}) }) : null;
 
-  const providerKeys = new Set(Object.keys(config.providers ?? {}));
-  const orphans = Object.entries(config.models ?? {}).filter(([, m]) => !providerKeys.has(m.provider));
-
-  const saveProvider = (): void => {
-    if (!creating) return;
+  const addProvider = (): void => {
+    if (!creating || !touched || problem) return;
     action.run(async () => {
-      await commit(upsertProvider(config, creating.key.trim(), { type: 'openai-compatible', baseURL: creating.baseURL.trim(), apiKey: creating.apiKey.trim() }));
+      await commit(upsertProvider(config, creating.key.trim(), providerFromForm(creating)));
       setCreating(null);
     });
   };
@@ -44,7 +45,15 @@ export function ModelsGroup({ config, commit }: { config: WayangConfig; commit: 
   return (
     <>
       <section className="flex flex-col gap-2">
-        <h3 className="px-1 text-sm font-medium">Providers</h3>
+        {/* 「新增」放在分区标题行的最右边：入口固定在这一区的顶部，不随卡片数量上下跑。 */}
+        <div className="flex items-center">
+          <SectionTitle className="flex-1">Providers</SectionTitle>
+          {/* 标题自带左右留白、按钮比标题行矮不了多少：按钮右缘即卡片右缘。 */}
+          <Button size="sm" variant="ghost" className="-my-1 text-muted-foreground hover:text-foreground" onClick={() => setCreating(EMPTY_PROVIDER)}>
+            <PlusIcon />
+            新增 provider
+          </Button>
+        </div>
         {providers.map(([key, provider]) => (
           <ProviderCard
             key={key}
@@ -56,106 +65,24 @@ export function ModelsGroup({ config, commit }: { config: WayangConfig; commit: 
             onToggle={() => setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }))}
           />
         ))}
-        {orphans.length > 0 && (
-          <Card className="gap-0 divide-y divide-border border-transparent py-0 shadow-card">
-            <div className="px-4 py-3 text-sm text-destructive">未归属 provider 的模型</div>
-            {orphans.map(([key, model]) => (
-              <div key={key} className="flex items-center gap-3 px-4 py-2 text-sm">
-                <span className="font-mono font-medium">{key}</span>
-                <span className="text-xs text-muted-foreground">
-                  {model.provider} / {model.name}
-                </span>
-                <Button size="sm" variant="ghost" className="ml-auto" disabled={action.pending} onClick={() => action.run(() => commit(removeModel(config, key)))}>
-                  删除
-                </Button>
-              </div>
-            ))}
-          </Card>
-        )}
-        {creating !== null ? (
-          <Card className="gap-3 border-transparent p-4 shadow-card">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="flex flex-col gap-1">
-                <Label>名称</Label>
-                <Input value={creating.key} onChange={(e) => setCreating((prev) => (prev ? { ...prev, key: e.target.value } : prev))} />
-              </div>
-              <div className="flex flex-col gap-1">
-                <Label>Base URL</Label>
-                <Input value={creating.baseURL} onChange={(e) => setCreating((prev) => (prev ? { ...prev, baseURL: e.target.value } : prev))} />
-              </div>
-              <div className="flex flex-col gap-1">
-                <Label>API Key</Label>
-                <Input type="password" value={creating.apiKey} onChange={(e) => setCreating((prev) => (prev ? { ...prev, apiKey: e.target.value } : prev))} />
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button size="sm" onClick={saveProvider} disabled={!creating.key.trim() || !creating.baseURL.trim() || !creating.apiKey.trim() || action.pending}>
-                {action.pending && <LoaderIcon className="animate-spin" />}
-                保存
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setCreating(null)} disabled={action.pending}>
-                取消
-              </Button>
-            </div>
-            {action.error && <p className="text-xs text-destructive">{action.error}</p>}
-          </Card>
-        ) : (
-          <Button size="sm" variant="secondary" className="self-start" onClick={() => setCreating({ key: '', baseURL: '', apiKey: '' })}>
-            新增 provider
-          </Button>
-        )}
       </section>
-      <BindingsSection config={config} commit={commit} />
-    </>
-  );
-}
 
-function BindingsSection({ config, commit }: { config: WayangConfig; commit: CommitFn }) {
-  const modelKeys = Object.keys(config.models ?? {});
-  const action = useAutoSaveAction();
-  return (
-    <SettingsSection title="模型绑定">
-      <SettingsRow>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-1">
-            <Label>Controller 模型</Label>
-            <Select
-              value={typeof config.controller?.model === 'string' ? config.controller.model : ''}
-              onValueChange={(v) => action.run(() => commit(setControllerModel(config, v || undefined)))}
-            >
-              <SelectTrigger fieldSize="md">
-                <SelectValue placeholder="选择模型" />
-              </SelectTrigger>
-              <SelectContent>
-                {modelKeys.map((k) => (
-                  <SelectItem key={k} value={k}>
-                    {k}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label>Worker 模型</Label>
-            <Select
-              value={typeof config.worker?.model === 'string' ? config.worker.model : ''}
-              onValueChange={(v) => action.run(() => commit(setWorkerModel(config, v || undefined)))}
-            >
-              <SelectTrigger fieldSize="md">
-                <SelectValue placeholder="选择模型" />
-              </SelectTrigger>
-              <SelectContent>
-                {modelKeys.map((k) => (
-                  <SelectItem key={k} value={k}>
-                    {k}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        {action.error && <p className="text-xs text-destructive">{action.error}</p>}
-      </SettingsRow>
-    </SettingsSection>
+      <FormDialog
+        open={creating !== null}
+        onClose={() => {
+          setCreating(null);
+          action.clearError();
+        }}
+        title="新增 provider"
+        description="填 OpenAI 兼容服务的连接信息。"
+        submitLabel="添加"
+        onSubmit={addProvider}
+        submitDisabled={!touched || problem !== null}
+        problem={action.error ?? (touched ? problem : null)}
+        saving={action.pending}
+      >
+        {creating && <ProviderForm keyEditable value={creating} onChange={setCreating} />}
+      </FormDialog>
+    </>
   );
 }

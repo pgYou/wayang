@@ -47,7 +47,6 @@ export function InquiryCard({ inquiry, onAnswer }: InquiryCardProps) {
             {inquiry.type === 'text' && (
               <div className="flex items-end gap-2">
                 <Textarea
-                  rows={2}
                   value={text}
                   placeholder="输入你的回答…"
                   onChange={(e) => setText(e.target.value)}

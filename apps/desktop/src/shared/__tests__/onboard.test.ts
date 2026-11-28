@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { WayangConfig } from '@wayang-ai/protocol';
-import { buildFallbackConfig, checkCoreCompleteness, resolveOnboardState } from '../onboard';
+import { checkCoreCompleteness, resolveOnboardState } from '../onboard';
 
 /**
  * Necessary-core checks (§2.11 决策九): these decide the welcome-page trigger
@@ -78,23 +78,20 @@ describe('resolveOnboardState (cold-boot decision)', () => {
     expect(resolveOnboardState({ wayangConfig: incomplete }, null)).toMatchObject({ onboarded: false });
   });
 
+  it('a core-incomplete (but valid) envelope is handed to the welcome page for「修改现有配置」', () => {
+    const incomplete = { ...base, controller: {} };
+    // 结构合法只差必要核心：配置本身带过去，欢迎页得以它为草稿进向导。
+    expect(resolveOnboardState({ wayangConfig: incomplete }, null)).toEqual({
+      onboarded: false,
+      problem: expect.stringContaining('controller'),
+      config: incomplete,
+    });
+    // The other two welcome-page causes carry NO config (nothing editable).
+    expect(resolveOnboardState(null, null).config).toBeUndefined();
+    expect(resolveOnboardState(null, 'config file is not valid JSON: x').config).toBeUndefined();
+  });
+
   it('a complete envelope is onboarded', () => {
     expect(resolveOnboardState({ wayangConfig: base }, null)).toEqual({ onboarded: true });
-  });
-});
-
-describe('buildFallbackConfig (向导兜底步骤)', () => {
-  it('produces a complete, core-valid config from one provider form', () => {
-    const config = buildFallbackConfig({
-      providerKey: 'default',
-      baseURL: 'https://api.example.com/v1',
-      apiKey: 'sk-1',
-      modelKey: 'main',
-      modelName: 'gpt-x',
-    });
-    expect(checkCoreCompleteness(config)).toBeNull();
-    expect(config.controller).toEqual({ model: 'main' });
-    expect(config.worker).toEqual({ model: 'main', maxConcurrency: 3 });
-    expect(config.models!.main.provider).toBe('default');
   });
 });

@@ -4,7 +4,7 @@ import { Slot } from '@radix-ui/react-slot';
 import { cn } from '@/renderer/shared/lib/cn';
 
 /**
- * Button — 操作按钮：变体（default/outline/secondary/ghost/destructive/link）
+ * Button — 操作按钮：变体（default/outline/secondary/dashed/ghost/destructive/link）
  * × 尺寸（default/xs/sm/lg/icon 系列）。
  */
 const buttonVariants = cva(
@@ -17,6 +17,9 @@ const buttonVariants = cva(
           'border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground',
         secondary:
           'bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground',
+        // 虚线边框、不填充、文字用说明文字的次要色：「添加一个」这类入口用，
+        // 比实心按钮轻，又比纯文字显眼；悬停才回到正文字色。
+        dashed: 'border-border border-dashed bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
         ghost:
           'hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground',
         destructive:

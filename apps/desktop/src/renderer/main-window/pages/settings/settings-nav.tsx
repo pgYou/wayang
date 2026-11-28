@@ -2,11 +2,11 @@ import { ArrowLeftIcon, BotIcon, CpuIcon, FolderIcon, ShieldIcon, SlidersHorizon
 import { Button } from '@/renderer/shared/components/ui/button';
 import { Menu, type MenuItem } from '@/renderer/shared/components/ui/menu';
 
-export type SettingsGroup = 'models' | 'worker' | 'permission' | 'workspace' | 'advanced';
+export type SettingsGroup = 'models' | 'agent' | 'permission' | 'workspace' | 'advanced';
 
 const GROUP_ITEMS: ReadonlyArray<MenuItem<SettingsGroup>> = [
   { value: 'models', label: '模型', icon: <CpuIcon /> },
-  { value: 'worker', label: 'Worker', icon: <BotIcon /> },
+  { value: 'agent', label: 'Agent', icon: <BotIcon /> },
   { value: 'permission', label: '权限', icon: <ShieldIcon /> },
   { value: 'workspace', label: '工作区', icon: <FolderIcon /> },
   { value: 'advanced', label: '高级', icon: <SlidersHorizontalIcon /> },
@@ -27,7 +27,9 @@ export function SettingsNav({
   onBack: () => void;
 }) {
   return (
-    <div className="sticky top-0 flex w-40 shrink-0 flex-col gap-2 self-start">
+    // top 与页面容器的 pt-8（settings-page.tsx）一致：导航一开始就停在粘性位置上，
+    // 滚动时纹丝不动。top 比这段留白小的话，它会先跟着内容滚一段再停住。
+    <div className="sticky top-8 flex w-40 shrink-0 flex-col gap-2 self-start">
       <Button variant="ghost" size="sm" onClick={onBack} className="self-start text-muted-foreground">
         <ArrowLeftIcon />
         返回 agent
