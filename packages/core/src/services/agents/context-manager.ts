@@ -8,8 +8,8 @@ import { nowISO } from '../../utils/time';
 
 // --- Configuration Constants ---
 
-/** Default context window budget: 256k tokens (fits most current models). */
-export const DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000;
+/** Default context window budget: 256K tokens (K = 1024 throughout the codebase). */
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 256 * 1024;
 
 /** Trigger compaction at 60% of the context window, reserving 40% for output. */
 const COMPACT_THRESHOLD_RATIO = 0.6;

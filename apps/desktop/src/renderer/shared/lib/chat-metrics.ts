@@ -12,9 +12,9 @@ export function contextPercent(usage: ContextUsage | null): number | null {
   return Math.min(100, Math.round((usage.usedTokens / usage.contextWindowTokens) * 100));
 }
 
-/** Compact token label for the ring's title (12.3k style). */
+/** Compact token label for the ring's title (12.3k style). K is binary (1024), same as the CLI status bar. */
 export function formatTokens(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  return n >= 1024 ? `${(n / 1024).toFixed(1)}k` : String(n);
 }
 
 /**

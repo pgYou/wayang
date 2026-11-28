@@ -198,7 +198,7 @@ async function buildConfigInteractive(): Promise<WayangConfig> {
       type: 'number',
       name: 'contextWindowTokens',
       message: 'Model context window in tokens (input budget, not max output; compaction starts at 60%)',
-      initial: 256_000,
+      initial: 256 * 1024,
       min: 1_000,
     },
     {

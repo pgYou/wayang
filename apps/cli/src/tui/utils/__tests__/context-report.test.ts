@@ -41,9 +41,12 @@ const makeUsage = (overrides: Partial<ContextUsage> = {}): ContextUsage => ({
 describe('formatTokenCount', () => {
   it('should render raw counts, thousands and millions', () => {
     expect(formatTokenCount(340)).toBe('340');
-    expect(formatTokenCount(8_000)).toBe('8k');
-    expect(formatTokenCount(12_100)).toBe('12.1k');
-    expect(formatTokenCount(1_200_000)).toBe('1.2M');
+    // K / M are binary: 8_000 tokens is 7.8k, a million tokens is 0.95M.
+    expect(formatTokenCount(8_000)).toBe('7.8k');
+    expect(formatTokenCount(12_100)).toBe('11.8k');
+    expect(formatTokenCount(1_200_000)).toBe('1.1M');
+    expect(formatTokenCount(256 * 1024)).toBe('256k');
+    expect(formatTokenCount(1024 * 1024)).toBe('1M');
   });
 });
 
@@ -59,16 +62,16 @@ describe('formatContextReport', () => {
     const lines = formatContextReport(makeUsage());
 
     expect(lines).toHaveLength(10);
-    expect(lines[0]).toBe('Context · 12.3k / 256k (5%) · source=usage');
-    expect(lines[1]).toBe('Last step · in 12.1k · out 340 · cached 8k');
+    expect(lines[0]).toBe('Context · 12k / 250k (5%) · source=usage');
+    expect(lines[1]).toBe('Last step · in 11.8k · out 340 · cached 7.8k');
     expect(lines[2]).toBe('Model limit · 256,000 tokens');
     expect(lines[3]).toBe('Breakdown');
     expect(lines[4]).toMatch(/^ {2}system prompt +1\.2k +0\.5%$/);
     expect(lines[5]).toMatch(/^ {2}user +300 +0\.1%$/);
     expect(lines[6]).toMatch(/^ {2}assistant +900 +0\.4%$/);
-    expect(lines[7]).toMatch(/^ {2}tool calls +2\.4k +0\.9%$/);
-    expect(lines[8]).toMatch(/^ {2}tool results +7\.5k +2\.9%$/);
-    expect(lines[9]).toMatch(/^ {2}total +12\.3k +4\.8%$/);
+    expect(lines[7]).toMatch(/^ {2}tool calls +2\.3k +0\.9%$/);
+    expect(lines[8]).toMatch(/^ {2}tool results +7\.3k +2\.9%$/);
+    expect(lines[9]).toMatch(/^ {2}total +12k +4\.8%$/);
   });
 
   it('should print "no usage yet" and mark the estimate source when usage is absent', () => {
@@ -76,7 +79,7 @@ describe('formatContextReport', () => {
 
     expect(lines[0]).toContain('source=estimate');
     expect(lines[1]).toBe('Last step · no usage yet');
-    expect(lines.some(line => line.includes('in 12.1k'))).toBe(false);
+    expect(lines.some(line => line.includes('in 11.8k'))).toBe(false);
   });
 
   it('should list every non-empty group including the compact summary', () => {

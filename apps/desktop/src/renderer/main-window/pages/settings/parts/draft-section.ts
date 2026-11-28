@@ -63,6 +63,8 @@ export interface AutoSaveAction {
   pending: boolean;
   error: string | null;
   run: (action: () => Promise<void>) => void;
+  /** 清掉上一次的错误（关掉承载错误的弹窗 / 表单时调用）。 */
+  clearError: () => void;
 }
 
 export function useAutoSaveAction(): AutoSaveAction {
@@ -75,5 +77,5 @@ export function useAutoSaveAction(): AutoSaveAction {
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setPending(false));
   };
-  return { pending, error, run };
+  return { pending, error, run, clearError: () => setError(null) };
 }

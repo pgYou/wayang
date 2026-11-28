@@ -231,7 +231,10 @@ export class SessionService {
 
     const prev = this.config;
     const store = this.configStore();
-    const nextPrefs = { ...(this.desktopPrefs ?? {}), ...(desktop ?? {}) };
+    // onboard 模式下 desktopPrefs 没装载过（「修改现有配置」后重新写入）：
+    // 以信封里已有的桌面偏好为底，不让一次重新 onboard 把它们抹掉。
+    const stored = await store.load().catch(() => null);
+    const nextPrefs = { ...(stored?.desktop ?? {}), ...(this.desktopPrefs ?? {}), ...(desktop ?? {}) };
     await store.save(makeEnvelope(config, nextPrefs));
     this.desktopPrefs = nextPrefs;
     this.log.info('config envelope saved', { hotPath: prev !== null });

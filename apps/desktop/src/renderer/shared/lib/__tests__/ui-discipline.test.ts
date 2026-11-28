@@ -56,7 +56,9 @@ describe('theme token system', () => {
     const offenders: string[] = [];
     // 多窗口结构：shared/components 与各 window 的 pages 都在扫描范围。
     const pagesRoot = join(rendererRoot, '../main-window/pages'); // renderer/main-window/pages
-    for (const file of [...walk(join(rendererRoot, 'components')), ...walk(pagesRoot)]) {
+    // 窗口级共享组件（main-window 目前是原子设置组件）不属于任何页面，单独扫。
+    const windowComponentsRoot = join(rendererRoot, '../main-window/components'); // renderer/main-window/components
+    for (const file of [...walk(join(rendererRoot, 'components')), ...walk(pagesRoot), ...walk(windowComponentsRoot)]) {
       const src = readFileSync(file, 'utf-8');
       const rel = file.replace(`${rendererRoot}/`, '');
       if (/#[0-9a-fA-F]{3,8}\b/.test(src) && !/data-slot|aria-|uuid|test/i.test(src)) {

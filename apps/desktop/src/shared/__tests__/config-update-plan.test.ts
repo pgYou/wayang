@@ -43,11 +43,13 @@ describe('planConfigUpdates (§2.4 八方法映射)', () => {
         main: { ...prev.providers.main, apiKey: 'sk-rotated' },
         extra: { type: 'openai-compatible', baseURL: 'https://e.example/v1', apiKey: 'sk-e' },
       },
+      models: { fast: prev.models!.fast }, // `gone` leaves together with its provider `old`
     };
     const plan = planConfigUpdates(prev, next);
     expect(plan.ops.map((op) => `${op.method}:${(op.params as { name?: string }).name ?? ''}`)).toEqual([
       'add_provider:extra',
       'update_provider:main',
+      'remove_model:gone',
       'remove_provider:old',
     ]);
     expectParses(next);
@@ -81,7 +83,8 @@ describe('planConfigUpdates (§2.4 八方法映射)', () => {
     };
     const plan = planConfigUpdates(prev, next);
     expect(plan.ops.map((op) => op.method)).toEqual([]);
-    expect(plan.restartRequired.join(' ')).toMatch(/models\.swift.*contextWindowTokens/);
+    // 文案说人话（「未声明上下文窗口」），不摆字段名。
+    expect(plan.restartRequired.join(' ')).toMatch(/models\.swift（未声明上下文窗口/);
   });
 
   it('controller/worker binding changes map to update_controller_model / update_worker_settings', () => {
@@ -111,6 +114,23 @@ describe('planConfigUpdates (§2.4 八方法映射)', () => {
     expect(plan.restartRequired.join(' ')).toMatch(/logging/);
   });
 
+  it('fields outside the hot path are reported restart-required, never silently dropped', () => {
+    const next: WayangConfig = {
+      ...prev,
+      worker: { ...prev.worker, maxTurns: 40 },
+      tavilyApiKey: 'tvly-x',
+      skillsDirs: ['/skills'],
+      idleTimeoutMs: 60000,
+      signalWindowSize: 500,
+    };
+    const plan = planConfigUpdates(prev, next);
+    expect(plan.ops).toEqual([]);
+    const notes = plan.restartRequired.join(' ');
+    for (const field of ['worker.maxTurns', 'tavilyApiKey', 'skillsDirs', 'idleTimeoutMs', 'signalWindowSize']) {
+      expect(notes, `restartRequired must mention ${field}`).toMatch(new RegExp(field));
+    }
+  });
+
   it('removals are sequenced LAST so unbinding first keeps the plan self-consistent', () => {
     // controller moves off `fast`; `fast` and its provider are then removed.
     const next: WayangConfig = {
@@ -133,6 +153,113 @@ describe('planConfigUpdates (§2.4 八方法映射)', () => {
     const plan = planConfigUpdates(prev, next);
     expect(plan.ops.map((op) => op.method)).toEqual([]);
     expect(plan.restartRequired.join(' ')).toMatch(/worker\.model 被清空/);
+  });
+
+  it('renaming a model that has no context window is saved as restart-only, not half-applied', () => {
+    const base: WayangConfig = {
+      providers: { main: { type: 'openai-compatible', baseURL: 'https://a.example/v1', apiKey: 'sk-1' } },
+      models: { bare: { provider: 'main', name: 'm-x' } }, // 未声明上下文窗口（比如从 CLI 配置导入的）
+      controller: { model: 'bare' },
+      worker: { model: 'bare', maxConcurrency: 2 },
+    };
+    const renamed: WayangConfig = {
+      ...base,
+      models: { sonnet: base.models!.bare },
+      controller: { model: 'sonnet' },
+      worker: { ...base.worker, model: 'sonnet' },
+    };
+    const plan = planConfigUpdates(base, renamed);
+    // 改名 = 新增 sonnet + 改绑 + 删除 bare。新增发不过去（add_model 必须带窗口），
+    // 指向它的改绑和对旧条目的删除 server 都会拒——全部留给重启，一条都不发。
+    expect(plan.ops).toEqual([]);
+    const notes = plan.restartRequired.join(' ');
+    expect(notes).toMatch(/models\.sonnet/);
+    expect(notes).toMatch(/controller\.model → sonnet/);
+    expect(notes).toMatch(/worker\.model → sonnet/);
+    expect(notes).toMatch(/models\.bare 的移除/);
+  });
+
+  it('binding a new model that did not cross the wire is deferred with it', () => {
+    const next: WayangConfig = {
+      ...prev,
+      models: { ...prev.models!, bare: { provider: 'main', name: 'bare-x' } },
+      controller: { model: 'bare' },
+      worker: { model: 'bare', maxConcurrency: 5 }, // 并发数照常热更
+    };
+    const plan = planConfigUpdates(prev, next);
+    expect(plan.ops).toEqual([{ method: 'update_worker_settings', params: { patch: { maxConcurrency: 5 } } }]);
+    const notes = plan.restartRequired.join(' ');
+    expect(notes).toMatch(/models\.bare/);
+    expect(notes).toMatch(/controller\.model → bare/);
+    expect(notes).toMatch(/worker\.model → bare/);
+    expectParses(next);
+  });
+
+  it('renaming a model a third-party row points at: the add and the rewrites go hot, the removal waits', () => {
+    const base: WayangConfig = {
+      providers: { main: { type: 'openai-compatible', baseURL: 'https://a.example/v1', apiKey: 'sk-1' } },
+      models: { fast: { provider: 'main', name: 'gpt-x', contextWindowTokens: 128000 } },
+      controller: { model: 'fast' },
+      worker: { model: 'fast', maxConcurrency: 2 },
+      workers: { codex: { type: 'claude-code', description: 'd', model: 'fast' } },
+    };
+    const renamed: WayangConfig = {
+      ...base,
+      models: { sonnet: { ...base.models!.fast, name: 'gpt-4.1' } },
+      controller: { model: 'sonnet' },
+      worker: { ...base.worker, model: 'sonnet' },
+      workers: { codex: { ...base.workers!.codex, model: 'sonnet' } },
+    };
+    const plan = planConfigUpdates(base, renamed);
+    // 第三方 worker 行只能重启才更新：server 上 workers.codex 还指着 fast，
+    // 所以 remove_model(fast) 不能发（会被拒，而配置文件此时已经写了）。
+    expect(plan.ops.map((op) => op.method)).toEqual(['add_model', 'update_controller_model', 'update_worker_settings']);
+    expect(plan.restartRequired.join(' ')).toMatch(/models\.fast 的移除（server 上 workers\.codex 还引用着它/);
+    expect(plan.restartRequired.join(' ')).toMatch(/workers/);
+    expectParses(renamed);
+  });
+
+  it('a field cleared on an existing entry is reported for the restart, never sent as an empty patch', () => {
+    const base: WayangConfig = {
+      providers: { main: { type: 'openai-compatible', baseURL: 'https://a.example/v1', apiKey: 'sk-1' } },
+      models: { fast: { provider: 'main', name: 'gpt-x', contextWindowTokens: 128000, temperature: 0.3 } },
+      controller: { model: 'fast' },
+      worker: { model: 'fast', maxConcurrency: 2 },
+    };
+    const cleared: WayangConfig = { ...base, models: { fast: { provider: 'main', name: 'gpt-x' } } } satisfies WayangConfig;
+    const plan = planConfigUpdates(base, cleared);
+    expect(plan.ops).toEqual([]);
+    expect(plan.restartRequired.join(' ')).toMatch(/models\.fast\.contextWindowTokens 被清空/);
+    expect(plan.restartRequired.join(' ')).toMatch(/models\.fast\.temperature 被清空/);
+  });
+
+  it('a provider removal the server would refuse is deferred: the server still sees something going through it', () => {
+    const base: WayangConfig = {
+      providers: {
+        main: { type: 'openai-compatible', baseURL: 'https://a.example/v1', apiKey: 'sk-1' },
+        other: { type: 'openai-compatible', baseURL: 'https://o.example/v1', apiKey: 'sk-2' },
+      },
+      models: {
+        fast: { provider: 'main', name: 'gpt-x', contextWindowTokens: 128000 },
+        slow: { provider: 'other', name: 'gpt-y', contextWindowTokens: 128000 },
+      },
+      controller: { model: 'slow' },
+      worker: { model: 'slow', maxConcurrency: 2 },
+      workers: { codex: { type: 'claude-code', description: 'd', model: 'fast' } },
+    };
+    // 删掉 main 及其模型，第三方 worker 行改指 slow（这一行在 server 上要重启才更新）。
+    const next: WayangConfig = {
+      ...base,
+      providers: { other: base.providers.other },
+      models: { slow: base.models!.slow },
+      workers: { codex: { ...base.workers!.codex, model: 'slow' } },
+    };
+    const plan = planConfigUpdates(base, next);
+    expect(plan.ops).toEqual([]);
+    const notes = plan.restartRequired.join(' ');
+    expect(notes).toMatch(/models\.fast 的移除（server 上 workers\.codex 还引用着它/);
+    // 经过 main 的有两处：还留在 server 上的 models.fast，和重启才更新的 workers.codex。
+    expect(notes).toMatch(/providers\.main 的移除（server 上 models\.fast、workers\.codex 还经过它/);
   });
 
   it('a legacy spelling never reaches the planner — both sides are canonical configs', () => {

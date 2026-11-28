@@ -1,25 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { WayangConfig } from '@wayang-ai/protocol';
 import { wayang } from '@/renderer/shared/lib/wayang-api';
+import { notifyConfigSaved } from './config-save-notice';
 
 export type ConfigLoadState = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready' };
-
-export interface SaveNotice {
-  applied: string[];
-  restartRequired: string[];
-}
 
 export interface ConfigCommitState {
   load: ConfigLoadState;
   config: WayangConfig | null;
   desktop: Record<string, unknown>;
-  notice: SaveNotice | null;
-  dismissNotice: () => void;
   /**
    * 整份配置回传（没有分段保存的 IPC——每次提交都带着完整
    * WayangConfig，后端按整份做必要核心校验）。desktop 缺省沿用当前值。
    * 提交成功后刷新 committed 基线，使其它卡片的只读引用（如 Models 卡
-   * 下拉里的 Providers 列表）跟着更新。
+   * 下拉里的 Providers 列表）跟着更新；保存后的反馈（已生效 / 需重启）
+   * 走 toast（config-save-notice）。
    */
   commit: (next: WayangConfig, nextDesktop?: Record<string, unknown>) => Promise<void>;
   reload: () => void;
@@ -34,7 +29,6 @@ export function useConfigCommit(): ConfigCommitState {
   const [load, setLoad] = useState<ConfigLoadState>({ kind: 'loading' });
   const [config, setConfig] = useState<WayangConfig | null>(null);
   const [desktop, setDesktop] = useState<Record<string, unknown>>({});
-  const [notice, setNotice] = useState<SaveNotice | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -55,11 +49,7 @@ export function useConfigCommit(): ConfigCommitState {
       const result = await wayang.saveConfig(next, desktopPatch);
       setConfig(next);
       setDesktop(desktopPatch);
-      setNotice(
-        result.applied.length > 0 || result.restartRequired.length > 0
-          ? { applied: result.applied, restartRequired: result.restartRequired }
-          : null,
-      );
+      notifyConfigSaved(result);
     },
     [desktop],
   );
@@ -68,8 +58,6 @@ export function useConfigCommit(): ConfigCommitState {
     load,
     config,
     desktop,
-    notice,
-    dismissNotice: (): void => setNotice(null),
     commit,
     reload: (): void => setReloadKey((k) => k + 1),
   };

@@ -33,6 +33,19 @@
 - 测试：core 夹具迁到规范格式、旧格式行为测试移除（由 protocol 的 normalize 单测覆盖）；新增 core 准入、CLI env 物化用例；e2e 新增「旧格式配置文件照常启动并服务」场景，e2e 夹具迁到规范格式
 - 文档：配置指南只讲新写法（旧写法说明与迁移对照移除）；monorepo-design、05-config、permission-policy 0.8.1 设计文档同步
 
+### desktop：原子设置组件与分步 onboard 向导
+
+- 原子设置组件：`renderer/main-window/components/settings/`——Provider / 模型 / 模型绑定 / 第三方 worker / puppet 默认参数的受控表单（`value` / `onChange`），表单值 ⇄ 配置的转换与校验随组件导出；只管表单不管持久化，设置页接后端提交、向导接本地草稿
+- 设置页·模型分组：provider 收成可折叠卡片（头部只留名称，折叠时补地址与模型数），编辑 / 删除是图标按钮；新增 / 编辑 provider 与模型改为弹窗（卡片保持只读，回车即提交）；模型改成灰底小卡，补「最大输出 tokens / 温度」，上下文窗口给 256K / 512K / 1M 预设；重命名 models 条目时同步改写绑定（原实现会断绑定），provider 与 models 条目的名称都可改；删除被绑定的模型、或名下还有模型的 provider，提前拦下并说明原因（原来只在保存时弹英文校验错误）
+- 设置页·Agent 分组（原「Worker」页改名）：模型绑定从模型页迁到最上面，下拉项带 provider 胶囊标签；Puppet 默认参数只读三行、点铅笔在弹窗里改；第三方 worker 一张可折叠卡片，头部只留 emoji + 名称 + 启用开关 + 删除，名称直接在卡片里改
+- 设置页·通用：表单统一为「不合法不点亮、动过才显示原因」，名称类输入框可清空；输入类字段（权限、高级页与 worker 卡片）有改动才出现保存 / 取消，校验就近显示；保存反馈改为 sonner toast——全部热更生效是一条短提示，有需重启的项是常驻提示并列出是哪些，带「重启」按钮（点后原地变成「正在重启…」和结果）；只读字段的值加大并撑到输入框高度，密钥的眼睛固定在标签后；侧栏分组导航滚动时固定不动；卡片与 toast 用渐变曲率圆角
+- 第三方 worker 表单按类型定制（原来一张表单通吃四类：ACP 类摆着不生效的模型引用，claude-code 摆着不生效的权限模式，ACP 真正能配的启动参数、环境变量又没处填）：类型、能力标签、描述四类共用；claude-code 只有 模型引用 / Max turns / CLI 路径，ACP 类（`acp` / `codebuddy` / `opencode`）有 可执行命令 / 启动参数 / 环境变量 / 权限模式 / MCP 注入，其中「取消后保留迟到的结果」仅通用 `acp`、「接管权限审批」仅 `opencode`。切换类型时清掉新类型不读的键；留空的可选字段与停在默认值的开关不落盘；协议超时不在表单里，配置里已有的原样保留
+- 文本域（worker 描述 / 启动参数 / 环境变量、权限与高级页的目录列表）改为高度跟内容走：一行时与输入框等高，随内容长高，到 7 行封顶、超出在框内滚动，不再显示原生拖拽角（原来固定 64px 起、无限长高）
+- 热更计划改按 server 的视角排指令（原来只对比保存前后的配置）：没声明上下文窗口的新增模型、改绑到这类模型的指令、被第三方 worker 行引用的模型、被清空的字段、server 上还有东西经过的 provider——这些发过去会被 server 拒绝，现在全部留给重启并在提示里说明；补报 `worker.maxTurns`、Tavily key、`skillsDirs`、`idleTimeoutMs`、`signalWindowSize` 的「需重启生效」（原来漏报，保存后没有任何反馈）
+- onboard：向导改为 Provider → 模型 → 模型绑定 → Worker（可选）四步，每步列出已有条目可编辑 / 删除（删除需二次确认），并用原子组件新增；第一个模型自动作为 controller / worker 的默认模型；有未保存的表单时不能「下一步」；确认页门槛与保存同口径，「返回修改」落在第一个没填好的步骤。磁盘上已有「结构合法但必要核心不完整」的配置时，欢迎页增加「修改现有配置」，保存时保留信封里已有的桌面偏好。确认页列出全部条目（含第三方 worker 与 puppet 默认参数，环境变量不展开）
+- K / M 统一按 1024 算：core 的默认上下文窗口从 256000 改为 256 × 1024，CLI 的 token 数格式化同步，配置文档与 README 更正
+- 测试：原子组件、向导流程、欢迎页入口、设置页重命名 / 删除拦截 / 保存反馈用例；`ui-discipline` 扫描范围加入 `main-window/components`
+
 ### 阶段工作流（临时记录）
 
 - desktop 第一版迭代确认还需改 core/cli：先完成一批改造作为阶段成果——① 配置解析上移（终端交互迁 apps/cli、App 层全权装载产出 WayangConfig 对象、protocol 新增 UPDATE_CONFIG 运行时热更新）② rootDir(dataDir) 与 controller-workspace 解耦（StoragePaths + WorkspacePolicy 双轨显式注入）；执行计划见 docs/develop/monorepo-design.md 第 4 节（待评审）。该批改造经 feat/core-app-decouple 分支实施、合回 release/1.0.0 并合入 main 后，发布 1.0.0-alpha.1；feat/desktop-m3 随后 rebase 到新基线推进 desktop 重构。

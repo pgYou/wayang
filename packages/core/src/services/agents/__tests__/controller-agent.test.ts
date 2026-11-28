@@ -764,8 +764,8 @@ describe('ControllerAgent', () => {
     expect(usage).toBeDefined();
     expect(usage.source).toBe('usage');
     expect(usage.usedTokens).toBe(25_000);
-    expect(usage.contextWindowTokens).toBe(256_000);
-    expect(usage.ratio).toBeCloseTo(25_000 / 256_000);
+    expect(usage.contextWindowTokens).toBe(256 * 1024);
+    expect(usage.ratio).toBeCloseTo(25_000 / (256 * 1024));
   });
 
   it('should fall back to the estimate when the step reports no input tokens', async () => {
@@ -800,7 +800,7 @@ describe('ControllerAgent', () => {
     expect(usage.source).toBe('estimate');
     // System prompt alone guarantees a positive estimate
     expect(usage.usedTokens).toBeGreaterThan(0);
-    expect(usage.contextWindowTokens).toBe(256_000);
+    expect(usage.contextWindowTokens).toBe(256 * 1024);
   });
 
   /** Assistant entry carrying provider usage (self-contained per test). */
@@ -863,7 +863,7 @@ describe('ControllerAgent', () => {
   it('passes the context window to the state-layer restore so the budgets agree (B6 wiring)', async () => {
     await agent.restore();
     // mockModel declares no contextWindowTokens → ContextManager's 256k default.
-    expect(state.restore).toHaveBeenCalledWith(256_000);
+    expect(state.restore).toHaveBeenCalledWith(256 * 1024);
   });
 
   it('warns with the estimate and the window when compaction cannot clear the threshold (B7)', async () => {
