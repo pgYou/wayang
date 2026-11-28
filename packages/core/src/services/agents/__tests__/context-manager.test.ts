@@ -366,7 +366,7 @@ describe('ContextManager', () => {
 
     it('should default contextWindowTokens to 256k when not injected', () => {
       const cm = new ContextManager(createMockState(), 'STATIC PROMPT');
-      expect(cm.getContextWindowTokens()).toBe(256_000);
+      expect(cm.getContextWindowTokens()).toBe(256 * 1024);
     });
 
     it('should count the system prompt even with an empty conversation', () => {
@@ -695,7 +695,7 @@ describe('ContextManager', () => {
   describe('context window budget validation', () => {
     it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('falls back to the default for %s', (bad) => {
       const cm = new ContextManager(createMockState(), 'STATIC PROMPT', bad);
-      expect(cm.getContextWindowTokens()).toBe(256_000);
+      expect(cm.getContextWindowTokens()).toBe(256 * 1024);
       expect(cm.isFull()).toBe(false);
     });
   });

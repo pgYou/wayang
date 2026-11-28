@@ -92,13 +92,13 @@ wayang 启动时按下面的顺序找配置：
 | --- | --- | --- | --- | --- |
 | `provider` | 字符串 | 是 | — | 所属 provider 名，必须存在于 `providers` |
 | `name` | 字符串 | 是 | — | 发给 provider 的模型名（OpenAI 协议的 `model` 字段） |
-| `contextWindowTokens` | 正整数 | 否 | 256000 | 上下文窗口（输入侧预算），不是输出上限；controller 与 puppet worker 都在用到 60% 时压缩。未声明时兜底 256000 |
+| `contextWindowTokens` | 正整数 | 否 | 262144 | 上下文窗口（输入侧预算），不是输出上限；controller 与 puppet worker 都在用到 60% 时压缩。未声明时兜底 262144（256K）。K / M 一律按 1024 算 |
 | `maxOutputTokens` | 数字 | 否 | — | 单次请求的最大输出 token；写在 `models` 条目（或内联对象）上才会随请求发送 |
 | `temperature` | 数字 | 否 | — | 采样温度；写在 `models` 条目（或内联对象）上才会随请求发送 |
 
 未配置时，请求里不携带 `temperature` / `maxOutputTokens`；组合写法（`provider名/模型名`）没有地方声明这两个参数，需要它们时请改用 `models` 条目或内联对象。
 
-解析规则：`model` 引用是唯一的解析入口，引用的 `models` 条目 / 内联对象 / 组合串自己声明什么就解析什么——`contextWindowTokens` 只取条目上声明的值（未声明兜底 256000），`temperature` / `maxOutputTokens` 仅模型级显式声明生效。
+解析规则：`model` 引用是唯一的解析入口，引用的 `models` 条目 / 内联对象 / 组合串自己声明什么就解析什么——`contextWindowTokens` 只取条目上声明的值（未声明兜底 262144，即 256K），`temperature` / `maxOutputTokens` 仅模型级显式声明生效。
 
 `workers.<id>.model`（可选）：给第三方 worker 指定模型。`claude-code` 会把它解析后传给 Claude Agent SDK 的 `model` 选项；ACP 类 worker（`acp` / `codebuddy` / `opencode`）的协议没有模型字段，配置了只会在启动时记录一条「配置的模型 X 未被该 provider 消费」，不会伪造能力。
 
