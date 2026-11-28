@@ -87,18 +87,18 @@ export function SessionMenu({ disabled }: SessionMenuProps) {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button size="icon-sm" variant="ghost" aria-label="会话菜单" disabled={disabled}>
+          <Button size="icon-sm" variant="ghost" data-testid="session-menu-trigger" aria-label="会话菜单" disabled={disabled}>
             <EllipsisIcon />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuLabel>会话</DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => setConfirmNew(true)}>
+          <DropdownMenuItem data-testid="session-menu-new" onSelect={() => setConfirmNew(true)}>
             <PlusIcon />
             新会话
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setHistoryOpen(true)}>
+          <DropdownMenuItem data-testid="session-menu-history" onSelect={() => setHistoryOpen(true)}>
             <HistoryIcon />
             历史会话…
           </DropdownMenuItem>
@@ -107,16 +107,16 @@ export function SessionMenu({ disabled }: SessionMenuProps) {
 
       {/* 新会话确认 */}
       <Dialog open={confirmNew} onOpenChange={setConfirmNew}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm" data-testid="session-new-dialog">
           <DialogHeader>
             <DialogTitle>开启新会话？</DialogTitle>
             <DialogDescription>当前会话将保留在历史中，切换后可随时回来。</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmNew(false)} disabled={switching}>
+            <Button variant="ghost" data-testid="session-new-cancel" onClick={() => setConfirmNew(false)} disabled={switching}>
               取消
             </Button>
-            <Button onClick={startLazyNew} disabled={switching}>
+            <Button data-testid="session-new-confirm" onClick={startLazyNew} disabled={switching}>
               开新会话
             </Button>
           </DialogFooter>
@@ -125,7 +125,7 @@ export function SessionMenu({ disabled }: SessionMenuProps) {
 
       {/* 历史会话弹框：时间 / 摘要列表 */}
       <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md" data-testid="session-history-dialog">
           <DialogHeader>
             <DialogTitle>历史会话</DialogTitle>
             <DialogDescription>选择一个会话切换（当前界面将重放恢复目标会话内容）。</DialogDescription>
@@ -144,6 +144,9 @@ export function SessionMenu({ disabled }: SessionMenuProps) {
                 <button
                   key={entry.sessionId}
                   type="button"
+                  data-testid="session-item"
+                  data-id={entry.sessionId}
+                  aria-pressed={entry.sessionId === selected?.sessionId}
                   onClick={() => setSelected(entry)}
                   className="flex flex-col items-start gap-1 rounded-lg border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:bg-accent"
                 >
@@ -159,10 +162,14 @@ export function SessionMenu({ disabled }: SessionMenuProps) {
             </div>
           </ScrollArea>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setHistoryOpen(false)} disabled={switching}>
+            <Button variant="ghost" data-testid="session-history-cancel" onClick={() => setHistoryOpen(false)} disabled={switching}>
               取消
             </Button>
-            <Button onClick={() => selected && void runSwitch(() => wayang.switchSession(selected.sessionId))} disabled={switching || selected === null}>
+            <Button
+              data-testid="session-switch-confirm"
+              onClick={() => selected && void runSwitch(() => wayang.switchSession(selected.sessionId))}
+              disabled={switching || selected === null}
+            >
               {switching && <LoaderIcon className="animate-spin" />}
               切换到所选会话
             </Button>

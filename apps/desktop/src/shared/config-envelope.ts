@@ -11,10 +11,43 @@
  * section for future host preferences (theme, window settings).
  */
 
-import { findLegacyConfigKeys, validateConfig, type WayangConfig } from '@wayang-ai/protocol';
+import { findLegacyConfigKeys, validateConfig, workerEntryProblem, type WayangConfig } from '@wayang-ai/protocol';
 
 /** Envelope schema version this build reads and writes. */
 export const CONFIG_SCHEMA_VERSION = 1;
+
+/** 一行在导入时因为不合法被置为停用的第三方 worker。 */
+export interface ImportedWorkerDisabled {
+  /** `workers` 的键。 */
+  id: string;
+  /** protocol 的校验原因（`workerEntryProblem` 的原话）。 */
+  problem: string;
+}
+
+/** 「导入 CLI 配置」的结果：配置本体 + 被置为停用的行。 */
+export interface ImportCliConfigResult {
+  config: WayangConfig;
+  disabledWorkers: ImportedWorkerDisabled[];
+}
+
+/**
+ * 把第三方 worker 里不合法的行置为停用，而不是让整个导入失败：onboard 不提供
+ * 这些行的预览和修改，导入时不因为它们拦下整份配置。停用的行不参与校验
+ * （protocol `validateConfig`），用户之后在设置页修正后再启用——启用时会校验。
+ * 已经是停用的行不动、也不报告；不是对象的行留给校验去报错。
+ */
+export function disableInvalidWorkers(config: WayangConfig): ImportCliConfigResult {
+  const workers = { ...(config.workers ?? {}) };
+  const disabledWorkers: ImportedWorkerDisabled[] = [];
+  for (const [id, worker] of Object.entries(workers)) {
+    if (typeof worker !== 'object' || worker === null || worker.enable === false) continue;
+    const problem = workerEntryProblem(config, id);
+    if (problem === null) continue;
+    workers[id] = { ...worker, enable: false };
+    disabledWorkers.push({ id, problem });
+  }
+  return { config: disabledWorkers.length > 0 ? { ...config, workers } : config, disabledWorkers };
+}
 
 /** The desktop config envelope: `{ schemaVersion, wayangConfig, desktop }`. */
 export interface ConfigEnvelope {

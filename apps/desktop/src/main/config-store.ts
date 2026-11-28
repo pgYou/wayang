@@ -16,7 +16,7 @@
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { normalizeConfig, type WayangConfig } from '@wayang-ai/protocol';
-import { parseConfigEnvelope, validateOrReject, type ConfigEnvelope } from '../shared/config-envelope';
+import { parseConfigEnvelope, disableInvalidWorkers, validateOrReject, type ConfigEnvelope, type ImportCliConfigResult } from '../shared/config-envelope';
 
 export { CONFIG_SCHEMA_VERSION } from '../shared/config-envelope';
 export type { ConfigEnvelope } from '../shared/config-envelope';
@@ -63,12 +63,15 @@ export class ConfigStore {
    * Explicit CLI-config import (§2.11「导入 CLI 配置」, 决策九): read the
    * given file (the legacy `~/.wayang.config.json`, read-only), translate it
    * to the canonical shape and validate it with the shared protocol
-   * validator; the caller decides whether to write it into the envelope (the
-   * confirm page). This is the ONLY touch of the CLI config domain — and the
-   * only place legacy spellings are translated (protocol `normalizeConfig`):
-   * the file is never written, and nothing downstream sees a legacy key.
+   * validator; the caller decides what to do with the result (the welcome page
+   * writes it straight into the envelope). Third-party worker rows that do
+   * not validate come back disabled instead of failing the whole import
+   * (see `disableInvalidWorkers`). This is the ONLY touch of the CLI config
+   * domain — and the only place legacy spellings are translated (protocol
+   * `normalizeConfig`): the file is never written, and nothing downstream sees
+   * a legacy key.
    */
-  async importFrom(legacyConfigPath: string): Promise<WayangConfig> {
+  async importFrom(legacyConfigPath: string): Promise<ImportCliConfigResult> {
     let raw: string;
     try {
       raw = await readFile(legacyConfigPath, 'utf-8');
@@ -84,7 +87,9 @@ export class ConfigStore {
     // 翻译先于校验：旧版写法（endpoint 别名、provider 隐式模型、provider
     // 键绑定…）在这里一次性落成规范格式，校验与下游只面对规范格式。
     const { config } = normalizeConfig(imported);
-    validateOrReject(config, `CLI config ${legacyConfigPath}`);
-    return config;
+    // 不合法的第三方 worker 行置为停用（停用的行不参与校验），其余照常校验。
+    const result = disableInvalidWorkers(config);
+    validateOrReject(result.config, `CLI config ${legacyConfigPath}`);
+    return result;
   }
 }

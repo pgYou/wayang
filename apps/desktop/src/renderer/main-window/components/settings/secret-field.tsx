@@ -40,6 +40,7 @@ export function RevealButton({
       type="button"
       size={size}
       variant="ghost"
+      data-testid="secret-reveal"
       disabled={disabled}
       aria-label={reveal ? `隐藏 ${label}` : `显示 ${label}`}
       aria-pressed={reveal}

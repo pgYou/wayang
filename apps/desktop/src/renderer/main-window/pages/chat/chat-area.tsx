@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { SparklesIcon, TerminalIcon, GitBranchIcon, LayersIcon } from 'lucide-react';
 import type { ConversationEntry, ControllerSignal } from '@wayang-ai/protocol';
 import {
   SLICE,
@@ -9,6 +8,7 @@ import {
   useSliceValue,
 } from '@/renderer/shared/lib/store';
 import { buildTurnDirectory, type TurnDot } from '@/renderer/shared/lib/chat-metrics';
+import { WayangMark } from '@/renderer/shared/components/shared/wayang-mark';
 import { UserRow } from './rows/user-row';
 import { SystemRow } from './rows/system-row';
 import { AssistantRow } from './rows/assistant-row';
@@ -17,7 +17,6 @@ import { TurnNav } from './parts/turn-nav';
 
 interface ChatAreaProps {
   busy: boolean;
-  onQuickPrompt?: (prompt: string) => void;
 }
 
 /**
@@ -49,29 +48,6 @@ export function useAtBottom(): { atBottom: boolean; scrollToBottom: () => void }
   }, []);
   return { atBottom, scrollToBottom };
 }
-
-const WELCOME_SUGGESTIONS = [
-  {
-    icon: TerminalIcon,
-    title: '代码库探索与诊断',
-    prompt: '请帮我梳理当前工作区的核心目录结构与模块职责',
-  },
-  {
-    icon: LayersIcon,
-    title: '多 Worker 并行拆解任务',
-    prompt: '评估当前未完成的任务，拆解为并行子任务派发给 Worker 执行',
-  },
-  {
-    icon: GitBranchIcon,
-    title: '构建与测试门禁自检',
-    prompt: '在当前工作区执行 typecheck 与单元测试，汇总失败项与修复建议',
-  },
-  {
-    icon: SparklesIcon,
-    title: '架构与方案评审',
-    prompt: '帮我分析最近的改动，检查是否符合项目边界与代码规范',
-  },
-];
 
 /** Row renderer shared by the conversation and unread-signal sections. */
 function renderRow(
@@ -126,7 +102,7 @@ function isAssistantBlockLast(
  * 自动滚底与浮动回底按钮 + 侧边轮次圆点导航。
  * 空态建议卡片是「可点击交互容器」（非标准按钮样式），保留原生 button 承载无障碍。
  */
-export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
+export function ChatArea({ busy }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -219,37 +195,17 @@ export function ChatArea({ busy, onQuickPrompt }: ChatAreaProps) {
     <div className="relative min-h-0 flex-1 ">
       <div ref={scrollRef} className="h-full overflow-y-auto py-6">
         {isEmpty ? (
-          <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center gap-6 px-6 py-8">
-            <div className="flex flex-col items-center gap-2 text-center">
-              <div className="flex size-12 items-center justify-center rounded-xl bg-primary text-lg font-bold text-primary-foreground">
-                W
-              </div>
-              <h2 className="text-lg font-semibold text-foreground">有什么可以交给 Wayang 编排？</h2>
-              <p className="max-w-md text-xs text-muted-foreground">
-                Controller 将解析你的意图，自动拆解任务并调度多个 Worker 并行执行。
+          <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-start gap-6 pt-[20vh] px-6">
+            {/* 与初始页同款：W 形标（带律动）+ 标题 + 两行小字，不套卡片。 */}
+            <div className="flex flex-col items-center text-center">
+              {/* SVG 四周自带留白（墨迹约占盒子的 54%），盒子要比看起来需要的大一档。 */}
+              <WayangMark size={112} animated />
+              <h2 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">Welcome play with Wayang</h2>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                <span className="block">你提出想法，我永远在线，任务同时进行</span>
+                <span className="block">与 Wayang 一起感受实时响应、思维不停的魅力 ~</span>
               </p>
             </div>
-            {onQuickPrompt && (
-              <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
-                {WELCOME_SUGGESTIONS.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.title}
-                      type="button"
-                      onClick={() => onQuickPrompt(item.prompt)}
-                      className="flex cursor-pointer flex-col items-start gap-1 rounded-xl border border-border bg-card p-3 text-left transition-colors hover:border-grey-5 hover:bg-muted/60"
-                    >
-                      <span className="inline-flex items-center gap-2 text-xs font-medium text-foreground">
-                        <Icon className="size-3 text-muted-foreground" />
-                        {item.title}
-                      </span>
-                      <span className="line-clamp-2 text-xs text-muted-foreground">{item.prompt}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </div>
         ) : (
           // 底部留白（pb-36）：Composer 以悬浮卡片 fixed 在底部，滚动到底时最新内容不被遮挡。

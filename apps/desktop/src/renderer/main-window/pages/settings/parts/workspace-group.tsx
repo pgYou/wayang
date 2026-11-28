@@ -4,8 +4,8 @@ import { setWorkspacePref } from '@/renderer/shared/lib/config-draft';
 import { Badge } from '@/renderer/shared/components/ui/badge';
 import { Button } from '@/renderer/shared/components/ui/button';
 import { wayang } from '@/renderer/shared/lib/wayang-api';
-import { useAutoSaveAction } from './draft-section';
-import { SettingsRow, SettingsSection } from './settings-section';
+import { useAutoSaveAction } from '@/renderer/main-window/components/settings/draft-section';
+import { SettingsRow, SettingsSection } from '@/renderer/main-window/components/settings/settings-section';
 import type { ConfigCommitState } from '../use-config-commit';
 
 type CommitFn = ConfigCommitState['commit'];

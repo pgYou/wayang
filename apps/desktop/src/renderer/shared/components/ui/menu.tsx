@@ -6,6 +6,8 @@ export interface MenuItem<T extends string = string> {
   label: ReactNode;
   icon?: ReactNode;
   disabled?: boolean;
+  /** 落在这一项上的锚点（data-testid）。 */
+  testId?: string;
 }
 
 export interface MenuProps<T extends string = string> {
@@ -30,6 +32,7 @@ export function Menu<T extends string = string>({ items, value, onValueChange, c
           <button
             key={item.value}
             type="button"
+            data-testid={item.testId}
             disabled={item.disabled}
             aria-current={selected ? 'page' : undefined}
             onClick={() => onValueChange(item.value)}

@@ -1,4 +1,4 @@
-import type { WayangConfig, WorkerType } from '@wayang-ai/protocol';
+import type { WorkerType } from '@wayang-ai/protocol';
 import { WORKER_TYPES } from '@wayang-ai/protocol';
 import { Input } from '@/renderer/shared/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/shared/components/ui/select';
@@ -15,10 +15,8 @@ export {
   type WorkerFormValues,
 } from './worker-form-values';
 
-/** WorkerForm 的外部接口：整份表单值 + 改动回调（claude-code 的「模型引用」下拉要读 config）。 */
-export interface WorkerFormProps extends WorkerFieldsProps {
-  config: WayangConfig;
-}
+/** WorkerForm 的外部接口：整份表单值 + 改动回调。 */
+export type WorkerFormProps = WorkerFieldsProps;
 
 /** worker 的 emoji：窄输入框，放在「名称」前面同一行（不在 WorkerForm 内部，由使用方摆在名称旁）。 */
 export function WorkerEmojiField({ value, onChange, disabled = false }: { value: string; onChange: (emoji: string) => void; disabled?: boolean }) {
@@ -64,21 +62,22 @@ export function WorkerBaseFields({ value, onChange, disabled = false }: WorkerFi
 }
 
 /**
- * 第三方 worker（`workers.<id>`）的字段表单——设置页（新增 / 编辑）与 onboard
- * 向导共用。受控组件；表单 ↔ 配置项的转换与校验在 worker-form-values.ts，
- * 两边保存前都走。
+ * 第三方 worker（`workers.<id>`）的字段表单——设置页新增 / 编辑第三方 worker
+ * 时用（onboard 不添加第三方 worker）。受控组件；表单 ↔ 配置项的转换与校验在
+ * worker-form-values.ts，保存前一律走它。
  *
  * 字段按类型定制：四类共用的在上面（WorkerBaseFields），之后按类型接一组专属
  * 字段（worker-type-fields.tsx）——只摆这一类真正会读的键。名称不在表单内部
  * （新增 / 编辑 / 是否可改名由使用方决定）；emoji 用 WorkerEmojiField，由使用
  * 方摆在名称前面同一行。
  */
-export function WorkerForm({ config, value, onChange, disabled = false }: WorkerFormProps) {
+export function WorkerForm({ value, onChange, disabled = false }: WorkerFormProps) {
+  // 字段间距与各类型专属字段那组网格一致（见 worker-type-fields 的 FIELDS_GRID）。
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-x-4 gap-y-5 sm:grid-cols-2">
       <WorkerBaseFields value={value} onChange={onChange} disabled={disabled} />
       {value.type === 'claude-code' ? (
-        <ClaudeCodeWorkerFields config={config} value={value} onChange={onChange} disabled={disabled} />
+        <ClaudeCodeWorkerFields value={value} onChange={onChange} disabled={disabled} />
       ) : (
         <AcpWorkerFields value={value} onChange={onChange} disabled={disabled} />
       )}

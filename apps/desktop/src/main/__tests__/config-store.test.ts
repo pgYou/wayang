@@ -121,9 +121,9 @@ describe('ConfigStore.importFrom (explicit CLI import, 决策九 域三落地)',
     await writeFile(legacyPath, before, 'utf-8');
     const store = new ConfigStore(configPath);
     const imported = await store.importFrom(legacyPath);
-    expect(imported).toEqual(validConfig);
+    expect(imported).toEqual({ config: validConfig, disabledWorkers: [] });
     // Import is read-only in BOTH directions: no envelope is seeded and the
-    // CLI file is untouched (the confirm page decides whether to save).
+    // CLI file is untouched (the welcome page decides whether to save).
     expect(existsSync(configPath)).toBe(false);
     expect(readFileSync(legacyPath, 'utf-8')).toBe(before);
   });
@@ -141,12 +141,49 @@ describe('ConfigStore.importFrom (explicit CLI import, 决策九 域三落地)',
     await expect(new ConfigStore(configPath).importFrom(legacyPath)).rejects.toThrow(/invalid CLI config/);
     expect(existsSync(configPath)).toBe(false);
   });
+
+  it('third-party worker rows that do not validate come back disabled, each with its reason', async () => {
+    const cli = {
+      ...validConfig,
+      workers: {
+        ok: { type: 'claude-code', description: 'fine' },
+        // 通用 acp 没有 command。
+        nocmd: { type: 'acp', description: 'no command' },
+        // 模型引用不存在。
+        ghost: { type: 'claude-code', description: 'ghost model', model: 'nope' },
+        // 本来就停用：不动、也不报告（哪怕它不合法）。
+        off: { type: 'claude-code', description: 'off', enable: false, permissionMode: 'nope' },
+      },
+    } as unknown as WayangConfig;
+    await writeFile(legacyPath, JSON.stringify(cli), 'utf-8');
+    const { config, disabledWorkers } = await new ConfigStore(configPath).importFrom(legacyPath);
+
+    expect(disabledWorkers.map((row) => row.id).sort()).toEqual(['ghost', 'nocmd']);
+    expect(disabledWorkers.find((row) => row.id === 'nocmd')?.problem).toContain('workers.nocmd.command is required');
+    expect(disabledWorkers.find((row) => row.id === 'ghost')?.problem).toContain('workers.ghost.model "nope" is not a known model');
+    expect(config.workers).toMatchObject({
+      ok: { type: 'claude-code', description: 'fine' },
+      nocmd: { enable: false, description: 'no command' },
+      ghost: { enable: false, model: 'nope' },
+      off: { enable: false, permissionMode: 'nope' },
+    });
+    expect(config.workers?.ok.enable).toBeUndefined();
+    // 这样一份配置写得进、读得回：停用的行不参与校验。
+    const store = new ConfigStore(configPath);
+    await store.save(makeEnvelope(config));
+    expect((await store.load())?.wayangConfig).toEqual(config);
+  });
+
+  it('a worker row that is not even an object still fails the import', async () => {
+    await writeFile(legacyPath, JSON.stringify({ ...validConfig, workers: { junk: null } }), 'utf-8');
+    await expect(new ConfigStore(configPath).importFrom(legacyPath)).rejects.toThrow(/workers\.junk must be an object/);
+  });
 });
 
 describe('旧版 CLI 配置：导入时翻译一次，桌面存储不做兼容', () => {
   it('importFrom 交回规范格式（models 条目 + model 引用，无任何废弃键）；CLI 文件只读未动', async () => {
     await writeFile(legacyPath, JSON.stringify(legacyConfig), 'utf-8');
-    const imported = await new ConfigStore(configPath).importFrom(legacyPath);
+    const { config: imported } = await new ConfigStore(configPath).importFrom(legacyPath);
     // 翻译逻辑在 protocol normalizeConfig（自有单测）；这里钉的是接线：
     // 导入是唯一翻译点，落进桌面的已经是规范格式。
     expect(imported).toStrictEqual(translatedConfig);

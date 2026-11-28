@@ -1,14 +1,18 @@
-import type { ModelRef, WorkerConfig, WorkerType } from '@wayang-ai/protocol';
+import type { WorkerConfig, WorkerType } from '@wayang-ai/protocol';
 import { parsePositiveInt } from './form-values';
 
 /**
- * 第三方 worker（`workers.<id>`）表单的值、转换与校验——设置页与 onboard 向导
- * 共用，保存前一律走这里。字段长什么样在 worker-form.tsx（公共字段 +
- * 分发）与 worker-type-fields.tsx（各类型的专属字段）。
+ * 第三方 worker（`workers.<id>`）表单的值、转换与校验——设置页保存前一律走
+ * 这里。字段长什么样在 worker-form.tsx（公共字段 + 分发）与
+ * worker-type-fields.tsx（各类型的专属字段）。
  *
  * 字段按类型定制：表单值是一份扁平对象，四种类型的字段都在里面；切换类型只改
  * `type`，校验与写回只看当前类型真正会读的字段。写在别的类型上不生效的键
  * （claude-code 行上的 ACP 启动字段、ACP 行上的模型引用）写回时一并清掉。
+ *
+ * 有几项不提供配置、一律用默认值（ACP 类的默认行为因此保持一致）：给 claude-code
+ * 指定模型；ACP 类的 MCP 注入、进度空闲回退、取消后是否保留迟到的结果、opencode
+ * 的权限闸。配置行上已有的这些键（可能来自 CLI 配置）表单不展示、保存时原样保留。
  */
 export const PERMISSION_MODE_UNSET = '__unset__';
 
@@ -18,8 +22,6 @@ export interface WorkerFormValues {
   emoji: string;
   capabilities: string;
   // --- claude-code ---
-  /** 模型引用；undefined = 不单独指定（用 Claude Code 自己的默认模型）。 */
-  model: ModelRef | undefined;
   maxTurns: string;
   cliPath: string;
   // --- ACP 类（acp / codebuddy / opencode）---
@@ -29,14 +31,6 @@ export interface WorkerFormValues {
   /** 环境变量，每行一个 `KEY=VALUE`。 */
   env: string;
   permissionMode: typeof PERMISSION_MODE_UNSET | 'client' | 'agent';
-  /** wayang 的 MCP 工具挂不挂给 agent（默认开）。 */
-  mcpEnabled: boolean;
-  /** 空闲多久补一条进度；留空用默认值。 */
-  mcpFallbackMs: string;
-  /** 仅通用 acp：任务取消后才返回的内容是否仍写入记录（默认丢弃）。 */
-  trustUpdatesAfterCancel: boolean;
-  /** 仅 opencode：wayang 是否接管权限审批（默认接管）。 */
-  gatePermissions: boolean;
 }
 
 export const EMPTY_WORKER_FORM: WorkerFormValues = {
@@ -44,17 +38,12 @@ export const EMPTY_WORKER_FORM: WorkerFormValues = {
   description: '',
   emoji: '',
   capabilities: '',
-  model: undefined,
   maxTurns: '',
   cliPath: '',
   command: '',
   args: '',
   env: '',
   permissionMode: PERMISSION_MODE_UNSET,
-  mcpEnabled: true,
-  mcpFallbackMs: '',
-  trustUpdatesAfterCancel: false,
-  gatePermissions: true,
 };
 
 export function workerForm(worker: WorkerConfig): WorkerFormValues {
@@ -63,7 +52,6 @@ export function workerForm(worker: WorkerConfig): WorkerFormValues {
     description: worker.description,
     emoji: worker.emoji ?? '',
     capabilities: (worker.capabilities ?? []).join(', '),
-    model: worker.model,
     maxTurns: worker.maxTurns !== undefined ? String(worker.maxTurns) : '',
     cliPath: worker.cliPath ?? '',
     command: worker.command ?? '',
@@ -72,10 +60,6 @@ export function workerForm(worker: WorkerConfig): WorkerFormValues {
       .map(([key, value]) => `${key}=${value}`)
       .join('\n'),
     permissionMode: worker.permissionMode ?? PERMISSION_MODE_UNSET,
-    mcpEnabled: worker.mcp?.enabled !== false,
-    mcpFallbackMs: worker.mcp?.fallbackMs !== undefined ? String(worker.mcp.fallbackMs) : '',
-    trustUpdatesAfterCancel: worker.trustUpdatesAfterCancel ?? false,
-    gatePermissions: worker.protocol?.gatePermissions ?? true,
   };
 }
 
@@ -116,15 +100,15 @@ export function workerFormProblem(values: WorkerFormValues): string | null {
   if (values.type === 'acp' && values.command.trim().length === 0) return '请填写可执行命令（通用 acp 没有内置的可执行文件）';
   const env = envLines(values.env);
   if (env.problem) return env.problem;
-  if (parsePositiveInt(values.mcpFallbackMs).invalid) return '空闲回退需为正整数，留空用默认值';
   return null;
 }
 
 /**
  * 表单值合并回配置项。表单留空的可选字段不落盘（只改个名称不会给配置行
  * 添一堆空值）；该类型不读的键清掉（claude-code 行上的 ACP 启动字段会被启动
- * 校验直接拒绝）。ACP 的 protocol 里表单只管 opencode 的 gatePermissions，其余
- * 键（超时、能力覆盖）不展示、原样保留。表单不合法时抛错，不写出半截配置。
+ * 校验直接拒绝）。表单不展示的键（ACP 的 protocol、mcp、trustUpdatesAfterCancel，
+ * claude-code 的 model）原样保留——它们一律用默认值，除非配置行上本来就写着别的。
+ * 表单不合法时抛错，不写出半截配置。
  */
 export function applyWorkerForm(existing: WorkerConfig, values: WorkerFormValues): WorkerConfig {
   const problem = workerFormProblem(values);
@@ -153,7 +137,7 @@ function applyClaudeCode(next: WorkerConfig, values: WorkerFormValues): void {
   // ACP 的启动字段写在 claude-code 行上会被启动校验拒绝；permissionMode 只有
   // ACP 类读（claude-code 的权限模式由 core 自己定），留着不起作用。
   for (const key of ['command', 'args', 'env', 'protocol', 'trustUpdatesAfterCancel', 'mcp', 'permissionMode'] as const) delete next[key];
-  put(next, 'model', values.model);
+  // `model` 表单不展示：已有的原样留在 next 里（来自 existing），不碰。
   put(next, 'maxTurns', parsePositiveInt(values.maxTurns).value);
   put(next, 'cliPath', values.cliPath.trim() || undefined);
 }
@@ -170,15 +154,5 @@ function applyAcp(next: WorkerConfig, values: WorkerFormValues): void {
   const env = envLines(values.env).record;
   put(next, 'env', Object.keys(env).length > 0 ? env : undefined);
   put(next, 'permissionMode', values.permissionMode === PERMISSION_MODE_UNSET ? undefined : values.permissionMode);
-  // 开关类的默认值（MCP 开启、取消后丢弃、接管 opencode 权限）不落盘，偏离默认才写。
-  const mcp: NonNullable<WorkerConfig['mcp']> = {};
-  if (!values.mcpEnabled) mcp.enabled = false;
-  const fallbackMs = parsePositiveInt(values.mcpFallbackMs).value;
-  if (fallbackMs !== undefined) mcp.fallbackMs = fallbackMs;
-  put(next, 'mcp', Object.keys(mcp).length > 0 ? mcp : undefined);
-  put(next, 'trustUpdatesAfterCancel', values.type === 'acp' && values.trustUpdatesAfterCancel ? true : undefined);
-  const protocol: NonNullable<WorkerConfig['protocol']> = { ...next.protocol };
-  delete protocol.gatePermissions;
-  if (values.type === 'opencode' && !values.gatePermissions) protocol.gatePermissions = false;
-  put(next, 'protocol', Object.keys(protocol).length > 0 ? protocol : undefined);
+  // mcp / trustUpdatesAfterCancel / protocol 表单不展示：next 里留着 existing 的值，不碰。
 }

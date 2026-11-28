@@ -4,7 +4,7 @@ import { Input } from '@/renderer/shared/components/ui/input';
 import { Textarea } from '@/renderer/shared/components/ui/textarea';
 import { FormField, parsePositiveInt } from '@/renderer/main-window/components/settings';
 import { DraftRow } from './draft-row';
-import { SettingsSection } from './settings-section';
+import { SettingsSection } from '@/renderer/main-window/components/settings/settings-section';
 import type { ConfigCommitState } from '../use-config-commit';
 
 type CommitFn = ConfigCommitState['commit'];

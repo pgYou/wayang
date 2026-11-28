@@ -31,7 +31,9 @@ export interface AppHeaderProps {
  *   显形、失焦变灰、无障碍），此处只留等宽占位避免内容垫在按钮下；其余
  *   平台渲染自绘回退（WindowControls）；
  * - wayang logo（assets/logo 单一来源，@assets 别名；light 变体为浅色底
- *   设计）；页面私有内容经 left/right 插槽注入。
+ *   设计）；页面私有内容经 left/right 插槽注入；
+ * - 下沿不加边框线：底下贴一条页面底色的渐隐遮罩，内容滚到这里才看得出
+ *   渐隐（见 app-header.scss）。
  */
 export function AppHeader({ left, right, className }: AppHeaderProps) {
   // macOS 原生全屏隐藏红绿灯（wayang:window 推送）——占位随之收拢，
@@ -41,7 +43,7 @@ export function AppHeader({ left, right, className }: AppHeaderProps) {
   const isMac = isMacPlatform();
 
   return (
-    <header className={cn('wayang-app-header flex h-12 shrink-0 items-center gap-3 border-b border-border bg-background px-4', className)}>
+    <header className={cn('wayang-app-header flex h-12 shrink-0 items-center gap-3 bg-background px-4', className)}>
       {isMac ? (
         // 系统红绿灯占位：按钮组 trafficLightPosition(16,18) 起宽 52px，
         // 占位 64px 后 logo 落在 80px 起（px-4 16 + 64）；fullscreen 下隐藏。

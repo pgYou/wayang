@@ -1,0 +1,123 @@
+/*
+ * WayangMark 的律动：三道折线位置不动，从底部依次亮起——底部那道先亮，
+ * 隔 0.28s 中间的亮，再隔 0.28s 顶部的亮；全亮保持 3.2s，然后三道一起慢慢
+ * 暗下去（约 1.5s，缓入缓出，像呼一口气），暗透了停 0.2s 就开始下一轮。
+ *
+ * 一轮 5.9s，下面的百分比都按它换算：5% ≈ 0.3s，7% ≈ 0.4s（一道线亮起来
+ * 用的时间），17% ≈ 1s（三道全亮的时刻），71% ≈ 4.2s（开始暗），97% ≈ 5.7s。
+ * 「没亮」不是消失，是留 30% 的透明度，标的轮廓始终看得见。
+ * 三道线暗下去的时刻必须一致，所以这里不用 animation-delay 错相（错相会把
+ * 暗下去也一起错开），而是三道线各写一条时间线。
+ * 系统开了「减少动态效果」就常亮不动。
+ */
+
+$dim: 0.3;
+
+/* 顶部那道（文件里的第 1 条折线）。 */
+@keyframes wayang-mark-lit-top {
+  0%,
+  10% {
+    opacity: $dim;
+  }
+  17%,
+  71% {
+    opacity: 1;
+  }
+  97%,
+  100% {
+    opacity: $dim;
+  }
+}
+
+/* 中间那道（第 2 条）。 */
+@keyframes wayang-mark-lit-middle {
+  0%,
+  5% {
+    opacity: $dim;
+  }
+  12%,
+  71% {
+    opacity: 1;
+  }
+  97%,
+  100% {
+    opacity: $dim;
+  }
+}
+
+/* 底部那道（第 3 条）：最先亮。 */
+@keyframes wayang-mark-lit-bottom {
+  0% {
+    opacity: $dim;
+  }
+  7%,
+  71% {
+    opacity: 1;
+  }
+  97%,
+  100% {
+    opacity: $dim;
+  }
+}
+
+/* 内联进来的 <svg> 自带 512×512 的固定尺寸，改成撑满外面的盒子。 */
+.wayang-mark > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/*
+ * 带底色（background）：方块用渐变曲率圆角（corner-shape，Chromium 139+；
+ * 旧内核退化成同半径的普通圆角）。半径按方块自身边长的百分比走，多大都是
+ * 同一个比例；squircle 的角比同半径的圆弧瘦，所以比应用图标的 22% 略放大。
+ * 底色跟着 variant 走：light（浅色底用的版本，墨迹偏深）配浅色方块，
+ * dark（深色底用的版本，墨迹偏亮）配深色方块——后者就是应用图标。
+ */
+.wayang-mark-tile {
+  position: relative;
+  border-radius: 24%;
+  corner-shape: squircle;
+}
+
+.wayang-mark[data-variant='light'].wayang-mark-tile {
+  background-color: var(--card);
+}
+
+.wayang-mark[data-variant='dark'].wayang-mark-tile {
+  background-color: var(--mark-tile);
+}
+
+/* 方块里标的盒子占边长的 84%（与应用图标一致）。绝对定位的百分比是相对方块
+   自身算的；不能用百分比 padding——那按父容器宽度算，换个摆法比例就变了。 */
+.wayang-mark-tile > svg {
+  position: absolute;
+  top: 8%;
+  left: 8%;
+  width: 84%;
+  height: 84%;
+}
+
+/* 律动只在 animated 时挂上。折线在 SVG 文件里自上而下排列
+   （wayang-mark.test 钉住这个约定）。 */
+.wayang-mark-animated polyline {
+  animation: 5.9s ease-in-out infinite;
+
+  &:nth-of-type(1) {
+    animation-name: wayang-mark-lit-top;
+  }
+
+  &:nth-of-type(2) {
+    animation-name: wayang-mark-lit-middle;
+  }
+
+  &:nth-of-type(3) {
+    animation-name: wayang-mark-lit-bottom;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wayang-mark-animated polyline {
+    animation: none;
+  }
+}

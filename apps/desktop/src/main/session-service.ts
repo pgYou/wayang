@@ -15,6 +15,7 @@
  */
 
 import { dialog, type BrowserWindow, type WebContents } from 'electron';
+import { stat } from 'node:fs/promises';
 import type { WayangConfig } from '@wayang-ai/protocol';
 import { parseConfigUpdateRequest, type ConfigUpdateResult } from '@wayang-ai/protocol';
 import { METHOD } from '@wayang-ai/protocol/rpc/protocol';
@@ -37,12 +38,21 @@ import {
 } from '../shared/ipc-contract';
 import { checkCoreCompleteness, resolveOnboardState } from '../shared/onboard';
 import { planConfigUpdates } from '../shared/config-update-plan';
-import { assertCanonicalConfig, makeEnvelope, validateOrReject, type ConfigEnvelope } from '../shared/config-envelope';
+import { assertCanonicalConfig, makeEnvelope, validateOrReject, type ConfigEnvelope, type ImportCliConfigResult } from '../shared/config-envelope';
 import { ConfigStore } from './config-store';
 import { ServerProcessHost, type HostSessionOptions } from './server-process-host';
 import { removeTypedHandler, typedHandle, type IpcRouterDeps } from './ipc/router';
 import type { MainLogger } from './logger';
 import type { UnifiedLogger } from './unified-logger';
+
+/** 文件存在且是普通文件（目录、坏链接都算没有）。 */
+async function isRegularFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
 
 export interface DesktopSessionOptions extends HostSessionOptions {
   /** Legacy CLI config (`~/.wayang.config.json`) — read-only import source (决策九). */
@@ -204,14 +214,20 @@ export class SessionService {
     } catch (err) {
       loadError = err instanceof Error ? err.message : String(err);
     }
-    return resolveOnboardState(envelope, loadError);
+    return {
+      ...resolveOnboardState(envelope, loadError),
+      // 欢迎页只在真有可导入的 CLI 配置时才摆「导入 CLI 配置」入口。
+      hasCliConfig: await isRegularFile(this.deps.options.legacyConfigPath),
+    };
   }
 
-  /** §2.11「导入 CLI 配置」: read-only import + validate, error surfaces to UI. */
-  async importCliConfig(): Promise<{ config: WayangConfig }> {
+  /**
+   * §2.11「导入 CLI 配置」: read-only import + validate, error surfaces to UI.
+   * 不合法的第三方 worker 行回来时已是停用（见 disableInvalidWorkers）。
+   */
+  async importCliConfig(): Promise<ImportCliConfigResult> {
     const store = this.configStore();
-    const config = await store.importFrom(this.deps.options.legacyConfigPath);
-    return { config };
+    return store.importFrom(this.deps.options.legacyConfigPath);
   }
 
   /**

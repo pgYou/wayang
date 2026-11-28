@@ -21,9 +21,10 @@ import {
 import { WIZARD_STEPS, draftProblem, firstProblemStep, stepProblem } from '../wizard-state';
 
 /**
- * Wizard state machine pin: the three mandatory steps come first (provider →
- * model → binding) and each gates on what it is about; the worker step is
- * optional. `firstProblemStep` is where the confirm page's「返回修改」lands.
+ * Wizard state machine pin: two steps that mirror the settings page's groups —
+ * 「模型」(providers + models) gates on usable provider rows and model rows,
+ * 「Agent」gates on the bindings (the puppet defaults are optional).
+ * `firstProblemStep` is where the confirm page's「返回修改」lands.
  */
 
 const providerDraft: WayangConfig = upsertProvider(emptyDraft(), 'default', {
@@ -40,36 +41,30 @@ const modelDraft: WayangConfig = upsertModel(providerDraft, 'main', {
 const boundDraft: WayangConfig = setWorkerModel(setControllerModel(modelDraft, 'main'), 'main');
 
 describe('wizard steps', () => {
-  it('orders the three mandatory steps first, then the optional worker step', () => {
-    expect(WIZARD_STEPS.map((s) => s.id)).toEqual(['provider', 'model', 'binding', 'worker']);
-    expect(WIZARD_STEPS.slice(0, 3).every((s) => s.required)).toBe(true);
-    expect(WIZARD_STEPS[3].required).toBe(false);
-    // 每一步都有一句给用户看的说明（这步在做什么、为什么需要）。
-    expect(WIZARD_STEPS.every((s) => s.description.length > 0)).toBe(true);
+  it('is two steps — the settings page groups 模型 and Agent, in that order', () => {
+    expect(WIZARD_STEPS.map((s) => s.id)).toEqual(['models', 'agent']);
+    expect(WIZARD_STEPS.map((s) => s.title)).toEqual(['模型', 'Agent']);
   });
 
-  it('each step blocks on what it is about: provider rows, model rows, bindings', () => {
-    expect(stepProblem(emptyDraft(), 'provider')).toMatch(/至少添加一个 provider/);
-    expect(stepProblem(upsertProvider(emptyDraft(), 'p', { apiKey: 'k' }), 'provider')).toMatch(/Base URL/);
-    expect(stepProblem(providerDraft, 'provider')).toBeNull();
-
-    expect(stepProblem(providerDraft, 'model')).toMatch(/至少添加一个模型/);
-    expect(stepProblem(upsertModel(providerDraft, 'm', { provider: 'ghost', name: 'x' }), 'model')).toMatch(/provider「ghost」不存在/);
-    expect(stepProblem(modelDraft, 'model')).toBeNull();
-
-    expect(stepProblem(modelDraft, 'binding')).toMatch(/controller/);
-    expect(stepProblem(boundDraft, 'binding')).toBeNull();
+  it('「模型」 blocks on provider rows first, then on model rows', () => {
+    expect(stepProblem(emptyDraft(), 'models')).toMatch(/至少添加一个 provider/);
+    expect(stepProblem(upsertProvider(emptyDraft(), 'p', { apiKey: 'k' }), 'models')).toMatch(/Base URL/);
+    // provider 齐了但还没有模型：仍然停在这一步。
+    expect(stepProblem(providerDraft, 'models')).toMatch(/至少添加一个模型/);
+    expect(stepProblem(upsertModel(providerDraft, 'm', { provider: 'ghost', name: 'x' }), 'models')).toMatch(/provider「ghost」不存在/);
+    expect(stepProblem(modelDraft, 'models')).toBeNull();
   });
 
-  it('the optional worker step has no gate', () => {
-    expect(stepProblem(emptyDraft(), 'worker')).toBeNull();
+  it('「Agent」 blocks on the bindings only — the puppet defaults are optional', () => {
+    expect(stepProblem(modelDraft, 'agent')).toMatch(/controller/);
+    expect(stepProblem(boundDraft, 'agent')).toBeNull();
   });
 
-  it('firstProblemStep lands on the first incomplete mandatory step, else on the first step', () => {
-    expect(firstProblemStep(emptyDraft())).toBe('provider');
-    expect(firstProblemStep(providerDraft)).toBe('model');
-    expect(firstProblemStep(modelDraft)).toBe('binding');
-    expect(firstProblemStep(boundDraft)).toBe('provider');
+  it('firstProblemStep lands on the step that still needs filling, else on the first step', () => {
+    expect(firstProblemStep(emptyDraft())).toBe('models');
+    expect(firstProblemStep(providerDraft)).toBe('models');
+    expect(firstProblemStep(modelDraft)).toBe('agent');
+    expect(firstProblemStep(boundDraft)).toBe('models');
   });
 
   it('draftProblem mirrors the save path: structure + necessary core', () => {

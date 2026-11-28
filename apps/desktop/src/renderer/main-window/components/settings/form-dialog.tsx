@@ -24,6 +24,8 @@ export interface FormDialogProps {
   saving?: boolean;
   /** 透传给弹窗容器（如放宽宽度）。 */
   className?: string;
+  /** 落在弹窗容器上的锚点（data-testid），区分是哪一个弹窗；标题、取消、主按钮自带锚点。 */
+  testId?: string;
   children: ReactNode;
 }
 
@@ -38,6 +40,7 @@ export function FormDialog({
   problem,
   saving = false,
   className,
+  testId,
   children,
 }: FormDialogProps) {
   const submit = (event: FormEvent<HTMLFormElement>): void => {
@@ -53,19 +56,19 @@ export function FormDialog({
         if (!next) onClose();
       }}
     >
-      <DialogContent className={cn('max-w-lg', className)}>
+      <DialogContent className={cn('max-w-lg', className)} data-testid={testId}>
         <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
+          <DialogTitle data-testid="dialog-title">{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
         <form className="flex flex-col gap-4" noValidate onSubmit={submit}>
           {children}
           {problem && <p className="text-xs text-destructive">{problem}</p>}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>
+            <Button type="button" variant="ghost" data-testid="dialog-cancel" onClick={onClose} disabled={saving}>
               取消
             </Button>
-            <Button type="submit" disabled={submitDisabled || saving}>
+            <Button type="submit" data-testid="dialog-submit" disabled={submitDisabled || saving}>
               {saving && <LoaderIcon className="animate-spin" />}
               {submitLabel}
             </Button>

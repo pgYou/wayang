@@ -21,8 +21,9 @@ import type {
   WayangConfig,
 } from '@wayang-ai/protocol';
 import type { OnboardState } from './onboard';
+import type { ImportCliConfigResult } from './config-envelope';
 
-export type { OnboardState };
+export type { OnboardState, ImportCliConfigResult };
 
 /* ------------------------------------------------------------------ *
  * State slices (§2.2 订阅载荷 + §2.7 快照面)
@@ -253,7 +254,7 @@ export interface IpcInvokeContract {
   [IPC.listSessions]: { args: []; result: SessionIndexEntry[] };
   [IPC.rendererLog]: { args: [entry: RendererLogEntry]; result: void };
   [IPC.getOnboardState]: { args: []; result: OnboardState };
-  [IPC.importCliConfig]: { args: []; result: { config: WayangConfig } };
+  [IPC.importCliConfig]: { args: []; result: ImportCliConfigResult };
   [IPC.saveConfig]: {
     args: [config: WayangConfig, desktop?: Record<string, unknown>];
     result: SaveConfigResult;

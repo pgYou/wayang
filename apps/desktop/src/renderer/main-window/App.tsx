@@ -25,7 +25,7 @@ export function App() {
       .then((state) => {
         // 磁盘上有「结构合法但必要核心不完整」的配置时一并带过去，欢迎页
         // 据此提供「修改现有配置」。
-        if (!state.onboarded) router.replace('/onboard', { problem: state.problem, config: state.config });
+        if (!state.onboarded) router.replace('/onboard', { problem: state.problem, config: state.config, hasCliConfig: state.hasCliConfig === true });
       })
       .catch((err: unknown) => {
         // The state channel itself failed (not the envelope): the main UI's
@@ -66,6 +66,7 @@ export function App() {
         <OnboardFlow
           problem={typeof route.params.problem === 'string' ? route.params.problem : undefined}
           existingConfig={existingConfig}
+          hasCliConfig={route.params.hasCliConfig === true}
           onFinished={() => router.replace('/chat')}
         />
       );

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { WayangConfig } from '@wayang-ai/protocol';
+import type { ConfigCommit } from '@/renderer/main-window/components/settings/commit';
 import { wayang } from '@/renderer/shared/lib/wayang-api';
 import { notifyConfigSaved } from './config-save-notice';
 
@@ -16,7 +17,7 @@ export interface ConfigCommitState {
    * 下拉里的 Providers 列表）跟着更新；保存后的反馈（已生效 / 需重启）
    * 走 toast（config-save-notice）。
    */
-  commit: (next: WayangConfig, nextDesktop?: Record<string, unknown>) => Promise<void>;
+  commit: ConfigCommit;
   reload: () => void;
 }
 

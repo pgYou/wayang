@@ -95,6 +95,13 @@ describe('AppHeader (custom header §2.1)', () => {
     expect(container.querySelector('.w-16')).not.toBeNull();
   });
 
+  it('has no bottom border: the fade under the header lives in app-header.scss, not on the element', () => {
+    stubUA('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    root = renderHeader(container);
+    const header = container.querySelector('header.wayang-app-header')!;
+    expect(header.classList.contains('border-b')).toBe(false);
+  });
+
   it('unsubscribes from wayang:window on unmount', () => {
     stubUA('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
     const local = renderHeader(container);
