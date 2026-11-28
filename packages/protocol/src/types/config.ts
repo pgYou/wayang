@@ -139,7 +139,11 @@ export interface WorkerConfig {
    * protocol model field, so the value is only reported as unused at start.
    */
   model?: ModelRef;
-  /** Whether this worker is enabled. Defaults to true. */
+  /**
+   * Whether this worker is enabled. Defaults to true. A disabled row is not
+   * validated (see `validateConfig`): a malformed row may stay in the config
+   * as long as it is off; it is checked when it is switched on.
+   */
   enable?: boolean;
   /** Display emoji for quick visual identification. */
   emoji?: string;
@@ -340,10 +344,11 @@ const ACP_CAPABILITY_KEYS = ['permissionRequests', 'toolCalls'] as const;
  *
  * Values arrive from `JSON.parse`, so every field is checked defensively —
  * the `WorkerConfig` typing is what the config CLAIMS, not what it is.
- * `enable: false` rows are validated too: a config error must not hide
- * behind a disabled row (rule 7).
+ * Run on every ENABLED row by `validateConfig`; hosts also call it on their own
+ * (the desktop checks a row before switching it on, and decides which imported
+ * rows have to come in disabled) — see `workerEntryProblem`.
  */
-function validateWorkerEntry(id: string, worker: WorkerConfig): string | null {
+function validateWorkerEntry(id: string, worker: WorkerConfig | undefined): string | null {
   const at = `workers.${id}`;
   if (typeof worker !== 'object' || worker === null) {
     return `${at} must be an object`;
@@ -478,10 +483,32 @@ function validateModelRefValue(config: WayangConfig, at: string, ref: ModelRef |
 }
 
 /**
+ * One `workers.<id>` row's problem — its shape plus its model reference — or
+ * null. `validateConfig` runs it on every enabled row; a host uses it wherever
+ * a row is about to count: before switching one on, or when importing a config
+ * whose rows may have to come in disabled.
+ */
+export function workerEntryProblem(config: WayangConfig, id: string): string | null {
+  const worker = config.workers?.[id];
+  const err = validateWorkerEntry(id, worker);
+  if (err) return err;
+  // 走到这里说明这一行是个对象（否则上面已经报了 must be an object）。
+  return validateModelRefValue(config, `workers.${id}.model`, (worker as WorkerConfig).model);
+}
+
+/**
  * Validate a CANONICAL config's required fields; return the error message or
  * null. Legacy spellings are not understood here — hosts run
  * `normalizeConfig` first (see config-normalize.ts); core's intake uses
  * `validateCanonicalConfig`, which also refuses any leftover legacy key.
+ *
+ * Disabled worker rows (`enable === false`) are not validated (05 §5 rule 7,
+ * revised): a malformed row may stay in the config as long as it is off — a
+ * host can keep a broken row for the user to fix later instead of refusing the
+ * whole config. The one thing still required is that the row is an object,
+ * because the code that walks `workers` reads its fields. Enabling is what
+ * checks a row: an enabled row goes through `workerEntryProblem` here, and
+ * hosts call it themselves before switching one on.
  */
 export function validateConfig(config: WayangConfig): string | null {
   for (const [name, provider] of Object.entries(config.providers)) {
@@ -522,10 +549,11 @@ export function validateConfig(config: WayangConfig): string | null {
   const workers = config.workers;
   if (workers !== undefined && workers !== null) {
     for (const [id, worker] of Object.entries(workers)) {
-      const err = validateWorkerEntry(id, worker);
+      // 停用的行不校验，只要求是个对象（见函数注释）。
+      const isObject = typeof worker === 'object' && worker !== null && !Array.isArray(worker);
+      if (isObject && worker.enable === false) continue;
+      const err = workerEntryProblem(config, id);
       if (err) return err;
-      const refError = validateModelRefValue(config, `workers.${id}.model`, worker.model);
-      if (refError) return refError;
     }
   }
   const permission = config.permission;

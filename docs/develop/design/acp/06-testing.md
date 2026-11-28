@@ -20,7 +20,7 @@
 | 权限桥 | `src/services/agents/acp/__tests__/permission-bridge.test.ts` | 冻结页 §5 全表；kind 缺失 → 形态推断 → 推断不出直接 ask；输入合并（请求 toolCall 与累积事件合并后判定）；两家的 rawInput 键都要喂（`file_path` 与 `path`，04 分册 §9.3）；审批记忆命中 → 不发信号 + `granted-by-memory` + `grantId`；`sensitiveMode:'deny'` → `hard-denied` + 无 reject 选项 → cancelled；超时 → `denied/timeout`；**选项按 kind 选**（optionId 字面值两家不同：allow/reject vs once/always/reject）；审计字段与 puppet 记录逐字段比对（transport/provider） |
 | 骨架 | `src/services/agents/acp/__tests__/acp-worker.test.ts`（内存 fake transport） | 回合循环（多回合 + 队列消息顺序）；`_inputClosed` 判定；stopReason → WorkerResult 映射（02 分册 §4，**cancelled 的拒绝计数收窄见 04 分册 §9.1**）；`abort()` 幂等；`getLiveStatus` 两标志；`trustUpdatesAfterCancel` 两分支（true 保留 / false 丢弃计数） |
 | provider 薄类 | `src/services/agents/acp/__tests__/provider-workers.test.ts`（两家合一个文件，断言按 provider 分块） | 握手成功但 `session/new` 超时 → `auth-required`（文案含 authMethods 名单）；stderr 命中 login → 立即短路；`stopPolicy`（codebuddy 8000/2000/true、opencode 5000/2000/false）；`buildLaunch` 默认（`codebuddy --acp` / `opencode acp` + 权限闸注入）；受控 PATH 下 `cli-missing` 文案（codebuddy 安装指引 / opencode 官方 URL） |
-| 配置校验 | `src/types/__tests__/config.test.ts` | 05 分册 §5 七条规则（含 `gatePermissions` boolean）；`promptMs:0` 合法；`enable:false` 仍校验；错误文案含字段路径与允许值；AcpProtocolConfig 形状锁 |
+| 配置校验 | `src/types/__tests__/config.test.ts` | 05 分册 §5 七条规则（含 `gatePermissions` boolean）；`promptMs:0` 合法；`enable:false` 的行不校验（只要求是对象），启用后照常报错；`workerEntryProblem` 单行校验（形状 + 模型引用）；错误文案含字段路径与允许值；AcpProtocolConfig 形状锁 |
 | 引擎分发 | `src/services/__tests__/task-execute-engine-acp-wiring.test.ts` | 三个 `type` 各构造出预期类；未知 `type` 抛错并列出允许值；`type` 缺失在 `validateConfig` 就失败（不是派发期）；能力探测后 `respond_permission` 通路回归 |
 
 ## 3. 集成：交付状态对账（fake e2e 未交付，双层替代）

@@ -1,7 +1,7 @@
 // Types barrel — re-export all for backward compatibility
 
 export type { ProviderConfig, ModelConfig, ModelRef, WayangConfig, WorkerConfig, WorkerType, AcpProtocolConfig, ToolChoice, PermissionConfig, SensitiveMode, LoggingConfig } from './config';
-export { validateConfig, collectWorkerWarnings, WORKER_TYPES } from './config';
+export { validateConfig, workerEntryProblem, collectWorkerWarnings, WORKER_TYPES } from './config';
 
 // --- Config normalization (legacy spellings → canonical shape; hosts call it at their config entry) ---
 export type { NormalizeConfigResult } from './config-normalize';

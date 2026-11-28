@@ -401,6 +401,9 @@ function buildWorkerList(workers?: Record<string, WorkerConfig>): string {
   const lines: string[] = [`- \`puppet\` — ${PUPPET_DEFAULTS.description} [${PUPPET_DEFAULTS.capabilities.join(', ')}]`];
   if (workers) {
     for (const [id, config] of Object.entries(workers)) {
+      // 停用的 worker 不提供给 controller（派发过去只会得到「已停用」）。停用的行也不
+      // 保证配置合法（protocol validateConfig 不校验它），所以不读它的字段。
+      if (config.enable === false) continue;
       const caps = config.capabilities?.length ? ` [${config.capabilities.join(', ')}]` : '';
       const acpTag = acpTagFor(config);
       const tag = acpTag ? ` [${acpTag}]` : '';
