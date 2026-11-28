@@ -9,6 +9,8 @@ import {
   removeProvider,
   renameModel,
   renameProvider,
+  setControllerModel,
+  setWorkerModel,
   upsertModel,
   upsertProvider,
 } from '@/renderer/shared/lib/config-draft';
@@ -35,9 +37,7 @@ import { useAutoSaveAction } from './draft-section';
 import { FormDialog } from './form-dialog';
 import { SettingsCard } from './settings-section';
 import { ModelCard } from './model-card';
-import type { ConfigCommitState } from '../use-config-commit';
-
-type CommitFn = ConfigCommitState['commit'];
+import type { ConfigCommit } from './commit';
 
 interface ModelEditor {
   /** null = 新增；否则是被编辑条目的原条目名（条目名可改，改名即重命名）。 */
@@ -52,6 +52,7 @@ interface ModelEditor {
  * 时补上概要（Base URL、模型数）；展开后连接信息只读展示（API Key 默认打码，
  * 标签后的眼睛切换明文），其下的模型直接在卡内增删，被绑定使用的模型带标记。
  * 新增 / 编辑 provider 与模型都在弹窗里做（FormDialog）——卡片本身不展开表单。
+ * 设置页和 onboard 向导共用这一张卡片。
  */
 export function ProviderCard({
   config,
@@ -60,13 +61,16 @@ export function ProviderCard({
   provider,
   open,
   onToggle,
+  cardClassName,
 }: {
   config: WayangConfig;
-  commit: CommitFn;
+  commit: ConfigCommit;
   providerKey: string;
   provider: ProviderConfig;
   open: boolean;
   onToggle: () => void;
+  /** 追加到卡片上的类（如白底页面上补一个边框，见 ModelsGroup 的 cardClassName）。 */
+  cardClassName?: string;
 }) {
   const models = Object.entries(config.models ?? {}).filter(([, m]) => m.provider === providerKey);
   // 两个弹窗的开着与否就是它们的表单值：null = 关着。
@@ -116,7 +120,13 @@ export function ProviderCard({
       // 改条目名 = 重命名：同步改写绑定。
       const renamed = originalKey !== null && originalKey !== key;
       const base = renamed ? renameModel(config, originalKey, key) : config;
-      await commit(upsertModel(base, key, modelFromForm({ ...value, provider: providerKey })));
+      let next = upsertModel(base, key, modelFromForm({ ...value, provider: providerKey }));
+      // 还没绑定的位置先用这个模型补上（第一次添加模型时 controller / worker
+      // 都指向它，之后可以再改）；已经绑好的不动。设置页上绑定始终在，这里
+      // 等于不生效——主要是给 onboard 向导用的。
+      if (next.controller?.model === undefined) next = setControllerModel(next, key);
+      if (next.worker?.model === undefined) next = setWorkerModel(next, key);
+      await commit(next);
       setModelEditor(null);
     });
   };
@@ -145,9 +155,16 @@ export function ProviderCard({
 
   return (
     <>
-      <SettingsCard className="gap-0 py-0">
+      <SettingsCard className={cn('gap-0 py-0', cardClassName)}>
         <div className="flex items-center gap-2 px-4 py-3">
-          <button type="button" onClick={onToggle} aria-expanded={open} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left">
+          <button
+            type="button"
+            data-testid="provider-toggle"
+            data-id={providerKey}
+            onClick={onToggle}
+            aria-expanded={open}
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+          >
             <ChevronRightIcon className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
             <span className="font-mono text-sm font-medium">{providerKey}</span>
             {/* 概要（Base URL、模型数）只在折叠时显示：展开后下面就是完整内容，不必重复。 */}
@@ -159,6 +176,8 @@ export function ProviderCard({
             )}
           </button>
           <IconButton
+            data-testid="provider-edit"
+            data-id={providerKey}
             label={`编辑 provider ${providerKey}`}
             onClick={() => {
               setEditValues(connection);
@@ -167,12 +186,18 @@ export function ProviderCard({
           >
             <PencilIcon />
           </IconButton>
-          <IconButton label={`删除 provider ${providerKey}`} disabled={deleteAction.pending} onClick={deleteProvider}>
+          <IconButton
+            data-testid="provider-delete"
+            data-id={providerKey}
+            label={`删除 provider ${providerKey}`}
+            disabled={deleteAction.pending}
+            onClick={deleteProvider}
+          >
             <Trash2Icon />
           </IconButton>
         </div>
         {/* 删除被拦下时的提示：放头部下方，折叠状态也能看到。 */}
-        {deleteAction.error && <p className="px-4 pb-3 text-xs text-destructive">{deleteAction.error}</p>}
+        {deleteAction.error && <p data-testid="provider-delete-error" className="px-4 pb-3 text-xs text-destructive">{deleteAction.error}</p>}
         <Collapse open={open}>
           {/* 卡内两部分：基础信息 + 模型。中间不加分割线，模型用灰底小卡自成一块。 */}
           <div className="flex flex-col gap-4 border-t border-border px-4 py-3">
@@ -203,6 +228,7 @@ export function ProviderCard({
               <Button
                 size="sm"
                 variant="dashed"
+                data-testid="model-add"
                 onClick={() => {
                   const initial = emptyModelForm(providerKey);
                   setModelEditor({ originalKey: null, initial, value: initial });
@@ -218,6 +244,7 @@ export function ProviderCard({
       </SettingsCard>
 
       <FormDialog
+        testId="provider-edit-dialog"
         open={editValues !== null}
         onClose={closeDialogs}
         title="编辑 provider"
@@ -232,6 +259,7 @@ export function ProviderCard({
       </FormDialog>
 
       <FormDialog
+        testId={modelEditor?.originalKey === null ? 'model-add-dialog' : 'model-edit-dialog'}
         open={modelEditor !== null}
         onClose={closeDialogs}
         title={modelEditor?.originalKey === null ? '添加模型' : '编辑模型'}

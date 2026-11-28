@@ -1,12 +1,11 @@
 import { useState } from 'react';
 import type { WayangConfig } from '@wayang-ai/protocol';
-import { Badge } from '@/renderer/shared/components/ui/badge';
+import { AgentGroup } from '@/renderer/main-window/components/settings/agent-group';
+import { ModelsGroup } from '@/renderer/main-window/components/settings/models-group';
 import { Button } from '@/renderer/shared/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/renderer/shared/components/ui/card';
-import { ConfigSummary } from './config-summary';
+import { Timeline } from '@/renderer/shared/components/ui/timeline';
 import { WIZARD_STEPS, draftProblem, stepIndex, stepProblem, type WizardStepId } from './wizard-state';
-import { BindingStep, ModelStep, ProviderStep } from './wizard-steps';
-import { WorkerStep } from './wizard-worker-step';
+import { CARD_ON_WHITE, ModelsStep, AgentStep, useDraftCommit } from './wizard-steps';
 
 interface OnboardWizardProps {
   draft: WayangConfig;
@@ -18,92 +17,86 @@ interface OnboardWizardProps {
 }
 
 /**
- * 向导外壳：步骤指示 + 当前步骤内容 + 上一步 / 下一步。步骤内容由原子设置
- * 组件组装（wizard-steps / wizard-worker-step），这里只管推进与放行：
- * 本步校验不过、或步骤报告了阻塞原因（未保存的表单、不合法输入）时不能前进。
+ * 向导外壳：步骤条 + 当前步骤内容 + 上一步 / 下一步。两步就是设置页的「模型」
+ * 「Agent」两个分组原样渲染（wizard-steps），这里只管推进与放行：本步校验不过
+ * 时不能前进。步骤下面不写说明文字——界面自己说清楚这一步在做什么。
+ *
+ * 整页不套最外层的卡片：步骤条（timeline）、步骤自己的卡片和按钮直接摆在
+ * 页面上。
  */
-export function OnboardWizard({ draft, onChange, initialStep = 'provider', onComplete, onCancel }: OnboardWizardProps) {
+export function OnboardWizard({ draft, onChange, initialStep = 'models', onComplete, onCancel }: OnboardWizardProps) {
   const [step, setStep] = useState<WizardStepId>(initialStep);
-  const [blockReason, setBlockReason] = useState<string | null>(null);
   const index = stepIndex(step);
   const isLast = index === WIZARD_STEPS.length - 1;
   const problem = stepProblem(draft, step);
-  // 步骤自身的问题优先；有表单开着时由步骤给的原因解释（可能为空串）。
-  const hint = problem && blockReason === null ? problem : blockReason || null;
-
-  const move = (next: WizardStepId): void => {
-    setBlockReason(null);
-    setStep(next);
-  };
 
   return (
-    <Card className="gap-4">
-      <CardHeader className="flex-col items-start gap-2">
-        <CardTitle>初始配置向导</CardTitle>
-        <div className="flex flex-wrap items-center gap-2">
-          {WIZARD_STEPS.map((s, i) => (
-            <Badge key={s.id} variant={i < index ? 'success' : i === index ? 'default' : 'outline'}>
-              {i + 1}. {s.title}
-              {!s.required && '（可选）'}
-            </Badge>
-          ))}
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <p className="text-sm text-muted-foreground">{WIZARD_STEPS[index].description}</p>
-        {step === 'provider' && <ProviderStep draft={draft} onChange={onChange} onBlock={setBlockReason} />}
-        {step === 'model' && <ModelStep draft={draft} onChange={onChange} onBlock={setBlockReason} />}
-        {step === 'binding' && <BindingStep draft={draft} onChange={onChange} onBlock={setBlockReason} />}
-        {step === 'worker' && <WorkerStep draft={draft} onChange={onChange} onBlock={setBlockReason} />}
-        {/* 「还差什么」是引导不是报错：灰色说明。表单刚打开还没动时什么都不显示（空串）。 */}
-        {hint && <p className="text-sm text-muted-foreground">{hint}</p>}
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={() => (index > 0 ? move(WIZARD_STEPS[index - 1].id) : onCancel())}>
-            {index > 0 ? '上一步' : '返回欢迎页'}
+    // 步骤条和下面的表单之间留出一截，别贴在一起。
+    <div className="flex flex-col gap-8 pb-12">
+      <Timeline current={index} items={WIZARD_STEPS.map((s) => ({ key: s.id, label: s.title }))} />
+      <div className="flex flex-col gap-4">
+        {step === 'models' && <ModelsStep draft={draft} onChange={onChange} />}
+        {step === 'agent' && <AgentStep draft={draft} onChange={onChange} />}
+        {/* 「还差什么」是引导不是报错：灰色说明。 */}
+        {problem && <p data-testid="step-problem" className="text-sm text-muted-foreground">{problem}</p>}
+        {/* 底栏右对齐：返回在主按钮的左边。 */}
+        <div className="flex items-center justify-end gap-2">
+          {/* 文案随步骤变（回到初始页 / 上一步、下一步 / 完成），锚点不变。 */}
+          <Button variant="ghost" data-testid="wizard-back" onClick={() => (index > 0 ? setStep(WIZARD_STEPS[index - 1].id) : onCancel())}>
+            {index > 0 ? '上一步' : '回到初始页'}
           </Button>
-          <Button className="ml-auto" onClick={() => (isLast ? onComplete() : move(WIZARD_STEPS[index + 1].id))} disabled={problem !== null || blockReason !== null}>
+          <Button data-testid="wizard-next" onClick={() => (isLast ? onComplete() : setStep(WIZARD_STEPS[index + 1].id))} disabled={problem !== null}>
             {isLast ? '完成，去确认' : '下一步'}
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
-/** 最终确认页：全量展示 + 与保存同口径的校验 → 确认写入。 */
+/**
+ * 确认页（最后一步）：两步的卡片一起摆出来，和向导里一样可以原地改，不再是
+ * 一张只读清单。「应用」要整份配置合法才可点——口径和保存一样（结构合法 +
+ * 必要核心齐备，见 draftProblem）。从 CLI 导入的配置也直接落在这一页。
+ */
 export function FinalConfirm({
   draft,
+  onChange,
   saving,
   error,
-  onBack,
+  onCancel,
   onConfirm,
 }: {
   draft: WayangConfig;
+  onChange: (next: WayangConfig) => void;
   saving: boolean;
   error: string | null;
-  onBack: () => void;
+  onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const commit = useDraftCommit(onChange);
   const problem = draftProblem(draft);
   return (
-    <Card className="gap-4">
-      <CardHeader className="flex-col items-start gap-2">
-        <CardTitle>确认配置</CardTitle>
-        <CardDescription>确认后写入应用配置（userData/config.json），并以此为 server 启动。</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <ConfigSummary config={draft} />
-        {problem && <p className="rounded-md border border-destructive/30 bg-destructive-soft px-3 py-2 text-sm text-destructive">{problem}</p>}
-        {error && <p className="rounded-md border border-destructive/30 bg-destructive-soft px-3 py-2 text-sm text-destructive">{error}</p>}
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={onBack}>
-            返回修改
-          </Button>
-          <Button className="ml-auto" onClick={onConfirm} disabled={problem !== null || saving}>
-            {saving ? '写入并启动中…' : '确认写入并进入主界面'}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-8 pb-12">
+      {/* 大标题与初始页的主标题同一档；这一页没有步骤条，靠它说明走到了哪。 */}
+      <h1 data-testid="confirm-title" className="text-2xl font-semibold tracking-tight">配置确认</h1>
+      {/* 两个分组之间的间距与设置页里分组的间距一致。第三方 worker 不在 onboard 里添加。 */}
+      <div className="flex flex-col gap-8">
+        <ModelsGroup config={draft} commit={commit} title="模型" cardClassName={CARD_ON_WHITE} />
+        <AgentGroup config={draft} commit={commit} thirdPartyWorkers={false} cardClassName={CARD_ON_WHITE} />
+      </div>
+      {/* 「还差什么」是引导不是报错：灰色说明。 */}
+      {problem && <p data-testid="confirm-problem" className="text-sm text-muted-foreground">{problem}</p>}
+      {error && <p data-testid="confirm-error" className="rounded-md border border-destructive/30 bg-destructive-soft px-3 py-2 text-sm text-destructive">{error}</p>}
+      {/* 底栏右对齐：返回在主按钮的左边（与向导页一致）。 */}
+      <div className="flex items-center justify-end gap-2">
+        <Button variant="ghost" data-testid="confirm-back" onClick={onCancel}>
+          返回初始页
+        </Button>
+        <Button data-testid="confirm-apply" onClick={onConfirm} disabled={problem !== null || saving}>
+          {saving ? '写入并启动中…' : '进入应用'}
+        </Button>
+      </div>
+    </div>
   );
 }

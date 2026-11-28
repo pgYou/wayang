@@ -24,17 +24,26 @@ export function SettingsCard({ className, ...props }: HTMLAttributes<HTMLDivElem
  * 之间用细分割线分隔——一个分区一张卡片，而不是每个配置项一整块卡片，
  * 页面因此有层次与呼吸感。需重启字段的徽标放在标题（整区皆需重启）或行
  * 标签（混合分区）旁。
+ *
+ * `cardClassName` 追加到卡片上：卡片的边框 / 投影默认按灰底的设置页调，放在
+ * 白底页面上（onboard 向导）时由调用方补一个边框。
  */
 export function SettingsSection({
   title,
   restart,
   action,
+  cardClassName,
+  testId,
   children,
 }: {
   title: string;
   restart?: boolean;
   /** 标题行最右边的动作（如整区的「编辑」按钮）；右缘与下方卡片的右缘对齐。 */
   action?: ReactNode;
+  /** 追加到卡片上的类（见函数注释）。 */
+  cardClassName?: string;
+  /** 落在整区上的锚点（data-testid）。 */
+  testId?: string;
   children: ReactNode;
 }) {
   const heading = (
@@ -44,7 +53,7 @@ export function SettingsSection({
     </SectionTitle>
   );
   return (
-    <section className="flex flex-col gap-2">
+    <section data-testid={testId} className="flex flex-col gap-2">
       {action ? (
         <div className="flex items-center">
           {heading}
@@ -53,7 +62,7 @@ export function SettingsSection({
       ) : (
         heading
       )}
-      <SettingsCard className="gap-0 divide-y divide-border py-0">{children}</SettingsCard>
+      <SettingsCard className={cn('gap-0 divide-y divide-border py-0', cardClassName)}>{children}</SettingsCard>
     </section>
   );
 }

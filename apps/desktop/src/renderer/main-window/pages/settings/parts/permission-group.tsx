@@ -2,9 +2,9 @@ import type { WayangConfig } from '@wayang-ai/protocol';
 import { parseDirList, setApprovalMemory, setPermissionList, setSensitiveMode } from '@/renderer/shared/lib/config-draft';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/shared/components/ui/select';
 import { Textarea } from '@/renderer/shared/components/ui/textarea';
-import { useAutoSaveAction } from './draft-section';
+import { useAutoSaveAction } from '@/renderer/main-window/components/settings/draft-section';
 import { DraftRow } from './draft-row';
-import { FieldLabel, SettingsRow, SettingsSection } from './settings-section';
+import { FieldLabel, SettingsRow, SettingsSection } from '@/renderer/main-window/components/settings/settings-section';
 import type { ConfigCommitState } from '../use-config-commit';
 
 type CommitFn = ConfigCommitState['commit'];

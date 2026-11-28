@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConfig, collectWorkerWarnings, WORKER_TYPES, type WayangConfig, type WorkerConfig } from '@wayang-ai/protocol/types/config';
+import { validateConfig, collectWorkerWarnings, workerEntryProblem, WORKER_TYPES, type WayangConfig, type WorkerConfig } from '@wayang-ai/protocol/types/config';
 import type { AcpProtocolConfig } from '@wayang-ai/protocol/types/config';
 import type { AcpProtocolOverrides } from '@/services/agents/acp/base-acp-worker';
 
@@ -293,11 +293,28 @@ describe('validateConfig: workers section (05 §5)', () => {
     expect(err).toContain(`workers.codebuddy.${key}`);
   });
 
-  it('still validates a disabled worker (enable: false hides nothing)', () => {
-    const err = validateConfig(
-      makeConfigWithWorkers({ codebuddy: { type: 'codebuddy', description: 'x', enable: false, permissionMode: 'nope' } }),
+  it('a disabled row (enable: false) is not validated — it only has to be an object; enabling is what checks it', () => {
+    // 规则 7（修订）：不合法的行可以原样留着，只要是停用的。
+    expect(validateConfig(makeConfigWithWorkers({ codebuddy: { type: 'codebuddy', description: 'x', enable: false, permissionMode: 'nope' } }))).toBeNull();
+    // 连 type、description 都没有，模型引用不存在，也不报。
+    expect(validateConfig(makeConfigWithWorkers({ broken: { enable: false }, ghost: { type: 'acp', enable: false, model: 'nope' } }))).toBeNull();
+    // 但它得是个对象：遍历 workers 的代码会读它的字段。
+    expect(validateConfig(makeConfigWithWorkers({ junk: null }))).toContain('workers.junk must be an object');
+    expect(validateConfig(makeConfigWithWorkers({ text: 'x' }))).toContain('workers.text must be an object');
+    // 同一行一旦启用，照常校验。
+    expect(validateConfig(makeConfigWithWorkers({ codebuddy: { type: 'codebuddy', description: 'x', permissionMode: 'nope' } }))).toContain(
+      'workers.codebuddy.permissionMode',
     );
-    expect(err).toContain('workers.codebuddy.permissionMode');
+  });
+
+  it('workerEntryProblem answers for one row on its own — what a host checks before switching a row on', () => {
+    const config = makeConfigWithWorkers({ off: { type: 'codebuddy', description: 'x', enable: false, permissionMode: 'nope' } });
+    expect(validateConfig(config)).toBeNull();
+    expect(workerEntryProblem(config, 'off')).toContain('workers.off.permissionMode');
+    expect(workerEntryProblem(config, 'missing')).toContain('workers.missing must be an object');
+    // 模型引用也算在这一行头上。
+    const ghostModel = makeConfigWithWorkers({ codex: { type: 'claude-code', description: 'x', enable: false, model: 'nope' } });
+    expect(workerEntryProblem(ghostModel, 'codex')).toContain('workers.codex.model "nope" is not a known model');
   });
 
   it('leaves claude-code rows valid without any ACP fields (existing configs unaffected)', () => {

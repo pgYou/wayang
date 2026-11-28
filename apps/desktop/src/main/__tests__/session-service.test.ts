@@ -258,6 +258,23 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
     expect(new Set(electronState.handlers.keys())).toEqual(new Set(IPC_INVOKE_CHANNELS));
     const state = await invoke(IPC.getOnboardState, []);
     expect(state).toMatchObject({ ok: true, data: { onboarded: false, problem: expect.stringContaining('不存在') } });
+    // 临时目录里没有 CLI 配置：欢迎页不摆「导入 CLI 配置」入口。
+    expect(state).toMatchObject({ ok: true, data: { hasCliConfig: false } });
+    await service.stop();
+  });
+
+  it('getOnboardState reports whether a CLI config is there to import (a directory does not count)', async () => {
+    const service = makeService();
+    await service.start(null);
+    const onboard = (): Promise<unknown> => invoke(IPC.getOnboardState, []);
+    expect(await onboard()).toMatchObject({ ok: true, data: { hasCliConfig: false } });
+    writeFileSync(options.legacyConfigPath, JSON.stringify(legacyCliConfig));
+    expect(await onboard()).toMatchObject({ ok: true, data: { hasCliConfig: true } });
+    // 判定每次都看磁盘：文件被删掉后入口就该消失；目录不算可导入的文件。
+    rmSync(options.legacyConfigPath);
+    expect(await onboard()).toMatchObject({ ok: true, data: { hasCliConfig: false } });
+    mkdirSync(options.legacyConfigPath);
+    expect(await onboard()).toMatchObject({ ok: true, data: { hasCliConfig: false } });
     await service.stop();
   });
 
@@ -325,7 +342,7 @@ describe('SessionService (§2.2 typed surface + §2.9 wiring)', () => {
     const service = makeService();
     await service.start(null);
     const ok = await invoke(IPC.importCliConfig, []);
-    expect(ok).toMatchObject({ ok: true, data: { config: validConfig } });
+    expect(ok).toMatchObject({ ok: true, data: { config: validConfig, disabledWorkers: [] } });
     // Read-only in both directions: no envelope seeded by the import itself,
     // and the CLI file is untouched.
     expect(existsSync(options.configPath)).toBe(false);

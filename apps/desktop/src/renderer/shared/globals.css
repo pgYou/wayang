@@ -62,6 +62,10 @@
   --traffic-minimize: oklch(0.828 0.1588 84.5);
   --traffic-zoom: oklch(0.762 0.1839 144.5);
 
+  /* Wayang 标带底色时的方块（WayangMark 的 dark 版）：应用图标同色 #0b1020
+   * （assets/logo/wayang-mark-icon.svg）。 */
+  --mark-tile: oklch(0.177 0.0341 269.6);
+
   /* 灰阶（grey-1..grey-9）。 */
   --grey-1: oklch(0.977 0.0000 89.9);
   --grey-2: oklch(0.962 0.0000 89.9);
@@ -141,6 +145,8 @@
   --color-traffic-close: var(--traffic-close);
   --color-traffic-minimize: var(--traffic-minimize);
   --color-traffic-zoom: var(--traffic-zoom);
+
+  --color-mark-tile: var(--mark-tile);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

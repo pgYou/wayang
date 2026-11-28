@@ -11,6 +11,12 @@ declare module '*.svg' {
   export default src;
 }
 
+/** SVG 源码（`?raw`）：要动到图形内部的组件（WayangMark 逐条折线做动画）用。 */
+declare module '*.svg?raw' {
+  const src: string;
+  export default src;
+}
+
 /** 位图（electron-builder 图标源 / 未来 UI 资产）：Vite 一律编译为资源 URL。 */
 declare module '*.png' {
   const src: string;

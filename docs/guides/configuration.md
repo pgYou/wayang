@@ -164,7 +164,7 @@ wayang 启动时按下面的顺序找配置：
 | `type` | 字符串 | 是 | — | `claude-code` / `acp` / `codebuddy` / `opencode` 四选一 |
 | `model` | 模型引用 | 否 | 无 | 该 worker 使用的模型（`models` 键 / `"provider/name"` / 内联对象）。claude-code 传给 SDK 的 `model` 选项；ACP 类协议无模型字段，只在启动时记录未消费 |
 | `description` | 字符串 | 是 | — | 给 controller 看的自然语言描述，非空 |
-| `enable` | 布尔值 | 否 | `true` | 是否启用这个 worker |
+| `enable` | 布尔值 | 否 | `true` | 是否启用这个 worker。停用的行不做配置校验，启用时才校验——不合法的行可以留在配置里，修正后再启用 |
 | `emoji` | 字符串 | 否 | 按类型 | 界面显示图标；缺省为 🤖（claude-code）/ 🧩（acp）/ 🐧（codebuddy）/ 🦉（opencode） |
 | `capabilities` | 字符串数组 | 否 | — | 能力标签，供 controller 路由任务时参考 |
 | `maxTurns` | 数字 | 否 | — | 单个任务的最大轮数；只对 claude-code 有意义（未配置即不限制），写在 ACP 类型上不生效（仅在 worker 运行时打一条 debug 日志） |

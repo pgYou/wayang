@@ -14,6 +14,7 @@ import type {
   ChooseDirectoryResult,
   ConnectionStatus,
   InitialStateSnapshot,
+  ImportCliConfigResult,
   OnboardState,
   ReadConfigResult,
   RendererLogEntry,
@@ -51,7 +52,7 @@ export const wayang = {
   listSessions: (): ReturnType<WayangBridge['listSessions']> => bridge().listSessions(),
   rendererLog: (entry: RendererLogEntry): Promise<void> => bridge().rendererLog(entry),
   getOnboardState: (): Promise<OnboardState> => bridge().getOnboardState(),
-  importCliConfig: (): Promise<{ config: WayangConfig }> => bridge().importCliConfig(),
+  importCliConfig: (): Promise<ImportCliConfigResult> => bridge().importCliConfig(),
   saveConfig: (config: WayangConfig, desktop?: Record<string, unknown>): Promise<SaveConfigResult> =>
     bridge().saveConfig(config, desktop),
   readConfig: (): Promise<ReadConfigResult> => bridge().readConfig(),

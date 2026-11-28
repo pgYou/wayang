@@ -39,14 +39,21 @@ export function ModelCard({
   onDelete: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-2 rounded-lg bg-grey-2 p-3">
+    <div data-testid="model-card" data-id={entryKey} className="flex flex-col gap-2 rounded-lg bg-grey-2 p-3">
       <div className="flex items-center gap-1">
         <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium">{entryKey}</span>
         {/* 小卡本身就是灰底，按钮悬停底色要更深一档才看得出来。 */}
-        <IconButton label={`编辑模型 ${entryKey}`} className="hover:bg-grey-3" onClick={onEdit}>
+        <IconButton data-testid="model-edit" data-id={entryKey} label={`编辑模型 ${entryKey}`} className="hover:bg-grey-3" onClick={onEdit}>
           <PencilIcon />
         </IconButton>
-        <IconButton label={`删除模型 ${entryKey}`} className="hover:bg-grey-3" disabled={deleteDisabled} onClick={onDelete}>
+        <IconButton
+        data-testid="model-delete"
+        data-id={entryKey}
+        label={`删除模型 ${entryKey}`}
+        className="hover:bg-grey-3"
+        disabled={deleteDisabled}
+        onClick={onDelete}
+      >
           <Trash2Icon />
         </IconButton>
       </div>

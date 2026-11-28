@@ -53,7 +53,7 @@ export function ChatPage() {
         </div>
       )}
 
-      <ChatArea busy={busy} onQuickPrompt={(prompt) => void submitInput(prompt)} />
+      <ChatArea busy={busy} />
 
       <div className="absolute inset-x-0 bottom-0 z-20">
         {pendingInquiry ? (

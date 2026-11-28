@@ -92,7 +92,7 @@ export interface AcpProtocolConfig {
 4. `type === 'claude-code'`：`command` / `args` / `env` / `protocol` / `trustUpdatesAfterCancel` 一律禁止（提示「claude-code 用 cliPath」），避免两套启动语义混用。
 5. `type` 为任一 ACP 类型：`command` 出现时必须非空字符串，且 `type: 'acp'` 时必填（§4.1）；`args` 必须字符串数组；`env` 必须 `Record<string,string>`；`trustUpdatesAfterCancel` 必须是 boolean；`protocol.*` 必须正数（`promptMs` 允许 0）、`protocol.gatePermissions` 必须是 boolean；`protocol.capabilities` 的键必须是已知键。
 6. `permissionMode` 必须是 `'client'` 或 `'agent'`。
-7. `enable === false` 的 worker 仍要校验形状（配置错误不因禁用而隐藏）。
+7. `enable === false` 的 worker 行不校验形状与模型引用，只要求是个对象（修订，原先「停用也照常校验」）：宿主可以把一行不合法的配置原样留着、只是停用，不必因此拒绝整份配置——桌面端导入 CLI 配置时，不合法的第三方 worker 就这样置为停用写进去。**启用前必须校验**：启用后的行照常走 `validateConfig`；单行的校验口是 `workerEntryProblem(config, id)`（形状 + 模型引用），宿主在打开启用开关前先调它。
 
 ## 6. 配置示例（可直接粘贴运行）
 

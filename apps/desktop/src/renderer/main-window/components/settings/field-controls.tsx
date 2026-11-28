@@ -40,11 +40,11 @@ export function SaveCancelBar({
 
   const buttons = (
     <div className="flex shrink-0 items-center gap-2">
-      <Button size="sm" onClick={onSave} disabled={!dirty || saving}>
+      <Button size="sm" data-testid="save-bar-save" onClick={onSave} disabled={!dirty || saving}>
         {saving && <LoaderIcon className="animate-spin" />}
         保存
       </Button>
-      <Button size="sm" variant="ghost" onClick={onCancel} disabled={!dirty || saving}>
+      <Button size="sm" variant="ghost" data-testid="save-bar-cancel" onClick={onCancel} disabled={!dirty || saving}>
         取消
       </Button>
     </div>
@@ -53,7 +53,7 @@ export function SaveCancelBar({
   if (inline) {
     return (
       <div className={cn('flex min-w-0 items-center gap-3', className)}>
-        {error && <p className="min-w-0 truncate text-xs text-destructive">{error}</p>}
+        {error && <p data-testid="save-bar-error" className="min-w-0 truncate text-xs text-destructive">{error}</p>}
         {buttons}
       </div>
     );
@@ -61,7 +61,7 @@ export function SaveCancelBar({
 
   return (
     <div className={cn('flex flex-col gap-2', className)}>
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && <p data-testid="save-bar-error" className="text-xs text-destructive">{error}</p>}
       {buttons}
     </div>
   );

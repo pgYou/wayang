@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
-import { useDraftSection } from './draft-section';
-import { SaveCancelBar } from './field-controls';
-import { FieldLabel, SettingsRow } from './settings-section';
+import { useDraftSection } from '@/renderer/main-window/components/settings/draft-section';
+import { SaveCancelBar } from '@/renderer/main-window/components/settings/field-controls';
+import { FieldLabel, SettingsRow } from '@/renderer/main-window/components/settings/settings-section';
 
 /**
  * 「输入类」设置项的通用容器：标签 + 控件 + 草稿 + 保存 / 取消，一行写完一项。

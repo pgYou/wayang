@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { byTestId, queryByTestId } from '@/renderer/shared/lib/__tests__/anchors';
 import { createRoot, type Root } from 'react-dom/client';
 import { act, type ButtonHTMLAttributes, type LabelHTMLAttributes, type ReactNode } from 'react';
 import type { WayangConfig, WorkerConfig } from '@wayang-ai/protocol';
@@ -165,13 +166,6 @@ const choose = (select: HTMLSelectElement, value: string): void => {
 const click = (el: Element): void => {
   act(() => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
 };
-
-const buttonNamed = (name: string): HTMLButtonElement => {
-  const button = container!.querySelector(`button[aria-label="${name}"]`);
-  if (!button) throw new Error(`button not found: ${name}`);
-  return button as HTMLButtonElement;
-};
-
 const labels = (): string[] => Array.from(container!.querySelectorAll('label')).map((el) => el.textContent ?? '');
 
 /* ------------------------------ 纯函数 ------------------------------ */
@@ -245,13 +239,14 @@ describe('worker form values', () => {
   /** 落盘后的样子（值为 undefined 的键 JSON 会丢掉）。 */
   const persisted = (worker: WorkerConfig): unknown => JSON.parse(JSON.stringify(worker));
 
-  it('round-trips a claude-code row over the fields its form shows', () => {
+  it('round-trips a claude-code row over the fields its form shows; a model already on the row is left alone', () => {
     const values = workerForm(claude);
-    expect(values).toMatchObject({ type: 'claude-code', description: '编码', model: 'fast', maxTurns: '12', emoji: '🤖', capabilities: 'code, review' });
+    expect(values).toMatchObject({ type: 'claude-code', description: '编码', maxTurns: '12', emoji: '🤖', capabilities: 'code, review' });
+    // 表单不提供「指定模型」：行上已有的 model（比如来自 CLI 配置）保存时原样保留。
     expect(applyWorkerForm(claude, values)).toEqual(claude);
   });
 
-  it('round-trips an acp row: args one per line, env KEY=VALUE one per line, switches from the effective value', () => {
+  it('round-trips an acp row: args one per line, env KEY=VALUE one per line', () => {
     const acp: WorkerConfig = {
       type: 'acp',
       description: 'agent',
@@ -259,50 +254,48 @@ describe('worker form values', () => {
       args: ['--acp', 'flag with space'],
       env: { A: '1', B: 'a=b' },
       permissionMode: 'agent',
+      // 表单不展示的几项（一律用默认值）：读进表单的值里没有它们，保存时原样留着。
       trustUpdatesAfterCancel: true,
       mcp: { enabled: false, fallbackMs: 60_000 },
+      protocol: { gatePermissions: false },
     };
     const values = workerForm(acp);
-    expect(values).toMatchObject({
-      type: 'acp',
-      command: 'my-agent',
-      args: '--acp\nflag with space',
-      env: 'A=1\nB=a=b',
-      permissionMode: 'agent',
-      mcpEnabled: false,
-      mcpFallbackMs: '60000',
-      trustUpdatesAfterCancel: true,
-      gatePermissions: true,
-    });
+    expect(Object.keys(values).sort()).toEqual(
+      ['args', 'capabilities', 'cliPath', 'command', 'description', 'emoji', 'env', 'maxTurns', 'permissionMode', 'type'],
+    );
+    expect(values).toMatchObject({ type: 'acp', command: 'my-agent', args: '--acp\nflag with space', env: 'A=1\nB=a=b', permissionMode: 'agent' });
     expect(applyWorkerForm(acp, values)).toEqual(acp);
   });
 
-  it('writes only what departs from the defaults, and keeps protocol keys the form does not show', () => {
-    const opencode: WorkerConfig = { type: 'opencode', description: 'd', protocol: { handshakeMs: 20_000 }, mcp: { enabled: true } };
-    // 关掉 opencode 的权限闸 → protocol.gatePermissions: false；超时原样保留，显式写的默认值（mcp.enabled: true）不再落盘。
-    const gated = applyWorkerForm(opencode, { ...workerForm(opencode), gatePermissions: false });
-    expect(persisted(gated)).toEqual({ type: 'opencode', description: 'd', protocol: { handshakeMs: 20_000, gatePermissions: false } });
-    // 开关留在默认：什么都不写。
-    expect(persisted(applyWorkerForm(opencode, workerForm(opencode)))).toEqual({ type: 'opencode', description: 'd', protocol: { handshakeMs: 20_000 } });
+  it('writes only what the form shows; keys it does not show are left alone, and a new row gets no extra keys', () => {
+    const opencode: WorkerConfig = { type: 'opencode', description: 'd', protocol: { handshakeMs: 20_000, gatePermissions: false }, mcp: { enabled: false } };
+    // 协议超时、权限闸、MCP 注入表单都不展示：保存时原样保留（这几项一律用默认值，
+    // 除非配置行上本来就写着别的）。
+    expect(persisted(applyWorkerForm(opencode, workerForm(opencode)))).toEqual(opencode);
+    // 新建一行：只写表单里填了的——MCP、回退、权限闸这些键不出现，走默认值。
+    const fresh = applyWorkerForm({ type: 'codebuddy', description: '' }, { ...workerForm({ type: 'codebuddy', description: '' }), description: 'd' });
+    expect(persisted(fresh)).toEqual({ type: 'codebuddy', description: 'd' });
     // 环境变量 / 启动参数：换行文本 → 数组 / 记录，空行丢掉，同名以最后一行为准。
     const typed = applyWorkerForm(
-      { type: 'acp', description: 'd', command: 'x' },
-      { ...workerForm({ type: 'acp', description: 'd', command: 'x' }), args: ' --acp \n\n--verbose ', env: 'A=1\nB=x=y\nA=2', trustUpdatesAfterCancel: true, mcpFallbackMs: '30000' },
+      { type: 'acp', description: 'd' },
+      { ...workerForm({ type: 'acp', description: 'd' }), command: 'x', args: ' --acp \n\n--verbose ', env: 'A=1\nB=x=y\nA=2' },
     );
-    expect(persisted(typed)).toEqual({
-      type: 'acp',
-      description: 'd',
-      command: 'x',
-      args: ['--acp', '--verbose'],
-      env: { A: '2', B: 'x=y' },
-      mcp: { fallbackMs: 30000 },
-      trustUpdatesAfterCancel: true,
-    });
+    expect(persisted(typed)).toEqual({ type: 'acp', description: 'd', command: 'x', args: ['--acp', '--verbose'], env: { A: '2', B: 'x=y' } });
   });
 
   it('switching type clears the fields the new type does not read', () => {
-    const acp: WorkerConfig = { type: 'acp', description: 'agent', command: 'my-agent', args: ['--acp'], env: { A: '1' }, permissionMode: 'agent' };
-    // acp → claude-code：command / args / env / permissionMode 清掉（前几个写在 claude-code 行上会被启动校验拒绝）。
+    const acp: WorkerConfig = {
+      type: 'acp',
+      description: 'agent',
+      command: 'my-agent',
+      args: ['--acp'],
+      env: { A: '1' },
+      permissionMode: 'agent',
+      mcp: { enabled: false },
+      trustUpdatesAfterCancel: true,
+    };
+    // acp → claude-code：command / args / env / permissionMode / mcp / trustUpdatesAfterCancel 清掉
+    // （写在 claude-code 行上会被启动校验拒绝）。
     const toClaude = applyWorkerForm(acp, { ...workerForm(acp), type: 'claude-code', cliPath: '/bin/claude' });
     expect(persisted(toClaude)).toEqual({ type: 'claude-code', description: 'agent', cliPath: '/bin/claude' });
     // claude-code → codebuddy：cliPath / maxTurns / 模型引用 清掉；命令留空 = 用内置默认。
@@ -321,7 +314,6 @@ describe('worker form values', () => {
     const acp = workerForm({ type: 'acp', description: 'd', command: 'x' });
     expect(workerFormProblem({ ...acp, env: 'FOO' })).toMatch(/KEY=VALUE/);
     expect(() => applyWorkerForm({ type: 'acp', description: 'd', command: 'x' }, { ...acp, env: 'A=1\nbroken' })).toThrow(/「broken」/);
-    expect(workerFormProblem({ ...acp, mcpFallbackMs: '0' })).toMatch(/空闲回退/);
   });
 
   it('validates only the current type’s fields', () => {
@@ -374,29 +366,32 @@ describe('SecretInput / 只读密钥字段', () => {
     const input = inputFor('API Key');
     expect(input.type).toBe('password');
     expect(container!.textContent).not.toContain('sk-secret');
-    click(buttonNamed('显示 API Key'));
+    // 显隐开关的状态看 aria-pressed（不看按钮文案）。
+    const eye = queryByTestId('secret-reveal', container!);
+    expect(eye?.getAttribute('aria-pressed')).toBe('false');
+    click(eye!);
     expect(input.type).toBe('text');
-    expect(buttonNamed('隐藏 API Key')).toBeDefined();
+    expect(eye?.getAttribute('aria-pressed')).toBe('true');
     typeInto(input, 'sk-next');
     expect(onChange).toHaveBeenCalledWith({ key: '', baseURL: '', apiKey: 'sk-next' });
   });
 
   it('hides the eye while the value is empty (nothing to reveal)', () => {
     render(<ProviderForm value={{ key: '', baseURL: '', apiKey: '' }} onChange={() => undefined} />);
-    expect(container!.querySelector('button[aria-label]')).toBeNull();
+    expect(queryByTestId('secret-reveal', container!)).toBeNull();
   });
 
   it('the read-only secret masks by default; the eye sits in the label row so its position never moves', () => {
     render(<ReadonlySecretField label="API Key" value="sk-secret" />);
     expect(container!.textContent).toContain('••••••••');
     expect(container!.textContent).not.toContain('sk-secret');
-    // 眼睛在标签行里（跟在「API Key」标签后面），不跟在值后面——值长短不影响它的位置。
-    const eye = buttonNamed('显示 API Key');
-    expect(eye.parentElement?.querySelector('label')?.textContent).toBe('API Key');
+    // 眼睛在标签行里（跟标签同一行），不跟在值后面——值长短不影响它的位置。
+    const eye = byTestId('secret-reveal', container!);
+    expect(eye.parentElement?.querySelector('label')).not.toBeNull();
     expect(eye.parentElement?.textContent).not.toContain('••••••••');
     click(eye);
     expect(container!.textContent).toContain('sk-secret');
-    expect(buttonNamed('隐藏 API Key')).toBeDefined();
+    expect(eye.getAttribute('aria-pressed')).toBe('true');
   });
 
   it('the read-only secret shows a dash and no eye when empty', () => {
@@ -496,13 +491,13 @@ describe('ModelBindingSelect', () => {
 });
 
 describe('WorkerForm', () => {
-  const config: WayangConfig = { providers: {}, models: { fast: { provider: 'p', name: 'a' } }, controller: {}, worker: { maxConcurrency: 1 } };
   const BASE_LABELS = ['类型', '能力标签', '描述'];
-  const ACP_LABELS = [...BASE_LABELS, '可执行命令', '权限模式', '启动参数', '环境变量', 'MCP 注入', '空闲回退（ms）'];
+  // 三种 ACP 类型的字段完全一样：MCP 注入、空闲回退、取消后保留迟到的结果、接管权限审批不再让配。
+  const ACP_LABELS = [...BASE_LABELS, '可执行命令', '权限模式', '启动参数', '环境变量'];
 
   it('every type shares 类型 / 能力标签 / 描述; 描述 is a textarea and typing reports back', () => {
     const onChange = vi.fn();
-    render(<WorkerForm config={config} value={workerForm({ type: 'claude-code', description: '写代码' })} onChange={onChange} />);
+    render(<WorkerForm value={workerForm({ type: 'claude-code', description: '写代码' })} onChange={onChange} />);
     expect(labels().slice(0, 3)).toEqual(BASE_LABELS);
     const description = textareaFor('描述');
     expect(description.value).toBe('写代码');
@@ -510,43 +505,30 @@ describe('WorkerForm', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ description: '写代码\n也能 review' }));
   });
 
-  it('claude-code shows only 模型引用 / Max turns / CLI 路径', () => {
-    render(<WorkerForm config={config} value={workerForm({ type: 'claude-code', description: 'd' })} onChange={() => undefined} />);
-    expect(labels()).toEqual([...BASE_LABELS, '模型引用', 'Max turns', 'CLI 路径']);
-  });
-
-  it('the model reference is the shared binding select, including the unset option', () => {
-    const onChange = vi.fn();
-    render(<WorkerForm config={config} value={{ ...workerForm({ type: 'claude-code', description: 'd' }), model: 'fast' }} onChange={onChange} />);
-    expect(selectFor('模型引用').value).toBe('fast');
-    choose(selectFor('模型引用'), '__unset__');
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ model: undefined }));
+  it('claude-code shows only Max turns / CLI 路径 — there is no way to pick a model', () => {
+    render(<WorkerForm value={workerForm({ type: 'claude-code', description: 'd' })} onChange={() => undefined} />);
+    expect(labels()).toEqual([...BASE_LABELS, 'Max turns', 'CLI 路径']);
   });
 
   it('switching 类型 reports the new type; acp swaps in its launch / permission / MCP fields', () => {
     const onChange = vi.fn();
-    render(<WorkerForm config={config} value={workerForm({ type: 'claude-code', description: 'd' })} onChange={onChange} />);
+    render(<WorkerForm value={workerForm({ type: 'claude-code', description: 'd' })} onChange={onChange} />);
     choose(selectFor('类型'), 'acp');
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ type: 'acp' }));
     act(() => root!.unmount());
     root = createRoot(container!);
-    render(<WorkerForm config={config} value={workerForm({ type: 'acp', description: 'd', command: 'x', env: { A: '1' } })} onChange={() => undefined} />);
-    expect(labels()).toEqual([...ACP_LABELS, '取消后保留迟到的结果']);
+    render(<WorkerForm value={workerForm({ type: 'acp', description: 'd', command: 'x', env: { A: '1' } })} onChange={() => undefined} />);
+    expect(labels()).toEqual(ACP_LABELS);
     expect(textareaFor('环境变量').value).toBe('A=1');
   });
 
-  it('codebuddy drops the acp-only switch; opencode adds 接管权限审批 and its switch reports back', () => {
-    render(<WorkerForm config={config} value={workerForm({ type: 'codebuddy', description: 'd' })} onChange={() => undefined} />);
-    expect(labels()).toEqual(ACP_LABELS);
-    act(() => root!.unmount());
-    root = createRoot(container!);
-    const onChange = vi.fn();
-    render(<WorkerForm config={config} value={workerForm({ type: 'opencode', description: 'd' })} onChange={onChange} />);
-    expect(labels()).toEqual([...ACP_LABELS, '接管权限审批']);
-    const gate = controlFor('接管权限审批');
-    expect(gate.getAttribute('aria-checked')).toBe('true');
-    click(gate);
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ gatePermissions: false }));
+  it('codebuddy and opencode show exactly the same fields as the generic acp — no type-only switches', () => {
+    for (const type of ['codebuddy', 'opencode'] as const) {
+      act(() => root!.unmount());
+      root = createRoot(container!);
+      render(<WorkerForm value={workerForm({ type, description: 'd' })} onChange={() => undefined} />);
+      expect(labels()).toEqual(ACP_LABELS);
+    }
   });
 });
 

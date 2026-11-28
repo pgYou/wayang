@@ -35,8 +35,15 @@ vi.mock('@/renderer/shared/components/ui/dropdown-menu', () => ({
   DropdownMenu: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DropdownMenuTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DropdownMenuContent: ({ children }: { children: React.ReactNode }) => <div role="menu">{children}</div>,
-  DropdownMenuItem: ({ children, onSelect }: { children: React.ReactNode; onSelect?: () => void }) => (
-    <div role="menuitem" onClick={onSelect}>
+  DropdownMenuItem: ({
+    children,
+    onSelect,
+    ...rest
+  }: {
+    children: React.ReactNode;
+    onSelect?: () => void;
+  } & Record<string, unknown>) => (
+    <div role="menuitem" {...rest} onClick={onSelect}>
       {children}
     </div>
   ),
@@ -45,7 +52,7 @@ vi.mock('@/renderer/shared/components/ui/dropdown-menu', () => ({
 }));
 vi.mock('@/renderer/shared/components/ui/dialog', () => ({
   Dialog: ({ children, open }: { children: React.ReactNode; open: boolean }) => (open ? <div role="dialog">{children}</div> : null),
-  DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DialogContent: ({ children, ...rest }: { children?: React.ReactNode }) => <div {...rest}>{children}</div>,
   DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
   DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
@@ -69,6 +76,7 @@ vi.mock('lucide-react', () => ({
   PlusIcon: (props: Record<string, unknown>) => <span data-icon="plus" {...props} />,
 }));
 
+import { byTestId, queryByTestId, rowAction } from '@/renderer/shared/lib/__tests__/anchors';
 import { wayang } from '@/renderer/shared/lib/wayang-api';
 import { wayangStore } from '@/renderer/shared/lib/store';
 import { beginNewSession } from '@/renderer/shared/lib/session-lazy';
@@ -111,15 +119,12 @@ describe('SessionMenu', () => {
     const el = renderMenu();
 
     // Open the dropdown, then the history dialog.
-    await click(el.querySelector('button[aria-label="会话菜单"]')!);
-    await click([...el.querySelectorAll('[role="menuitem"]')].find((i) => i.textContent?.includes('历史会话'))!);
+    await click(byTestId('session-menu-trigger', el));
+    await click(byTestId('session-menu-history', el));
     // The dialog opened and listSessions fired (list: time + summary).
     expect(wayang.listSessions).toHaveBeenCalledTimes(1);
-    const item = [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('帮我发布桌面应用'));
-    expect(item).toBeDefined();
-    await click(item!);
-    const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('切换到所选会话'));
-    await click(confirm!);
+    await click(rowAction('session-item', 's-1', el));
+    await click(byTestId('session-switch-confirm', el));
 
     expect(wayang.switchSession).toHaveBeenCalledWith('s-1');
     expect(wayangStore.rehydrate).toHaveBeenCalledTimes(1);
@@ -128,32 +133,32 @@ describe('SessionMenu', () => {
   it('listSessions failure surfaces the error inside the dialog', async () => {
     vi.mocked(wayang.listSessions).mockRejectedValue(new Error('server not ready'));
     const el = renderMenu();
-    await click(el.querySelector('button[aria-label="会话菜单"]')!);
-    await click([...el.querySelectorAll('[role="menuitem"]')].find((i) => i.textContent?.includes('历史会话'))!);
+    await click(byTestId('session-menu-trigger', el));
+    await click(byTestId('session-menu-history', el));
     expect(el.textContent).toContain('server not ready');
   });
 
   it('新会话 confirm path: lazy — local reset only, no server session until first input', async () => {
     const el = renderMenu();
-    await click(el.querySelector('button[aria-label="会话菜单"]')!);
-    await click([...el.querySelectorAll('[role="menuitem"]')].find((i) => i.textContent?.includes('新会话'))!);
-    await click([...el.querySelectorAll('button')].find((b) => b.textContent?.includes('开新会话'))!);
+    await click(byTestId('session-menu-trigger', el));
+    await click(byTestId('session-menu-new', el));
+    await click(byTestId('session-new-confirm', el));
     // 懒加载：确认后只重置本地视图（beginNewSession），server 不创建会话。
     expect(beginNewSession).toHaveBeenCalledTimes(1);
     expect(wayang.newSession).not.toHaveBeenCalled();
     expect(wayangStore.rehydrate).not.toHaveBeenCalled();
     // 确认弹窗关闭。
-    expect(el.querySelector('[role="dialog"]')).toBeNull();
+    expect(queryByTestId('session-new-dialog', el)).toBeNull();
   });
 
   it('a failing switch keeps the dialog open with the error', async () => {
     vi.mocked(wayang.listSessions).mockResolvedValue(entries);
     vi.mocked(wayang.switchSession).mockRejectedValue(new Error('unknown session'));
     const el = renderMenu();
-    await click(el.querySelector('button[aria-label="会话菜单"]')!);
-    await click([...el.querySelectorAll('[role="menuitem"]')].find((i) => i.textContent?.includes('历史会话'))!);
-    await click([...el.querySelectorAll('button')].find((b) => b.textContent?.includes('帮我发布桌面应用'))!);
-    await click([...el.querySelectorAll('button')].find((b) => b.textContent?.includes('切换到所选会话'))!);
+    await click(byTestId('session-menu-trigger', el));
+    await click(byTestId('session-menu-history', el));
+    await click(rowAction('session-item', 's-1', el));
+    await click(byTestId('session-switch-confirm', el));
     expect(el.textContent).toContain('unknown session');
     // No rehydrate when the switch failed.
     expect(wayangStore.rehydrate).not.toHaveBeenCalled();

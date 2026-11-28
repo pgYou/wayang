@@ -3,10 +3,35 @@
  * 唯一来源就是 CSS drag region——整条 header 可拖，交互件逐个 no-drag
  * 恢复点击。双击缩放是系统对 drag region 的原生行为，无需手写。
  * macOS 系统红绿灯的整组 hover 显形 / 失焦变灰同样由系统自带。
+ *
+ * header 浮在滚动内容之上（relative + z-index）：下沿的渐隐遮罩要压住内容。
  */
 
 .wayang-app-header {
+  position: relative;
+  z-index: 10;
   -webkit-app-region: drag;
+}
+
+/*
+ * 下沿不加边框线，改成一截「页面底色的阴影」：header 底下贴一条从 header
+ * 底色渐变到透明的遮罩，盖在滚动内容上——内容滚到这里就渐渐隐进底色里；
+ * 没内容滚到时它和页面同色，什么都看不出来。
+ * 颜色用 background: inherit 跟着 header 自己的底色走（设置页的 header 是灰
+ * 底，遮罩也就跟着是灰的），页面不用另外告知；渐变靠 mask 做。
+ * 遮罩不拦鼠标：它底下的内容照常能点。
+ */
+.wayang-app-header::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  height: 24px;
+  background: inherit;
+  mask-image: linear-gradient(to bottom, oklch(0 0 0), transparent);
+  pointer-events: none;
+  -webkit-app-region: no-drag;
 }
 
 .wayang-app-header button {

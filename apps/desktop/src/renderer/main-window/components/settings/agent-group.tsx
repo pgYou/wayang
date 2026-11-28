@@ -19,31 +19,45 @@ import { FormDialog } from './form-dialog';
 import { RestartBadge } from './field-controls';
 import { FieldLabel, SectionTitle, SettingsRow, SettingsSection } from './settings-section';
 import { NewWorkerCard, WorkerCard } from './worker-card';
-import type { ConfigCommitState } from '../use-config-commit';
-
-type CommitFn = ConfigCommitState['commit'];
+import type { ConfigCommit } from './commit';
 
 /**
  * Agent 分组：谁在干活、用什么模型。模型绑定（controller / puppet worker 各用
  * 哪个模型，选了即生效）在最上面，其下是 puppet 默认参数和第三方 worker 列表。
+ *
+ * 设置页整组展示；onboard 向导的「Agent」一步也是这一组，只是不摆第三方
+ * worker（thirdPartyWorkers={false}）——第三方 worker 在 onboard 里不添加。
  */
-export function AgentGroup({ config, commit }: { config: WayangConfig; commit: CommitFn }) {
+export interface AgentGroupProps {
+  config: WayangConfig;
+  commit: ConfigCommit;
+  /** 是否摆第三方 worker 列表。默认摆；onboard 向导不摆。 */
+  thirdPartyWorkers?: boolean;
+  /**
+   * 追加到每张卡片上的类。卡片的边框 / 投影默认按灰底的设置页调，放在白底
+   * 页面上（onboard 向导）时传 `border-border` 补一个边框。
+   */
+  cardClassName?: string;
+}
+
+export function AgentGroup({ config, commit, thirdPartyWorkers = true, cardClassName }: AgentGroupProps) {
   return (
     <>
-      <BindingsSection config={config} commit={commit} />
-      <PuppetDefaultsSection config={config} commit={commit} />
-      <ThirdPartyWorkersSection config={config} commit={commit} />
+      <BindingsSection config={config} commit={commit} cardClassName={cardClassName} />
+      <PuppetDefaultsSection config={config} commit={commit} cardClassName={cardClassName} />
+      {thirdPartyWorkers && <ThirdPartyWorkersSection config={config} commit={commit} cardClassName={cardClassName} />}
     </>
   );
 }
 
-function BindingsSection({ config, commit }: { config: WayangConfig; commit: CommitFn }) {
+function BindingsSection({ config, commit, cardClassName }: { config: WayangConfig; commit: ConfigCommit; cardClassName?: string }) {
   const action = useAutoSaveAction();
   return (
-    <SettingsSection title="模型绑定">
+    <SettingsSection title="模型绑定" cardClassName={cardClassName} testId="agent-bindings">
       <SettingsRow>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <FormField label="Controller 模型" hint="负责理解意图、拆解任务、调度 worker">
+          {/* 字段下面不挂说明文字：标签本身已经说清楚是给谁选模型。 */}
+          <FormField label="Controller 模型">
             {(id) => (
               <ModelBindingSelect
                 id={id}
@@ -54,7 +68,7 @@ function BindingsSection({ config, commit }: { config: WayangConfig; commit: Com
               />
             )}
           </FormField>
-          <FormField label="Worker 模型" hint="puppet worker 默认使用的模型">
+          <FormField label="Worker 模型">
             {(id) => (
               <ModelBindingSelect
                 id={id}
@@ -76,7 +90,7 @@ function BindingsSection({ config, commit }: { config: WayangConfig; commit: Com
  * Puppet 默认参数：卡片里只读，三项各占一行；标题行右侧的「编辑」打开弹窗改，
  * 卡片本身不展开表单（与 provider / 模型一致）。
  */
-function PuppetDefaultsSection({ config, commit }: { config: WayangConfig; commit: CommitFn }) {
+function PuppetDefaultsSection({ config, commit, cardClassName }: { config: WayangConfig; commit: ConfigCommit; cardClassName?: string }) {
   const [editValues, setEditValues] = useState<PuppetDefaultsFormValues | null>(null);
   const action = useAutoSaveAction();
   const worker = config.worker;
@@ -100,8 +114,11 @@ function PuppetDefaultsSection({ config, commit }: { config: WayangConfig; commi
     <>
       <SettingsSection
         title="Puppet 默认参数"
+        cardClassName={cardClassName}
+        testId="agent-puppet-defaults"
         action={
           <IconButton
+            data-testid="puppet-defaults-edit"
             label="编辑 Puppet 默认参数"
             onClick={() => {
               setEditValues(committed);
@@ -112,17 +129,23 @@ function PuppetDefaultsSection({ config, commit }: { config: WayangConfig; commi
           </IconButton>
         }
       >
-        <PuppetRow label="最大并发" value={worker?.maxConcurrency !== undefined ? String(worker.maxConcurrency) : undefined} />
         <PuppetRow
+          testId="puppet-max-concurrency"
+          label="最大并发"
+          value={worker?.maxConcurrency !== undefined ? String(worker.maxConcurrency) : undefined}
+        />
+        <PuppetRow
+          testId="puppet-max-turns"
           label="Max turns"
           restart
           value={worker?.maxTurns !== undefined ? String(worker.maxTurns) : undefined}
           unset="不限"
         />
-        <PuppetRow label="Tool choice" value={worker?.toolChoice} unset="未设置" />
+        <PuppetRow testId="puppet-tool-choice" label="Tool choice" value={worker?.toolChoice} unset="未设置" />
       </SettingsSection>
 
       <FormDialog
+        testId="puppet-defaults-dialog"
         open={editValues !== null}
         onClose={close}
         title="编辑 Puppet 默认参数"
@@ -140,9 +163,21 @@ function PuppetDefaultsSection({ config, commit }: { config: WayangConfig; commi
 }
 
 /** 只读的一行：左边标签（可带重启徽标），右边值；没设置的值显示 `unset`（灰色）。 */
-function PuppetRow({ label, restart = false, value, unset }: { label: string; restart?: boolean; value: string | undefined; unset?: string }) {
+function PuppetRow({
+  testId,
+  label,
+  restart = false,
+  value,
+  unset,
+}: {
+  testId: string;
+  label: string;
+  restart?: boolean;
+  value: string | undefined;
+  unset?: string;
+}) {
   return (
-    <SettingsRow className="flex-row flex-wrap items-center gap-3">
+    <SettingsRow data-testid={testId} className="flex-row flex-wrap items-center gap-3">
       <FieldLabel restart={restart} className="w-36 shrink-0">
         {label}
       </FieldLabel>
@@ -151,13 +186,21 @@ function PuppetRow({ label, restart = false, value, unset }: { label: string; re
   );
 }
 
-function ThirdPartyWorkersSection({ config, commit }: { config: WayangConfig; commit: CommitFn }) {
+function ThirdPartyWorkersSection({
+  config,
+  commit,
+  cardClassName,
+}: {
+  config: WayangConfig;
+  commit: ConfigCommit;
+  cardClassName?: string;
+}) {
   const rows = Object.entries(config.workers ?? {});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [creating, setCreating] = useState(false);
 
   return (
-    <section className="flex flex-col gap-2">
+    <section data-testid="agent-workers" className="flex flex-col gap-2">
       <SectionTitle>
         第三方 Worker
         <RestartBadge />
@@ -171,11 +214,12 @@ function ThirdPartyWorkersSection({ config, commit }: { config: WayangConfig; co
           worker={worker}
           open={!collapsed[id]}
           onToggle={() => setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }))}
+          cardClassName={cardClassName}
         />
       ))}
-      {creating && <NewWorkerCard config={config} commit={commit} onDone={() => setCreating(false)} />}
+      {creating && <NewWorkerCard config={config} commit={commit} onDone={() => setCreating(false)} cardClassName={cardClassName} />}
       {!creating && (
-        <Button size="sm" variant="dashed" className="self-start" onClick={() => setCreating(true)}>
+        <Button size="sm" variant="dashed" className="self-start" data-testid="worker-add" onClick={() => setCreating(true)}>
           <PlusIcon />
           添加 worker
         </Button>

@@ -24,6 +24,12 @@ export interface OnboardState {
    * start over (and silently dropping everything they had configured).
    */
   config?: WayangConfig;
+  /**
+   * 磁盘上有可导入的 CLI 配置（`~/.wayang.config.json`）时为 true——欢迎页
+   * 只在真有的时候才摆「导入 CLI 配置」入口。要看磁盘，所以只有 main 的
+   * getOnboardState 会填；冷启动判定那个纯函数不管它。
+   */
+  hasCliConfig?: boolean;
 }
 
 /**
@@ -100,6 +106,13 @@ function bindingProblem(config: WayangConfig, ref: ModelRef | undefined, label: 
 }
 
 /**
+ * 信封文件还不存在（真正的首次启动）时的 `problem`。欢迎页认得这一个：
+ * 只有它不显示——副标题「完成基础配置」已经把话说完，再甩一句「config.json
+ * 不存在」是噪音；其余情况（文件坏了、现有配置缺东西）原因必须给人看见。
+ */
+export const NOT_CONFIGURED_PROBLEM = '尚未配置：config.json 不存在';
+
+/**
  * Resolve the envelope → cold-start decision. A missing file, a load/validate
  * failure, or a core-incomplete-but-valid config all land on the welcome
  * page (§2.11) — never a silent fallback to the CLI file.
@@ -109,7 +122,7 @@ export function resolveOnboardState(
   loadError: string | null,
 ): OnboardState {
   if (loadError) return { onboarded: false, problem: loadError };
-  if (!envelope) return { onboarded: false, problem: '尚未配置：config.json 不存在' };
+  if (!envelope) return { onboarded: false, problem: NOT_CONFIGURED_PROBLEM };
   const problem = checkCoreCompleteness(envelope.wayangConfig);
   // 结构合法只差必要核心：把配置带给欢迎页，供「修改现有配置」接着改。
   if (problem) return { onboarded: false, problem, config: envelope.wayangConfig };

@@ -78,4 +78,18 @@ describe('buildControllerSystemPrompt: worker list for *-acp rows (05 §7)', () 
 
     expect(prompt).toContain('[acp:acp]');
   });
+
+  it('leaves disabled rows out of the list — even malformed ones, which a disabled row is allowed to be', () => {
+    const prompt = promptWith({
+      off: { type: 'codebuddy', description: 'Switched off', enable: false },
+      // 停用的行不保证配置合法（protocol validateConfig 不校验它）。
+      broken: { enable: false } as WorkerConfig,
+      on: { type: 'claude-code', description: 'Still on' },
+    });
+
+    expect(prompt).toContain('`on` — Still on');
+    expect(prompt).not.toContain('`off`');
+    expect(prompt).not.toContain('`broken`');
+    expect(prompt).not.toContain('Switched off');
+  });
 });

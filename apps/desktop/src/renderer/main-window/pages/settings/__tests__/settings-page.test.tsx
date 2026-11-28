@@ -9,7 +9,7 @@ import { renameModel, renameProvider } from '@/renderer/shared/lib/config-draft'
 /**
  * 设置页挂载/切组回归：进入设置页与在五个分组间切换都不能自激更新
  * （"Maximum update depth exceeded" 曾由 useDraftSection 的对象字面量
- * committed 触发，见 parts/__tests__/draft-section.test.tsx）。
+ * committed 触发，见 components/settings/__tests__/draft-section.test.tsx）。
  *
  * radix 系原语与 lucide 由 vitest externalize 后可能解析到仓库根的 react 18
  * （双 React major 提升），这里按 session-menu 测试的惯例做 UI shim，测试
@@ -86,9 +86,9 @@ vi.mock('@/renderer/shared/components/ui/dialog', async () => {
   const pass = ({ children }: { children?: ReactNode }) => <>{children}</>;
   return {
     Dialog: ({ open, children }: { open: boolean; children?: ReactNode }) => (open ? createPortal(<div role="dialog">{children}</div>, document.body) : null),
-    DialogContent: pass,
+    DialogContent: ({ children, ...rest }: { children?: ReactNode }) => <div {...rest}>{children}</div>,
     DialogHeader: pass,
-    DialogTitle: ({ children }: { children?: ReactNode }) => <h2>{children}</h2>,
+    DialogTitle: ({ children, ...rest }: { children?: ReactNode }) => <h2 {...rest}>{children}</h2>,
     DialogDescription: pass,
     DialogFooter: pass,
   };
@@ -132,6 +132,7 @@ vi.mock('lucide-react', () => {
   };
 });
 
+import { allByTestId, byTestId, queryByTestId, rowAction } from '@/renderer/shared/lib/__tests__/anchors';
 import { SettingsPage } from '../settings-page';
 
 const config: WayangConfig = {
@@ -173,32 +174,30 @@ afterEach(() => {
   container = null;
 });
 
-const buttonNamed = (label: string): HTMLButtonElement => {
-  const button = Array.from(document.body.querySelectorAll('button')).find((el) => el.textContent?.trim() === label);
-  if (!button) throw new Error(`button not found: ${label}`);
-  return button;
-};
-const navButton = buttonNamed;
+// 找元素一律用 data-testid（见 lib/__tests__/anchors），不按可见文案或 aria-label 找：
+// 那些是给用户看的，改一次测试就得跟着改。输入框靠 label[for] 关联找——那是无障碍契约。
+const button = (id: string): HTMLButtonElement => byTestId(id) as HTMLButtonElement;
+/** 某一行（provider / 模型 / worker）上的动作按钮。 */
+const rowButton = (id: string, rowId: string): HTMLButtonElement => rowAction(id, rowId) as HTMLButtonElement;
+type Group = 'models' | 'agent' | 'permission' | 'workspace' | 'advanced';
+const navButton = (group: Group): HTMLButtonElement => button(`nav-${group}`);
 
-/** 图标按钮（编辑 / 删除）没有可见文字，靠 aria-label 找。 */
-const iconButton = (label: string): HTMLButtonElement => {
-  const button = document.body.querySelector(`button[aria-label="${label}"]`);
-  if (!button) throw new Error(`icon button not found: ${label}`);
-  return button as HTMLButtonElement};
-
-/** 按标签文字找输入框。只认带 for 的表单标签——卡片里的只读字段也有同名标签，但没有关联控件。 */
-const inputFor = (label: string): HTMLInputElement => {
+/** 按标签找控件。只认带 for 的表单标签——卡片里的只读字段也有同名标签，但没有关联控件。 */
+const controlFor = (label: string): HTMLElement => {
   const htmlFor = Array.from(document.body.querySelectorAll('label')).find((el) => el.textContent === label && el.hasAttribute('for'))?.getAttribute('for');
   const control = htmlFor ? document.getElementById(htmlFor) : null;
+  if (!control) throw new Error(`control not found for label: ${label}`);
+  return control;
+};
+const inputFor = (label: string): HTMLInputElement => {
+  const control = controlFor(label);
   if (!(control instanceof HTMLInputElement)) throw new Error(`input not found for label: ${label}`);
   return control;
 };
-const maybeInputFor = (label: string): HTMLInputElement | undefined => {
-  try {
-    return inputFor(label);
-  } catch {
-    return undefined;
-  }
+const selectFor = (label: string): HTMLSelectElement => {
+  const control = controlFor(label);
+  if (!(control instanceof HTMLSelectElement)) throw new Error(`select not found for label: ${label}`);
+  return control;
 };
 
 const typeInto = (input: HTMLInputElement, value: string): void => {
@@ -214,9 +213,6 @@ const click = (el: Element): void => {
 
 /** 当前打开的弹窗（没有则 null）。 */
 const openDialog = (): HTMLElement | null => document.body.querySelector('[role="dialog"]') as HTMLElement | null;
-
-/** 弹窗的标题文字。 */
-const dialogTitle = (): string | null => openDialog()?.querySelector('h2')?.textContent ?? null;
 
 /** 提交弹窗里的表单（回车 / 点主按钮走的是同一条路）。 */
 const submitDialog = (): void => {
@@ -242,16 +238,16 @@ describe('SettingsPage', () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
     // 首屏：模型分组（默认）——只有 provider 与模型，模型绑定在 Agent 分组。
-    expect(container!.textContent).not.toContain('模型绑定');
-    expect(container!.textContent).toContain('Providers');
+    expect(queryByTestId('models-group', container!)).not.toBeNull();
+    expect(queryByTestId('agent-bindings', container!)).toBeNull();
 
-    for (const label of ['Agent', '权限', '工作区', '高级', '模型']) {
-      act(() => navButton(label).click());
+    for (const group of ['agent', 'permission', 'workspace', 'advanced', 'models'] as const) {
+      act(() => navButton(group).click());
     }
-    expect(container!.textContent).not.toContain('模型绑定');
+    expect(queryByTestId('agent-bindings', container!)).toBeNull();
 
-    act(() => navButton('Agent').click());
-    expect(container!.textContent).toContain('模型绑定');
+    act(() => navButton('agent').click());
+    expect(queryByTestId('agent-bindings', container!)).not.toBeNull();
     expect(hoisted.saveConfig).not.toHaveBeenCalled();
   });
 
@@ -259,33 +255,30 @@ describe('SettingsPage', () => {
     await act(async () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
-    act(() => navButton('Agent').click());
-    // Puppet 默认参数是只读的三行（不是输入框）。
-    const text = container!.textContent ?? '';
-    expect(text).toMatch(/最大并发\s*3/);
-    expect(text).toMatch(/Max turns\s*重启生效\s*12/);
-    expect(text).toMatch(/Tool choice\s*auto/);
+    act(() => navButton('agent').click());
+    // Puppet 默认参数是只读的三行（不是输入框）：值是后端给的配置值。
+    expect(queryByTestId('agent-puppet-defaults', container!)!.querySelector('input, textarea')).toBeNull();
+    expect(queryByTestId('puppet-max-concurrency', container!)!.textContent).toMatch(/3/);
+    expect(queryByTestId('puppet-max-turns', container!)!.textContent).toMatch(/12/);
+    expect(queryByTestId('puppet-tool-choice', container!)!.textContent).toMatch(/auto/);
   });
 
   it('puppet defaults are read-only on the page; editing happens in a dialog', async () => {
     await act(async () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
-    act(() => navButton('Agent').click());
-    // 这三项在页面里没有输入框（第三方 worker 卡片里的输入框是另一回事）。
-    // 「最大并发」在页面里是只读标签：没有关联的输入框。
-    const concurrencyLabel = Array.from(document.body.querySelectorAll('label')).find((el) => el.textContent === '最大并发');
-    expect(concurrencyLabel?.hasAttribute('for')).toBe(false);
-    expect(maybeInputFor('最大并发')).toBeUndefined();
+    act(() => navButton('agent').click());
+    // 这三项在页面里是只读的（第三方 worker 卡片里的输入框是另一回事）。
+    expect(queryByTestId('agent-puppet-defaults', container!)!.querySelector('input, textarea')).toBeNull();
 
-    click(iconButton('编辑 Puppet 默认参数'));
-    expect(dialogTitle()).toBe('编辑 Puppet 默认参数');
+    click(button('puppet-defaults-edit'));
+    expect(queryByTestId('puppet-defaults-dialog')).not.toBeNull();
     expect(inputFor('最大并发').value).toBe('3');
-    expect((buttonNamed('保存') as HTMLButtonElement).disabled).toBe(true);
+    expect(button('dialog-submit').disabled).toBe(true);
     // 清空并发数不合法：原因就近显示，保存不点亮。
     typeInto(inputFor('最大并发'), '');
-    expect(openDialog()!.textContent).toContain('最大并发需为正整数');
-    expect((buttonNamed('保存') as HTMLButtonElement).disabled).toBe(true);
+    expect(queryByTestId('puppet-defaults-dialog')!.textContent).toContain('最大并发需为正整数');
+    expect(button('dialog-submit').disabled).toBe(true);
 
     typeInto(inputFor('最大并发'), '5');
     submitDialog();
@@ -298,9 +291,9 @@ describe('SettingsPage', () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
     // provider 卡片内直接列出其模型；模型绑定不在这页。
-    expect(container!.textContent).toContain('gpt-fast');
-    expect(container!.textContent).not.toContain('模型绑定');
-    const toggle = Array.from(container!.querySelectorAll('button[aria-expanded]')).find((el) => el.textContent?.includes('main')) as HTMLButtonElement;
+    expect(container!.querySelector('[data-testid="model-card"][data-id="fast"]')).not.toBeNull();
+    expect(queryByTestId('agent-bindings', container!)).toBeNull();
+    const toggle = container!.querySelector('[data-testid="provider-toggle"][data-id="main"]') as HTMLButtonElement;
     // 卡片默认展开：点一下收起，再点开。
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     act(() => toggle.click());
@@ -308,24 +301,24 @@ describe('SettingsPage', () => {
     act(() => toggle.click());
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     // 模型绑定在 Agent 分组，排在 Puppet 默认参数与第三方 worker 之前。
-    act(() => navButton('Agent').click());
-    const text = container!.textContent ?? '';
-    expect(text.indexOf('模型绑定')).toBeGreaterThanOrEqual(0);
-    expect(text.indexOf('模型绑定')).toBeLessThan(text.indexOf('Puppet 默认参数'));
-    expect(text.indexOf('Puppet 默认参数')).toBeLessThan(text.indexOf('第三方 Worker'));
+    act(() => navButton('agent').click());
+    const position = (id: string): number => Array.from(container!.querySelectorAll('[data-testid]')).indexOf(byTestId(id, container!));
+    expect(position('agent-bindings')).toBeGreaterThanOrEqual(0);
+    expect(position('agent-bindings')).toBeLessThan(position('agent-puppet-defaults'));
+    expect(position('agent-puppet-defaults')).toBeLessThan(position('agent-workers'));
   });
 
   it('renaming a bound model carries the bindings over to the new name', async () => {
     await act(async () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
-    click(iconButton('编辑模型 fast'));
-    expect(dialogTitle()).toBe('编辑模型');
+    click(rowButton('model-edit', 'fast'));
+    expect(queryByTestId('model-edit-dialog')).not.toBeNull();
     expect(inputFor('名称').value).toBe('fast');
     // 改条目名 = 重命名。编辑已有模型不强制填上下文窗口（留空按 256K）：
     // 只改名称就能保存，controller / worker 的绑定跟着指向新名字。
     typeInto(inputFor('名称'), 'sonnet');
-    expect((buttonNamed('保存') as HTMLButtonElement).disabled).toBe(false);
+    expect(button('dialog-submit').disabled).toBe(false);
     submitDialog();
     expect(await lastSaved()).toEqual(renameModel(config, 'fast', 'sonnet'));
     // 保存成功后弹窗自己关上。
@@ -336,14 +329,14 @@ describe('SettingsPage', () => {
     await act(async () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
-    click(iconButton('删除模型 fast'));
+    click(rowButton('model-delete', 'fast'));
     await settle();
     expect(hoisted.saveConfig).not.toHaveBeenCalled();
-    expect(container!.textContent).toContain('该模型正被 controller、worker 使用，先改绑再删除');
+    expect(byTestId('provider-delete-error', container!).textContent).toContain('该模型正被 controller、worker 使用，先改绑再删除');
 
-    click(iconButton('删除 provider main'));
+    click(rowButton('provider-delete', 'main'));
     await settle();
-    expect(container!.textContent).toContain('该 provider 下还有模型（fast）');
+    expect(byTestId('provider-delete-error', container!).textContent).toContain('该 provider 下还有模型（fast）');
     expect(hoisted.saveConfig).not.toHaveBeenCalled();
   });
 
@@ -352,18 +345,19 @@ describe('SettingsPage', () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
     expect(container!.querySelector('input')).toBeNull();
-    click(iconButton('编辑 provider main'));
-    expect(dialogTitle()).toBe('编辑 provider');
+    click(rowButton('provider-edit', 'main'));
+    expect(queryByTestId('provider-edit-dialog')).not.toBeNull();
     // 卡片里没有冒出输入框：表单只在弹窗里。
     expect(container!.querySelector('input')).toBeNull();
     // 名称、Base URL、API Key——名称也能改（改名即重命名，引用它的地方一起改）。
-    expect(openDialog()!.querySelectorAll('input')).toHaveLength(3);
+    expect(queryByTestId('provider-edit-dialog')!.querySelectorAll('input')).toHaveLength(3);
     const key = inputFor('API Key');
     expect(key.type).toBe('password');
-    click(openDialog()!.querySelector('button[aria-label="显示 API Key"]') as Element);
+    // 页面的只读卡片上也有一个显隐开关：点的是弹窗里的这一个。
+    click(byTestId('secret-reveal', queryByTestId('provider-edit-dialog')!));
     expect(key.type).toBe('text');
     // 没改动时保存不点亮。
-    expect((buttonNamed('保存') as HTMLButtonElement).disabled).toBe(true);
+    expect(button('dialog-submit').disabled).toBe(true);
 
     typeInto(inputFor('API Key'), 'k-rotated');
     submitDialog();
@@ -375,7 +369,7 @@ describe('SettingsPage', () => {
     await act(async () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
-    click(iconButton('编辑 provider main'));
+    click(rowButton('provider-edit', 'main'));
     expect(inputFor('名称').value).toBe('main');
     typeInto(inputFor('名称'), 'hub');
     submitDialog();
@@ -391,22 +385,23 @@ describe('SettingsPage', () => {
     await act(async () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
-    click(buttonNamed('新增 provider'));
-    expect(dialogTitle()).toBe('新增 provider');
-    expect(openDialog()!.querySelectorAll('label')).toHaveLength(3);
-    expect((buttonNamed('添加') as HTMLButtonElement).disabled).toBe(true);
+    click(button('provider-add'));
+    expect(queryByTestId('provider-add-dialog')).not.toBeNull();
+    // 名称、Base URL、API Key 三个字段。
+    expect(queryByTestId('provider-add-dialog')!.querySelectorAll('label[for]')).toHaveLength(3);
+    expect(button('dialog-submit').disabled).toBe(true);
 
     // 名称和已有的重复：原因就近显示，仍然不能提交。
     typeInto(inputFor('名称'), 'main');
     typeInto(inputFor('Base URL'), 'https://hub.example/v1');
     typeInto(inputFor('API Key'), 'sk-hub');
-    expect(openDialog()!.textContent).toContain('provider 名称「main」已存在');
-    expect((buttonNamed('添加') as HTMLButtonElement).disabled).toBe(true);
-    click(buttonNamed('取消'));
+    expect(queryByTestId('provider-add-dialog')!.textContent).toContain('provider 名称「main」已存在');
+    expect(button('dialog-submit').disabled).toBe(true);
+    click(button('dialog-cancel'));
     expect(openDialog()).toBeNull();
     expect(hoisted.saveConfig).not.toHaveBeenCalled();
 
-    click(buttonNamed('新增 provider'));
+    click(button('provider-add'));
     typeInto(inputFor('名称'), 'hub');
     typeInto(inputFor('Base URL'), 'https://hub.example/v1');
     typeInto(inputFor('API Key'), 'sk-hub');
@@ -422,12 +417,13 @@ describe('SettingsPage', () => {
     await act(async () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
-    click(buttonNamed('添加模型'));
-    expect(dialogTitle()).toBe('添加模型');
-    expect(Array.from(openDialog()!.querySelectorAll('label')).map((el) => el.textContent)).toEqual(
-      expect.arrayContaining(['名称', '模型名', '上下文窗口（tokens）', '最大输出 tokens', '温度']),
-    );
-    click(buttonNamed('取消'));
+    click(button('model-add'));
+    expect(queryByTestId('model-add-dialog')).not.toBeNull();
+    // 弹窗里摆着这五个字段（靠 label 关联找控件）。
+    for (const label of ['名称', '模型名', '上下文窗口（tokens）', '最大输出 tokens', '温度']) {
+      expect(controlFor(label).tagName).toBe('INPUT');
+    }
+    click(button('dialog-cancel'));
     expect(openDialog()).toBeNull();
   });
 
@@ -436,15 +432,16 @@ describe('SettingsPage', () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
     // 热更生效（改绑定是即时提交；模型绑定在 Agent 分组）。
-    act(() => navButton('Agent').click());
+    act(() => navButton('agent').click());
     hoisted.saveConfig.mockResolvedValueOnce({ applied: ['update_controller_model'], restartRequired: [], booted: false });
-    const binding = document.body.querySelector('select') as HTMLSelectElement;
+    const binding = selectFor('Controller 模型');
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(binding, 'fast');
       binding.dispatchEvent(new Event('change', { bubbles: true }));
     });
     await settle();
-    expect(toast.success).toHaveBeenCalledWith('已保存并生效', expect.objectContaining({ id: 'config-applied' }));
+    // 反馈走 toast，按 toast 的 id 认是哪一条；文案是给用户看的，不在这里钉。
+    expect(toast.success).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ id: 'config-applied' }));
 
     // 有需要重启才生效的项：常驻提示 + 「重启 server」按钮，点它去重启。
     hoisted.saveConfig.mockResolvedValueOnce({ applied: [], restartRequired: ['worker.maxTurns（需重启生效）'], booted: false });
@@ -453,48 +450,38 @@ describe('SettingsPage', () => {
     });
     await settle();
     expect(toast).toHaveBeenCalledWith(
-      '已保存，需重启生效',
-      expect.objectContaining({ id: 'config-restart-required', description: '以下设置重启后生效：worker.maxTurns（需重启生效）', duration: Infinity }),
+      expect.any(String),
+      expect.objectContaining({ id: 'config-restart-required', description: expect.stringContaining('worker.maxTurns'), duration: Infinity }),
     );
-    const call = toast.mock.calls.at(-1) as unknown as [string, { action: { label: string; onClick: (event: { preventDefault: () => void }) => void } }];
-    // 动作按钮只有两个字：标题不换行，按钮不能把标题挤掉。
-    expect(call[1].action.label).toBe('重启');
+    const call = toast.mock.calls.at(-1) as unknown as [string, { action: { onClick: (event: { preventDefault: () => void }) => void } }];
     // 点「重启」：拦下 sonner「点完自动关闭」的默认行为——这条提示要原地变成
     // 「正在重启…」，再变成结果，不能跟着消失；重启期间按钮不再显示（防连点）。
     const event = { preventDefault: vi.fn() };
     call[1].action.onClick(event);
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(hoisted.restartServer).toHaveBeenCalledTimes(1);
-    expect(toast.loading).toHaveBeenCalledWith('正在重启…', expect.objectContaining({ id: 'config-restart-required', action: null }));
+    expect(toast.loading).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ id: 'config-restart-required', action: null }));
     await settle();
-    expect(toast.success).toHaveBeenLastCalledWith('server 已重启', expect.objectContaining({ id: 'config-restart-required' }));
-    // 页面里不再有手写的提示条。
-    expect(container!.textContent).not.toContain('知道了');
+    expect(toast.success).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ id: 'config-restart-required' }));
   });
 
   it('a third-party worker is renamed by editing the name in its card; the save bar only shows once something changed', async () => {
     await act(async () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
-    act(() => navButton('Agent').click());
-    const saveButtons = (): HTMLButtonElement[] =>
-      Array.from(document.body.querySelectorAll('button')).filter((el) => el.textContent?.trim() === '保存') as HTMLButtonElement[];
+    act(() => navButton('agent').click());
     // 卡片展开着，但没有改动：没有保存 / 取消。
-    expect(saveButtons()).toHaveLength(0);
-    // 头部只有 emoji + 名称（展开时不带类型徽标和描述）。
-    const toggle = container!.querySelector('button[aria-expanded]') as HTMLElement;
-    expect(toggle.textContent).toBe('claude-code');
-
+    expect(allByTestId('save-bar-save')).toHaveLength(0);
     const name = inputFor('名称');
     expect(name.value).toBe('claude-code');
     typeInto(name, 'claude');
-    expect(saveButtons()).toHaveLength(1);
+    expect(allByTestId('save-bar-save')).toHaveLength(1);
     // 名称清空不合法：原因就近显示，保存不亮。
     typeInto(name, '');
-    expect(document.body.textContent).toContain('请填写名称');
-    expect((saveButtons()[0] as HTMLButtonElement).disabled).toBe(true);
+    expect(byTestId('save-bar-error').textContent).toBe('请填写名称');
+    expect(button('save-bar-save').disabled).toBe(true);
     typeInto(name, 'claude');
-    click(saveButtons()[0] as HTMLButtonElement);
+    click(button('save-bar-save'));
     expect(await lastSaved()).toEqual({ ...config, workers: { claude: config.workers!['claude-code'] } });
   });
 
@@ -502,11 +489,43 @@ describe('SettingsPage', () => {
     await act(async () => {
       root!.render(<SettingsPage onClose={() => undefined} />);
     });
-    act(() => navButton('Agent').click());
+    act(() => navButton('agent').click());
     // 描述是一段给 controller 看的自然语言：文本域，不是单行输入框。
-    const description = container!.querySelector('textarea') as HTMLTextAreaElement | null;
-    expect(description?.value).toBe('第三方编码 agent');
-    expect(container!.querySelector('button[role="switch"]')).not.toBeNull();
-    expect(container!.textContent).toContain('添加 worker');
+    const description = queryByTestId('worker-card', container!)!.querySelector('textarea');
+    expect((description as HTMLTextAreaElement | null)?.value).toBe('第三方编码 agent');
+    expect(button('worker-enabled').getAttribute('role')).toBe('switch');
+    expect(queryByTestId('worker-add', container!)).not.toBeNull();
+  });
+
+  it('a disabled worker row that does not validate says so and cannot be switched on; a valid one can', async () => {
+    // 像「导入 CLI 配置」时被置为停用的行：停用的行不参与校验，所以它可以不合法。
+    const broken = { ...config, workers: { codex: { type: 'acp', description: 'no command', enable: false } } };
+    hoisted.readConfig.mockResolvedValue({ config: broken, desktop: {} });
+    await act(async () => {
+      root!.render(<SettingsPage onClose={() => undefined} />);
+    });
+    act(() => navButton('agent').click());
+    const switchOf = (): HTMLElement => rowButton('worker-enabled', 'codex');
+    // 卡片上先写明它为什么不合法。
+    expect(byTestId('worker-disabled-problem', container!).textContent).toContain('workers.codex.command is required');
+    // 打开开关 = 启用前校验这一行：不合法就拦下，什么都不提交，开关仍是关的。
+    click(switchOf());
+    await settle();
+    expect(hoisted.saveConfig).not.toHaveBeenCalled();
+    expect(switchOf().getAttribute('aria-checked')).toBe('false');
+    expect(byTestId('worker-toggle-error', container!).textContent).toContain('workers.codex.command is required');
+
+    // 合法的停用行可以直接启用（重新挂载页面才会重新读配置）。
+    const off = { ...config, workers: { codex: { type: 'claude-code', description: 'fine', enable: false } } };
+    hoisted.readConfig.mockResolvedValue({ config: off, desktop: {} });
+    act(() => root!.unmount());
+    root = createRoot(container!);
+    await act(async () => {
+      root!.render(<SettingsPage onClose={() => undefined} />);
+    });
+    act(() => navButton('agent').click());
+    expect(queryByTestId('worker-disabled-problem', container!)).toBeNull();
+    click(rowButton('worker-enabled', 'codex'));
+    expect(await lastSaved()).toEqual({ ...off, workers: { codex: { type: 'claude-code', description: 'fine', enable: true } } });
   });
 });
